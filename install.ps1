@@ -20,7 +20,8 @@ param(
     [int]$Port = 48884,
     [switch]$SkipClaudeDesktop,
     [switch]$SkipClaudeCode,
-    [switch]$NonInteractive
+    [switch]$NonInteractive,
+    [switch]$SkipAddin   # only (re)install the MCP server + Claude registration; leaves Revit alone
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,6 +61,7 @@ Write-Host "ACE Revit MCP installer (Revit $RevitYear)" -ForegroundColor White
 Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
 # ------------------------------------------------------------------------------------------------
+if (-not $SkipAddin) {
 Step "Checking Revit $RevitYear"
 $existingDll = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitYear\AceRevitMcp\AceRevitMcp.dll"
 if (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
@@ -78,13 +80,18 @@ $revitExe = Join-Path $env:ProgramFiles "Autodesk\Revit $RevitYear\Revit.exe"
 if (Test-Path $revitExe) { Ok "Revit $RevitYear found" }
 else { Warn "Revit $RevitYear was not found at $revitExe. Continuing; the add-in will load once Revit $RevitYear is installed." }
 
+}
+
 # ------------------------------------------------------------------------------------------------
+if (-not $SkipAddin) {
 Step "Checking .NET 8 SDK (used to build the add-in)"
 $hasSdk = $false
 if (Has dotnet) { $hasSdk = [bool]((Invoke-Quiet { dotnet --list-sdks }) -match '^(8|9|10)\.') }
 if (-not $hasSdk) { Winget-Install 'Microsoft.DotNet.SDK.8' '.NET 8 SDK' }
 if (-not (Has dotnet) -or -not ((Invoke-Quiet { dotnet --list-sdks }) -match '^(8|9|10)\.')) { throw ".NET 8 SDK is still not available. Install it from https://dotnet.microsoft.com/download/dotnet/8.0 and re-run." }
 Ok ".NET SDK $((& dotnet --version).Trim())"
+
+}
 
 Step "Checking Node.js 18+ (runs the MCP server)"
 $nodeOk = $false
@@ -95,6 +102,7 @@ $NodeExe = (Get-Command node).Source
 Ok "Node.js $((& node --version).Trim()) at $NodeExe"
 
 # ------------------------------------------------------------------------------------------------
+if (-not $SkipAddin) {
 Step "Building and installing the Revit add-in"
 $AddinRoot  = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitYear"
 $InstallDir = Join-Path $AddinRoot 'AceRevitMcp'
@@ -109,6 +117,8 @@ if ($LASTEXITCODE -ne 0) { throw "Building the script compiler failed (see error
 $manifest = (Get-Content (Join-Path $Root 'revit-addin\AceRevitMcp.addin.template') -Raw).Replace('{{ASSEMBLY_PATH}}', (Join-Path $InstallDir 'AceRevitMcp.dll'))
 Write-Utf8NoBom (Join-Path $AddinRoot 'AceRevitMcp.addin') $manifest
 Ok "Add-in installed to $InstallDir"
+
+}
 
 # ------------------------------------------------------------------------------------------------
 Step "Creating shared configuration"
