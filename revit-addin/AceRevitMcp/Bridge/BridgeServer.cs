@@ -108,7 +108,7 @@ namespace AceRevitMcp.Bridge
                 using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
                     body = await reader.ReadToEndAsync().ConfigureAwait(false);
 
-                if (JsonNode.Parse(body) is not JsonObject request || request["command"]?.GetValue<string>() is not string command)
+                if (JsonNode.Parse(body) is not JsonObject request || !(request["command"] is JsonValue cv && cv.TryGetValue<string>(out var command)))
                 {
                     await WriteAsync(ctx, 400, Error("Body must be JSON: {\"command\": \"...\", \"args\": {...}}"));
                     return;

@@ -1,6 +1,6 @@
 {
   "name": "ace-revit-mcp",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "MCP server that lets Claude control Autodesk Revit 2025 through the ACE Revit add-in",
   "type": "module",
   "main": "index.js",

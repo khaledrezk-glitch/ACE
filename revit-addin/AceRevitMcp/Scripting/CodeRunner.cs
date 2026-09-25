@@ -72,12 +72,14 @@ public static class AceScript
 
         public static JsonObject Run(UIApplication uiapp, JsonObject args)
         {
-            var code = args["code"]?.GetValue<string>();
+            if (args["code"] != null && args["code"] is not JsonValue)
+                throw new CommandException("'code' must be a string of C# (it arrived as a JSON object or array).");
+            var code = Commands.Args.Str(args, "code");
             if (string.IsNullOrWhiteSpace(code)) throw new CommandException("'code' is required.");
 
-            var mode = (args["mode"]?.GetValue<string>() ?? "auto").ToLowerInvariant();
+            var mode = (Commands.Args.Str(args, "mode") ?? "auto").ToLowerInvariant();
             var dryRun = args["dry_run"] is JsonValue dv && dv.TryGetValue<bool>(out var dr) && dr;
-            var name = args["transaction_name"]?.GetValue<string>() ?? "Claude: script";
+            var name = Commands.Args.Str(args, "transaction_name") ?? "Claude: script";
             if (mode is not ("auto" or "manual" or "readonly"))
                 throw new CommandException("mode must be 'auto', 'manual' or 'readonly'.");
 

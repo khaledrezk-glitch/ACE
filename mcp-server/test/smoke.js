@@ -129,6 +129,10 @@ await call("save_script", { name: "my_task", description: "Test", code: "return 
 await call("save_script", { name: "team_task", description: "Shared", code: "return 1;", mode: "readonly", scope: "team" });
 assert.equal(json(await call("list_saved_scripts")).find((s) => s.name === "team_task").source, "team");
 assert.ok(json(await call("list_saved_scripts")).find((s) => s.name === "door_width_check"));
+for (const s of json(await call("list_saved_scripts")).filter((s) => s.source === "built-in")) {
+  assert.ok(s.description && ["auto", "manual", "readonly"].includes(s.mode), `built-in script ${s.name} needs @description and a valid @mode`);
+}
+assert.match((await call("read_saved_script", { name: "door_width_check" })).content[0].text, /"Width"/, "door width falls back to the family Width parameter");
 const mine = json(await call("list_saved_scripts")).find((s) => s.name === "my_task");
 assert.equal(mine.source, "user");
 const mineRun = json(await call("run_saved_script", { name: "my_task", inputs: { n: 7 } }));

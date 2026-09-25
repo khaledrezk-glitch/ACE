@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1
+- `door_width_check` now reads door families that store width in a plain "Width" family parameter
+  (found in real-model testing: 132 of 142 Snowdon Towers doors readable, up from 8), and treats zero widths
+  (curtain wall panel doors) as unreadable instead of reporting them as 0 mm doors.
+- The add-in returns a clear message when `code` or `command` arrives with the wrong JSON type.
+
 ## 1.2.0
 - **Smarter Claude:** `revit_api_lookup` reads the real Revit API on the PC (signatures, overloads, enums,
   obsolete flags); `describe_category` shows which parameters a category really has (instance/type,

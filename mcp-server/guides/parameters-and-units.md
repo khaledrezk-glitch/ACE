@@ -7,6 +7,9 @@
   Several parameters can share a name, in which case use `e.GetParameters("Name")`.
 - Type vs instance: when `LookupParameter` returns null on the instance, check `doc.GetElement(e.GetTypeId())`.
   Editing a type parameter changes EVERY instance of that type, so say so in the plan.
+- Built-in vs family parameters: many families (doors, windows, casework) define their own "Width" / "Height"
+  family parameters instead of filling DOOR_WIDTH / FAMILY_WIDTH_PARAM. Check with `describe_category`, and read
+  built-in first, then `LookupParameter("Width")` on the instance, then on the type. Treat 0 as "unknown".
 - Common built-ins: ALL_MODEL_MARK, ALL_MODEL_INSTANCE_COMMENTS, ROOM_NUMBER, ROOM_NAME, ROOM_AREA, ROOM_FINISH_FLOOR,
   DOOR_WIDTH / FAMILY_WIDTH_PARAM, FAMILY_HEIGHT_PARAM, WALL_USER_HEIGHT_PARAM, CURVE_ELEM_LENGTH, HOST_AREA_COMPUTED,
   SHEET_NUMBER, VIEW_NAME, ELEM_PARTITION_PARAM (workset), PHASE_CREATED. Check any name with `revit_api_lookup "BuiltInParameter.WORD"`.
