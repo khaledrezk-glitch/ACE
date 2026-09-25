@@ -8,7 +8,7 @@
   2. Builds the ACE Revit add-in and registers it with Revit 2025 (per-user, no admin needed).
   3. Installs the MCP server to %LOCALAPPDATA%\ACE-RevitMCP\mcp-server.
   4. Creates the shared config (%APPDATA%\ACE-RevitMCP\config.json: port + secret token).
-  5. Registers the "revit" MCP server in Claude Desktop and, if installed, Claude Code.
+  5. Registers the "ace-revit" MCP server in Claude Desktop and, if installed, Claude Code.
 
   Safe to re-run: it upgrades in place.
 
@@ -161,7 +161,7 @@ function Register-ClaudeDesktop($file) {
         $conf | Add-Member -NotePropertyName 'mcpServers' -NotePropertyValue (New-Object PSObject) -Force
     }
     $entry = [PSCustomObject]@{ command = $NodeExe; args = @($IndexJs) }
-    $conf.mcpServers | Add-Member -NotePropertyName 'revit' -NotePropertyValue $entry -Force
+    $conf.mcpServers | Add-Member -NotePropertyName 'ace-revit' -NotePropertyValue $entry -Force
     Write-Utf8NoBom $file ($conf | ConvertTo-Json -Depth 32)
     Ok "Registered in Claude Desktop: $file"
 }
@@ -182,8 +182,8 @@ if (-not $SkipClaudeDesktop) {
 if (-not $SkipClaudeCode) {
     Step "Registering with Claude Code (if installed)"
     if (Has claude) {
-        Invoke-Quiet { claude mcp remove revit --scope user } | Out-Null
-        & claude mcp add revit --scope user -- $NodeExe $IndexJs | Out-Host
+        Invoke-Quiet { claude mcp remove ace-revit --scope user } | Out-Null
+        & claude mcp add ace-revit --scope user -- $NodeExe $IndexJs | Out-Host
         if ($LASTEXITCODE -eq 0) { Ok "Registered in Claude Code (user scope)" } else { Warn "claude mcp add failed; run it manually (see README)." }
     } else {
         Write-Host "    Claude Code CLI not found - skipped. (Claude Desktop is enough.)"

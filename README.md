@@ -120,7 +120,7 @@ code execution and keeps a small set of reliable tools. It adopts their best ide
 | Requests time out | Revit only runs commands when idle. Close open dialogs, press **Esc** to end any active command, and wait for the model to finish loading. |
 | No **ACE** tab in Revit | Re-run `install.cmd` with Revit closed, and click **Always Load** when Revit asks. |
 | Port 48884 is already in use | Edit `"port"` in `%APPDATA%\ACE-RevitMCP\config.json`, then restart Revit. |
-| Tools don't appear in Claude Desktop | Fully quit and reopen Claude Desktop. Check `%APPDATA%\Claude\claude_desktop_config.json` has a `"revit"` entry. |
+| Tools don't appear in Claude Desktop | Fully quit and reopen Claude Desktop. Check `%APPDATA%\Claude\claude_desktop_config.json` has an `"ace-revit"` entry. |
 | Anything else | Read the log at `%APPDATA%\ACE-RevitMCP\logs\addin.log`. |
 
 Manual registration, if needed. Claude Desktop config:
@@ -128,7 +128,7 @@ Manual registration, if needed. Claude Desktop config:
 ```json
 {
   "mcpServers": {
-    "revit": {
+    "ace-revit": {
       "command": "C:\\Program Files\\nodejs\\node.exe",
       "args": ["C:\\Users\\<you>\\AppData\\Local\\ACE-RevitMCP\\mcp-server\\index.js"]
     }
@@ -136,7 +136,7 @@ Manual registration, if needed. Claude Desktop config:
 }
 ```
 
-Claude Code: `claude mcp add revit --scope user -- node "%LOCALAPPDATA%\ACE-RevitMCP\mcp-server\index.js"`
+Claude Code: `claude mcp add ace-revit --scope user -- node "%LOCALAPPDATA%\ACE-RevitMCP\mcp-server\index.js"`
 
 ## Repository layout
 

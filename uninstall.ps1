@@ -18,13 +18,13 @@ foreach ($file in $targets) {
     if (-not (Test-Path $file)) { continue }
     try {
         $conf = Get-Content $file -Raw | ConvertFrom-Json
-        if ($conf.mcpServers -and ($conf.mcpServers.PSObject.Properties.Name -contains 'revit')) {
-            $conf.mcpServers.PSObject.Properties.Remove('revit')
+        if ($conf.mcpServers -and ($conf.mcpServers.PSObject.Properties.Name -contains 'ace-revit')) {
+            $conf.mcpServers.PSObject.Properties.Remove('ace-revit')
             [IO.File]::WriteAllText($file, ($conf | ConvertTo-Json -Depth 32), (New-Object System.Text.UTF8Encoding($false)))
             Write-Host "Removed from $file"
         }
     } catch { Write-Host "Could not edit $file : $_" -ForegroundColor Yellow }
 }
-if (Get-Command claude -ErrorAction SilentlyContinue) { & claude mcp remove revit --scope user 2>$null | Out-Null }
+if (Get-Command claude -ErrorAction SilentlyContinue) { & claude mcp remove ace-revit --scope user 2>$null | Out-Null }
 if ($Purge) { Remove-Item (Join-Path $env:APPDATA 'ACE-RevitMCP') -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host "ACE Revit MCP removed." -ForegroundColor Green
