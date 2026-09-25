@@ -22,6 +22,7 @@ namespace AceRevitMcp
                 Config = AceConfig.LoadOrCreate();
                 var dispatcher = new RequestDispatcher(new CommandRegistry());
                 dispatcher.Initialize();
+                application.ControlledApplication.DocumentChanged += ChangeTracker.OnDocumentChanged;
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
                 Server.Start();
                 CreateRibbon(application);
@@ -36,6 +37,7 @@ namespace AceRevitMcp
 
         public Result OnShutdown(UIControlledApplication application)
         {
+            application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged;
             Server?.Dispose();
             return Result.Succeeded;
         }

@@ -26,7 +26,8 @@ namespace AceRevitMcp.Commands
 
             var results = new JsonArray();
             var applied = 0;
-            string status;
+            string status = null;
+            var recording = ChangeTracker.Begin("Claude: set parameters");
             using (var guard = new ModelGuard(app))
             {
                 using (var t = new Transaction(doc, "Claude: set parameters"))
@@ -57,7 +58,8 @@ namespace AceRevitMcp.Commands
                         }
                         results.Add(r);
                     }
-                    status = (dryRun ? t.RollBack() : t.Commit()).ToString();
+                    try { status = (dryRun ? t.RollBack() : t.Commit()).ToString(); }
+                    finally { ChangeTracker.End(recording, !dryRun && status == nameof(TransactionStatus.Committed)); }
                 }
 
                 var response = new JsonObject
@@ -68,6 +70,7 @@ namespace AceRevitMcp.Commands
                     ["dryRun"] = dryRun,
                     ["results"] = results,
                 };
+                if (!dryRun && applied > 0) response["note"] = "Applied as ONE undo step named 'Claude: set parameters'.";
                 if (guard.Warnings.Count > 0) response["revitWarnings"] = new JsonArray(guard.Warnings.Select(w => (JsonNode)w).ToArray());
                 if (guard.Errors.Count > 0) response["revitErrors"] = new JsonArray(guard.Errors.Select(w => (JsonNode)w).ToArray());
                 return response;

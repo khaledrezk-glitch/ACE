@@ -24,16 +24,22 @@ its main tool, **`execute_revit_code`**, lets Claude write C# against the **full
 it directly in Revit. One request can cover a whole workflow: analyse geometry, cross-check rules,
 update thousands of elements, build views and sheets.
 
-It is built to be safe to use with a live model:
+It is built so you can trust it with a live model. Claude **explains, previews, asks, then applies**,
+and the most important rules are enforced by the software itself, not just requested of Claude:
 
 | Safeguard | What it means for you |
 |---|---|
-| **Dry run** | Claude runs the change completely, reads the result, then rolls it back. It checks what would happen before touching your model. |
-| **One Undo step** | Each change is a single named transaction ("Claude: renumber rooms"). **Ctrl+Z** undoes it. |
-| **All-or-nothing** | If anything fails partway, all changes from that run are rolled back. |
-| **No blocked Revit** | Warnings are dismissed and reported back to Claude, and hard errors roll back instead of leaving a modal dialog open. |
+| **Plan in plain words first** | Before changing anything, Claude explains what it understood, the steps it will take, and what will and won't change. |
+| **Enforced preview** | A change runs completely and is then rolled back, and Claude reports "would add 12 grids, modify 3 views, delete 0". **The server refuses any real change that wasn't previewed first with exactly the same code and inputs.** |
+| **Your confirmation** | Claude shows you the preview and waits for your "yes" before applying it. |
+| **One Undo step** | Each applied change is a single named step ("Claude: renumber rooms"). Undo it with **Ctrl+Z**, or ask Claude to undo it. |
+| **Safe undo** | `undo_last_claude_change` refuses if you changed anything afterwards, so it never undoes your own work. |
+| **All-or-nothing** | If anything fails partway, every change from that run is rolled back. |
+| **Backups** | Claude can copy your .rvt file to a timestamped backup before big changes (`backup_model`). |
+| **Code screening** | Code that would touch files on disk, run other programs, use the network, or save, close or sync models is blocked unless you explicitly allow it. |
+| **Activity journal** | Every preview and change is logged with a plain-language description, the result, and the exact code, in `%APPDATA%\ACE-RevitMCP\journal`. Ask Claude "what did you change today?" |
+| **No blocked Revit** | Warnings are dismissed and reported back to Claude, and errors roll back instead of leaving a dialog open. |
 | **Local only** | The add-in listens on `localhost` only and needs a secret token, so other machines can't reach it. |
-| **Script library** | Claude can save a working solution as a named script (`save_script`) and re-run it later with new inputs. |
 
 Claude also gets a built-in guide (the MCP server instructions) that tells it how to work: understand
 the model, plan, dry-run, run, verify (it can even **look at views as images**), then report.
@@ -56,6 +62,8 @@ To update, pull or download the new version and run `install.cmd` again. To remo
 (add `-Purge` to also delete your config and saved scripts).
 
 ## Using it
+
+**First time? Follow [FIRST-TEST.md](FIRST-TEST.md). It's a 10-minute guided test on a scratch copy of a model.**
 
 Open a model in Revit, then just ask Claude. Examples:
 
@@ -84,12 +92,25 @@ doing it"). It does that by default for anything large.
 | `set_parameters` | Bulk parameter edits in one transaction |
 | `select_elements` | Select and zoom so you can see what Claude means |
 | `list_views`, `view_image` | List views, and export a view as an image Claude can look at |
-| **`execute_revit_code`** | Run C# against the full Revit API (dry-run, auto/manual/readonly transactions) |
+| **`execute_revit_code`** | Run C# against the full Revit API (preview, compile check, auto/manual/readonly transactions) |
+| `backup_model`, `undo_last_claude_change`, `get_activity_log` | Backup, safe undo, and "what did you do?" |
 | `list_saved_scripts`, `read_saved_script`, `run_saved_script`, `save_script` | Reusable script library |
 
 Built-in scripts (`mcp-server/scripts`): `audit_model`, `renumber_rooms`, `tag_untagged`,
 `grid_system`, `sheets_for_levels`, `copy_parameter`. Scripts you save go to
 `%APPDATA%\ACE-RevitMCP\scripts`.
+
+### Compared with other Revit MCP servers
+
+Before settling on this design I reviewed the published Revit MCP servers on npm: `mcp-server-for-revit`,
+`revit-mcp`, `revit-mcp-server` (179 tools), `@shuotao/revit-mcp-server`, `@kimminsub/revit-mcp`
+and `@visionxt/revit-mcp`. Most offer long lists of fixed tools. ACE covers the same ground through
+code execution and keeps a small set of reliable tools. It adopts their best ideas in a safer form:
+
+- **Undo and checkpoints:** undo only when the latest change is really Claude's; backups of the .rvt file.
+- **Compile-only code checks:** `compile_only: true`.
+- **"Secure" code execution:** risky-code screening plus the enforced preview.
+- **Audits and warnings:** the `audit_model` script.
 
 ## Troubleshooting
 

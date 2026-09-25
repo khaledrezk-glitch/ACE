@@ -20,8 +20,9 @@ namespace AceRevitMcp.Scripting
     ///
     /// Modes:
     ///   auto     - whole script runs in ONE transaction (default; simplest for edits)
-    ///   manual   - script manages its own transactions (ctx.Transact / new Transaction);
-    ///              everything is still wrapped in a TransactionGroup so dry_run can undo it all
+    ///   manual   - script manages its own transactions (ctx.Transact / new Transaction)
+    ///   Both are wrapped in a TransactionGroup: merged into one undo step, or rolled back for dry_run.
+    ///   readonly is wrapped too and always rolled back, so it can never change the model.
     ///   readonly - no transaction; any attempt to modify the model fails
     ///
     /// dry_run = true runs the script and then rolls every change back: a safe preview.
@@ -92,6 +93,8 @@ public static class AceScript
                     ["hint"] = "Line numbers refer to your code. Fix the errors and call again.",
                 };
             }
+            if (args["compile_only"] is JsonValue cv && cv.TryGetValue<bool>(out var compileOnly) && compileOnly)
+                return new JsonObject { ["success"] = true, ["stage"] = "compile", ["note"] = "Compiled successfully. Nothing was run." };
 
             var ctx = new ScriptContext(uiapp, args["inputs"] as JsonObject, dryRun);
             var doc = ctx.Doc;
@@ -103,15 +106,26 @@ public static class AceScript
             object result = null;
             Exception failure = null;
             string transactionStatus = null;
+            var recording = ChangeTracker.Begin(name);
+            var keptChanges = false;
 
             using (var guard = new ModelGuard(uiapp))
             {
-                Transaction tx = null;
+                // Both modes run inside a TransactionGroup. Inner transactions really commit (so Revit's
+                // own checks and warnings run and every change is recorded), then the group is either
+                // merged into ONE undo step (real run) or rolled back completely (dry run / failure).
                 TransactionGroup group = null;
+                Transaction tx = null;
                 try
                 {
+                    // readonly runs are also wrapped, and ALWAYS rolled back: even if the code opens its own
+                    // transaction it cannot change the model (readonly skips the preview requirement).
+                    if (doc != null && !doc.IsReadOnly)
+                    {
+                        group = new TransactionGroup(doc, name);
+                        group.Start();
+                    }
                     if (mode == "auto") { tx = new Transaction(doc, name); tx.Start(); }
-                    else if (mode == "manual") { group = new TransactionGroup(doc, name); group.Start(); }
 
                     result = Invoke(entry, ctx);
 
@@ -119,11 +133,24 @@ public static class AceScript
                     {
                         if (tx.GetStatus() != TransactionStatus.Started)
                             throw new CommandException("The script ended the automatic transaction itself. Use mode 'manual' to manage transactions.");
-                        transactionStatus = (dryRun ? tx.RollBack() : tx.Commit()).ToString();
+                        var committed = tx.Commit();
+                        if (committed != TransactionStatus.Committed)
+                            throw new CommandException("Revit refused to commit the changes (see revitErrors).");
+                    }
+                    if (group != null && mode == "readonly")
+                    {
+                        group.RollBack();
+                        if (recording.Committed > 0)
+                            response["note"] = "Read-only run: the script made changes, and they were all rolled back. Use mode 'auto' or 'manual' (with a preview) to change the model.";
                     }
                     else if (group != null)
                     {
-                        transactionStatus = (dryRun ? group.RollBack() : group.Assimilate()).ToString();
+                        if (dryRun) transactionStatus = group.RollBack().ToString();
+                        else
+                        {
+                            transactionStatus = group.Assimilate().ToString();
+                            keptChanges = transactionStatus == TransactionStatus.Committed.ToString();
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -137,9 +164,12 @@ public static class AceScript
                 {
                     tx?.Dispose();
                     group?.Dispose();
+                    ChangeTracker.End(recording, keptChanges);
                 }
 
                 if (transactionStatus != null) response["transaction"] = transactionStatus;
+                if (mode != "readonly" && failure == null)
+                    response[dryRun ? "wouldChange" : "changed"] = recording.Summary();
                 if (guard.Warnings.Count > 0) response["revitWarnings"] = ToArray(guard.Warnings);
                 if (guard.Errors.Count > 0) response["revitErrors"] = ToArray(guard.Errors);
                 if (guard.Dialogs.Count > 0) response["dialogs"] = ToArray(guard.Dialogs);
@@ -154,16 +184,17 @@ public static class AceScript
                 response["error"] = $"{failure.GetType().Name}: {failure.Message}";
                 var line = ScriptLine(failure);
                 if (line != null) response["line"] = line;
-                response["note"] = mode == "readonly" ? "Nothing was changed." : "All changes from this run were rolled back.";
+                response["note"] = mode == "readonly" ? "Nothing was changed." : "All changes from this run were rolled back. The model is exactly as before.";
                 return response;
             }
 
-            var rolledBackByRevit = transactionStatus == "RolledBack" && !dryRun;
-            response["success"] = !rolledBackByRevit;
-            if (rolledBackByRevit)
-                response["note"] = "Revit rejected the changes (see revitErrors) and rolled them back.";
+            response["success"] = true;
+            if (mode == "readonly")
+            { /* keep any note set above */ }
             else if (dryRun)
-                response["note"] = "Dry run: the script ran completely, then every change was rolled back.";
+                response["note"] = "Dry run: the script ran completely, then every change was rolled back. The model is unchanged.";
+            else if (mode != "readonly")
+                response["note"] = $"Applied as ONE undo step named '{name}' (Ctrl+Z in Revit, or undo_last_claude_change).";
             response["result"] = JsonConvert.ToNode(result);
             return response;
         }
