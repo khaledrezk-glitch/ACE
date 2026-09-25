@@ -1,0 +1,289 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.Loader;
+using System.Text;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using System.Threading;
+using AceRevitMcp.Bridge;
+using AceRevitMcp.Util;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+
+namespace AceRevitMcp.Scripting
+{
+    /// <summary>
+    /// Compiles C# written by Claude and runs it on Revit's main thread.
+    ///
+    /// Modes:
+    ///   auto     - whole script runs in ONE transaction (default; simplest for edits)
+    ///   manual   - script manages its own transactions (ctx.Transact / new Transaction);
+    ///              everything is still wrapped in a TransactionGroup so dry_run can undo it all
+    ///   readonly - no transaction; any attempt to modify the model fails
+    ///
+    /// dry_run = true runs the script and then rolls every change back: a safe preview.
+    /// </summary>
+    internal static class CodeRunner
+    {
+        private const string Template = @"using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Text.Json.Nodes;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Architecture;
+using Autodesk.Revit.DB.Structure;
+using Autodesk.Revit.DB.Mechanical;
+using Autodesk.Revit.DB.Plumbing;
+using Autodesk.Revit.DB.Electrical;
+using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Selection;
+using AceRevitMcp.Scripting;
+/*USINGS*/
+public static class AceScript
+{
+    public static object Run(ScriptContext ctx)
+    {
+        var doc = ctx.Doc;
+        var uidoc = ctx.UiDoc;
+        var uiapp = ctx.UiApp;
+        var app = ctx.App;
+        var args = ctx.Args;
+        void Log(object message) => ctx.Log(message);
+#line 1
+/*BODY*/
+#line default
+        return null;
+    }
+}
+";
+
+        private static readonly Regex UsingLine = new Regex(
+            @"^\s*using\s+(static\s+)?[A-Za-z_][\w.]*(\s*=\s*[A-Za-z_][\w.<>, ]*)?\s*;\s*$",
+            RegexOptions.Compiled);
+
+        private static readonly object CompilerGate = new object();
+        private static MethodInfo _compile;
+        private static int _counter;
+
+        public static JsonObject Run(UIApplication uiapp, JsonObject args)
+        {
+            var code = args["code"]?.GetValue<string>();
+            if (string.IsNullOrWhiteSpace(code)) throw new CommandException("'code' is required.");
+
+            var mode = (args["mode"]?.GetValue<string>() ?? "auto").ToLowerInvariant();
+            var dryRun = args["dry_run"] is JsonValue dv && dv.TryGetValue<bool>(out var dr) && dr;
+            var name = args["transaction_name"]?.GetValue<string>() ?? "Claude: script";
+            if (mode is not ("auto" or "manual" or "readonly"))
+                throw new CommandException("mode must be 'auto', 'manual' or 'readonly'.");
+
+            var source = BuildSource(code);
+            var compiled = Compile(source);
+            if (compiled.assembly == null)
+            {
+                return new JsonObject
+                {
+                    ["success"] = false,
+                    ["stage"] = "compile",
+                    ["errors"] = new JsonArray(compiled.errors.Select(e => (JsonNode)e).ToArray()),
+                    ["hint"] = "Line numbers refer to your code. Fix the errors and call again.",
+                };
+            }
+
+            var ctx = new ScriptContext(uiapp, args["inputs"] as JsonObject, dryRun);
+            var doc = ctx.Doc;
+            if (mode != "readonly" && doc == null)
+                throw new CommandException("No document is open in Revit. Use mode 'readonly' if the script opens one itself.");
+
+            var entry = compiled.assembly.GetType("AceScript")!.GetMethod("Run")!;
+            var response = new JsonObject { ["mode"] = mode, ["dryRun"] = dryRun };
+            object result = null;
+            Exception failure = null;
+            string transactionStatus = null;
+
+            using (var guard = new ModelGuard(uiapp))
+            {
+                Transaction tx = null;
+                TransactionGroup group = null;
+                try
+                {
+                    if (mode == "auto") { tx = new Transaction(doc, name); tx.Start(); }
+                    else if (mode == "manual") { group = new TransactionGroup(doc, name); group.Start(); }
+
+                    result = Invoke(entry, ctx);
+
+                    if (tx != null)
+                    {
+                        if (tx.GetStatus() != TransactionStatus.Started)
+                            throw new CommandException("The script ended the automatic transaction itself. Use mode 'manual' to manage transactions.");
+                        transactionStatus = (dryRun ? tx.RollBack() : tx.Commit()).ToString();
+                    }
+                    else if (group != null)
+                    {
+                        transactionStatus = (dryRun ? group.RollBack() : group.Assimilate()).ToString();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                    try { if (tx != null && tx.HasStarted() && !tx.HasEnded()) tx.RollBack(); } catch { }
+                    try { if (group != null && group.HasStarted() && !group.HasEnded()) group.RollBack(); } catch { }
+                    transactionStatus = mode == "readonly" ? null : "RolledBack";
+                }
+                finally
+                {
+                    tx?.Dispose();
+                    group?.Dispose();
+                }
+
+                if (transactionStatus != null) response["transaction"] = transactionStatus;
+                if (guard.Warnings.Count > 0) response["revitWarnings"] = ToArray(guard.Warnings);
+                if (guard.Errors.Count > 0) response["revitErrors"] = ToArray(guard.Errors);
+                if (guard.Dialogs.Count > 0) response["dialogs"] = ToArray(guard.Dialogs);
+            }
+
+            if (ctx.Output.Count > 0) response["output"] = ToArray(ctx.Output);
+
+            if (failure != null)
+            {
+                response["success"] = false;
+                response["stage"] = "runtime";
+                response["error"] = $"{failure.GetType().Name}: {failure.Message}";
+                var line = ScriptLine(failure);
+                if (line != null) response["line"] = line;
+                response["note"] = mode == "readonly" ? "Nothing was changed." : "All changes from this run were rolled back.";
+                return response;
+            }
+
+            var rolledBackByRevit = transactionStatus == "RolledBack" && !dryRun;
+            response["success"] = !rolledBackByRevit;
+            if (rolledBackByRevit)
+                response["note"] = "Revit rejected the changes (see revitErrors) and rolled them back.";
+            else if (dryRun)
+                response["note"] = "Dry run: the script ran completely, then every change was rolled back.";
+            response["result"] = JsonConvert.ToNode(result);
+            return response;
+        }
+
+        private static object Invoke(MethodInfo entry, ScriptContext ctx)
+        {
+            try { return entry.Invoke(null, new object[] { ctx }); }
+            catch (TargetInvocationException tie) when (tie.InnerException != null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
+                throw;
+            }
+        }
+
+        private static int? ScriptLine(Exception ex)
+        {
+            var trace = new System.Diagnostics.StackTrace(ex, true);
+            foreach (var frame in trace.GetFrames() ?? Array.Empty<System.Diagnostics.StackFrame>())
+            {
+                if (frame.GetMethod()?.DeclaringType?.Assembly.GetName().Name?.StartsWith("AceScript_") == true && frame.GetFileLineNumber() > 0)
+                    return frame.GetFileLineNumber();
+            }
+            return null;
+        }
+
+        private static JsonArray ToArray(IEnumerable<string> items) => new JsonArray(items.Select(i => (JsonNode)i).ToArray());
+
+        /// <summary>Hoists top-level "using X;" lines out of the body, keeping line numbers intact.</summary>
+        internal static string BuildSource(string code)
+        {
+            var usings = new StringBuilder();
+            var body = new StringBuilder();
+            var inPreamble = true;
+            foreach (var raw in code.Replace("\r\n", "\n").Split('\n'))
+            {
+                if (inPreamble && UsingLine.IsMatch(raw))
+                {
+                    usings.AppendLine(raw.Trim());
+                    body.AppendLine(); // keep line numbering aligned
+                    continue;
+                }
+                if (inPreamble && raw.Trim().Length > 0 && !raw.TrimStart().StartsWith("//")) inPreamble = false;
+                body.AppendLine(raw);
+            }
+            return Template.Replace("/*USINGS*/", usings.ToString()).Replace("/*BODY*/", body.ToString());
+        }
+
+        private static (Assembly assembly, string[] errors) Compile(string source)
+        {
+            MethodInfo compile;
+            lock (CompilerGate) compile = _compile ??= LoadCompiler();
+
+            var assemblyName = $"AceScript_{Interlocked.Increment(ref _counter)}";
+            var output = (object[])compile.Invoke(null, new object[] { source, ReferencePaths(), assemblyName })!;
+            var bytes = (byte[])output[0];
+            var errors = (string[])output[1];
+            if (bytes == null) return (null, errors);
+
+            // Collectible context so thousands of scripts don't leak memory; Revit/our types resolve from the default context.
+            var alc = new AssemblyLoadContext(assemblyName, isCollectible: true);
+            using var ms = new MemoryStream(bytes);
+            return (alc.LoadFromStream(ms), Array.Empty<string>());
+        }
+
+        private static MethodInfo LoadCompiler()
+        {
+            var addinDir = Path.GetDirectoryName(typeof(CodeRunner).Assembly.Location)!;
+            var compilerDir = Path.Combine(addinDir, "Compiler");
+            var path = Path.Combine(compilerDir, "AceRevitMcp.Compiler.dll");
+            if (!File.Exists(path))
+                throw new CommandException($"C# compiler not found at {path}. Re-run install.ps1.");
+
+            var alc = new CompilerLoadContext(compilerDir);
+            var asm = alc.LoadFromAssemblyPath(path);
+            return asm.GetType("AceRevitMcp.Compiler.ScriptCompiler")!.GetMethod("Compile")!;
+        }
+
+        private static string[] ReferencePaths()
+        {
+            var paths = new List<string>();
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (asm.IsDynamic) continue;
+                string location;
+                try { location = asm.Location; } catch { continue; }
+                if (string.IsNullOrEmpty(location)) continue;
+                if (AssemblyLoadContext.GetLoadContext(asm) is CompilerLoadContext) continue;
+                paths.Add(location);
+            }
+
+            // Framework facades scripts commonly need even if Revit hasn't loaded them yet.
+            var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+            foreach (var name in new[]
+                     {
+                         "System.Runtime.dll", "netstandard.dll", "System.Collections.dll", "System.Linq.dll",
+                         "System.Linq.Expressions.dll", "System.Text.Json.dll", "System.Text.RegularExpressions.dll",
+                         "System.Console.dll", "System.IO.dll", "System.Memory.dll", "Microsoft.CSharp.dll",
+                         "System.ComponentModel.Primitives.dll", "System.ObjectModel.dll",
+                     })
+            {
+                paths.Add(Path.Combine(runtimeDir, name));
+            }
+
+            // Ensure the core Revit + bridge assemblies are always present (first wins on duplicates).
+            paths.Insert(0, typeof(ScriptContext).Assembly.Location);
+            paths.Insert(0, typeof(UIApplication).Assembly.Location);
+            paths.Insert(0, typeof(Document).Assembly.Location);
+            return paths.ToArray();
+        }
+
+        private sealed class CompilerLoadContext : AssemblyLoadContext
+        {
+            private readonly string _dir;
+            public CompilerLoadContext(string dir) : base("AceRevitMcp.Compiler") { _dir = dir; }
+
+            protected override Assembly Load(AssemblyName name)
+            {
+                var candidate = Path.Combine(_dir, name.Name + ".dll");
+                return File.Exists(candidate) ? LoadFromAssemblyPath(candidate) : null;
+            }
+        }
+    }
+}

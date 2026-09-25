@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>ACE Revit MCP</Name>
+    <Assembly>{{ASSEMBLY_PATH}}</Assembly>
+    <AddInId>6F1B8E2A-3C4D-4E5F-9A0B-ACE000000001</AddInId>
+    <FullClassName>AceRevitMcp.App</FullClassName>
+    <VendorId>ACE</VendorId>
+    <VendorDescription>Lets Claude control Revit through the Model Context Protocol</VendorDescription>
+  </AddIn>
+</RevitAddIns>
