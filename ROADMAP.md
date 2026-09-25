@@ -9,9 +9,44 @@ confirmed, applied as one undo step, and recorded in the activity journal.
 
 ---
 
+## The ACE ribbon: ready-made tools, with or without Claude
+
+Each capability is built **once**, as a shared engine inside the add-in, and reached two ways:
+- **Ribbon button:** one click, a simple dialog for options, and results in an **ACE Results** panel docked in
+  Revit. Clicking an item in the list selects and zooms to its elements. There's also an HTML/Excel report.
+- **Claude:** the same engine as an MCP tool, for requests like *"audit this model and fix the safe warnings on Level 2"*.
+
+Ribbon tools that change the model follow the same safety rule without Claude: a **preview dialog**
+("This will modify 142 doors: [details]"), then **Apply** or **Cancel**, one undo step, and an entry in the journal.
+Buttons follow the user's **role** from Phase 1: hidden or greyed out when not allowed.
+
+| Ribbon panel | Buttons | Phase |
+|---|---|---|
+| **Claude** | MCP Status · Activity Log · Undo Claude Change | exists (Status) / 1 |
+| **Audit** | Model Health (score + report) · Warning Solver · Parameter Check · Rooms & Doors QA | 2 |
+| **Inspect** | Snoop Selection · Snoop Document · Event Monitor | 3 |
+| **Data** | Export to Excel · Import from Excel · Parameter Manager · Smart Select | 3 |
+| **Export** | Batch Export (PDF / DWG / IFC / NWC) · Export Profiles | 3 |
+| **Coordination** | Run Clash Test · Clash Results | 4 |
+| **Deliver** | Submission Check · Prepare Submission · Transmittal | 5 |
+| **Compliance** | Design Check · Code Packs | 6 |
+| **Team Tools** | One button per shared team script, with icon and input form, updated from the team folder | 3 |
+| **Admin** *(admins only)* | Users & Roles · Usage Report · Publish Policy | 1 |
+
+Some capabilities are **Claude-only**, because they need reasoning rather than a fixed recipe: free-form
+requests, proposing clash fixes, explaining audit findings, and writing new scripts. When a Claude
+workflow proves useful, it can be saved and promoted to a **Team Tools** button.
+
+Foundation work, done in Phase 1 before the first new button:
+- WPF dialogs and the dockable **ACE Results** pane (element list → select/zoom, export to Excel/HTML).
+- A shared "run tool" pipeline: options → preview → confirm → apply → report → journal.
+- Role checks, so the same code serves the ribbon and the MCP tools.
+
+---
+
 ## Phase 1: Control who can use it (foundation for rollout)
 
-**Goal:** administrators decide who may use ACE, which features each person gets, and can switch it off.
+**Goal:** administrators decide who may use ACE, which features and ribbon buttons each person gets, and can switch it off.
 
 **How it works:**
 - **A signed policy file** (`policy.json` plus an Ed25519 signature) is published by an administrator to a
@@ -119,7 +154,7 @@ run as one guided workflow:
 
 | Phase | Why this order | Size |
 |---|---|---|
-| 1. Usage control | Needed before rolling out to many PCs | M |
+| 1. Usage control + ribbon foundation | Needed before rolling out to many PCs; results pane, dialogs and preview pipeline used by every button | M–L |
 | 2. Audit + warning solver | Highest everyday value; builds on existing scripts | M |
 | 3a. Snoop + team toolbar | Big usability win, and makes the other features one-click | M |
 | 3b. Excel round-trip + batch export | Replaces paid tools for common work | M–L |
