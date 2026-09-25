@@ -50,7 +50,7 @@ function Source-Dir {
 }
 
 Write-Host "ACE Revit MCP doctor" -ForegroundColor White
-Write-Host "Checking $env:COMPUTERNAME as $env:USERNAME`n"
+Write-Host "Checking $([Environment]::MachineName) as $([Environment]::UserName)`n"
 
 # --- System -------------------------------------------------------------------------------------
 $os = [Environment]::OSVersion.Version
@@ -247,7 +247,7 @@ if ($Report -or $Note -or $Kind) {
         Write-Host "Send this file to the ACE tool maintainers (or attach it in Claude Code with: 'Work on this ACE Revit MCP report')."
         try { Start-Process explorer.exe "/select,`"$file`"" } catch { }
     } else {
-        $file = Join-Path $DataDir ("reports\doctor-$env:COMPUTERNAME-{0:yyyy-MM-dd-HHmmss}.md" -f (Get-Date))
+        $file = Join-Path $DataDir ("reports\doctor-$([Environment]::MachineName)-{0:yyyy-MM-dd-HHmmss}.md" -f (Get-Date))
         New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
         [IO.File]::WriteAllText($file, "# ACE Revit MCP - Doctor report`n`n$Note`n`n" + $md.ToString(), (New-Object System.Text.UTF8Encoding($false)))
         Write-Host "`nReport written to:`n  $file (MCP server missing, so only Windows checks are included)" -ForegroundColor Yellow
