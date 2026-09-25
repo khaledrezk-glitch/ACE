@@ -9,6 +9,7 @@ $addinRoot = Join-Path $env:APPDATA 'Autodesk\Revit\Addins\2025'
 Remove-Item (Join-Path $addinRoot 'AceRevitMcp.addin') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $addinRoot 'AceRevitMcp') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ACE Revit MCP') -Recurse -Force -ErrorAction SilentlyContinue
 
 $targets = @(Join-Path $env:APPDATA 'Claude\claude_desktop_config.json')
 Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue | ForEach-Object {

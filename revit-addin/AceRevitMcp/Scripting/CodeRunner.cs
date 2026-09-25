@@ -127,7 +127,9 @@ public static class AceScript
                     }
                     if (mode == "auto") { tx = new Transaction(doc, name); tx.Start(); }
 
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
                     result = Invoke(entry, ctx);
+                    response["scriptMs"] = sw.ElapsedMilliseconds;
 
                     if (tx != null)
                     {

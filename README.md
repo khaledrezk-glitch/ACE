@@ -44,22 +44,14 @@ and the most important rules are enforced by the software itself, not just reque
 Claude also gets a built-in guide (the MCP server instructions) that tells it how to work: understand
 the model, plan, dry-run, run, verify (it can even **look at views as images**), then report.
 
-## Install (once per PC)
+## Install
 
-Requirements: Windows 10/11, Revit 2025, and Claude Desktop (or Claude Code). The installer adds the
-.NET 8 SDK and Node.js with `winget` if they're missing. No admin rights are needed for the add-in.
-
-1. Close Revit.
-2. Download this repository (green **Code** button > *Download ZIP*, then extract; or `git clone`).
-3. Double-click **`install.cmd`**.
-4. Start Revit 2025. When it asks about the add-in **ACE Revit MCP**, click **Always Load**.
-5. Fully quit Claude Desktop (tray icon > Quit) and reopen it. The Revit tools appear under the 🔨 / tools icon.
-
-Check the connection with the **ACE** ribbon tab > **MCP Status**, or run
-`powershell -ExecutionPolicy Bypass -File test-connection.ps1`.
-
-To update, pull or download the new version and run `install.cmd` again. To remove everything, run `uninstall.ps1`
-(add `-Purge` to also delete your config and saved scripts).
+- **Team members:** unzip the release package `ACE-RevitMCP-<version>.zip`, then double-click **`install.cmd`**
+  (Revit closed). Then follow **[USER-GUIDE.md](USER-GUIDE.md)**.
+- **Maintainers and IT:** build the package and roll it out with **[TEAM-DEPLOYMENT.md](TEAM-DEPLOYMENT.md)**.
+  Requirements are in **[REQUIREMENTS.md](REQUIREMENTS.md)**.
+- **Tune your Claude:** **[AGENT-GUIDE.md](AGENT-GUIDE.md)**.
+- **Problems:** Start menu → *ACE Revit MCP* → **Check and fix** (`doctor.cmd -Fix`) or **Report a problem** (`report.cmd`).
 
 ## Using it
 
@@ -82,23 +74,17 @@ doing it"). It does that by default for anything large.
 
 ### Tools Claude gets
 
-| Tool | Purpose |
+| Area | Tools |
 |---|---|
-| `revit_status` | Check the connection |
-| `get_model_overview` | Levels, units, project info, active view, element counts per category |
-| `get_selection` | What you've selected in Revit |
-| `find_elements` | Search by category, level, view, name, or parameter conditions |
-| `get_element_details` | All parameters, location, host, room for specific elements |
-| `set_parameters` | Bulk parameter edits in one transaction |
-| `select_elements` | Select and zoom so you can see what Claude means |
-| `list_views`, `view_image` | List views, and export a view as an image Claude can look at |
-| **`execute_revit_code`** | Run C# against the full Revit API (preview, compile check, auto/manual/readonly transactions) |
-| `backup_model`, `undo_last_claude_change`, `get_activity_log` | Backup, safe undo, and "what did you do?" |
-| `list_saved_scripts`, `read_saved_script`, `run_saved_script`, `save_script` | Reusable script library |
+| Understand | `revit_status`, `get_model_overview`, `get_selection`, `find_elements`, `get_element_details`, `describe_category`, `list_types`, `list_views`, `view_image` |
+| Knowledge | `revit_api_lookup` (the real Revit API on the PC), `revit_guide` (9 expert guides) |
+| Change (gated by preview + confirmation) | **`execute_revit_code`**, `set_parameters`, `run_saved_script`, `select_elements` |
+| Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |
+| Library | `list_saved_scripts`, `read_saved_script`, `save_script` (personal or team) |
+| Support | `check_setup`, `report_issue` |
 
-Built-in scripts (`mcp-server/scripts`): `audit_model`, `renumber_rooms`, `tag_untagged`,
-`grid_system`, `sheets_for_levels`, `copy_parameter`. Scripts you save go to
-`%APPDATA%\ACE-RevitMCP\scripts`.
+Built-in scripts: `audit_model`, `parameter_completeness`, `rooms_without_doors`, `door_width_check`,
+`renumber_rooms`, `tag_untagged`, `grid_system`, `sheets_for_levels`, `copy_parameter`.
 
 ### Compared with other Revit MCP servers
 
@@ -114,44 +100,22 @@ code execution and keeps a small set of reliable tools. It adopts their best ide
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| Claude says Revit is not reachable | Revit must be open with the add-in loaded. Check **ACE > MCP Status**, and restart the connection there. |
-| Requests time out | Revit only runs commands when idle. Close open dialogs, press **Esc** to end any active command, and wait for the model to finish loading. |
-| No **ACE** tab in Revit | Re-run `install.cmd` with Revit closed, and click **Always Load** when Revit asks. |
-| Port 48884 is already in use | Edit `"port"` in `%APPDATA%\ACE-RevitMCP\config.json`, then restart Revit. |
-| Tools don't appear in Claude Desktop | Fully quit and reopen Claude Desktop. Check `%APPDATA%\Claude\claude_desktop_config.json` has an `"ace-revit"` entry. |
-| Anything else | Read the log at `%APPDATA%\ACE-RevitMCP\logs\addin.log`. |
-
-Manual registration, if needed. Claude Desktop config:
-
-```json
-{
-  "mcpServers": {
-    "ace-revit": {
-      "command": "C:\\Program Files\\nodejs\\node.exe",
-      "args": ["C:\\Users\\<you>\\AppData\\Local\\ACE-RevitMCP\\mcp-server\\index.js"]
-    }
-  }
-}
-```
-
-Claude Code: `claude mcp add ace-revit --scope user -- node "%LOCALAPPDATA%\ACE-RevitMCP\mcp-server\index.js"`
+Run **`doctor.cmd`**: it checks every component and prints a fix for each problem. `doctor.cmd -Fix` repairs
+automatically, and `report.cmd` writes an issue report for the maintainers. The full table is in
+[USER-GUIDE.md](USER-GUIDE.md#4-when-something-goes-wrong).
 
 ## Repository layout
 
 ```
-install.cmd / install.ps1     one-click installer (prereqs, build, register)
-uninstall.ps1                 removes everything
-test-connection.ps1           checks Revit is reachable
-revit-addin/
-  AceRevitMcp/                Revit 2025 add-in (.NET 8): bridge, commands, code runner
-  AceRevitMcp.Compiler/       Roslyn C# compiler, loaded in isolation (no clashes with Dynamo etc.)
-mcp-server/
-  index.js                    MCP server + Claude's working instructions
-  scripts/                    built-in script library
-  test/smoke.js               end-to-end test against a fake Revit bridge
+install.cmd / install.ps1     installer (prebuilt package or source; -Silent for IT; -SkipAddin)
+doctor.cmd / doctor.ps1       check everything, -Fix repairs, -Report writes a Markdown report
+report.cmd                    create an issue report for the maintainers
+build-package.ps1             build the team release zip (prebuilt add-in + bundled dependencies)
+uninstall.ps1                 removes everything (-Purge also removes settings, scripts and journals)
+team.example.json             team settings template (shared scripts and reports folders)
+revit-addin/                  Revit 2025 add-in (.NET 8) + isolated Roslyn compiler
+mcp-server/                   MCP server: index.js, lib/, instructions.md, guides/, scripts/, test/
+USER-GUIDE / AGENT-GUIDE / REQUIREMENTS / TEAM-DEPLOYMENT / FIRST-TEST / CHANGELOG / CLAUDE.md
 ```
 
-Development checks (no Revit needed): `dotnet build revit-addin/AceRevitMcp/AceRevitMcp.csproj` and
-`cd mcp-server && npm install && npm run check`.
+Maintainer checks (no Revit needed) are in [CLAUDE.md](CLAUDE.md).

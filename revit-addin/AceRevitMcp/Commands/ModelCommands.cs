@@ -18,6 +18,8 @@ namespace AceRevitMcp.Commands
             return new JsonObject
             {
                 ["revit"] = $"{app.Application.VersionName} ({app.Application.VersionBuild})",
+                ["addinVersion"] = typeof(ModelCommands).Assembly.GetName().Version?.ToString(),
+                ["user"] = app.Application.Username,
                 ["language"] = app.Application.Language.ToString(),
                 ["activeDocument"] = doc?.Title,
                 ["openDocuments"] = new JsonArray(app.Application.Documents.Cast<Document>().Select(d => (JsonNode)d.Title).ToArray()),

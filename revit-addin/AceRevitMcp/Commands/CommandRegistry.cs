@@ -24,6 +24,9 @@ namespace AceRevitMcp.Commands
                 ["execute_code"] = CodeRunner.Run,
                 ["backup_model"] = BackupCommands.Backup,
                 ["undo_last_claude_change"] = UndoCommands.UndoLast,
+                ["api_lookup"] = InsightCommands.ApiLookup,
+                ["describe_category"] = InsightCommands.DescribeCategory,
+                ["list_types"] = InsightCommands.ListTypes,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

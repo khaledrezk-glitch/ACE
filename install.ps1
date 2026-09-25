@@ -21,11 +21,18 @@ param(
     [switch]$SkipClaudeDesktop,
     [switch]$SkipClaudeCode,
     [switch]$NonInteractive,
+    [switch]$Silent,     # for IT / mass deployment: no prompts (same as -NonInteractive)
     [switch]$SkipAddin   # only (re)install the MCP server + Claude registration; leaves Revit alone
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($Silent) { $NonInteractive = $true }
+# A release package ships a prebuilt add-in (bin\addin) and bundled Node dependencies, so team PCs
+# need neither the .NET SDK nor internet access to npm. A source checkout builds on the machine.
+$Prebuilt = Test-Path (Join-Path $Root 'bin\addin\AceRevitMcp.dll')
+$BundledNodeModules = Test-Path (Join-Path $Root 'mcp-server\node_modules\@modelcontextprotocol')
+$PackageVersion = (Get-Content (Join-Path $Root 'mcp-server\package.json') -Raw | ConvertFrom-Json).version
 $RevitYear = '2025'
 
 function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
@@ -57,7 +64,8 @@ function Winget-Install($id, $label) {
 # Windows PowerShell 5.1 otherwise serialises some arrays as {"value":[...],"Count":n}.
 Remove-TypeData System.Array -ErrorAction SilentlyContinue
 
-Write-Host "ACE Revit MCP installer (Revit $RevitYear)" -ForegroundColor White
+Write-Host "ACE Revit MCP $PackageVersion installer (Revit $RevitYear)" -ForegroundColor White
+Write-Host $(if ($Prebuilt) { "    prebuilt package" } else { "    source checkout (the add-in is built on this PC)" })
 Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
 # ------------------------------------------------------------------------------------------------
@@ -83,7 +91,7 @@ else { Warn "Revit $RevitYear was not found at $revitExe. Continuing; the add-in
 }
 
 # ------------------------------------------------------------------------------------------------
-if (-not $SkipAddin) {
+if (-not $SkipAddin -and -not $Prebuilt) {
 Step "Checking .NET 8 SDK (used to build the add-in)"
 $hasSdk = $false
 if (Has dotnet) { $hasSdk = [bool]((Invoke-Quiet { dotnet --list-sdks }) -match '^(8|9|10)\.') }
@@ -109,12 +117,19 @@ $InstallDir = Join-Path $AddinRoot 'AceRevitMcp'
 if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-& dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp\AceRevitMcp.csproj') -c Release -o $InstallDir --nologo -v quiet
-if ($LASTEXITCODE -ne 0) { throw "Building the add-in failed (see errors above)." }
-& dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Compiler\AceRevitMcp.Compiler.csproj') -c Release -o (Join-Path $InstallDir 'Compiler') --nologo -v quiet
-if ($LASTEXITCODE -ne 0) { throw "Building the script compiler failed (see errors above)." }
+if ($Prebuilt) {
+    Copy-Item (Join-Path $Root 'bin\addin\*') -Destination $InstallDir -Recurse -Force
+} else {
+    & dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp\AceRevitMcp.csproj') -c Release -o $InstallDir --nologo -v quiet
+    if ($LASTEXITCODE -ne 0) { throw "Building the add-in failed (see errors above)." }
+    & dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Compiler\AceRevitMcp.Compiler.csproj') -c Release -o (Join-Path $InstallDir 'Compiler') --nologo -v quiet
+    if ($LASTEXITCODE -ne 0) { throw "Building the script compiler failed (see errors above)." }
+}
+Get-ChildItem $InstallDir -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
 
-$manifest = (Get-Content (Join-Path $Root 'revit-addin\AceRevitMcp.addin.template') -Raw).Replace('{{ASSEMBLY_PATH}}', (Join-Path $InstallDir 'AceRevitMcp.dll'))
+$template = Join-Path $Root 'revit-addin\AceRevitMcp.addin.template'
+if (-not (Test-Path $template)) { $template = Join-Path $Root 'bin\AceRevitMcp.addin.template' }
+$manifest = (Get-Content $template -Raw).Replace('{{ASSEMBLY_PATH}}', (Join-Path $InstallDir 'AceRevitMcp.dll'))
 Write-Utf8NoBom (Join-Path $AddinRoot 'AceRevitMcp.addin') $manifest
 Ok "Add-in installed to $InstallDir"
 
@@ -135,6 +150,19 @@ if (-not $cfg -or -not $cfg.token) {
 } elseif ($PSBoundParameters.ContainsKey('Port')) {
     $cfg.port = $Port
 }
+# Team settings (shared script library, shared report folder) from team.json in the package.
+$teamFile = Join-Path $Root 'team.json'
+if (Test-Path $teamFile) {
+    $team = Get-Content $teamFile -Raw | ConvertFrom-Json
+    foreach ($key in 'teamName', 'teamScriptsDir', 'teamReportsDir') {
+        $value = $team.$key
+        if ($value) {
+            $value = [Environment]::ExpandEnvironmentVariables([string]$value)
+            $cfg | Add-Member -NotePropertyName $key -NotePropertyValue $value -Force
+        }
+    }
+    Ok "Team settings applied from team.json ($($team.teamName))"
+}
 Write-Utf8NoBom $CfgFile ($cfg | ConvertTo-Json)
 Ok "Config at $CfgFile (port $($cfg.port))"
 
@@ -143,14 +171,20 @@ Step "Installing the MCP server"
 $McpDir = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\mcp-server'
 if (Test-Path $McpDir) { Remove-Item $McpDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $McpDir | Out-Null
-foreach ($item in 'index.js', 'package.json', 'package-lock.json', 'scripts') {
+foreach ($item in 'index.js', 'instructions.md', 'package.json', 'package-lock.json', 'lib', 'guides', 'scripts') {
     Copy-Item (Join-Path $Root "mcp-server\$item") -Destination $McpDir -Recurse -Force
 }
-Push-Location $McpDir
-try {
-    & npm.cmd install --omit=dev --no-audit --no-fund --loglevel=error
-    if ($LASTEXITCODE -ne 0) { throw "npm install failed (see errors above)." }
-} finally { Pop-Location }
+if ($BundledNodeModules) {
+    Copy-Item (Join-Path $Root 'mcp-server\node_modules') -Destination $McpDir -Recurse -Force
+} else {
+    Push-Location $McpDir
+    try {
+        & npm.cmd install --omit=dev --no-audit --no-fund --loglevel=error
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed (see errors above). Behind a proxy? Use the prebuilt release package, which bundles its dependencies." }
+    } finally { Pop-Location }
+}
+& $NodeExe --check (Join-Path $McpDir 'index.js')
+if ($LASTEXITCODE -ne 0) { throw "The installed MCP server has a syntax error." }
 $IndexJs = Join-Path $McpDir 'index.js'
 Ok "MCP server installed to $McpDir"
 
@@ -201,9 +235,56 @@ if (-not $SkipClaudeCode) {
 }
 
 # ------------------------------------------------------------------------------------------------
+Step "Installing support tools (doctor, issue reports, shortcuts)"
+$AceLocal = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP'
+$PkgDir = Join-Path $AceLocal 'package'
+if ((Resolve-Path $Root).Path.TrimEnd('\') -ne $PkgDir) {
+    # Keep a private copy of this package so doctor -Fix can always repair, even if the download is deleted.
+    if (Test-Path $PkgDir) { Remove-Item $PkgDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $PkgDir | Out-Null
+    Get-ChildItem $Root -File | Where-Object { $_.Extension -in '.ps1', '.cmd', '.md', '.json' } | Copy-Item -Destination $PkgDir -Force
+    foreach ($dir in 'bin', 'docs') { if (Test-Path (Join-Path $Root $dir)) { Copy-Item (Join-Path $Root $dir) -Destination $PkgDir -Recurse -Force } }
+    New-Item -ItemType Directory -Force -Path (Join-Path $PkgDir 'mcp-server') | Out-Null
+    Get-ChildItem (Join-Path $Root 'mcp-server') | Where-Object { $_.Name -ne 'test' } | Copy-Item -Destination (Join-Path $PkgDir 'mcp-server') -Recurse -Force
+    if (-not $Prebuilt) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $PkgDir 'revit-addin') | Out-Null
+        Copy-Item (Join-Path $Root 'revit-addin\AceRevitMcp.addin.template') -Destination (Join-Path $PkgDir 'revit-addin') -Force
+        foreach ($proj in 'AceRevitMcp', 'AceRevitMcp.Compiler') {
+            $target = Join-Path $PkgDir "revit-addin\$proj"
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            Get-ChildItem (Join-Path $Root "revit-addin\$proj") -Recurse -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } | ForEach-Object {
+                $rel = $_.FullName.Substring((Join-Path $Root "revit-addin\$proj").Length)
+                $dest = Join-Path $target $rel
+                New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+                Copy-Item $_.FullName -Destination $dest -Force
+            }
+        }
+    }
+}
+$info = [PSCustomObject]@{ version = $PackageVersion; source = $PkgDir; installedFrom = (Resolve-Path $Root).Path; installedAt = (Get-Date).ToString('s'); prebuilt = $Prebuilt }
+Write-Utf8NoBom (Join-Path $AceLocal 'install-info.json') ($info | ConvertTo-Json)
+
+try {
+    $menu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ACE Revit MCP'
+    New-Item -ItemType Directory -Force -Path $menu | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    function New-Shortcut($name, $target, $arguments, $description) {
+        $lnk = $shell.CreateShortcut((Join-Path $menu "$name.lnk"))
+        $lnk.TargetPath = $target; $lnk.Arguments = $arguments; $lnk.WorkingDirectory = $PkgDir; $lnk.Description = $description
+        $lnk.Save()
+    }
+    New-Shortcut 'Check and fix ACE Revit' (Join-Path $PkgDir 'doctor.cmd') '-Fix' 'Check every part of the ACE Revit setup and repair problems'
+    New-Shortcut 'Report a problem (ACE Revit)' (Join-Path $PkgDir 'report.cmd') '' 'Create an issue report for the ACE tool maintainers'
+    if (Test-Path (Join-Path $PkgDir 'USER-GUIDE.md')) { New-Shortcut 'ACE Revit user guide' 'notepad.exe' ('"' + (Join-Path $PkgDir 'USER-GUIDE.md') + '"') 'How to use Claude with Revit' }
+    Ok "Start menu: 'ACE Revit MCP' (Check and fix / Report a problem / User guide)"
+} catch {
+    Warn "Could not create Start menu shortcuts: $($_.Exception.Message)"
+}
+
+# ------------------------------------------------------------------------------------------------
 Write-Host ""
 Write-Host "Done! Next steps:" -ForegroundColor Green
 Write-Host "  1. Start Revit $RevitYear. If it asks about the unsigned add-in 'ACE Revit MCP', click 'Always Load'."
 Write-Host "  2. Open a model. The 'ACE' ribbon tab > 'MCP Status' shows the connection."
 Write-Host "  3. (Re)start Claude Desktop, then ask e.g.: 'Give me an overview of the open Revit model.'"
-Write-Host "  Test the connection any time with: powershell -ExecutionPolicy Bypass -File `"$Root\test-connection.ps1`""
+Write-Host "  Problems? Start menu > ACE Revit MCP > 'Check and fix ACE Revit', or 'Report a problem'."
