@@ -51,6 +51,7 @@ the model, plan, dry-run, run, verify (it can even **look at views as images**),
 - **Maintainers and IT:** build the package and roll it out with **[TEAM-DEPLOYMENT.md](TEAM-DEPLOYMENT.md)**.
   Requirements are in **[REQUIREMENTS.md](REQUIREMENTS.md)**.
 - **Tune your Claude:** **[AGENT-GUIDE.md](AGENT-GUIDE.md)**.
+- **What's next:** [ROADMAP.md](ROADMAP.md) (usage control, auditing, add-in equivalents, clash detection, submissions, code checks).
 - **Problems:** Start menu → *ACE Revit MCP* → **Check and fix** (`doctor.cmd -Fix`) or **Report a problem** (`report.cmd`).
 
 ## Using it
