@@ -19,7 +19,8 @@
 param(
     [int]$Port = 48884,
     [switch]$SkipClaudeDesktop,
-    [switch]$SkipClaudeCode
+    [switch]$SkipClaudeCode,
+    [switch]$NonInteractive
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,9 +61,18 @@ Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue | Unblock
 
 # ------------------------------------------------------------------------------------------------
 Step "Checking Revit $RevitYear"
-while (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
-    Warn "Revit is running. Save your work and close Revit so the add-in files can be updated."
-    Read-Host "    Press Enter once Revit is closed"
+$existingDll = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitYear\AceRevitMcp\AceRevitMcp.dll"
+if (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
+    if (Test-Path $existingDll) {
+        # Upgrade: Revit has the old add-in loaded and its files are locked.
+        while (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
+            if ($NonInteractive) { throw "Revit is running and has the current add-in loaded. Close Revit, then re-run the installer." }
+            Warn "Revit is running. Save your work and close Revit so the add-in files can be updated."
+            Read-Host "    Press Enter once Revit is closed"
+        }
+    } else {
+        Warn "Revit is running. That's fine for a first install - restart Revit afterwards to load the add-in."
+    }
 }
 $revitExe = Join-Path $env:ProgramFiles "Autodesk\Revit $RevitYear\Revit.exe"
 if (Test-Path $revitExe) { Ok "Revit $RevitYear found" }
