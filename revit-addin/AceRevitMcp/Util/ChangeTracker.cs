@@ -85,8 +85,14 @@ namespace AceRevitMcp.Util
             internal string PreviousName { get; }
             internal string PreviousDocument { get; }
 
+            /// <summary>While true, changes are not recorded (e.g. temporary preview views).</summary>
+            public bool Paused { get; set; }
+            public ICollection<long> AddedIds => _added;
+            public ICollection<long> ModifiedIds => _modified;
+
             public void Add(DocumentChangedEventArgs e)
             {
+                if (Paused) return;
                 Committed++;
                 var doc = e.GetDocument();
                 foreach (var id in e.GetAddedElementIds()) { _added.Add(id.Value); Remember(doc, id); }

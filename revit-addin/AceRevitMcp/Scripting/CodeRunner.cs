@@ -79,6 +79,7 @@ public static class AceScript
 
             var mode = (Commands.Args.Str(args, "mode") ?? "auto").ToLowerInvariant();
             var dryRun = args["dry_run"] is JsonValue dv && dv.TryGetValue<bool>(out var dr) && dr;
+            var previewImage = args["preview_image"] is JsonValue pv && pv.TryGetValue<bool>(out var pi) && pi;
             var name = Commands.Args.Str(args, "transaction_name") ?? "Claude: script";
             if (mode is not ("auto" or "manual" or "readonly"))
                 throw new CommandException("mode must be 'auto', 'manual' or 'readonly'.");
@@ -166,6 +167,14 @@ public static class AceScript
                         var committed = tx.Commit();
                         if (committed != TransactionStatus.Committed)
                             throw new CommandException("Revit refused to commit the changes (see revitErrors).");
+                    }
+                    // A picture of the previewed change, taken before the rollback (the temporary views go with it).
+                    if (dryRun && group != null && mode != "readonly" && previewImage)
+                    {
+                        recording.Paused = true;
+                        try { var imgs = PreviewImages.Capture(doc, recording.AddedIds, recording.ModifiedIds); if (imgs.Count > 0) response["previewImages"] = imgs; }
+                        catch (Exception ex) { response["previewImageError"] = ex.Message; }
+                        finally { recording.Paused = false; }
                     }
                     if (group != null && mode == "readonly")
                     {

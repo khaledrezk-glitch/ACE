@@ -28,6 +28,7 @@ const bridge = http.createServer((req, res) => {
       case "execute_code":
         if (args.code.includes("PANEL_APPLIED") && !args.dry_run) return reply({ ok: true, result: { success: true, alreadyApplied: true, note: "applied in panel" } });
         if (args.code.includes("PANEL_REJECTED") && !args.dry_run) return reply({ ok: true, result: { success: false, stage: "rejected", error: "The user cancelled this change in the ACE Companion panel" } });
+        if (args.code.includes("PICTURE") && args.dry_run) return reply({ ok: true, result: { success: true, transaction: "RolledBack", wouldChange: { added: 2, modified: 0, deleted: 0 }, previewImages: [{ view: "Plan", mimeType: "image/png", base64: "iVBORw0KGgo=" }, { view: "3D", mimeType: "image/png", base64: "iVBORw0KGgo=" }], echoPreview: args.preview_image } });
         if (args.code.includes("boom")) return reply({ ok: true, result: { success: false, stage: "compile", errors: ["line 1: CS0103"] } });
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
       case "set_parameters":
@@ -112,6 +113,12 @@ const pr2 = await call("execute_revit_code", { ...panelRejected, explanation: "x
 assert.equal(pr2.isError, true);
 assert.match(pr2.content[0].text, /cancelled/);
 assert.match(client.getInstructions(), /ACE COMPANION PANEL/);
+
+// --- preview pictures come back as image blocks, not base64 in the text ---
+const pic = await call("execute_revit_code", { code: "/*PICTURE*/ return 1;", dry_run: true, preview_image: true });
+assert.equal(pic.content.filter((c) => c.type === "image").length, 2);
+assert.doesNotMatch(pic.content[0].text, /iVBORw0KGgo/);
+assert.match(pic.content[0].text, /"echoPreview": true/);
 
 // read-only runs need no preview
 assert.equal(json(await call("execute_revit_code", { code: "return 1;", mode: "readonly" })).echoMode, "readonly");

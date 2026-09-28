@@ -30,6 +30,8 @@ namespace AceRevitMcp.Companion
         public PendingState State = PendingState.Waiting;
         public DateTime? DecidedAt;
         public string Outcome;
+        /// <summary>Preview pictures of the change (plan, 3D), when Claude asked for them.</summary>
+        public System.Collections.Generic.List<byte[]> Images = new System.Collections.Generic.List<byte[]>();
     }
 
     internal sealed class ElementRef
@@ -193,6 +195,7 @@ namespace AceRevitMcp.Companion
             var clean = (JsonObject)args.DeepClone();
             clean.Remove("dry_run");
             clean.Remove("_fromPanel");
+            clean.Remove("preview_image");
             var hash = Fingerprint(kind, clean);
             Pending.RemoveAll(p => p.Hash == hash || DateTime.Now - p.PreviewedAt > PendingLifetime);
 
@@ -209,8 +212,13 @@ namespace AceRevitMcp.Companion
                 if (result?["revitWarnings"] is JsonArray w && w.Count > 0) summary += $" · {w.Count} Revit warning(s)";
             }
 
+            var images = new System.Collections.Generic.List<byte[]>();
+            if (result?["previewImages"] is JsonArray pics)
+                foreach (var pic in pics)
+                    try { if (pic?["base64"]?.ToString() is string b64) images.Add(Convert.FromBase64String(b64)); } catch { }
             Pending.Insert(0, new PendingChange
             {
+                Images = images,
                 Hash = hash,
                 Kind = kind,
                 Args = clean,

@@ -104,7 +104,7 @@ can already do today. **ACE tab → Roadmap** shows the whole plan. Details: [RO
 | Support | `check_setup`, `report_issue` |
 
 Built-in scripts: `audit_model`, `parameter_completeness`, `rooms_without_doors`, `door_width_check`,
-`renumber_rooms`, `tag_untagged`, `grid_system`, `sheets_for_levels`, `copy_parameter`.
+`renumber_rooms`, `tag_untagged`, `grid_system`, `sheets_for_levels`, `copy_parameter`, `test_fit_out` (office test fit).
 
 ### Compared with other Revit MCP servers
 

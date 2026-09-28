@@ -146,6 +146,19 @@ namespace AceRevitMcp.Companion
                 var body = (StackPanel)card.Child;
                 body.Children.Add(new TextBlock { Text = p.Title, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text });
                 body.Children.Add(new TextBlock { Text = p.Summary, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text, Margin = new Thickness(0, 4, 0, 0) });
+                foreach (var bytes in p.Images.Take(2))
+                {
+                    try
+                    {
+                        var bmp = new System.Windows.Media.Imaging.BitmapImage();
+                        bmp.BeginInit(); bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                        bmp.StreamSource = new System.IO.MemoryStream(bytes); bmp.EndInit(); bmp.Freeze();
+                        var img = new Image { Source = bmp, Stretch = Stretch.Uniform, MaxHeight = 260, Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+                        RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+                        body.Children.Add(new Border { BorderBrush = _c.Border, BorderThickness = new Thickness(1), Background = Brushes.White, Child = img, Margin = new Thickness(0, 6, 0, 0) });
+                    }
+                    catch { }
+                }
                 body.Children.Add(new TextBlock { Text = $"Previewed {Ago(p.PreviewedAt)}. The model is unchanged until you apply.", Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) });
                 var buttons = new StackPanel { Orientation = Orientation.Horizontal };
                 var apply = ActionButton("Apply", true);

@@ -241,9 +241,10 @@ const codeSchema = {
   explanation: z.string().optional().describe("Plain-language description of what this run does (required when applying changes; recorded in the activity journal)"),
   allow_risky: z.boolean().optional().describe("Only after the user explicitly agreed: allow code touching files, programs, network, or saving/closing/syncing models"),
   compile_only: z.boolean().optional().describe("Only check that the code compiles; run nothing"),
+  preview_image: z.boolean().optional().describe("With dry_run: also return pictures (plan + 3D) of the area that would change, with the changed elements highlighted. Show them to the user before asking for confirmation. Use it for anything visual: placing, moving or creating elements."),
 };
 
-async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only }) {
+async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image }) {
   mode = mode || "auto";
   const risky = screenCode(code, allow_risky);
   const modifies = mode !== "readonly" && !compile_only;
@@ -253,7 +254,10 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
     if (!explanation) throw new RevitError("Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal.");
   }
 
-  const result = await callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only }, timeout_seconds ?? 300);
+  const result = await callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, preview_image: !!(preview_image && dry_run) }, timeout_seconds ?? 300);
+  // Preview pictures travel as image blocks, not as base64 inside the JSON text.
+  const pictures = Array.isArray(result?.previewImages) ? result.previewImages : [];
+  if (result && pictures.length) result.previewImages = pictures.map((p) => `${p.view} image attached`);
 
   // The user may have decided in the ACE Companion panel inside Revit (Apply / Cancel) - the add-in reports it.
   if (result?.alreadyApplied) {
@@ -278,6 +282,10 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
   }
 
   const out = text(result);
+  for (const p of pictures) {
+    if (p?.base64) out.content.push({ type: "image", data: p.base64, mimeType: p.mimeType || "image/png" });
+  }
+  if (pictures.length) out.content.push({ type: "text", text: `The ${pictures.map((p) => p.view).join(" and ")} picture(s) above show the previewed change (changed elements highlighted in red). Describe what they show to the user.` });
   if (result && result.success === false) {
     out.isError = true;
     if (result.stage === "compile") out.content.push({ type: "text", text: "Tip: check uncertain members with revit_api_lookup before retrying." });
@@ -341,17 +349,18 @@ tool("run_saved_script", {
     name: z.string(),
     inputs: z.record(z.any()).optional(),
     dry_run: z.boolean().optional(),
+    preview_image: z.boolean().optional().describe("With dry_run: also return plan + 3D pictures of the previewed change"),
     timeout_seconds: z.number().optional(),
     explanation: z.string().optional().describe("Plain-language description (required when applying changes)"),
     allow_risky: z.boolean().optional(),
   },
   annotations: writes,
-}, async ({ name, inputs, dry_run, timeout_seconds, explanation, allow_risky }) => {
+}, async ({ name, inputs, dry_run, preview_image, timeout_seconds, explanation, allow_risky }) => {
   const script = findScript(name);
   return runCode({
     code: fs.readFileSync(script.file, "utf8"),
     mode: script.mode || "auto",
-    dry_run, inputs, timeout_seconds, explanation, allow_risky,
+    dry_run, preview_image, inputs, timeout_seconds, explanation, allow_risky,
     transaction_name: `Claude: ${script.name}`,
   });
 });
