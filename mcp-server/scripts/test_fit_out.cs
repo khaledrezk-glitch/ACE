@@ -25,7 +25,22 @@ double Wd = desk.LookupParameter("Width")?.AsDouble() ?? ctx.Mm(762);    // desk
 double chairZone = ctx.Mm(700), chairOffset = Wd / 2 + ctx.Mm(100);
 
 var zTest = z + ctx.Mm(300);
-bool In(double x, double y) => room.IsPointInRoom(new XYZ(x, y, zTest));
+var rb = room.get_BoundingBox(null);
+// Rasterise the room once (100 mm cells): point-in-room tests are then lookups, so the search takes about a second.
+var cell = ctx.Mm(100);
+int nx = (int)Math.Ceiling((rb.Max.X - rb.Min.X) / cell) + 1, ny = (int)Math.Ceiling((rb.Max.Y - rb.Min.Y) / cell) + 1;
+var inside = new bool[nx, ny];
+for (var i = 0; i < nx; i++)
+    for (var j = 0; j < ny; j++)
+        inside[i, j] = room.IsPointInRoom(new XYZ(rb.Min.X + i * cell, rb.Min.Y + j * cell, zTest));
+bool In(double x, double y)
+{
+    // Inside only if all four surrounding cell corners are inside (conservative near walls).
+    var fx = (x - rb.Min.X) / cell; var fy = (y - rb.Min.Y) / cell;
+    int i0 = (int)Math.Floor(fx), j0 = (int)Math.Floor(fy);
+    if (i0 < 0 || j0 < 0 || i0 + 1 >= nx || j0 + 1 >= ny) return false;
+    return inside[i0, j0] && inside[i0 + 1, j0] && inside[i0, j0 + 1] && inside[i0 + 1, j0 + 1];
+}
 
 // 1. Remove a previous test fit in this room (so re-runs replace it).
 var old = new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Furniture).WhereElementIsNotElementType()
@@ -37,7 +52,6 @@ if (old.Count > 0) doc.Delete(old);
 // 2. What to keep clear of: doors, columns, and anything standing in the room.
 var doors = new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Doors).WhereElementIsNotElementType().Cast<FamilyInstance>()
     .Where(d => d.FromRoom?.Id == room.Id || d.ToRoom?.Id == room.Id).Select(d => ((LocationPoint)d.Location).Point).ToList();
-var rb = room.get_BoundingBox(null);
 var skip = new HashSet<long> { (long)BuiltInCategory.OST_Doors, (long)BuiltInCategory.OST_Windows, (long)BuiltInCategory.OST_LightingFixtures };
 var obstacles = new FilteredElementCollector(doc).WhereElementIsNotElementType()
     .WherePasses(new BoundingBoxIntersectsFilter(new Outline(new XYZ(rb.Min.X, rb.Min.Y, z), new XYZ(rb.Max.X, rb.Max.Y, z + ctx.Mm(1800)))))
