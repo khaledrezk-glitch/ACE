@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWPF>true</UseWPF><Nullable>disable</Nullable><EnableWindowsTargeting>true</EnableWindowsTargeting></PropertyGroup>
+</Project>
