@@ -117,6 +117,10 @@ if (-not $Dotnet) {
     $seen = @(Get-Command dotnet -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source }) -join ', '
     throw ".NET 8 SDK is still not available (dotnet found at: $(if ($seen) { $seen } else { 'none' })). Close this window, open a NEW PowerShell and re-run; or install it from https://dotnet.microsoft.com/download/dotnet/8.0; or use the prebuilt team package, which needs no SDK."
 }
+# Quiet first-run experience: no welcome banner and no ASP.NET dev certificate (not needed for a Revit add-in).
+$env:DOTNET_NOLOGO = '1'
+$env:DOTNET_GENERATE_ASPNET_CERTIFICATE = 'false'
+$env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
 # Make sure child processes (MSBuild) use the same SDK host.
 $env:Path = (Split-Path $Dotnet) + ';' + $env:Path
 Ok ".NET SDK $((& $Dotnet --version).Trim()) at $Dotnet"

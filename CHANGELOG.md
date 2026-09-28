@@ -1,6 +1,8 @@
 # Changelog
 
 ## 1.2.1
+- Installer: finds a `dotnet` that actually has an SDK 8+ (fixes "SDK still not available" right after winget installed it),
+  and builds without the .NET welcome banner or the ASP.NET dev-certificate creation. New `get-ace.ps1` one-line installer.
 - `door_width_check` now reads door families that store width in a plain "Width" family parameter
   (found in real-model testing: 132 of 142 Snowdon Towers doors readable, up from 8), and treats zero widths
   (curtain wall panel doors) as unreadable instead of reporting them as 0 mm doors.
