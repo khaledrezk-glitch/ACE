@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.2
+- ACE is now registered for **Claude Code sessions** too (`~/.claude.json`, used by the desktop app's Code tab and the
+  CLI), not only Claude Desktop chats. Found on a work PC where a Code session couldn't see `ace-revit`.
+- New `lib/register.js` does all registration (add / remove / status) with exact-key JSON edits, backups and atomic
+  writes; the installer asks you to quit Claude Desktop first so the running app can't overwrite the entry.
+- Doctor and `check_setup` check every Claude config (Desktop, Store app, Claude Code).
+
 ## 1.2.1
 - Installer: finds a `dotnet` that actually has an SDK 8+ (fixes "SDK still not available" right after winget installed it),
   and builds without the .NET welcome banner or the ASP.NET dev-certificate creation. New `get-ace.ps1` one-line installer.

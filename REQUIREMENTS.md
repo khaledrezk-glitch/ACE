@@ -37,5 +37,5 @@ needs the .NET SDK there too (the installer adds it with winget).
 | MCP server | `%LOCALAPPDATA%\ACE-RevitMCP\mcp-server\` |
 | Repair copy of the package | `%LOCALAPPDATA%\ACE-RevitMCP\package\` |
 | Settings, logs, journal, reports, personal scripts, backups | `%APPDATA%\ACE-RevitMCP\` |
-| Claude Desktop registration | `"ace-revit"` in `%APPDATA%\Claude\claude_desktop_config.json` (and the Store-app copy) |
+| Claude registration | `"ace-revit"` in `%APPDATA%\Claude\claude_desktop_config.json` (and the Store-app copy) for chats, and in `%USERPROFILE%\.claude.json` for Claude Code sessions |
 | Start menu | *ACE Revit MCP* → Check and fix · Report a problem · User guide |

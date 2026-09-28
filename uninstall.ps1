@@ -8,6 +8,8 @@ if (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) { Write-Host "Close
 $addinRoot = Join-Path $env:APPDATA 'Autodesk\Revit\Addins\2025'
 Remove-Item (Join-Path $addinRoot 'AceRevitMcp.addin') -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $addinRoot 'AceRevitMcp') -Recurse -Force -ErrorAction SilentlyContinue
+$reg = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\mcp-server\lib\register.js'
+if ((Test-Path $reg) -and (Get-Command node -ErrorAction SilentlyContinue)) { & node $reg remove }
 Remove-Item (Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ACE Revit MCP') -Recurse -Force -ErrorAction SilentlyContinue
 

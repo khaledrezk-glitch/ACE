@@ -136,27 +136,17 @@ if ((Test-Path $index) -and (Test-Path (Join-Path $McpDir 'node_modules\@modelco
     Add-Result 'FAIL' 'MCP server' "Not installed (or dependencies missing) in $McpDir" 'Install the MCP server.' 'mcp'
 }
 
-$claudeConfigs = @(Join-Path $AppData 'Claude\claude_desktop_config.json')
-Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue | ForEach-Object {
-    $claudeConfigs += Join-Path $_.FullName 'LocalCache\Roaming\Claude\claude_desktop_config.json'
-}
-$anyClaude = $false
-foreach ($f in $claudeConfigs) {
-    if (-not (Test-Path $f)) { continue }
-    $anyClaude = $true
-    try {
-        $conf = Get-Content $f -Raw | ConvertFrom-Json
-        $entry = $null
-        if ($conf.mcpServers) { $entry = $conf.mcpServers.PSObject.Properties | Where-Object { $_.Name -ceq 'ace-revit' } | Select-Object -First 1 }
-        if (-not $entry) { Add-Result 'FAIL' 'Claude Desktop' "No 'ace-revit' server in $f" 'Register it (then fully quit and reopen Claude Desktop).' 'mcp' }
-        elseif (-not (Test-Path ($entry.Value.args | Select-Object -First 1))) { Add-Result 'FAIL' 'Claude Desktop' "'ace-revit' points to a missing file: $($entry.Value.args -join ' ')" 'Re-register it.' 'mcp' }
-        elseif (-not (Test-Path $entry.Value.command)) { Add-Result 'FAIL' 'Claude Desktop' "'ace-revit' uses a missing Node.js: $($entry.Value.command)" 'Re-register it.' 'mcp' }
-        else { Add-Result 'OK' 'Claude Desktop' "Registered in $f" }
-    } catch {
-        Add-Result 'FAIL' 'Claude Desktop' "$f is not valid JSON" "Fix or delete the file (a backup may exist next to it), then re-run the installer."
+$regScript = Join-Path $McpDir 'lib\register.js'
+if ($node -and (Test-Path $regScript)) {
+    $lines = & node $regScript status 2>$null
+    if (-not $lines) { Add-Result 'WARN' 'Claude registration' 'No Claude config found (is Claude Desktop installed and opened once?).' 'Install Claude Desktop from claude.ai/download, open it once, then run doctor -Fix.' 'mcp' }
+    foreach ($l in @($lines)) {
+        if ($l -match '^OK') { Add-Result 'OK' 'Claude registration' ($l.Substring(4).Trim()) }
+        else { Add-Result 'FAIL' 'Claude registration' ($l.Substring(4).Trim()) 'Quit Claude Desktop (tray icon > Quit), then run doctor -Fix.' 'mcp' }
     }
+} else {
+    Add-Result 'FAIL' 'Claude registration' 'Cannot check (MCP server or Node.js missing).' 'Install the MCP server.' 'mcp'
 }
-if (-not $anyClaude) { Add-Result 'WARN' 'Claude Desktop' 'No Claude Desktop config found (is Claude Desktop installed and opened once?).' 'Install Claude Desktop from claude.ai/download, open it once, then run doctor -Fix.' 'mcp' }
 if (Get-Command claude -ErrorAction SilentlyContinue) { Add-Result 'INFO' 'Claude Code CLI' 'Installed (ace-revit registered at user scope by the installer).' }
 
 # --- Live checks through the MCP server's own diagnostics -----------------------------------------

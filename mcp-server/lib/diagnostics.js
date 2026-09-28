@@ -12,6 +12,7 @@ import {
 } from "./core.js";
 import { readCalls } from "./telemetry.js";
 import { listScripts } from "./scripts.js";
+import { status as registrationStatus } from "./register.js";
 
 const isWindows = process.platform === "win32";
 const ADDIN_DIR = path.join(APPDATA, "Autodesk", "Revit", "Addins", "2025");
@@ -48,18 +49,12 @@ export async function runChecks({ deep = true } = {}) {
     } catch {
       /* no add-ins folder */
     }
-    for (const file of claudeDesktopConfigs()) {
-      try {
-        const conf = JSON.parse(fs.readFileSync(file, "utf8").replace(/^﻿/, ""));
-        const has = conf?.mcpServers && Object.keys(conf.mcpServers).includes("ace-revit");
-        checks.push(
-          has
-            ? check("Claude Desktop registration", "ok", file)
-            : check("Claude Desktop registration", "fail", `No "ace-revit" server in ${file}`, "Run install.ps1 -SkipAddin (or doctor.ps1 -Fix), then fully quit and reopen Claude Desktop."),
-        );
-      } catch (err) {
-        checks.push(check("Claude Desktop registration", "warn", `${file}: ${err.message}`, "Check the file is valid JSON."));
-      }
+    for (const r of registrationStatus()) {
+      const where = `${r.kind}: ${r.file}`;
+      if (r.error) checks.push(check("Claude registration", "warn", `${where} - ${r.error}`, "Fix or delete that file (a .ace-backup copy may exist next to it), then run doctor.cmd -Fix."));
+      else if (!r.registered) checks.push(check("Claude registration", "fail", `No "ace-revit" server in ${where}`, "Quit Claude Desktop (tray icon > Quit), then run doctor.cmd -Fix (or install.ps1 -SkipAddin)."));
+      else if (!r.targetExists || !r.nodeExists) checks.push(check("Claude registration", "fail", `"ace-revit" in ${where} points to a missing file`, "Run doctor.cmd -Fix."));
+      else checks.push(check("Claude registration", "ok", where));
     }
   }
 

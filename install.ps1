@@ -215,48 +215,24 @@ $IndexJs = Join-Path $McpDir 'index.js'
 Ok "MCP server installed to $McpDir"
 
 # ------------------------------------------------------------------------------------------------
-function Register-ClaudeDesktop($file) {
-    New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
-    $conf = $null
-    if (Test-Path $file) {
-        Copy-Item $file "$file.bak" -Force
-        $raw = Get-Content $file -Raw
-        if ($raw -and $raw.Trim()) {
-            try { $conf = $raw | ConvertFrom-Json }
-            catch { Warn "$file is not valid JSON; left unchanged (backup: $file.bak). Add the server manually - see README."; return }
+if (-not $SkipClaudeDesktop) {
+    Step "Registering 'ace-revit' with Claude (Desktop chats + Claude Code sessions)"
+    # A running Claude Desktop can rewrite its config from memory when it quits, dropping our entry,
+    # so ask the user to quit it first. (Non-interactive installs register anyway; doctor -Fix repairs.)
+    if (Get-Process -Name 'Claude' -ErrorAction SilentlyContinue) {
+        if ($NonInteractive) {
+            Warn "Claude Desktop is running. If the Revit tools don't appear after restarting it, run 'Check and fix ACE Revit'."
+        } else {
+            Warn "Claude Desktop is running. Quit it now: right-click the Claude icon near the clock > Quit."
+            Read-Host "    Press Enter once Claude is closed"
         }
     }
-    if (-not $conf) { $conf = New-Object PSObject }
-    if (-not ($conf.PSObject.Properties.Name -contains 'mcpServers') -or -not $conf.mcpServers) {
-        $conf | Add-Member -NotePropertyName 'mcpServers' -NotePropertyValue (New-Object PSObject) -Force
-    }
-    $entry = [PSCustomObject]@{ command = $NodeExe; args = @($IndexJs) }
-    $conf.mcpServers | Add-Member -NotePropertyName 'ace-revit' -NotePropertyValue $entry -Force
-    Write-Utf8NoBom $file ($conf | ConvertTo-Json -Depth 32)
-    Ok "Registered in Claude Desktop: $file"
-}
-
-if (-not $SkipClaudeDesktop) {
-    Step "Registering with Claude Desktop"
-    $targets = @(Join-Path $env:APPDATA 'Claude\claude_desktop_config.json')
-    # Microsoft Store / MSIX installs keep their config in a virtualised folder.
-    Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue | ForEach-Object {
-        $targets += Join-Path $_.FullName 'LocalCache\Roaming\Claude\claude_desktop_config.json'
-    }
-    foreach ($t in $targets) { Register-ClaudeDesktop $t }
-    if (Get-Process -Name 'Claude' -ErrorAction SilentlyContinue) {
-        Warn "Claude Desktop is running: fully quit it (tray icon > Quit) and reopen it to load the Revit tools."
-    }
-}
-
-if (-not $SkipClaudeCode) {
-    Step "Registering with Claude Code (if installed)"
-    if (Has claude) {
+    $IndexJs = Join-Path $McpDir 'index.js'
+    & $NodeExe (Join-Path $McpDir 'lib\register.js') add --node $NodeExe --index $IndexJs | ForEach-Object { Write-Host "    $_" }
+    if ($LASTEXITCODE -ne 0) { Warn "Some Claude configs could not be updated (see above). Run 'Check and fix ACE Revit' after closing Claude." }
+    if (-not $SkipClaudeCode -and (Has claude)) {
         Invoke-Quiet { claude mcp remove ace-revit --scope user } | Out-Null
-        & claude mcp add ace-revit --scope user -- $NodeExe $IndexJs | Out-Host
-        if ($LASTEXITCODE -eq 0) { Ok "Registered in Claude Code (user scope)" } else { Warn "claude mcp add failed; run it manually (see README)." }
-    } else {
-        Write-Host "    Claude Code CLI not found - skipped. (Claude Desktop is enough.)"
+        Invoke-Quiet { claude mcp add ace-revit --scope user -- $NodeExe $IndexJs } | Out-Null
     }
 }
 
