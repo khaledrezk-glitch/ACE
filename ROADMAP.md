@@ -20,6 +20,9 @@ Ribbon tools that change the model follow the same safety rule without Claude: a
 ("This will modify 142 doors: [details]"), then **Apply** or **Cancel**, one undo step, and an entry in the journal.
 Buttons follow the user's **role** from Phase 1: hidden or greyed out when not allowed.
 
+Since 1.4.0 every button below is already on the ACE ribbon as a placeholder: it opens a card explaining what it
+will do (and what Claude can do today). The **Roadmap** button shows the whole plan in one window.
+
 | Ribbon panel | Buttons | Phase |
 |---|---|---|
 | **Claude** | Companion panel · MCP Status (done) · Undo Claude Change | 1.3.0 / 1 |

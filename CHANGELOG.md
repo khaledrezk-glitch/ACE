@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0
+- **The ACE ribbon shows the roadmap:** panels Audit, Inspect, Data, Export, Coordination, Deliver, Compliance,
+  Team Tools and Admin, plus *Undo Claude Change* next to Companion: 25 planned tools as real buttons. Each opens an
+  ACE-branded card: what it will do, how it will work, its phase, and (where possible) what Claude can already do today,
+  with a prompt to copy. Planned buttons carry a hollow red ring; live ones a solid dot.
+- New **Roadmap** button: one window with what is live today and every planned tool by phase (for presentations).
+- Companion **Context & prompts:** 21 ready-made prompts in 5 groups (selection, this view, model checks, common
+  tasks, session and support). Prompts that need a selection no longer turn unreadable in the dark theme.
+
 ## 1.3.3
 - Companion header logo: sharper and slightly larger (high-quality scaling, 44 px high, about 84 px wide), still on its
   white field with 25% clear space. `branding/README.md` now says to crop the lettermark from the largest official

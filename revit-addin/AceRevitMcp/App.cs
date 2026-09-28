@@ -70,6 +70,48 @@ namespace AceRevitMcp
             catch (Exception ex) { Log.Warn($"Ribbon icons: {ex.Message}"); }
             panel.AddItem(companion);
             panel.AddItem(status);
+
+            // Planned tools (roadmap): real buttons that open a card explaining what each will do.
+            try { AddPlannedTools(application, tab, panel, path); }
+            catch (Exception ex) { Log.Warn($"Roadmap buttons: {ex.Message}"); }
+        }
+
+        private static void AddPlannedTools(UIControlledApplication application, string tab, RibbonPanel claudePanel, string path)
+        {
+            PushButtonData Data(Ribbon.Feature f)
+            {
+                var d = new PushButtonData("AcePlanned_" + f.Key, f.Label.Replace("&&", "&"), path, "AceRevitMcp.Ribbon.Planned_" + f.Key)
+                {
+                    ToolTip = f.Summary,
+                    LongDescription = $"Coming soon (Phase {f.Phase}: {Ribbon.Roadmap.Phases[f.Phase]}). Click to see what it will do" +
+                                      (f.TodayWithClaude != null ? " and what Claude can already do today." : "."),
+                };
+                try { d.LargeImage = Icons.Line(32, f.Glyph, planned: true); d.Image = Icons.Line(16, f.Glyph, planned: true); }
+                catch (Exception ex) { Log.Warn($"Icon {f.Key}: {ex.Message}"); }
+                return d;
+            }
+
+            foreach (var f in Ribbon.Roadmap.Features.Where(x => x.Panel == claudePanel.Name)) claudePanel.AddItem(Data(f));
+
+            foreach (var name in Ribbon.Roadmap.Panels)
+            {
+                var panel = application.CreateRibbonPanel(tab, name);
+                var features = Ribbon.Roadmap.Features.Where(x => x.Panel == name).ToList();
+                foreach (var f in features.Where(x => x.Large)) panel.AddItem(Data(f));
+                var small = features.Where(x => !x.Large).Select(Data).ToList();
+                if (small.Count == 1) panel.AddItem(small[0]);
+                else if (small.Count == 2) panel.AddStackedItems(small[0], small[1]);
+                else if (small.Count >= 3) panel.AddStackedItems(small[0], small[1], small[2]);
+            }
+
+            var about = application.CreateRibbonPanel(tab, "Roadmap");
+            var roadmap = new PushButtonData("AceRoadmap", "Roadmap", path, typeof(Ribbon.RoadmapCommand).FullName)
+            {
+                ToolTip = "What ACE can do today, and the tools planned for the ACE ribbon.",
+            };
+            try { roadmap.LargeImage = Icons.Line(32, Ribbon.Glyphs.Map, planned: false); roadmap.Image = Icons.Line(16, Ribbon.Glyphs.Map, planned: false); }
+            catch (Exception ex) { Log.Warn($"Icon roadmap: {ex.Message}"); }
+            about.AddItem(roadmap);
         }
     }
 

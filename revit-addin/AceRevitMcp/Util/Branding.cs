@@ -99,8 +99,10 @@ namespace AceRevitMcp.Util
         // The company mark is not used on 16/32 px ribbon icons (brand minimum logo size is 72 px wide).
         public static ImageSource Companion(int size) => Render(size, ChatCheck, useMark: false);
         public static ImageSource Status(int size) => Render(size, Pulse, useMark: false);
+        /// <summary>A line icon (24 × 24 stroked path). Planned tools get a hollow accent ring instead of a solid dot.</summary>
+        public static ImageSource Line(int size, string glyph, bool planned) => Render(size, glyph, useMark: false, stroke: true, planned: planned);
 
-        private static ImageSource Render(int size, string glyph, bool useMark)
+        private static ImageSource Render(int size, string glyph, bool useMark, bool stroke = false, bool planned = false)
         {
             if (Branding.UseLogoOnRibbon && Branding.Logo != null) return Branding.Logo;
             var dark = Branding.IsDarkTheme;
@@ -128,13 +130,22 @@ namespace AceRevitMcp.Util
                 else
                 {
                     var geometry = Geometry.Parse(glyph).Clone();
-                    var scale = size * 0.72 / 24.0;
+                    var scale = size * (stroke ? 0.64 : 0.72) / 24.0;
                     var offset = (size - 24 * scale) / 2;
                     geometry.Transform = new TransformGroup { Children = { new ScaleTransform(scale, scale), new TranslateTransform(offset, offset) } };
-                    dc.DrawGeometry(new SolidColorBrush(ink), null, geometry);
+                    if (stroke)
+                    {
+                        var pen = new Pen(new SolidColorBrush(ink), Math.Max(1.0, 2.0 * scale))
+                        { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
+                        dc.DrawGeometry(null, pen, geometry);
+                    }
+                    else dc.DrawGeometry(new SolidColorBrush(ink), null, geometry);
                 }
                 // Small accent punctuation (e.g. ACE Red), never a large fill.
-                dc.DrawEllipse(new SolidColorBrush(Branding.Accent), null, new Point(size * 0.84, size * 0.16), size * 0.1, size * 0.1);
+                var accent = new SolidColorBrush(Branding.Accent);
+                var dot = new Point(size * 0.84, size * 0.16);
+                if (planned) dc.DrawEllipse(new SolidColorBrush(tile), new Pen(accent, Math.Max(1.0, size * 0.05)), dot, size * 0.09, size * 0.09);
+                else dc.DrawEllipse(accent, null, dot, size * 0.1, size * 0.1);
             }
             var bmp = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
             bmp.Render(visual);

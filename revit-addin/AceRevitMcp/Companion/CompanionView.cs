@@ -314,32 +314,72 @@ namespace AceRevitMcp.Companion
 
             panel.Children.Add(new TextBlock { Text = "Quick prompts (copied to the clipboard, paste into Claude)", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 4), Foreground = _c.Text, TextWrapping = TextWrapping.Wrap });
             var hasSelection = ctx.SelectedIds.Count > 0;
-            foreach (var (label, prompt, needsSelection) in Prompts())
+            foreach (var (group, prompts) in Prompts())
             {
-                var b = ActionButton(label, false);
-                b.HorizontalAlignment = HorizontalAlignment.Stretch;
-                b.HorizontalContentAlignment = HorizontalAlignment.Left;
-                b.Margin = new Thickness(0, 2, 0, 2);
-                b.IsEnabled = !needsSelection || hasSelection;
-                if (needsSelection && !hasSelection) b.ToolTip = "Select elements in Revit first";
-                b.Click += (s, e) => Copy(prompt(), $"Copied \"{label}\". Paste into Claude (Ctrl+V).");
-                panel.Children.Add(b);
+                panel.Children.Add(new TextBlock { Text = group, Foreground = _c.Muted, FontSize = 11, Margin = new Thickness(0, 8, 0, 2) });
+                foreach (var (label, prompt, needsSelection) in prompts)
+                {
+                    var available = !needsSelection || hasSelection;
+                    var b = ActionButton(label, false);
+                    b.HorizontalAlignment = HorizontalAlignment.Stretch;
+                    b.HorizontalContentAlignment = HorizontalAlignment.Left;
+                    b.Margin = new Thickness(0, 2, 0, 2);
+                    // Not disabled (WPF's disabled look ignores the theme and becomes unreadable): muted instead.
+                    if (!available) { b.Foreground = _c.Muted; b.ToolTip = "Select elements in Revit first"; }
+                    b.Click += (s, e) =>
+                    {
+                        if (needsSelection && ActivityHub.Context.SelectedIds.Count == 0) { Toast("Select elements in Revit first, then click this prompt again."); return; }
+                        Copy(prompt(), $"Copied \"{label}\". Paste into Claude (Ctrl+V).");
+                    };
+                    panel.Children.Add(b);
+                }
             }
             return panel;
         }
 
-        private static (string, Func<string>, bool)[] Prompts()
+        private static (string, (string, Func<string>, bool)[])[] Prompts()
         {
             string sel() => SelectionText();
-            return new (string, Func<string>, bool)[]
+            const string ro = " Read-only, don't change anything.";
+            const string gated = " Explain your plan first and show me a preview of what would change before applying anything.";
+            return new (string, (string, Func<string>, bool)[])[]
             {
-                ("Explain my selection", () => $"Using ace-revit: explain what I have selected in Revit ({sel()}): what the elements are, their key parameters, and anything unusual or inconsistent.", true),
-                ("Check parameters of my selection", () => $"Using ace-revit: check the parameters of my selection ({sel()}): which important values are missing or inconsistent? Read-only, don't change anything.", true),
-                ("Model QA check", () => "Using ace-revit: run a read-only QA check of the open model and explain the top issues simply, ranked by importance, with element ids and a suggested fix for each.", false),
-                ("Parameter completeness", () => "Using ace-revit: check how complete the key parameters are for doors, windows and rooms (read-only) and summarise the gaps by level.", false),
-                ("What did you change today?", () => "Using ace-revit: what did you preview and change in Revit today? Use the activity log.", false),
-                ("Undo your last change", () => "Using ace-revit: undo your last change in Revit, then confirm what was undone.", false),
-                ("Report a problem with ACE", () => "Using ace-revit: something isn't working as expected. Run check_setup, fix what you can, and create an issue report for the ACE tool maintainers. The problem: ", false),
+                ("About my selection", new (string, Func<string>, bool)[]
+                {
+                    ("Explain my selection", () => $"Using ace-revit: explain what I have selected in Revit ({sel()}): what the elements are, their key parameters, and anything unusual or inconsistent.{ro}", true),
+                    ("Check parameters of my selection", () => $"Using ace-revit: check the parameters of my selection ({sel()}): which important values are missing or inconsistent?{ro}", true),
+                    ("Compare the selected elements", () => $"Using ace-revit: compare the selected elements ({sel()}) and show me, in a table, the parameters whose values differ between them.{ro}", true),
+                    ("Find and select similar elements", () => $"Using ace-revit: find every element in the model with the same family and type as my selection ({sel()}), tell me how many there are per level, and select them.", true),
+                }),
+                ("About this view", new (string, Func<string>, bool)[]
+                {
+                    ("Describe this view", () => $"Using ace-revit: describe the active view: what it shows, its scale, view template, filters, crop and visibility settings, and anything that looks wrong. Look at it as an image too.{ro}", false),
+                    ("Check this sheet", () => $"Using ace-revit: check the active sheet: title block data (number, name, revision, dates, drawn/checked by), which views are placed on it, and anything missing or inconsistent.{ro}", false),
+                    ("Tag untagged elements in this view", () => $"Using ace-revit: find the untagged doors, windows and rooms in the active view and tag them.{gated}", false),
+                }),
+                ("Model checks", new (string, Func<string>, bool)[]
+                {
+                    ("Model QA check", () => $"Using ace-revit: run a QA check of the open model and explain the top issues simply, ranked by importance, with element ids and a suggested fix for each.{ro}", false),
+                    ("Warnings summary", () => $"Using ace-revit: list the model's warnings grouped by type with counts, show the worst offenders, and say which ones could be fixed safely and how.{ro}", false),
+                    ("Parameter completeness", () => $"Using ace-revit: check how complete the key parameters are for doors, windows and rooms and summarise the gaps by level.{ro}", false),
+                    ("Rooms and doors check", () => $"Using ace-revit: find rooms without doors, unplaced or unenclosed rooms, and doors narrower than 900 mm, listed by level.{ro}", false),
+                    ("Views and sheets housekeeping", () => $"Using ace-revit: list views not placed on any sheet, empty sheets, views without a view template, and duplicate or badly named views and sheets.{ro}", false),
+                    ("Families and CAD imports", () => $"Using ace-revit: list in-place families, imported (not linked) CAD files, unused families and types, and the largest families by instance count.{ro}", false),
+                    ("Model statistics by level", () => $"Using ace-revit: give me a table of element counts by level for walls, doors, windows, rooms, floors and furniture, plus total room area per level.{ro}", false),
+                }),
+                ("Common tasks", new (string, Func<string>, bool)[]
+                {
+                    ("Renumber rooms on a level", () => $"Using ace-revit: renumber the rooms on level [LEVEL NAME] in reading order (left to right, top to bottom), starting at [START NUMBER].{gated}", false),
+                    ("Create sheets for levels", () => $"Using ace-revit: create a floor plan and a sheet for every level using the title block [TITLE BLOCK NAME], numbered [A-101] onwards.{gated}", false),
+                    ("Fill empty parameters", () => $"Using ace-revit: for [CATEGORY], where [PARAMETER] is empty, set it to [VALUE]. Tell me how many elements that affects per level first.{gated}", false),
+                }),
+                ("Session and support", new (string, Func<string>, bool)[]
+                {
+                    ("What did you change today?", () => "Using ace-revit: what did you preview and change in Revit today? Use the activity log.", false),
+                    ("Back up the model first", () => "Using ace-revit: make a backup copy of the open model now, before we make bigger changes, and tell me where it was saved.", false),
+                    ("Undo your last change", () => "Using ace-revit: undo your last change in Revit, then confirm what was undone.", false),
+                    ("Report a problem with ACE", () => "Using ace-revit: something isn't working as expected. Run check_setup, fix what you can, and create an issue report for the ACE tool maintainers. The problem: ", false),
+                }),
             };
         }
 

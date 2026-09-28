@@ -79,6 +79,12 @@ doing it"). It does that by default for anything large.
 previewed changes, a live activity feed, results you can click to select and zoom, and your current selection
 and view with one-click prompts to paste into Claude. No extra cost: it has no AI of its own.
 
+### Coming to the ACE ribbon
+
+The ACE tab already shows the planned tools (Audit, Inspect, Data, Export, Coordination, Deliver, Compliance,
+Team Tools, Admin). Buttons with a hollow red ring are planned: click one to see what it will do and what Claude
+can already do today. **ACE tab → Roadmap** shows the whole plan. Details: [ROADMAP.md](ROADMAP.md).
+
 ### Tools Claude gets
 
 | Area | Tools |
