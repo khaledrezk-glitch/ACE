@@ -146,6 +146,9 @@ assert.match(log, /Undid/);
 const bad = await call("execute_revit_code", { code: "boom" });
 assert.equal(bad.isError, true);
 
+await call("run_saved_script", { name: "test_fit_out", inputs: { room_number: "301", m2_per_person: 8 }, dry_run: true });
+assert.equal(seen.at(-1).args.transaction_name, "Claude: test_fit_out (room number 301, m2 per person 8)");
+
 const lib = json(await call("list_saved_scripts"));
 assert.ok(lib.find((s) => s.name === "renumber_rooms" && s.mode === "auto"));
 assert.ok(lib.find((s) => s.name === "audit_model" && s.mode === "readonly"));

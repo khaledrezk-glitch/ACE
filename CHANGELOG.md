@@ -8,7 +8,8 @@
 - New built-in script **`test_fit_out`**: an office test fit. 4-desk pods (desk + chair per person) on a regular
   grid, clear of walls, doors, columns and fixtures, for a target m2 per person; reports seats, m2 per person and
   the room's maximum; re-running replaces the previous test fit in the room. About 4 s for a 225 m2 office.
-- Claude's instructions cover both (space planning, visual previews).
+- Claude's instructions cover both (space planning, visual previews). Saved-script cards in the ACE panel now show the
+  key inputs in their title (e.g. "test_fit_out (room number 301, m2 per person 8)"), so several options can be told apart.
 
 ## 1.5.0
 - **Insights dashboard** (ACE tab → Insights → Dashboard, or ask Claude: new `model_dashboard` tool). Read-only:

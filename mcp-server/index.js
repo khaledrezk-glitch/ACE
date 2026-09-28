@@ -361,7 +361,10 @@ tool("run_saved_script", {
     code: fs.readFileSync(script.file, "utf8"),
     mode: script.mode || "auto",
     dry_run, preview_image, inputs, timeout_seconds, explanation, allow_risky,
-    transaction_name: `Claude: ${script.name}`,
+    // The name is the card title in the ACE panel: include the key inputs so several options can be told apart.
+    transaction_name: `Claude: ${script.name}${inputs && Object.keys(inputs).length
+      ? ` (${Object.entries(inputs).slice(0, 3).map(([k, v]) => `${k.replace(/_/g, " ")} ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ")})`
+      : ""}`.slice(0, 100),
   });
 });
 
