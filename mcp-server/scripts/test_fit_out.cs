@@ -70,10 +70,10 @@ var doorClear = ctx.Mm(ctx.Num("door_clearance_mm", 1500));
 var minAisle = ctx.Mm(ctx.Num("min_aisle_mm", 1200));
 var step = ctx.Mm(150);
 
+// Pods sit on a regular grid (rows and columns with equal aisles); the grid offset is chosen to fit the most pods.
 List<(double x, double y)> Fit(bool alongX, double aisle)
 {
     double sx = alongX ? podLong : podShort, sy = alongX ? podShort : podLong;
-    var placed = new List<(double x, double y)>();
     bool Clear(double x0, double y0)
     {
         double x1 = x0 + sx, y1 = y0 + sy;
@@ -88,13 +88,23 @@ List<(double x, double y)> Fit(bool alongX, double aisle)
             if (Math.Sqrt(dx * dx + dy * dy) < doorClear) return false;
         }
         var m = ctx.Mm(300);
-        if (obstacles.Any(b => x1 + m > b.Min.X && x0 - m < b.Max.X && y1 + m > b.Min.Y && y0 - m < b.Max.Y)) return false;
-        return !placed.Any(p => x1 + aisle > p.x && x0 - aisle < p.x + sx && y1 + aisle > p.y && y0 - aisle < p.y + sy);
+        return !obstacles.Any(b => x1 + m > b.Min.X && x0 - m < b.Max.X && y1 + m > b.Min.Y && y0 - m < b.Max.Y);
     }
-    for (var y = rb.Min.Y; y + sy <= rb.Max.Y; y += step)
-        for (var x = rb.Min.X; x + sx <= rb.Max.X; x += step)
-            if (Clear(x, y)) placed.Add((x, y));
-    return placed;
+    double px = sx + aisle, py = sy + aisle;
+    var best = new List<(double x, double y)>();
+    double cx = (rb.Min.X + rb.Max.X) / 2, cy = (rb.Min.Y + rb.Max.Y) / 2, bestSpread = double.MaxValue;
+    for (var ox = 0.0; ox < px; ox += step)
+        for (var oy = 0.0; oy < py; oy += step)
+        {
+            var pods = new List<(double x, double y)>();
+            for (var y = rb.Min.Y + oy; y + sy <= rb.Max.Y; y += py)
+                for (var x = rb.Min.X + ox; x + sx <= rb.Max.X; x += px)
+                    if (Clear(x, y)) pods.Add((x, y));
+            if (pods.Count == 0) continue;
+            var spread = Math.Abs(pods.Average(q => q.x + sx / 2) - cx) + Math.Abs(pods.Average(q => q.y + sy / 2) - cy);
+            if (pods.Count > best.Count || (pods.Count == best.Count && spread < bestSpread)) { best = pods; bestSpread = spread; }
+        }
+    return best;
 }
 
 var target = Math.Max(1, (int)Math.Floor(areaM2 / ctx.Num("m2_per_person", 10)));
@@ -107,12 +117,15 @@ foreach (var alongX in new[] { true, false })
 }
 // Spread out: the widest aisle that still fits the pods we want.
 if (best.Count > podsWanted)
-    for (var aisle = minAisle + ctx.Mm(1600); aisle > minAisle; aisle -= ctx.Mm(200))
+    for (var aisle = minAisle + ctx.Mm(1200); aisle > minAisle; aisle -= ctx.Mm(200))
     {
         var wide = Fit(bestAlongX, aisle);
         if (wide.Count >= podsWanted) { best = wide; bestAisle = aisle; break; }
     }
-var pods = best.Take(podsWanted).ToList();
+// Keep the pods closest to the middle of the group, in reading order.
+double gx = best.Count == 0 ? 0 : best.Average(q => q.x), gy = best.Count == 0 ? 0 : best.Average(q => q.y);
+var pods = best.OrderBy(q => Math.Abs(q.x - gx) + Math.Abs(q.y - gy)).Take(podsWanted)
+    .OrderByDescending(q => Math.Round(q.y, 1)).ThenBy(q => q.x).ToList();
 var desksToPlace = Math.Min(target, pods.Count * 4);
 
 // 4. Place desks and chairs (chair faces its desk).
