@@ -5,3 +5,7 @@ node_modules/
 .vs/
 dist/
 team.json
+
+# Company logo files stay out of the public repository; add them locally before build-package.ps1
+branding/*.png
+branding/ACE_BRAND_GUIDELINES.md

@@ -31,27 +31,43 @@ namespace AceRevitMcp.Companion
         {
             _c = Palette.Current();
             Background = _c.Background;
-            FontFamily = new FontFamily("Segoe UI");
+            FontFamily = new FontFamily(Branding.FontFamily);
             FontSize = 12;
             Foreground = _c.Text;
 
             var root = new DockPanel { LastChildFill = true };
-            var header = new StackPanel { Margin = new Thickness(10, 8, 10, 6) };
+            var header = new StackPanel { Margin = new Thickness(10, 10, 10, 6) };
+            // ACE layout (as in the email signature): logo on a white field | thin ACE Red divider | text.
             var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
-            if (Branding.Logo != null)
-                titleRow.Children.Add(new Image { Source = Branding.Logo, Height = 22, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center });
-            else
-                titleRow.Children.Add(new Image { Source = Icons.Companion(22), Height = 22, Width = 22, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center });
-            titleRow.Children.Add(new TextBlock { Text = $"{Branding.Name} Companion", FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = _c.Text, VerticalAlignment = VerticalAlignment.Center });
+            if (Branding.Mark != null)
+            {
+                const double markHeight = 40; // ~73 px wide: at or above the 72 px digital minimum
+                titleRow.Children.Add(new Border
+                {
+                    Background = Brushes.White,
+                    Padding = new Thickness(markHeight * 0.25), // clear space: 25% of logo height
+                    CornerRadius = new CornerRadius(2),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Child = new Image { Source = Branding.Mark, Height = markHeight, Stretch = Stretch.Uniform, SnapsToDevicePixels = true },
+                });
+                titleRow.Children.Add(new Border { Width = 2, Background = _c.Rule, Margin = new Thickness(12, 4, 12, 4) });
+            }
+            var titleText = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            titleText.Children.Add(new TextBlock { Text = Branding.Mark != null ? "Companion" : $"{Branding.Name} Companion", FontSize = 17, FontWeight = FontWeights.Bold, Foreground = _c.Text });
+            if (!string.IsNullOrEmpty(Branding.FullName))
+                titleText.Children.Add(new TextBlock { Text = Branding.FullName, FontSize = 11, Foreground = _c.Muted });
+            titleRow.Children.Add(titleText);
             header.Children.Add(titleRow);
-            header.Children.Add(new Border { Height = 3, Background = new SolidColorBrush(Branding.Primary), CornerRadius = new CornerRadius(1.5), Margin = new Thickness(0, 6, 0, 4), HorizontalAlignment = HorizontalAlignment.Left, Width = 56 });
+            if (Branding.Mark == null)
+                header.Children.Add(new Border { Height = 2, Background = _c.Rule, Margin = new Thickness(0, 6, 0, 4), HorizontalAlignment = HorizontalAlignment.Left, Width = 56 });
             _status.Foreground = _c.Muted;
             _status.TextWrapping = TextWrapping.Wrap;
+            _status.Margin = new Thickness(0, 8, 0, 0);
             header.Children.Add(_status);
             DockPanel.SetDock(header, Dock.Top);
             root.Children.Add(header);
 
-            _toast.Foreground = _c.Accent;
+            _toast.Foreground = _c.Text;
             _toast.Margin = new Thickness(10, 4, 10, 8);
             _toast.TextWrapping = TextWrapping.Wrap;
             DockPanel.SetDock(_toast, Dock.Bottom);
@@ -92,7 +108,7 @@ namespace AceRevitMcp.Companion
         {
             var server = App.Server;
             var last = ActivityHub.Activity.FirstOrDefault();
-            _status.Text = (server?.IsRunning == true ? "● Connected, Claude can work in this Revit session" : "○ Connection stopped (ACE tab > MCP Status)") +
+            _status.Text = (server?.IsRunning == true ? "Connected. Claude can work in this Revit session." : "Connection stopped (ACE tab > MCP Status).") +
                            (last != null ? $"\nLast activity: {Ago(last.Time)}" : "\nWaiting for Claude, ask it something in Claude Desktop.");
 
             var waiting = ActivityHub.Waiting.ToList();
@@ -152,10 +168,10 @@ namespace AceRevitMcp.Companion
                 {
                     var state = p.State switch
                     {
-                        PendingState.AppliedByPanel => "✓ Applied by you",
-                        PendingState.AppliedByClaude => "✓ Applied via Claude",
-                        PendingState.Rejected => "✗ Cancelled",
-                        _ => "⚠ Failed",
+                        PendingState.AppliedByPanel => "Applied by you",
+                        PendingState.AppliedByClaude => "Applied via Claude",
+                        PendingState.Rejected => "Cancelled",
+                        _ => "Failed",
                     };
                     panel.Children.Add(new TextBlock
                     {
@@ -212,15 +228,20 @@ namespace AceRevitMcp.Companion
                 panel.Children.Add(Hint("Everything Claude does in this Revit session appears here: what it read, previewed and changed."));
             foreach (var a in ActivityHub.Activity.Take(80))
             {
-                var row = new StackPanel { Margin = new Thickness(0, 3, 0, 3) };
+                // Failed rows get a thin ACE Red marker (accent, not red text).
+                var row = new StackPanel();
                 row.Children.Add(new TextBlock
                 {
-                    Text = $"{(a.Ok ? "✓" : "✗")}  {a.Time:HH:mm:ss}  {a.Title}",
-                    Foreground = a.Ok ? _c.Text : _c.Error, TextWrapping = TextWrapping.Wrap,
+                    Text = $"{a.Time:HH:mm:ss}   {a.Title}{(a.Ok ? "" : "  (failed)")}",
+                    Foreground = _c.Text, FontWeight = a.Ok ? FontWeights.Normal : FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap,
                 });
                 if (!string.IsNullOrEmpty(a.Detail))
-                    row.Children.Add(new TextBlock { Text = "     " + a.Detail, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap });
-                panel.Children.Add(row);
+                    row.Children.Add(new TextBlock { Text = a.Detail, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 1, 0, 0) });
+                panel.Children.Add(new Border
+                {
+                    BorderBrush = a.Ok ? Brushes.Transparent : _c.Rule, BorderThickness = new Thickness(2, 0, 0, 0),
+                    Padding = new Thickness(6, 3, 0, 3), Margin = new Thickness(0, 1, 0, 1), Child = row,
+                });
             }
             return panel;
         }
@@ -243,7 +264,7 @@ namespace AceRevitMcp.Companion
             {
                 var link = new Button
                 {
-                    Content = new TextBlock { Text = $"{r.Id}  {r.Label}", TextWrapping = TextWrapping.Wrap },
+                    Content = new TextBlock { Text = $"{r.Id}  {r.Label}", TextWrapping = TextWrapping.Wrap, TextDecorations = TextDecorations.Underline },
                     HorizontalContentAlignment = HorizontalAlignment.Left,
                     Background = Brushes.Transparent, BorderThickness = new Thickness(0),
                     Foreground = _c.Link, Cursor = System.Windows.Input.Cursors.Hand,
@@ -368,23 +389,25 @@ namespace AceRevitMcp.Companion
             Padding = new Thickness(12, 4, 12, 4),
             Margin = new Thickness(0, 4, 8, 4),
             Background = primary ? _c.Accent : _c.Card,
-            Foreground = primary ? Brushes.White : _c.Text,
+            Foreground = primary ? _c.OnAccent : _c.Text,
             BorderBrush = primary ? _c.Accent : _c.Border,
             Cursor = System.Windows.Input.Cursors.Hand,
         };
 
         private sealed class Palette
         {
-            public Brush Background, Card, Border, Text, Muted, Accent, Link, Error;
+            public Brush Background, Card, Border, Text, Muted, Accent, OnAccent, Link, Error, Rule;
 
             public static Palette Current()
             {
-                var dark = false;
-                try { dark = UIThemeManager.CurrentTheme == UITheme.Dark; } catch { }
                 Brush b(string hex) => (Brush)new BrushConverter().ConvertFromString(hex);
-                return dark
-                    ? new Palette { Background = b("#2B2F36"), Card = b("#343A43"), Border = b("#4A515C"), Text = b("#E6E8EB"), Muted = b("#A3AAB5"), Accent = new SolidColorBrush(Branding.Accent), Link = b("#7FB2FF"), Error = b("#FF8A80") }
-                    : new Palette { Background = b("#F7F8FA"), Card = b("#FFFFFF"), Border = b("#D5D9DF"), Text = b("#1F2328"), Muted = b("#5F6773"), Accent = new SolidColorBrush(Branding.Primary), Link = b("#1F5FB8"), Error = b("#C62828") };
+                Brush c(Color col) => new SolidColorBrush(col);
+                // Brand: black / white / greys, with the accent colour (ACE Red) for thin rules and the main action only.
+                return Branding.IsDarkTheme
+                    ? new Palette { Background = b("#2B2B2B"), Card = b("#363636"), Border = b("#4D4D4D"), Text = b("#F2F2F2"), Muted = b("#BDBDBD"),
+                                    Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = b("#F2F2F2"), Error = b("#F2F2F2"), Rule = c(Branding.Accent) }
+                    : new Palette { Background = c(Branding.GreyLight), Card = Brushes.White, Border = b("#D9D9D9"), Text = c(Branding.Primary), Muted = c(Branding.GreyDark),
+                                    Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = c(Branding.Primary), Error = c(Branding.Primary), Rule = c(Branding.Accent) };
             }
         }
     }

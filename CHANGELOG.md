@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2
+- **ACE brand applied** (per ACE brand guidelines): black / white / greys with ACE Red `#C8102E` as a thin accent and for
+  the main action only; Arial; no emoji-style symbols; the header follows the ACE signature layout (the ACE lettermark on
+  a white logo field, a thin red divider, "Companion" and "ACE | AlAin Consulting Engineers").
+- The logo is never recoloured and is shown at 72 px wide or more; ribbon icons stay simple black/white glyphs with a small
+  red accent (the logo is too small to use at 16/32 px). A reversed (white) logo is TBC with ACE Marketing.
+- New brand.json fields: `fullName`, `greyDark`, `greyLight`, `font`. Logo files and the guidelines stay out of the public repo.
+
 ## 1.3.1
 - **Branding:** a `branding/` folder (`brand.json` + optional logo) sets the company name, primary and accent colours,
   and logo for the Revit ribbon and the Companion panel. The installer copies it to every PC. Neutral defaults until
