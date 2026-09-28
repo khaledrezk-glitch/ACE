@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1
+- **Branding:** a `branding/` folder (`brand.json` + optional logo) sets the company name, primary and accent colours,
+  and logo for the Revit ribbon and the Companion panel. The installer copies it to every PC. Neutral defaults until
+  the official ACE logo and colours are added.
+- Ribbon buttons now have icons (drawn as vectors in the brand colour, or the company logo if `useLogoOnRibbon`).
+
 ## 1.3.0
 - **ACE Companion panel** inside Revit (ACE tab → *Companion*), docked on the right, working alongside Claude Desktop
   with no AI of its own and no extra cost:

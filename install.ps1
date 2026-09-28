@@ -192,6 +192,15 @@ if (Test-Path $teamFile) {
 Write-Utf8NoBom $CfgFile ($cfg | ConvertTo-Json)
 Ok "Config at $CfgFile (port $($cfg.port))"
 
+# Company branding (logo, colours) for the ribbon icons and the Companion panel.
+$brandSrc = Join-Path $Root 'branding'
+if (Test-Path $brandSrc) {
+    $brandDst = Join-Path $CfgDir 'branding'
+    New-Item -ItemType Directory -Force -Path $brandDst | Out-Null
+    Copy-Item (Join-Path $brandSrc '*') -Destination $brandDst -Recurse -Force
+    Ok "Branding installed to $brandDst"
+}
+
 # ------------------------------------------------------------------------------------------------
 Step "Installing the MCP server"
 $McpDir = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\mcp-server'
@@ -245,7 +254,7 @@ if ((Resolve-Path $Root).Path.TrimEnd('\') -ne $PkgDir) {
     if (Test-Path $PkgDir) { Remove-Item $PkgDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $PkgDir | Out-Null
     Get-ChildItem $Root -File | Where-Object { $_.Extension -in '.ps1', '.cmd', '.md', '.json' } | Copy-Item -Destination $PkgDir -Force
-    foreach ($dir in 'bin', 'docs') { if (Test-Path (Join-Path $Root $dir)) { Copy-Item (Join-Path $Root $dir) -Destination $PkgDir -Recurse -Force } }
+    foreach ($dir in 'bin', 'docs', 'branding') { if (Test-Path (Join-Path $Root $dir)) { Copy-Item (Join-Path $Root $dir) -Destination $PkgDir -Recurse -Force } }
     New-Item -ItemType Directory -Force -Path (Join-Path $PkgDir 'mcp-server') | Out-Null
     Get-ChildItem (Join-Path $Root 'mcp-server') | Where-Object { $_.Name -ne 'test' } | Copy-Item -Destination (Join-Path $PkgDir 'mcp-server') -Recurse -Force
     if (-not $Prebuilt) {

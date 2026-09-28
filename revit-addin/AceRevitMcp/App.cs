@@ -21,6 +21,7 @@ namespace AceRevitMcp
             try
             {
                 Config = AceConfig.LoadOrCreate();
+                Branding.Load();
                 var dispatcher = new RequestDispatcher(new CommandRegistry());
                 dispatcher.Initialize();
                 Dispatcher = dispatcher;
@@ -53,14 +54,22 @@ namespace AceRevitMcp
             try { application.CreateRibbonTab(tab); } catch { /* already exists */ }
             var panel = application.CreateRibbonPanel(tab, "Claude MCP");
             var path = typeof(App).Assembly.Location;
-            panel.AddItem(new PushButtonData("AceCompanion", "Companion", path, typeof(Companion.ToggleCompanionCommand).FullName)
+            var companion = new PushButtonData("AceCompanion", "Companion", path, typeof(Companion.ToggleCompanionCommand).FullName)
             {
                 ToolTip = "Show or hide the ACE Companion panel: approve Claude's previewed changes, follow its activity, click results to select them, and copy ready-made prompts.",
-            });
-            panel.AddItem(new PushButtonData("AceMcpStatus", "MCP\nStatus", path, typeof(StatusCommand).FullName)
+            };
+            var status = new PushButtonData("AceMcpStatus", "MCP\nStatus", path, typeof(StatusCommand).FullName)
             {
                 ToolTip = "Show whether Claude can reach this Revit session, and restart the connection if needed.",
-            });
+            };
+            try
+            {
+                companion.LargeImage = Icons.Companion(32); companion.Image = Icons.Companion(16);
+                status.LargeImage = Icons.Status(32); status.Image = Icons.Status(16);
+            }
+            catch (Exception ex) { Log.Warn($"Ribbon icons: {ex.Message}"); }
+            panel.AddItem(companion);
+            panel.AddItem(status);
         }
     }
 

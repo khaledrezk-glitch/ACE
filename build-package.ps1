@@ -45,6 +45,8 @@ foreach ($f in 'install.ps1', 'install.cmd', 'doctor.ps1', 'doctor.cmd', 'report
     if (Test-Path $p) { Copy-Item $p -Destination $stage }
 }
 
+if (Test-Path (Join-Path $Root 'branding')) { Copy-Item (Join-Path $Root 'branding') -Destination $stage -Recurse -Force }
+
 $zip = Join-Path $Out "$name.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip

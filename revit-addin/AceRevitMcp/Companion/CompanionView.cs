@@ -37,7 +37,14 @@ namespace AceRevitMcp.Companion
 
             var root = new DockPanel { LastChildFill = true };
             var header = new StackPanel { Margin = new Thickness(10, 8, 10, 6) };
-            header.Children.Add(new TextBlock { Text = "ACE Companion", FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = _c.Text });
+            var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
+            if (Branding.Logo != null)
+                titleRow.Children.Add(new Image { Source = Branding.Logo, Height = 22, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center });
+            else
+                titleRow.Children.Add(new Image { Source = Icons.Companion(22), Height = 22, Width = 22, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center });
+            titleRow.Children.Add(new TextBlock { Text = $"{Branding.Name} Companion", FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = _c.Text, VerticalAlignment = VerticalAlignment.Center });
+            header.Children.Add(titleRow);
+            header.Children.Add(new Border { Height = 3, Background = new SolidColorBrush(Branding.Primary), CornerRadius = new CornerRadius(1.5), Margin = new Thickness(0, 6, 0, 4), HorizontalAlignment = HorizontalAlignment.Left, Width = 56 });
             _status.Foreground = _c.Muted;
             _status.TextWrapping = TextWrapping.Wrap;
             header.Children.Add(_status);
@@ -376,8 +383,8 @@ namespace AceRevitMcp.Companion
                 try { dark = UIThemeManager.CurrentTheme == UITheme.Dark; } catch { }
                 Brush b(string hex) => (Brush)new BrushConverter().ConvertFromString(hex);
                 return dark
-                    ? new Palette { Background = b("#2B2F36"), Card = b("#343A43"), Border = b("#4A515C"), Text = b("#E6E8EB"), Muted = b("#A3AAB5"), Accent = b("#2F7DE1"), Link = b("#7FB2FF"), Error = b("#FF8A80") }
-                    : new Palette { Background = b("#F7F8FA"), Card = b("#FFFFFF"), Border = b("#D5D9DF"), Text = b("#1F2328"), Muted = b("#5F6773"), Accent = b("#1F6FD1"), Link = b("#1F5FB8"), Error = b("#C62828") };
+                    ? new Palette { Background = b("#2B2F36"), Card = b("#343A43"), Border = b("#4A515C"), Text = b("#E6E8EB"), Muted = b("#A3AAB5"), Accent = new SolidColorBrush(Branding.Accent), Link = b("#7FB2FF"), Error = b("#FF8A80") }
+                    : new Palette { Background = b("#F7F8FA"), Card = b("#FFFFFF"), Border = b("#D5D9DF"), Text = b("#1F2328"), Muted = b("#5F6773"), Accent = new SolidColorBrush(Branding.Primary), Link = b("#1F5FB8"), Error = b("#C62828") };
             }
         }
     }
