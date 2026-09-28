@@ -16,6 +16,12 @@ model. This guide is for everyone on the team. No programming knowledge needed.
 Check it works: in a new Claude chat, type
 > Using ace-revit, check the Revit connection and give me an overview of the open model.
 
+**No package at hand?** Open PowerShell (Revit closed) and paste this one line. It downloads ACE from GitHub
+and installs it, building the add-in on the PC, so it may ask to install the .NET SDK:
+```powershell
+irm https://raw.githubusercontent.com/khaledrezk-glitch/ACE/claude/brave-carson-vcjduc/get-ace.ps1 | iex
+```
+
 Requirements are listed in [REQUIREMENTS.md](REQUIREMENTS.md). You can delete the unzipped folder
 afterwards: a copy is kept for repairs.
 
