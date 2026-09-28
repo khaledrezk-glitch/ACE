@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.3
+- Companion header logo: sharper and slightly larger (high-quality scaling, 44 px high, about 84 px wide), still on its
+  white field with 25% clear space. `branding/README.md` now says to crop the lettermark from the largest official
+  logo file available (the small drawing-embedded PNG renders soft).
+
 ## 1.3.2
 - **ACE brand applied** (per ACE brand guidelines): black / white / greys with ACE Red `#C8102E` as a thin accent and for
   the main action only; Arial; no emoji-style symbols; the header follows the ACE signature layout (the ACE lettermark on

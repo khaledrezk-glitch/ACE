@@ -10,7 +10,7 @@ Put the company's visual identity here. The installer copies this folder to
 | `accent` | Status dot on the icons, main buttons (dark theme) |
 | `fullName` | Line under the panel title, e.g. `ACE \| AlAin Consulting Engineers` |
 | `greyDark` / `greyLight` / `font` | Secondary text colour, panel background, and font |
-| `mark` | The company lettermark only (e.g. just "ACE"): the official black artwork on a transparent background. Shown in the panel header on a white logo field, at 72 px wide or more. Never recoloured. |
+| `mark` | The company lettermark only (e.g. just "ACE"): the official black artwork on a white or transparent background, cropped tightly (the panel adds the 25% clear space). Shown in the panel header on a white logo field, at 72 px wide or more. Never recoloured. |
 | `logo` | File name of a full logo in this folder, e.g. `logo.png` (transparent PNG, about 256 px tall). Shown in the panel header. |
 | `useLogoOnRibbon` | `true` to use the logo as the ribbon button icon instead of the drawn icons. Use a square logo mark for this. |
 
@@ -19,6 +19,7 @@ from the marketing / brand guidelines. Then rebuild the package (`build-package.
 files to `%APPDATA%\ACE-RevitMCP\branding` and restart Revit.
 
 **ACE's lettermark file (`ace-mark.png`) and `ACE_BRAND_GUIDELINES.md` are not stored in the public GitHub
-repository.** Put them in this folder on the machine that builds the package. They were made from the
-official logo used in ACE project title blocks (the lettermark only, with a transparent background).
+repository.** Put them in this folder on the machine that builds the package. They were cropped from the
+official logo used in ACE project title blocks (the lettermark only, left of the divider). Crop from the largest
+official file available (the current mark is 580 × 307 px); small copies look soft in the panel.
 Colours follow ACE_BRAND_GUIDELINES.md: black, white and greys, with ACE Red `#C8102E` as an accent only. Items marked TBC there (reversed logo, official font, secondary palette) should be confirmed with ACE Marketing.

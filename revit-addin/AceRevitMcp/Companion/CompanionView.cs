@@ -41,14 +41,14 @@ namespace AceRevitMcp.Companion
             var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
             if (Branding.Mark != null)
             {
-                const double markHeight = 40; // ~73 px wide: at or above the 72 px digital minimum
+                const double markHeight = 44; // ~84 px wide: above the 72 px digital minimum
                 titleRow.Children.Add(new Border
                 {
                     Background = Brushes.White,
                     Padding = new Thickness(markHeight * 0.25), // clear space: 25% of logo height
                     CornerRadius = new CornerRadius(2),
                     VerticalAlignment = VerticalAlignment.Center,
-                    Child = new Image { Source = Branding.Mark, Height = markHeight, Stretch = Stretch.Uniform, SnapsToDevicePixels = true },
+                    Child = MarkImage(markHeight),
                 });
                 titleRow.Children.Add(new Border { Width = 2, Background = _c.Rule, Margin = new Thickness(12, 4, 12, 4) });
             }
@@ -122,6 +122,14 @@ namespace AceRevitMcp.Companion
             if (waiting.Count > 0 && _tabs.SelectedItem != _approvalsTab && waiting.Any(w => DateTime.Now - w.PreviewedAt < TimeSpan.FromSeconds(5)))
                 _tabs.SelectedItem = _approvalsTab; // bring new previews to the user's attention
             if (_tabs.SelectedItem == null) _tabs.SelectedIndex = 0;
+        }
+
+        // The logo file is used as supplied (never recoloured or stretched); high-quality scaling keeps it crisp.
+        private static Image MarkImage(double height)
+        {
+            var img = new Image { Source = Branding.Mark, Height = height, Stretch = Stretch.Uniform, SnapsToDevicePixels = true };
+            RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+            return img;
         }
 
         private UIElement RenderApprovals(System.Collections.Generic.List<PendingChange> waiting)
