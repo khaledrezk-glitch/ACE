@@ -76,12 +76,15 @@ namespace AceRevitMcp.Bridge
                 try
                 {
                     var result = _registry.Execute(pending.Command, app, pending.Args);
+                    var ms = (long)(DateTime.Now - started).TotalMilliseconds;
+                    Companion.ActivityHub.RecordCommand(pending.Command, pending.Args, result, null, ms);
                     pending.Completion.TrySetResult(result);
-                    Log.Info($"{pending.Command} ok ({(DateTime.Now - started).TotalMilliseconds:0} ms)");
+                    Log.Info($"{pending.Command} ok ({ms} ms)");
                 }
                 catch (Exception ex)
                 {
                     Log.Error($"{pending.Command} failed: {ex}");
+                    Companion.ActivityHub.RecordCommand(pending.Command, pending.Args, null, ex, (long)(DateTime.Now - started).TotalMilliseconds);
                     pending.Completion.TrySetException(ex);
                 }
             }

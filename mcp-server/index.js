@@ -199,6 +199,10 @@ tool("set_parameters", {
     if (!explanation) throw new RevitError("Give 'explanation': a plain sentence describing this change for the activity journal.");
   }
   const result = await callRevit("set_parameters", { changes, dry_run }, 300);
+  if (result?.alreadyApplied) {
+    previews.delete(key);
+    return text(result);
+  }
   const ok = result.failed === 0;
   if (ok && dry_run) previews.set(key, Date.now());
   if (!dry_run) previews.delete(key);
@@ -244,6 +248,16 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
 
   const result = await callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only }, timeout_seconds ?? 300);
 
+  // The user may have decided in the ACE Companion panel inside Revit (Apply / Cancel) - the add-in reports it.
+  if (result?.alreadyApplied) {
+    previews.delete(key);
+    return text({ ...result, instruction: "Already applied by the user in Revit. Do not re-apply. Verify with a read-only query and report the outcome." });
+  }
+  if (result?.stage === "rejected") {
+    previews.delete(key);
+    return { isError: true, content: [{ type: "text", text: result.error }] };
+  }
+
   if (modifies) {
     if (result?.success && dry_run) previews.set(key, Date.now());
     if (result?.success && !dry_run) previews.delete(key); // a repeat needs a fresh preview
@@ -261,7 +275,7 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
     out.isError = true;
     if (result.stage === "compile") out.content.push({ type: "text", text: "Tip: check uncertain members with revit_api_lookup before retrying." });
   } else if (modifies && dry_run) {
-    out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Explain this result to the user in plain words and ask for confirmation before applying (same call with dry_run: false)." });
+    out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Explain this result to the user in plain words and ask for confirmation before applying (same call with dry_run: false). This preview now also appears in the ACE Companion panel in Revit, where the user can click Apply or Cancel instead of answering here." });
   }
   return out;
 }

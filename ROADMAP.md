@@ -22,7 +22,7 @@ Buttons follow the user's **role** from Phase 1: hidden or greyed out when not a
 
 | Ribbon panel | Buttons | Phase |
 |---|---|---|
-| **Claude** | MCP Status · Activity Log · Undo Claude Change | exists (Status) / 1 |
+| **Claude** | Companion panel · MCP Status (done) · Undo Claude Change | 1.3.0 / 1 |
 | **Audit** | Model Health (score + report) · Warning Solver · Parameter Check · Rooms & Doors QA | 2 |
 | **Inspect** | Snoop Selection · Snoop Document · Event Monitor | 3 |
 | **Data** | Export to Excel · Import from Excel · Parameter Manager · Smart Select | 3 |
@@ -168,7 +168,7 @@ chat, and it's covered by the existing Claude plans.
 - Model: default Claude Opus 5, with per-team model and effort settings.
 - Spending: per-user usage and cost limits.
 
-**No-cost alternative, possible now:** an **ACE Companion panel** in Revit that works *alongside* Claude
+**No-cost alternative, done in 1.3.0:** the **ACE Companion panel** in Revit that works *alongside* Claude
 Desktop, with no AI of its own:
 - a live feed of what Claude is doing;
 - Apply/Cancel for previews right in Revit;

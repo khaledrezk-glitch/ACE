@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0
+- **ACE Companion panel** inside Revit (ACE tab → *Companion*), docked on the right, working alongside Claude Desktop
+  with no AI of its own and no extra cost:
+  - **Approvals:** every change Claude previews appears as a card with **Apply / Cancel**. Apply makes the change as one
+    undo step and writes it to the journal. If Claude later tries to apply the same change, the add-in answers
+    "already applied" (or "cancelled"), so nothing is ever applied twice.
+  - **Activity:** a live, plain-language feed of what Claude reads, previews and changes.
+  - **Results:** elements from Claude's latest answer; click to select and zoom, or *Select all*.
+  - **Context & prompts:** the current model, view and selection, *Copy this context for Claude*, and ready-made prompts
+    (explain my selection, check its parameters, model QA, what changed today, undo, report a problem).
+  - Follows Revit's light or dark theme.
+- Claude's instructions explain the panel; the MCP server handles the panel's "already applied" and "cancelled" answers.
+
 ## 1.2.2
 - ACE is now registered for **Claude Code sessions** too (`~/.claude.json`, used by the desktop app's Code tab and the
   CLI), not only Claude Desktop chats. Found on a work PC where a Code session couldn't see `ace-revit`.

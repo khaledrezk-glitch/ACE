@@ -32,6 +32,7 @@ parameters you use, title blocks, view templates), the better Claude's defaults 
 | Library | `list_saved_scripts`, `read_saved_script`, `save_script` (personal or team) |
 | Support | `check_setup`, `report_issue` |
 | Prompts | *Do a Revit task*, *Model QA check*, *Report a problem* |
+| In Revit | The **ACE Companion panel** shows Claude's previews with Apply/Cancel, its activity, and clickable results. Claude's instructions already cover it. |
 
 Built-in scripts: `audit_model`, `parameter_completeness`, `rooms_without_doors`, `door_width_check`,
 `renumber_rooms`, `tag_untagged`, `grid_system`, `sheets_for_levels`, `copy_parameter`.

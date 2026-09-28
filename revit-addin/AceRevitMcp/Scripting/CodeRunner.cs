@@ -83,6 +83,32 @@ public static class AceScript
             if (mode is not ("auto" or "manual" or "readonly"))
                 throw new CommandException("mode must be 'auto', 'manual' or 'readonly'.");
 
+            // Approvals made in the ACE Companion panel: a change the user already applied or cancelled
+            // there must not be applied again by Claude.
+            var fromPanel = Commands.Args.Bool(args, "_fromPanel");
+            var compileOnlyRequested = Commands.Args.Bool(args, "compile_only");
+            var tracked = mode != "readonly" && !compileOnlyRequested;
+            var hash = tracked ? Companion.ActivityHub.Fingerprint("execute_code", args) : null;
+            if (tracked && !dryRun && !fromPanel)
+            {
+                var decision = Companion.ActivityHub.DecisionFor(hash);
+                if (decision?.State == Companion.PendingState.AppliedByPanel)
+                    return new JsonObject
+                    {
+                        ["success"] = true,
+                        ["alreadyApplied"] = true,
+                        ["note"] = $"The user already applied this exact change themselves with the Apply button in the ACE Companion panel in Revit at {decision.DecidedAt:HH:mm}. Do NOT apply it again. Verify the result with a read-only query and report it.",
+                        ["outcome"] = decision.Outcome,
+                    };
+                if (decision?.State == Companion.PendingState.Rejected)
+                    return new JsonObject
+                    {
+                        ["success"] = false,
+                        ["stage"] = "rejected",
+                        ["error"] = $"The user cancelled this change in the ACE Companion panel in Revit at {decision.DecidedAt:HH:mm}. Do not apply it. Ask what they would like instead.",
+                    };
+            }
+
             var source = BuildSource(code);
             var compiled = Compile(source);
             if (compiled.assembly == null)
@@ -193,6 +219,8 @@ public static class AceScript
             }
 
             response["success"] = true;
+            if (tracked && dryRun) Companion.ActivityHub.AddPending("execute_code", args, response);
+            else if (tracked && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
             if (mode == "readonly")
             { /* keep any note set above */ }
             else if (dryRun)

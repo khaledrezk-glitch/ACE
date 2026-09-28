@@ -26,6 +26,8 @@ const bridge = http.createServer((req, res) => {
       case "api_lookup": return reply({ ok: true, result: { query: args.query, results: [{ type: "Autodesk.Revit.DB.Wall", members: [{ signature: "static Wall Create(Document document, Curve curve, ElementId levelId, bool structural)" }] }] } });
       case "export_view_image": return reply({ ok: true, result: { view: "Level 1", viewType: "FloorPlan", path: "x.png", mimeType: "image/png", base64: "iVBORw0KGgo=" } });
       case "execute_code":
+        if (args.code.includes("PANEL_APPLIED") && !args.dry_run) return reply({ ok: true, result: { success: true, alreadyApplied: true, note: "applied in panel" } });
+        if (args.code.includes("PANEL_REJECTED") && !args.dry_run) return reply({ ok: true, result: { success: false, stage: "rejected", error: "The user cancelled this change in the ACE Companion panel" } });
         if (args.code.includes("boom")) return reply({ ok: true, result: { success: false, stage: "compile", errors: ["line 1: CS0103"] } });
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
       case "set_parameters":
@@ -92,6 +94,20 @@ const applied = json(await call("execute_revit_code", { ...edit, explanation: "S
 assert.equal(applied.transaction, "Committed");
 const again = await call("execute_revit_code", { ...edit, explanation: "again" });
 assert.match(again.content[0].text, /not been previewed/, "a repeat needs a fresh preview");
+// --- Companion panel decisions come back from the add-in ---
+const panelApplied = { code: "/*PANEL_APPLIED*/ return 1;", inputs: {} };
+await call("execute_revit_code", { ...panelApplied, dry_run: true });
+const pa = json(await call("execute_revit_code", { ...panelApplied, explanation: "x" }));
+assert.equal(pa.alreadyApplied, true);
+assert.match(pa.instruction, /Do not re-apply/);
+assert.match((await call("execute_revit_code", { ...panelApplied, explanation: "x" })).content[0].text, /not been previewed/, "after a panel apply a repeat needs a fresh preview");
+const panelRejected = { code: "/*PANEL_REJECTED*/ return 1;", inputs: {} };
+await call("execute_revit_code", { ...panelRejected, dry_run: true });
+const pr2 = await call("execute_revit_code", { ...panelRejected, explanation: "x" });
+assert.equal(pr2.isError, true);
+assert.match(pr2.content[0].text, /cancelled/);
+assert.match(client.getInstructions(), /ACE COMPANION PANEL/);
+
 // read-only runs need no preview
 assert.equal(json(await call("execute_revit_code", { code: "return 1;", mode: "readonly" })).echoMode, "readonly");
 

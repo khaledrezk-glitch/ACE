@@ -48,14 +48,25 @@ Tips:
 - Use the **+ / prompts** menu in Claude: *Do a Revit task*, *Model QA check*, *Report a problem*.
 - Ask Claude to **save** a task you'll repeat ("save this as a team script called renumber_rooms_by_level").
 
-## 3. What Claude does before changing anything (your safety)
+## 3. The ACE Companion panel (inside Revit)
+
+Click **ACE tab → Companion** to show or hide it (it docks on the right). It works alongside Claude Desktop:
+
+| Tab | What it's for |
+|---|---|
+| **Approvals** | When Claude previews a change, a card appears, e.g. *"Would modify 142 (Doors 142)"*. Click **Apply** to make the change (one undo step), or **Cancel**. You can also just answer Claude in the chat. After Apply, tell Claude "done" and it verifies the result. |
+| **Activity** | A live list of what Claude is doing in your model. |
+| **Results** | Elements from Claude's latest answer. **Click one to select and zoom to it**, or *Select all*. |
+| **Context & prompts** | Your current model, view and selection. *Copy this context for Claude*, plus one-click prompts such as "Explain my selection" and "Model QA check": click, then paste into Claude (Ctrl+V). |
+
+## 4. What Claude does before changing anything (your safety)
 
 Every change goes through five steps. Two of the protections are enforced by the software itself,
 not just requested of Claude:
 
 1. **Explains the plan** in plain words: what, how, what will and won't change, and how to undo it.
 2. **Previews**: it runs the change and rolls it back, then reports "would modify 142 doors, delete 0". *(Enforced: a real change is refused unless that exact change was previewed first.)*
-3. **Asks you**: "Shall I apply this?" Nothing happens until you say yes.
+3. **Asks you**: "Shall I apply this?" Nothing happens until you say yes, or click **Apply** in the ACE Companion panel.
 4. **Applies** it as **one undo step** named "Claude: …". Press **Ctrl+Z** or say "undo that".
 5. **Verifies** the result and reports it, often with a picture.
 
@@ -68,7 +79,7 @@ Also:
 
 Good practice: work on a **copy** or a model you've saved recently, especially while learning.
 
-## 4. When something goes wrong
+## 5. When something goes wrong
 
 | Symptom | What to do |
 |---|---|
@@ -91,7 +102,7 @@ code, not your drawings.
 
 Ideas for new capabilities are welcome too: *"Create an improvement report: I often need X."*
 
-## 5. Updating and removing
+## 6. Updating and removing
 
 - **Update:** unzip the new package, close Revit, run `install.cmd`. Your settings and scripts are kept.
 - **Remove:** run `uninstall.ps1` from the package folder (`-Purge` also deletes settings, scripts and journals).

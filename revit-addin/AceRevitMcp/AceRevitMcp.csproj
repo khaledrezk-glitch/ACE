@@ -9,10 +9,16 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <RootNamespace>AceRevitMcp</RootNamespace>
     <AssemblyName>AceRevitMcp</AssemblyName>
-    <Version>1.2.2</Version>
+    <Version>1.3.0</Version>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WPF for the ACE Companion panel. UI is written in C# (no XAML), so only the framework reference is needed;
+         this also builds on non-Windows CI with EnableWindowsTargeting. Revit supplies WPF at runtime. -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Reference-only Revit 2025 API assemblies; Revit supplies the real ones at runtime. -->

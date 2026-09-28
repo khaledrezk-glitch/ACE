@@ -73,6 +73,12 @@ Open a model in Revit, then just ask Claude. Examples:
 For big edits, tell Claude to show you the dry-run result first ("show me what you'd change before
 doing it"). It does that by default for anything large.
 
+### The ACE Companion panel (in Revit)
+
+**ACE tab → Companion** opens a docked panel that works alongside Claude Desktop: **Apply / Cancel** for Claude's
+previewed changes, a live activity feed, results you can click to select and zoom, and your current selection
+and view with one-click prompts to paste into Claude. No extra cost: it has no AI of its own.
+
 ### Tools Claude gets
 
 | Area | Tools |
@@ -103,7 +109,7 @@ code execution and keeps a small set of reliable tools. It adopts their best ide
 
 Run **`doctor.cmd`**: it checks every component and prints a fix for each problem. `doctor.cmd -Fix` repairs
 automatically, and `report.cmd` writes an issue report for the maintainers. The full table is in
-[USER-GUIDE.md](USER-GUIDE.md#4-when-something-goes-wrong).
+[USER-GUIDE.md](USER-GUIDE.md#5-when-something-goes-wrong).
 
 ## Repository layout
 

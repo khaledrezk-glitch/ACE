@@ -23,6 +23,16 @@ namespace AceRevitMcp.Commands
             if (args["changes"] is not JsonArray changes || changes.Count == 0)
                 throw new CommandException("'changes' is required: [{id, parameter, value}].");
             var dryRun = Args.Bool(args, "dry_run");
+            var fromPanel = Args.Bool(args, "_fromPanel");
+            var hash = Companion.ActivityHub.Fingerprint("set_parameters", args);
+            if (!dryRun && !fromPanel)
+            {
+                var decision = Companion.ActivityHub.DecisionFor(hash);
+                if (decision?.State == Companion.PendingState.AppliedByPanel)
+                    return new JsonObject { ["alreadyApplied"] = true, ["applied"] = 0, ["failed"] = 0, ["note"] = $"The user already applied these values with the Apply button in the ACE Companion panel at {decision.DecidedAt:HH:mm}. Do NOT apply again; verify and report." };
+                if (decision?.State == Companion.PendingState.Rejected)
+                    throw new CommandException($"The user cancelled these parameter changes in the ACE Companion panel at {decision.DecidedAt:HH:mm}. Do not apply them; ask what they would like instead.");
+            }
 
             var results = new JsonArray();
             var applied = 0;
@@ -71,6 +81,8 @@ namespace AceRevitMcp.Commands
                     ["results"] = results,
                 };
                 if (!dryRun && applied > 0) response["note"] = "Applied as ONE undo step named 'Claude: set parameters'.";
+                if (dryRun && applied > 0 && applied == results.Count) Companion.ActivityHub.AddPending("set_parameters", args, response);
+                else if (!dryRun && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
                 if (guard.Warnings.Count > 0) response["revitWarnings"] = new JsonArray(guard.Warnings.Select(w => (JsonNode)w).ToArray());
                 if (guard.Errors.Count > 0) response["revitErrors"] = new JsonArray(guard.Errors.Select(w => (JsonNode)w).ToArray());
                 return response;

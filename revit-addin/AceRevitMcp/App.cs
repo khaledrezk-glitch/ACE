@@ -14,6 +14,7 @@ namespace AceRevitMcp
     {
         internal static BridgeServer Server { get; private set; }
         internal static AceConfig Config { get; private set; }
+        internal static RequestDispatcher Dispatcher { get; private set; }
 
         public Result OnStartup(UIControlledApplication application)
         {
@@ -22,10 +23,13 @@ namespace AceRevitMcp
                 Config = AceConfig.LoadOrCreate();
                 var dispatcher = new RequestDispatcher(new CommandRegistry());
                 dispatcher.Initialize();
+                Dispatcher = dispatcher;
                 application.ControlledApplication.DocumentChanged += ChangeTracker.OnDocumentChanged;
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
                 Server.Start();
                 CreateRibbon(application);
+                try { Companion.CompanionPane.Register(application); }
+                catch (Exception ex) { Log.Error($"Could not register the ACE Companion panel: {ex}"); }
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -38,6 +42,7 @@ namespace AceRevitMcp
         public Result OnShutdown(UIControlledApplication application)
         {
             application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged;
+            try { Companion.CompanionPane.Unregister(application); } catch { }
             Server?.Dispose();
             return Result.Succeeded;
         }
@@ -48,6 +53,10 @@ namespace AceRevitMcp
             try { application.CreateRibbonTab(tab); } catch { /* already exists */ }
             var panel = application.CreateRibbonPanel(tab, "Claude MCP");
             var path = typeof(App).Assembly.Location;
+            panel.AddItem(new PushButtonData("AceCompanion", "Companion", path, typeof(Companion.ToggleCompanionCommand).FullName)
+            {
+                ToolTip = "Show or hide the ACE Companion panel: approve Claude's previewed changes, follow its activity, click results to select them, and copy ready-made prompts.",
+            });
             panel.AddItem(new PushButtonData("AceMcpStatus", "MCP\nStatus", path, typeof(StatusCommand).FullName)
             {
                 ToolTip = "Show whether Claude can reach this Revit session, and restart the connection if needed.",
