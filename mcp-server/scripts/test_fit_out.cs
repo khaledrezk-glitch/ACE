@@ -38,15 +38,15 @@ if (old.Count > 0) doc.Delete(old);
 var doors = new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Doors).WhereElementIsNotElementType().Cast<FamilyInstance>()
     .Where(d => d.FromRoom?.Id == room.Id || d.ToRoom?.Id == room.Id).Select(d => ((LocationPoint)d.Location).Point).ToList();
 var rb = room.get_BoundingBox(null);
+var skip = new HashSet<long> { (long)BuiltInCategory.OST_Doors, (long)BuiltInCategory.OST_Windows, (long)BuiltInCategory.OST_LightingFixtures };
 var obstacles = new FilteredElementCollector(doc).WhereElementIsNotElementType()
     .WherePasses(new BoundingBoxIntersectsFilter(new Outline(new XYZ(rb.Min.X, rb.Min.Y, z), new XYZ(rb.Max.X, rb.Max.Y, z + ctx.Mm(1800)))))
-    .Where(e => e.Category != null && e.Category.CategoryType == CategoryType.Model
-                && e.Category.Id.Value != (long)BuiltInCategory.OST_Rooms && e.Category.Id.Value != (long)BuiltInCategory.OST_Walls
-                && e.Category.Id.Value != (long)BuiltInCategory.OST_Floors && e.Category.Id.Value != (long)BuiltInCategory.OST_Ceilings
-                && e.Category.Id.Value != (long)BuiltInCategory.OST_Doors && e.Category.Id.Value != (long)BuiltInCategory.OST_Windows
-                && e.Category.Id.Value != (long)BuiltInCategory.OST_LightingFixtures && !(e is FamilyInstance fi && fi.SuperComponent != null))
-    .Select(e => e.get_BoundingBox(null)).Where(b => b != null && b.Min.Z < z + ctx.Mm(1800) && b.Max.Z > z)
-    .Where(b => In((b.Min.X + b.Max.X) / 2, (b.Min.Y + b.Max.Y) / 2) || In(b.Min.X, b.Min.Y) || In(b.Max.X, b.Max.Y))
+    .Where(e => e.Category != null && !skip.Contains(e.Category.Id.Value)
+                && ((e is FamilyInstance fi && fi.SuperComponent == null && !(e is Panel) && !(e is Mullion))
+                    || e is Autodesk.Revit.DB.Architecture.Railing || e is Autodesk.Revit.DB.Architecture.Stairs))
+    .Select(e => e.get_BoundingBox(null))
+    .Where(b => b != null && b.Min.Z < z + ctx.Mm(1800) && b.Max.Z > z && b.Max.X - b.Min.X < ctx.Mm(10000) && b.Max.Y - b.Min.Y < ctx.Mm(10000))
+    .Where(b => In((b.Min.X + b.Max.X) / 2, (b.Min.Y + b.Max.Y) / 2))
     .ToList();
 
 // 3. Find pod positions: 2 desks wide, back to back, chairs on both sides.
