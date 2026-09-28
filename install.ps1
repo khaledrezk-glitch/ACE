@@ -93,11 +93,33 @@ else { Warn "Revit $RevitYear was not found at $revitExe. Continuing; the add-in
 # ------------------------------------------------------------------------------------------------
 if (-not $SkipAddin -and -not $Prebuilt) {
 Step "Checking .NET 8 SDK (used to build the add-in)"
-$hasSdk = $false
-if (Has dotnet) { $hasSdk = [bool]((Invoke-Quiet { dotnet --list-sdks }) -match '^(8|9|10)\.') }
-if (-not $hasSdk) { Winget-Install 'Microsoft.DotNet.SDK.8' '.NET 8 SDK' }
-if (-not (Has dotnet) -or -not ((Invoke-Quiet { dotnet --list-sdks }) -match '^(8|9|10)\.')) { throw ".NET 8 SDK is still not available. Install it from https://dotnet.microsoft.com/download/dotnet/8.0 and re-run." }
-Ok ".NET SDK $((& dotnet --version).Trim())"
+# Find a dotnet.exe that really has an SDK 8+. "dotnet" on PATH can be an older or x86 host without
+# SDKs (or PATH is stale right after winget installs the SDK), so check every standard location.
+function Find-DotnetSdk {
+    $candidates = @()
+    $candidates += @(Get-Command dotnet -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+    if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles 'dotnet\dotnet.exe') }
+    if ($env:LOCALAPPDATA) { $candidates += (Join-Path $env:LOCALAPPDATA 'Microsoft\dotnet\dotnet.exe') }
+    if ($env:USERPROFILE)  { $candidates += (Join-Path $env:USERPROFILE '.dotnet\dotnet.exe') }
+    foreach ($exe in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
+        if (-not (Test-Path $exe)) { continue }
+        $sdks = Invoke-Quiet { & $exe --list-sdks }
+        if ($sdks -match '^(8|9|10)\.') { return $exe }
+    }
+    return $null
+}
+$Dotnet = Find-DotnetSdk
+if (-not $Dotnet) {
+    Winget-Install 'Microsoft.DotNet.SDK.8' '.NET 8 SDK'
+    $Dotnet = Find-DotnetSdk
+}
+if (-not $Dotnet) {
+    $seen = @(Get-Command dotnet -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source }) -join ', '
+    throw ".NET 8 SDK is still not available (dotnet found at: $(if ($seen) { $seen } else { 'none' })). Close this window, open a NEW PowerShell and re-run; or install it from https://dotnet.microsoft.com/download/dotnet/8.0; or use the prebuilt team package, which needs no SDK."
+}
+# Make sure child processes (MSBuild) use the same SDK host.
+$env:Path = (Split-Path $Dotnet) + ';' + $env:Path
+Ok ".NET SDK $((& $Dotnet --version).Trim()) at $Dotnet"
 
 }
 
@@ -120,9 +142,9 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 if ($Prebuilt) {
     Copy-Item (Join-Path $Root 'bin\addin\*') -Destination $InstallDir -Recurse -Force
 } else {
-    & dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp\AceRevitMcp.csproj') -c Release -o $InstallDir --nologo -v quiet
+    & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp\AceRevitMcp.csproj') -c Release -o $InstallDir --nologo -v quiet
     if ($LASTEXITCODE -ne 0) { throw "Building the add-in failed (see errors above)." }
-    & dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Compiler\AceRevitMcp.Compiler.csproj') -c Release -o (Join-Path $InstallDir 'Compiler') --nologo -v quiet
+    & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Compiler\AceRevitMcp.Compiler.csproj') -c Release -o (Join-Path $InstallDir 'Compiler') --nologo -v quiet
     if ($LASTEXITCODE -ne 0) { throw "Building the script compiler failed (see errors above)." }
 }
 Get-ChildItem $InstallDir -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
