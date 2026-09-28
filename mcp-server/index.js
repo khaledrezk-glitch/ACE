@@ -63,6 +63,13 @@ tool("get_model_overview", {
   annotations: readOnly,
 }, async () => text(await callRevit("get_document_info", {}, 120)));
 
+tool("model_dashboard", {
+  title: "Model insights dashboard",
+  description: "Read-only health check of the open model: a 0-100 health score with every audit finding (warnings, imported CAD, in-place families, rooms not enclosed or without doors, narrow doors, duplicate marks, views not on sheets, view templates, parameter completeness, sheet title block data, project information), warnings by type, per-level statistics, Claude's activity and the status of every ACE tool. Saves an ACE-branded HTML report (path in htmlReport) in Documents\\ACE Insights. show: true also opens the dashboard inside Revit. Use for 'how healthy is this model', 'dashboard', 'status report', 'audit'.",
+  inputSchema: { show: z.boolean().optional().describe("Also open the dashboard window in Revit") },
+  annotations: readOnly,
+}, async (a) => text(await callRevit("get_model_insights", a, 600)));
+
 tool("get_selection", {
   title: "Current selection",
   description: "Elements the user has selected in Revit. Use when they say 'these', 'the selected ...'.",

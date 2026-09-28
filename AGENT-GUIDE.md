@@ -25,7 +25,7 @@ parameters you use, title blocks, view templates), the better Claude's defaults 
 
 | Area | Tools |
 |---|---|
-| Understand | `revit_status`, `get_model_overview`, `get_selection`, `find_elements`, `get_element_details`, `describe_category` (real parameters, % filled), `list_types` (loaded families/types), `list_views`, `view_image` (sees views) |
+| Understand | `revit_status`, `get_model_overview`, `model_dashboard` (health score, findings, HTML report), `get_selection`, `find_elements`, `get_element_details`, `describe_category` (real parameters, % filled), `list_types` (loaded families/types), `list_views`, `view_image` (sees views) |
 | Knowledge | `revit_api_lookup` (the real Revit API on this PC: signatures, overloads, enums), `revit_guide` (expert guides: planning, performance, transactions, geometry, families, views and sheets, parameters and units, MEP and structure, links and worksharing) |
 | Change (gated) | `execute_revit_code` (full Revit API in C#), `set_parameters`, `run_saved_script`, `select_elements` |
 | Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |

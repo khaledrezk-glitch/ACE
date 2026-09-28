@@ -79,6 +79,13 @@ doing it"). It does that by default for anything large.
 previewed changes, a live activity feed, results you can click to select and zoom, and your current selection
 and view with one-click prompts to paste into Claude. No extra cost: it has no AI of its own.
 
+### Insights dashboard
+
+**ACE tab → Insights → Dashboard** (or ask Claude "show me the model dashboard") gives a read-only health score
+out of 100 with every finding, warnings, parameter completeness, statistics by level, submission readiness, Claude's
+activity and the status of every ACE tool. It opens inside Revit (click a finding to select its elements) and is
+saved as an HTML report in `Documents\ACE Insights`, ready to share.
+
 ### Coming to the ACE ribbon
 
 The ACE tab already shows the planned tools (Audit, Inspect, Data, Export, Coordination, Deliver, Compliance,
@@ -89,7 +96,7 @@ can already do today. **ACE tab → Roadmap** shows the whole plan. Details: [RO
 
 | Area | Tools |
 |---|---|
-| Understand | `revit_status`, `get_model_overview`, `get_selection`, `find_elements`, `get_element_details`, `describe_category`, `list_types`, `list_views`, `view_image` |
+| Understand | `revit_status`, `get_model_overview`, `model_dashboard`, `get_selection`, `find_elements`, `get_element_details`, `describe_category`, `list_types`, `list_views`, `view_image` |
 | Knowledge | `revit_api_lookup` (the real Revit API on the PC), `revit_guide` (9 expert guides) |
 | Change (gated by preview + confirmation) | **`execute_revit_code`**, `set_parameters`, `run_saved_script`, `select_elements` |
 | Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |

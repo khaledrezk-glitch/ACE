@@ -93,6 +93,17 @@ namespace AceRevitMcp
 
             foreach (var f in Ribbon.Roadmap.Features.Where(x => x.Panel == claudePanel.Name)) claudePanel.AddItem(Data(f));
 
+            // Live: the Insights dashboard (model health, QA, submission readiness, Claude activity, tool status).
+            var insights = application.CreateRibbonPanel(tab, "Insights");
+            var dashboard = new PushButtonData("AceDashboard", "Dashboard", path, typeof(Dashboard.DashboardCommand).FullName)
+            {
+                ToolTip = "Model insights: health score, audit findings, warnings, rooms and doors QA, parameters, submission readiness, Claude activity and the status of every ACE tool.",
+                LongDescription = "Read-only. Shown inside Revit and saved as an HTML report in Documents\\ACE Insights, ready to share.",
+            };
+            try { dashboard.LargeImage = Icons.Line(32, Ribbon.Glyphs.Dashboard, planned: false); dashboard.Image = Icons.Line(16, Ribbon.Glyphs.Dashboard, planned: false); }
+            catch (Exception ex) { Log.Warn($"Icon dashboard: {ex.Message}"); }
+            insights.AddItem(dashboard);
+
             foreach (var name in Ribbon.Roadmap.Panels)
             {
                 var panel = application.CreateRibbonPanel(tab, name);

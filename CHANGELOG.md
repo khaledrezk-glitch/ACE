@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.0
+- **Insights dashboard** (ACE tab → Insights → Dashboard, or ask Claude: new `model_dashboard` tool). Read-only:
+  - a **health score (0–100)** with a trend per model, from 15 audit checks: warnings, imported CAD, in-place families,
+    unloaded links, unplaced / not enclosed rooms, rooms without doors, narrow doors, duplicate marks, views not on
+    sheets, views without templates, empty sheets, key parameters, sheet title block data, project information;
+  - key figures, most frequent warnings, parameter completeness, statistics by level, submission readiness,
+    Claude's activity over 7 days, and the **status of every ACE tool** (live, or planned with its phase: clash
+    detection and code compliance show "no results yet");
+  - shown **inside Revit** (with Refresh, *Select in Revit* for each finding, Open in browser) and saved as a
+    self-contained ACE-branded **HTML report** in `Documents\ACE Insights\<model>\`, ready to share.
+
 ## 1.4.0
 - **The ACE ribbon shows the roadmap:** panels Audit, Inspect, Data, Export, Coordination, Deliver, Compliance,
   Team Tools and Admin, plus *Undo Claude Change* next to Companion: 25 planned tools as real buttons. Each opens an

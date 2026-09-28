@@ -59,6 +59,22 @@ Click **ACE tab → Companion** to show or hide it (it docks on the right). It w
 | **Results** | Elements from Claude's latest answer. **Click one to select and zoom to it**, or *Select all*. |
 | **Context & prompts** | Your current model, view and selection. *Copy this context for Claude*, plus one-click prompts such as "Explain my selection" and "Model QA check": click, then paste into Claude (Ctrl+V). |
 
+### The Insights dashboard
+
+Click **ACE tab → Insights → Dashboard** (read-only, takes a few seconds on large models). You get:
+- a **health score out of 100** and its trend, with every finding ranked by its impact on the score;
+- the most frequent warnings, key parameters filled, statistics by level, submission readiness
+  (project information and sheet title block data), and Claude's activity this week;
+- the **status of every ACE tool**, including the planned ones (clash detection, code compliance).
+
+In the window: **Refresh** after you fix things, choose a finding and click **Select in Revit** to select and
+zoom to its elements, **Open in browser** to view or print it. Every run is saved as an HTML file in
+`Documents\ACE Insights\<model name>\`: send it to your team lead or attach it to a submission. You can also
+ask Claude: *"Show me the model dashboard and explain the top issues."*
+
+The ribbon also shows the **planned tools** (buttons with a hollow red ring). Click one to see what it will do,
+or **ACE tab → Roadmap** for the whole plan.
+
 ## 4. What Claude does before changing anything (your safety)
 
 Every change goes through five steps. Two of the protections are enforced by the software itself,

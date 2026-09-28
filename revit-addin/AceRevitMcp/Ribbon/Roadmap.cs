@@ -47,7 +47,7 @@ namespace AceRevitMcp.Ribbon
                     "Checks naming (views, sheets, levels, families) and required parameters against the ACE standard.",
                     "Keeps the score per model over time, so progress is visible.",
                     "HTML, Excel and Markdown reports; click a finding to select and zoom to the elements." },
-                TodayWithClaude = "Claude runs the built-in audit_model script and explains the results.",
+                TodayWithClaude = "A first version is live: ACE tab > Insights > Dashboard shows a health score with every finding. Claude can also explain it and help fix the issues.",
                 Prompt = "Audit this Revit model: give me an overview, the main problems ranked by importance, and what to fix first." },
             new Feature { Key = "warnings", Panel = "Audit", Label = "Warning Solver", Large = false, Phase = 2, Glyph = Glyphs.Warning,
                 Summary = "Groups the model's warnings and fixes the ones that can be fixed safely.",
@@ -184,6 +184,7 @@ namespace AceRevitMcp.Ribbon
         public const string User = "M8,8 A4,4 0 1 0 16,8 A4,4 0 1 0 8,8 M4,21 A8,7 0 0 1 20,21";
         public const string Chart = "M3,21 H21 M7,21 V12 M12,21 V5 M17,21 V15";
         public const string Shield = "M12,2 L20,5 V11 C20,16 16.5,20 12,22 C7.5,20 4,16 4,11 V5 Z M9,12 L11,14 L15,10";
+        public const string Dashboard = "M3,3 H10 V12 H3 Z M14,3 H21 V8 H14 Z M14,12 H21 V21 H14 Z M3,16 H10 V21 H3 Z";
         public const string Map = "M3,6 L9,3 L15,6 L21,3 V18 L15,21 L9,18 L3,21 Z M9,3 V18 M15,6 V21";
     }
 }

@@ -32,6 +32,8 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
       case "set_parameters":
         return reply({ ok: true, result: { applied: args.changes.length, failed: 0, dryRun: !!args.dry_run, results: [] } });
+      case "get_model_insights":
+        return reply({ ok: true, result: { model: "Test", score: 81, grade: "Fair", checks: [{ check: "Revit warnings", status: "warn" }], htmlReport: "C:/Users/x/Documents/ACE Insights/Test/Test - Insights.html", shown: !!args.show } });
       case "backup_model":
         return reply({ ok: true, result: { backup: "C:/backups/model.rvt", savedBeforeBackup: false } });
       case "undo_last_claude_change":
@@ -56,7 +58,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["backup_model", "check_setup", "describe_category", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_overview", "get_selection", "list_saved_scripts", "list_types", "list_views", "read_saved_script", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_saved_script", "save_script", "select_elements", "set_parameters", "undo_last_claude_change", "view_image"]);
+assert.deepEqual(tools, ["backup_model", "check_setup", "describe_category", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_overview", "get_selection", "list_saved_scripts", "list_types", "list_views", "model_dashboard", "read_saved_script", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_saved_script", "save_script", "select_elements", "set_parameters", "undo_last_claude_change", "view_image"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -73,6 +75,9 @@ assert.equal(json(await call("describe_category", { category: "Doors" })).comman
 assert.equal(json(await call("list_types", { category: "Doors" })).command, "list_types");
 
 assert.equal(json(await call("revit_status")).activeDocument, "Test.rvt");
+const dash = json(await call("model_dashboard", { show: true }));
+assert.equal(dash.score, 81);
+assert.equal(dash.shown, true);
 assert.equal(json(await call("find_elements", { categories: ["Walls"], limit: 5 })).command, "query_elements");
 
 const img = await call("view_image", {});
