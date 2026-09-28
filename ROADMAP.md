@@ -150,6 +150,32 @@ run as one guided workflow:
 
 ---
 
+## Deferred: an in-Revit Claude chat panel (like Claude in Excel)
+
+A dockable chat panel inside Revit running its own Claude agent: streamed answers, visible tool steps,
+**Apply/Cancel buttons for previews**, clickable element results, view images inline, and the current
+selection and view added automatically.
+
+**Why it's deferred:** a custom add-in must reach Claude through a **paid API account**: an Anthropic API
+key, or Claude on AWS Bedrock, Google Vertex AI or Microsoft Foundry. The Claude.ai login used by Claude in
+Excel is only for Anthropic's own add-ins. ACE chose no extra cost for now, so Claude Desktop remains the
+chat, and it's covered by the existing Claude plans.
+
+**When ACE decides to go ahead:**
+- Chat panel: a WebView2 panel docked in Revit.
+- Engine: a local agent host (Node + the Anthropic TypeScript SDK) that reuses the existing ACE tools, safety gate and journal.
+- Credentials: an admin-provided key or cloud credentials delivered through the Phase 1 policy.
+- Model: default Claude Opus 5, with per-team model and effort settings.
+- Spending: per-user usage and cost limits.
+
+**No-cost alternative, possible now:** an **ACE Companion panel** in Revit that works *alongside* Claude
+Desktop, with no AI of its own:
+- a live feed of what Claude is doing;
+- Apply/Cancel for previews right in Revit;
+- click-to-select results;
+- the current selection and view context;
+- one-click ready-made prompts to paste into Claude.
+
 ## Suggested order and rough size
 
 | Phase | Why this order | Size |
