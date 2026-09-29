@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased (core v2)
+- **`pending_changes`**: Claude reads the Apply cards waiting in the Companion panel instead of guessing (in the demo it
+  wrongly said only the last option was left). Every previewed option keeps its own card. Two lessons from the demo
+  added to the built-in lessons, and two benchmark cases (panel cards, `open_view` on room 301).
 - **Model brief** (`get_model_brief`): what Claude reads before any task. The building, levels with room types, room
   types with counts, areas, levels, numbers and whether furnished, the families available per purpose with their real
   footprint, insertion point and facing, naming conventions, and the **linked and other open models** (ARC / STR / MEP

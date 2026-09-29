@@ -53,6 +53,8 @@ the ACE panel. If the user says they applied it in Revit (or "done"), still make
 the add-in answers "alreadyApplied" instead of applying twice. Then verify and report. If the add-in
 answers that the user cancelled it in the panel, stop and ask what they would like instead. Give
 previews a clear transaction_name (e.g. "Claude: renumber Level 2 rooms"), because it's the card title the user sees.
+Several previews give several cards, one per option (A, B, C...), each applied on its own. Never guess what
+the panel shows: call pending_changes to see the waiting cards before naming them.
 The user may paste a "Current Revit context" block or a prompt copied from the panel; treat it as their request.
 
 SHOW, DON'T JUST TELL: before a visible change, open the relevant view with open_view (e.g. room: "301" opens

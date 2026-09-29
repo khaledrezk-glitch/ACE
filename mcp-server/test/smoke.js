@@ -33,6 +33,7 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
       case "set_parameters":
         return reply({ ok: true, result: { applied: args.changes.length, failed: 0, dryRun: !!args.dry_run, results: [] } });
+      case "pending_changes": return reply({ ok: true, result: { waiting: [{ card: 1, title: "Claude: Test fit (301, 10 m2)" }, { card: 2, title: "Claude: Test fit (301, 8 m2)" }], recentlyDecided: [] } });
       case "model_brief":
         return reply({ ok: true, result: { model: { title: "Test", project: "Tower (P-01)", discipline: "ARC" }, rooms: [{ type: "Office Unit", count: 3 }], otherModels: [{ relation: "link", discipline: "STR", alignment: { verdict: "aligned" } }] } });
       case "describe_family":
@@ -67,7 +68,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["backup_model", "check_setup", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image"]);
+assert.deepEqual(tools, ["backup_model", "check_setup", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "pending_changes", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -228,6 +229,8 @@ const lr = (await call("learning_report", { days: 7 })).content[0].text;
 assert.match(lr, /First-time right/);
 assert.match(lr, /Repeated API mistakes/, "the failed compile in this test run shows up");
 assert.match(lr, /Saved: /);
+const pc = (await call("pending_changes")).content[0].text;
+assert.match(pc, /8 m2/, "the panel's waiting cards reach Claude");
 bridge.close();
 const down = await call("revit_status");
 assert.equal(down.isError, true);

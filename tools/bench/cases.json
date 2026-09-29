@@ -221,6 +221,43 @@
           "value": 4
         }
       ]
+    },
+    {
+      "name": "Companion panel cards are readable",
+      "command": "pending_changes",
+      "args": {},
+      "maxMs": 5000,
+      "expect": [
+        {
+          "path": "waiting",
+          "op": "exists"
+        },
+        {
+          "path": "note",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "open_view opens the room's plan",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "open_view",
+      "args": {
+        "room": "301"
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "viewType",
+          "op": "==",
+          "value": "FloorPlan"
+        },
+        {
+          "path": "selected",
+          "op": ">=",
+          "value": 1
+        }
+      ]
     }
   ]
 }

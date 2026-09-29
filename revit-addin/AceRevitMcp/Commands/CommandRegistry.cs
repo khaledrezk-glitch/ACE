@@ -37,6 +37,7 @@ namespace AceRevitMcp.Commands
                 ["run_clash_test"] = Coordination.ClashCommands.Run,
                 ["set_clash_status"] = Coordination.ClashCommands.SetStatus,
                 ["coordination_sources"] = Coordination.ClashCommands.Sources,
+                ["pending_changes"] = Companion.ActivityHub.PendingCommand,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

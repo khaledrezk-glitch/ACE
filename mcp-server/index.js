@@ -276,6 +276,13 @@ tool("open_view", {
   annotations: benign,
 }, async (a) => text(await callRevit("open_view", a, 60)));
 
+tool("pending_changes", {
+  title: "What is waiting in the Companion panel",
+  description: "List the Apply cards the user sees in ACE > Companion > Approvals (each previewed change, newest first, with its inputs and age) and the ones recently applied or cancelled. Call this before telling the user which options they can apply; never guess what the panel shows.",
+  inputSchema: {},
+  annotations: readOnly,
+}, async () => text(await callRevit("pending_changes", {}, 30)));
+
 tool("view_image", {
   title: "Look at a view",
   description: "Export a view (default: active view) as a PNG and return it so you can SEE the model: verify edits, check layouts, understand a plan.",

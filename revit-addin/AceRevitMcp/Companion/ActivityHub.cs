@@ -257,6 +257,33 @@ namespace AceRevitMcp.Companion
             Raise();
         }
 
+        /// <summary>Bridge command "pending_changes": what the Companion panel shows right now (so Claude never guesses).</summary>
+        public static JsonNode PendingCommand(Autodesk.Revit.UI.UIApplication app, JsonObject args)
+        {
+            JsonObject Row(PendingChange p, int n) => new JsonObject
+            {
+                ["card"] = n,
+                ["title"] = p.Title,
+                ["summary"] = p.Summary,
+                ["state"] = p.State.ToString(),
+                ["previewedMinutesAgo"] = Math.Round((DateTime.Now - p.PreviewedAt).TotalMinutes, 1),
+                ["expiresInMinutes"] = Math.Max(0, Math.Round((PendingLifetime - (DateTime.Now - p.PreviewedAt)).TotalMinutes)),
+                ["inputs"] = p.Args?["inputs"]?.DeepClone(),
+                ["pictures"] = p.Images.Count,
+                ["outcome"] = p.Outcome,
+            };
+            var waiting = Waiting.ToList();
+            var decided = Pending.Where(p => p.State != PendingState.Waiting && p.DecidedAt.HasValue).Take(10).ToList();
+            return new JsonObject
+            {
+                ["waiting"] = new JsonArray(waiting.Select((p, i) => (JsonNode)Row(p, i + 1)).ToArray()),
+                ["recentlyDecided"] = new JsonArray(decided.Select((p, i) => (JsonNode)Row(p, 0)).ToArray()),
+                ["note"] = waiting.Count == 0
+                    ? "No cards are waiting in ACE > Companion > Approvals."
+                    : $"{waiting.Count} card(s) wait in ACE > Companion > Approvals, newest first. Each one applies independently (one undo step each).",
+            };
+        }
+
         // ---- Context ---------------------------------------------------------------------------------
 
         public static void UpdateContext(RevitContext context)
