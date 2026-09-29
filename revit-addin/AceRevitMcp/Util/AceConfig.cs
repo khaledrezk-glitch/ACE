@@ -16,6 +16,8 @@ namespace AceRevitMcp.Util
 
         public int Port { get; private set; } = DefaultPort;
         public string Token { get; private set; }
+        /// <summary>Take change-tracker snapshots automatically (on open, and after saves/syncs). Default on.</summary>
+        public bool AutoSnapshots { get; private set; } = true;
 
         public static string Directory =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ACE-RevitMCP");
@@ -48,6 +50,8 @@ namespace AceRevitMcp.Util
                 json["token"] = config.Token;
                 changed = true;
             }
+
+            if (json["autoSnapshots"] is JsonValue a && a.TryGetValue<bool>(out var auto)) config.AutoSnapshots = auto;
 
             if (changed)
                 File.WriteAllText(FilePath, json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));

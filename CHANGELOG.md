@@ -9,7 +9,13 @@
 - **Lessons** (`remember_lesson`, `recall_lessons`, `forget_lesson`): Claude saves facts, techniques, mistakes and
   preferences (model, project or ACE-wide; personal or shared with the team) and gets them back in every brief.
   Reviewed lessons ship with the package (`mcp-server/lessons/built-in.jsonl`), seeded with what the Snowdon tests taught.
-- Instructions: brief first; keep learning as part of every task.
+- **Change tracker** (ACE tab → Insights → *Change Tracker*, or `model_changes`): compares the model **and its linked
+  models** with an earlier snapshot: added, deleted, moved (distance, rotation, level), retyped and changed elements
+  (Mark, Comments, workset, phase), by category and, in workshared models, by person. Snapshots are taken automatically
+  when a model is opened (once a day) and after saves or syncs (at most every 2 hours), or by name with `snapshot_model`
+  (e.g. "Stage 3 issue"). Report in Revit (select added / moved / changed elements) and as HTML.
+- The dashboard window is now a shared ACE report window (also used by the change tracker).
+- Instructions: brief first; keep learning as part of every task; change tracking and linked models.
 
 ## 1.6.0
 - **Preview pictures:** a preview (`dry_run`) with `preview_image: true` also returns a plan and a 3D picture of the

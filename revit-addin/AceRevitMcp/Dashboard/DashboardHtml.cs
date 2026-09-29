@@ -16,11 +16,12 @@ namespace AceRevitMcp.Dashboard
     /// </summary>
     internal static class DashboardHtml
     {
-        private static string Hex(System.Windows.Media.Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
-        private static string E(string s) => WebUtility.HtmlEncode(s ?? "");
-        private static string N(double v, string f = "N0") => v.ToString(f, CultureInfo.InvariantCulture);
+        internal static string Hex(System.Windows.Media.Color c) => $"#{c.R:X2}{c.G:X2}{c.B:X2}";
+        internal static string E(string s) => WebUtility.HtmlEncode(s ?? "");
+        internal static string N(double v, string f = "N0") => v.ToString(f, CultureInfo.InvariantCulture);
 
-        public static string Render(Insights x)
+        /// <summary>The ACE report shell: styles (IE-safe), logo | red rule | heading, meta line, company line.</summary>
+        internal static StringBuilder Begin(string title, string heading, string meta, string rightNote)
         {
             var red = Hex(Branding.Accent);
             var black = Hex(Branding.Primary);
@@ -30,7 +31,7 @@ namespace AceRevitMcp.Dashboard
             var sb = new StringBuilder();
             sb.Append("<!DOCTYPE html><html lang=\"en-GB\"><head><meta charset=\"utf-8\"><meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">");
             sb.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-            sb.Append($"<title>{E(x.Model)} | Model insights</title><style>");
+            sb.Append($"<title>{E(title)}</title><style>");
             sb.Append($@"
 body{{margin:0;background:#FFFFFF;color:{black};font-family:{font};font-size:13px;line-height:1.45}}
 .page{{max-width:1180px;margin:0 auto;padding:24px 28px 40px}}
@@ -71,8 +72,31 @@ table.list td{{border-bottom:1px solid #EDEDED;padding:7px 8px;vertical-align:to
             sb.Append("<div class=\"head\"><table><tr><td>");
             if (logo != null) sb.Append($"<img class=\"logo\" src=\"{logo}\" alt=\"{E(Branding.Name)}\"><span class=\"rule\"></span>");
             sb.Append("<span style=\"display:inline-block;vertical-align:middle\">");
-            sb.Append($"<h1>Model insights</h1><div class=\"meta\">{E(x.Model)} &nbsp;·&nbsp; {x.Time:d MMMM yyyy, HH:mm} &nbsp;·&nbsp; {E(x.User)}</div></span></td>");
-            sb.Append($"<td style=\"text-align:right;vertical-align:bottom\" class=\"meta\">{E(Branding.FullName)}<br>Read-only snapshot: nothing in the model was changed</td></tr></table></div>");
+            sb.Append($"<h1>{E(heading)}</h1><div class=\"meta\">{meta}</div></span></td>");
+            sb.Append($"<td style=\"text-align:right;vertical-align:bottom\" class=\"meta\">{E(Branding.FullName)}<br>{E(rightNote)}</td></tr></table></div>");
+
+            return sb;
+        }
+
+        /// <summary>Saves a report to Documents\ACE Insights\&lt;model&gt;\ and returns the path.</summary>
+        internal static string SaveAs(string model, string kind, DateTime time, string html)
+        {
+            var safe = string.Concat((model ?? "Model").Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ACE Insights", safe);
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"{safe} - {kind} {time:yyyy-MM-dd HHmm}.html");
+            File.WriteAllText(path, html, new UTF8Encoding(false));
+            return path;
+        }
+
+        public static string Render(Insights x)
+        {
+            var red = Hex(Branding.Accent);
+            var black = Hex(Branding.Primary);
+            var grey = Hex(Branding.GreyDark);
+            var light = Hex(Branding.GreyLight);
+            var sb = Begin($"{x.Model} | Model insights", "Model insights",
+                $"{E(x.Model)} &nbsp;·&nbsp; {x.Time:d MMMM yyyy, HH:mm} &nbsp;·&nbsp; {E(x.User)}", "Read-only snapshot: nothing in the model was changed");
 
             // ---- row 1: score | key figures | trend ----
             sb.Append("<table class=\"row\"><tr>");
@@ -236,14 +260,14 @@ table.list td{{border-bottom:1px solid #EDEDED;padding:7px 8px;vertical-align:to
         }
 
         /// <summary>Non-ASCII characters as numeric entities, so the file reads correctly in any viewer and encoding.</summary>
-        private static string Ascii(string html)
+        internal static string Ascii(string html)
         {
             var sb = new StringBuilder(html.Length + 256);
             foreach (var ch in html) { if (ch < 128) sb.Append(ch); else sb.Append("&#").Append((int)ch).Append(';'); }
             return sb.ToString();
         }
 
-        private static string Trim(string s, int max) => string.IsNullOrEmpty(s) || s.Length <= max ? s : s.Substring(0, max - 1) + "…";
+        internal static string Trim(string s, int max) => string.IsNullOrEmpty(s) || s.Length <= max ? s : s.Substring(0, max - 1) + "…";
 
         private static string LogoDataUri()
         {

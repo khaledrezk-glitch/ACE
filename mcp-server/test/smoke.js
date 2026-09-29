@@ -37,6 +37,8 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { model: { title: "Test", project: "Tower (P-01)", discipline: "ARC" }, rooms: [{ type: "Office Unit", count: 3 }], otherModels: [{ relation: "link", discipline: "STR", alignment: { verdict: "aligned" } }] } });
       case "describe_family":
         return reply({ ok: true, result: [{ name: "Chair-Breuer : Chair-Breuer", footprintMm: "560 x 600 x 800 (W x D x H, local)" }] });
+      case "model_changes":
+        return reply({ ok: true, result: { since: args.since || "last", models: [{ model: "Test", relation: "this model", added: 3, moved: 2 }, { model: "Test-STR", relation: "link", moved: 12 }] } });
       case "get_model_insights":
         return reply({ ok: true, result: { model: "Test", score: 81, grade: "Fair", checks: [{ check: "Revit warnings", status: "warn" }], htmlReport: "C:/Users/x/Documents/ACE Insights/Test/Test - Insights.html", shown: !!args.show } });
       case "backup_model":
@@ -63,7 +65,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["backup_model", "check_setup", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "list_saved_scripts", "list_types", "list_views", "model_dashboard", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_saved_script", "save_script", "select_elements", "set_parameters", "undo_last_claude_change", "view_image"]);
+assert.deepEqual(tools, ["backup_model", "check_setup", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_saved_script", "save_script", "select_elements", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -99,6 +101,10 @@ assert.ok(json(await call("recall_lessons", { query: "chair" })).length >= 2);
 json(await call("forget_lesson", { id: saved.id, reason: "test" }));
 assert.equal(json(await call("get_model_brief", { refresh: true })).lessons.filter((l) => l.source !== "built-in").length, 2);
 assert.match(json(await call("describe_family", { name: "Chair" }))[0].footprintMm, /560/);
+const ch = json(await call("model_changes", { since: "week" }));
+assert.equal(ch.since, "week");
+assert.equal(ch.models[1].relation, "link");
+assert.equal(json(await call("snapshot_model", { label: "Stage 3" })).command, "snapshot_model");
 const dash = json(await call("model_dashboard", { show: true }));
 assert.equal(dash.score, 81);
 assert.equal(dash.shown, true);

@@ -30,6 +30,9 @@ namespace AceRevitMcp.Commands
                 ["get_model_insights"] = Dashboard.DashboardCommands.Insights,
                 ["model_brief"] = BriefCommands.ModelBrief,
                 ["describe_family"] = BriefCommands.DescribeFamily,
+                ["snapshot_model"] = Tracking.ChangeTracking.SnapshotCommand,
+                ["list_snapshots"] = Tracking.ChangeTracking.ListCommand,
+                ["model_changes"] = Tracking.ChangeTracking.ChangesCommand,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

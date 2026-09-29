@@ -26,6 +26,7 @@ namespace AceRevitMcp
                 dispatcher.Initialize();
                 Dispatcher = dispatcher;
                 application.ControlledApplication.DocumentChanged += ChangeTracker.OnDocumentChanged;
+                Tracking.ChangeTracking.Attach(application.ControlledApplication);
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
                 Server.Start();
                 CreateRibbon(application);
@@ -103,6 +104,14 @@ namespace AceRevitMcp
             try { dashboard.LargeImage = Icons.Line(32, Ribbon.Glyphs.Dashboard, planned: false); dashboard.Image = Icons.Line(16, Ribbon.Glyphs.Dashboard, planned: false); }
             catch (Exception ex) { Log.Warn($"Icon dashboard: {ex.Message}"); }
             insights.AddItem(dashboard);
+            var changes = new PushButtonData("AceChangeTracker", "Change\nTracker", path, typeof(Tracking.ChangeTrackerCommand).FullName)
+            {
+                ToolTip = "What changed in this model and its linked models since the last snapshot: added, deleted, moved, retyped and changed elements, by category and by person.",
+                LongDescription = "Read-only. Snapshots are taken automatically when a model is opened and after saves or syncs. Report saved in Documents\\ACE Insights.",
+            };
+            try { changes.LargeImage = Icons.Line(32, Ribbon.Glyphs.History, planned: false); changes.Image = Icons.Line(16, Ribbon.Glyphs.History, planned: false); }
+            catch (Exception ex) { Log.Warn($"Icon change tracker: {ex.Message}"); }
+            insights.AddItem(changes);
 
             foreach (var name in Ribbon.Roadmap.Panels)
             {

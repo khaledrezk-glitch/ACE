@@ -129,6 +129,32 @@ tool("forget_lesson", {
   annotations: benign,
 }, async ({ id, reason }) => text(retireLesson(id, reason)));
 
+tool("model_changes", {
+  title: "What changed (change tracker)",
+  description: "Compare this model AND its loaded linked models with an earlier snapshot: added, deleted, moved (distance, rotation, level), retyped and changed elements (key values such as Mark and Comments), by category and, in workshared models, by person. since: \"last\" (default: the last snapshot, i.e. since the last check), \"today\", \"yesterday\", \"week\", \"month\" or a date (yyyy-MM-dd). Saves the current state as a new snapshot and an HTML report; show: true opens the Change tracker window in Revit. Use for 'what changed', 'what did the structure team change', coordination after a link update.",
+  inputSchema: {
+    since: z.string().optional(),
+    include_links: z.boolean().optional().describe("Default true"),
+    show: z.boolean().optional(),
+    save_snapshot: z.boolean().optional().describe("Default true: the current state becomes the new baseline"),
+  },
+  annotations: benign,
+}, async (a) => text(await callRevit("model_changes", a, 900)));
+
+tool("snapshot_model", {
+  title: "Take a change-tracker snapshot",
+  description: "Save the current state of this model and its loaded links as a named snapshot (e.g. before an issue, or 'Stage 3 submission'), to compare against later with model_changes. Snapshots are also taken automatically when a model is opened and after saves or syncs.",
+  inputSchema: { label: z.string().optional(), include_links: z.boolean().optional() },
+  annotations: benign,
+}, async (a) => text(await callRevit("snapshot_model", a, 900)));
+
+tool("list_snapshots", {
+  title: "List snapshots",
+  description: "The change-tracker snapshots available for this model and its links (newest first).",
+  inputSchema: {},
+  annotations: readOnly,
+}, async () => text(await callRevit("list_snapshots", {}, 60)));
+
 tool("model_dashboard", {
   title: "Model insights dashboard",
   description: "Read-only health check of the open model: a 0-100 health score with every audit finding (warnings, imported CAD, in-place families, rooms not enclosed or without doors, narrow doors, duplicate marks, views not on sheets, view templates, parameter completeness, sheet title block data, project information), warnings by type, per-level statistics, Claude's activity and the status of every ACE tool. Saves an ACE-branded HTML report (path in htmlReport) in Documents\\ACE Insights. show: true also opens the dashboard inside Revit. Use for 'how healthy is this model', 'dashboard', 'status report', 'audit'.",

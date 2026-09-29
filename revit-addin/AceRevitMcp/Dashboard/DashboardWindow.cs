@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System;
 using System.Diagnostics;
 using System.Linq;
@@ -29,8 +30,21 @@ namespace AceRevitMcp.Dashboard
             var x = ModelInsights.Collect(doc, app.Application.Username);
             var path = DashboardHtml.Save(x, DashboardHtml.Render(x));
             Last = x; LastPath = path;
-            if (Args.Bool(args, "show")) DashboardWindow.ShowOrRefresh(app.MainWindowHandle);
+            if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Model insights", "get_model_insights", State);
             return ModelInsights.ToJson(x, path);
+        }
+
+        private static ReportWindow.State State()
+        {
+            var x = Last;
+            if (x == null) return null;
+            return new ReportWindow.State
+            {
+                Path = LastPath,
+                Status = $"Score {x.Score}/100 ({x.Grade}), {x.Time:HH:mm}. Saved to Documents\\ACE Insights.",
+                Findings = x.Checks.Where(c => c.Status != "ok" && c.Ids.Count > 0).OrderByDescending(c => c.Penalty)
+                    .Select(c => ($"{c.Name} ({c.Count})", c.Ids.ToArray())).ToList(),
+            };
         }
     }
 
@@ -58,30 +72,45 @@ namespace AceRevitMcp.Dashboard
         }
     }
 
-    /// <summary>Shows the HTML dashboard inside Revit (modeless), with refresh, select-in-Revit and open-in-browser.</summary>
-    internal sealed class DashboardWindow : Window
+    /// <summary>
+    /// An ACE report shown inside Revit (modeless): the HTML report, Refresh (re-runs a bridge command),
+    /// a list of findings whose elements can be selected and zoomed to, Open in browser, and Show file.
+    /// One window per report kind.
+    /// </summary>
+    internal sealed class ReportWindow : Window
     {
-        private static DashboardWindow _open;
-        private readonly WebBrowser _browser = new WebBrowser();
-        private readonly ComboBox _checks = new ComboBox { MinWidth = 280, Margin = new Thickness(6, 0, 6, 0), VerticalContentAlignment = VerticalAlignment.Center };
-        private readonly TextBlock _status = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
-
-        public static void ShowOrRefresh(IntPtr owner)
+        internal sealed class State
         {
-            if (_open == null)
-            {
-                _open = new DashboardWindow();
-                new WindowInteropHelper(_open) { Owner = owner };
-                _open.Closed += (s, e) => _open = null;
-                _open.Show();
-            }
-            _open.Load();
-            _open.Activate();
+            public string Path;
+            public string Status;
+            public List<(string Label, long[] Ids)> Findings = new List<(string, long[])>();
         }
 
-        private DashboardWindow()
+        private static readonly Dictionary<string, ReportWindow> Open = new Dictionary<string, ReportWindow>();
+        private readonly WebBrowser _browser = new WebBrowser();
+        private readonly ComboBox _findings = new ComboBox { MinWidth = 300, Margin = new Thickness(6, 0, 6, 0), VerticalContentAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _status = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
+        private readonly Func<State> _state;
+        private string _path;
+
+        public static void ShowOrRefresh(IntPtr owner, string title, string refreshCommand, Func<State> state)
         {
-            Title = $"{Branding.Name} | Model insights";
+            if (!Open.TryGetValue(title, out var w))
+            {
+                w = new ReportWindow(title, refreshCommand, state);
+                new WindowInteropHelper(w) { Owner = owner };
+                w.Closed += (s, e) => Open.Remove(title);
+                Open[title] = w;
+                w.Show();
+            }
+            w.Load();
+            w.Activate();
+        }
+
+        private ReportWindow(string title, string refreshCommand, Func<State> state)
+        {
+            _state = state;
+            Title = $"{Branding.Name} | {title}";
             Width = 1240; Height = 860; MinWidth = 700; MinHeight = 400;
             WindowStartupLocation = WindowStartupLocation.CenterOwner;
             FontFamily = new FontFamily(Branding.FontFamily + ", Arial");
@@ -95,28 +124,25 @@ namespace AceRevitMcp.Dashboard
             var red = new SolidColorBrush(Branding.Accent);
             _status.Foreground = grey;
 
-            Button Btn(string text, bool primary)
+            Button Btn(string text, bool primary) => new Button
             {
-                return new Button
-                {
-                    Content = text, Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 6, 0),
-                    Background = primary ? red : Brushes.White, Foreground = primary ? Brushes.White : black,
-                    BorderBrush = primary ? red : grey, Cursor = System.Windows.Input.Cursors.Hand,
-                };
-            }
+                Content = text, Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 6, 0),
+                Background = primary ? red : Brushes.White, Foreground = primary ? Brushes.White : black,
+                BorderBrush = primary ? red : grey, Cursor = System.Windows.Input.Cursors.Hand,
+            };
 
             var refresh = Btn("Refresh", true);
             refresh.Click += async (s, e) =>
             {
                 refresh.IsEnabled = false; _status.Text = "Reading the model...";
-                try { await App.Dispatcher.EnqueueAsync("get_model_insights", new JsonObject(), TimeSpan.FromMinutes(5)); Load(); }
+                try { await App.Dispatcher.EnqueueAsync(refreshCommand, new JsonObject(), TimeSpan.FromMinutes(10)); Load(); }
                 catch (Exception ex) { _status.Text = "Could not refresh: " + ex.Message; }
                 finally { refresh.IsEnabled = true; }
             };
             var select = Btn("Select in Revit", false);
             select.Click += async (s, e) =>
             {
-                if (!(_checks.SelectedItem is ComboBoxItem item) || !(item.Tag is long[] ids) || ids.Length == 0) { _status.Text = "Choose a finding first."; return; }
+                if (!(_findings.SelectedItem is ComboBoxItem item) || !(item.Tag is long[] ids) || ids.Length == 0) { _status.Text = "Choose a finding first."; return; }
                 try
                 {
                     var r = await App.Dispatcher.EnqueueAsync("select_elements",
@@ -126,15 +152,15 @@ namespace AceRevitMcp.Dashboard
                 catch (Exception ex) { _status.Text = "Could not select: " + ex.Message; }
             };
             var browser = Btn("Open in browser", false);
-            browser.Click += (s, e) => Open(DashboardCommands.LastPath, select: false);
+            browser.Click += (s, e) => OpenFile(_path, select: false);
             var folder = Btn("Show file", false);
-            folder.Click += (s, e) => Open(DashboardCommands.LastPath, select: true);
+            folder.Click += (s, e) => OpenFile(_path, select: true);
 
             var bar = new DockPanel { Background = light, LastChildFill = true };
             var left = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 8, 12, 8) };
             left.Children.Add(refresh);
             left.Children.Add(new TextBlock { Text = "Finding:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), Foreground = black });
-            left.Children.Add(_checks);
+            left.Children.Add(_findings);
             left.Children.Add(select);
             left.Children.Add(browser);
             left.Children.Add(folder);
@@ -153,19 +179,19 @@ namespace AceRevitMcp.Dashboard
 
         private void Load()
         {
-            var x = DashboardCommands.Last;
-            var path = DashboardCommands.LastPath;
-            if (x == null || path == null) return;
-            try { _browser.Navigate(new Uri(path)); }
+            var st = _state();
+            if (st?.Path == null) return;
+            _path = st.Path;
+            try { _browser.Navigate(new Uri(st.Path)); }
             catch (Exception ex) { _status.Text = "Could not show the report: " + ex.Message; }
-            _checks.Items.Clear();
-            foreach (var c in x.Checks.Where(c => c.Status != "ok" && c.Ids.Count > 0).OrderByDescending(c => c.Penalty))
-                _checks.Items.Add(new ComboBoxItem { Content = $"{c.Name} ({c.Count})", Tag = c.Ids.ToArray() });
-            if (_checks.Items.Count > 0) _checks.SelectedIndex = 0;
-            _status.Text = $"Score {x.Score}/100 ({x.Grade}), {x.Time:HH:mm}. Saved to Documents\\ACE Insights.";
+            _findings.Items.Clear();
+            foreach (var (label, ids) in st.Findings.Where(f => f.Ids != null && f.Ids.Length > 0))
+                _findings.Items.Add(new ComboBoxItem { Content = label, Tag = ids });
+            if (_findings.Items.Count > 0) _findings.SelectedIndex = 0;
+            _status.Text = st.Status;
         }
 
-        private void Open(string path, bool select)
+        private void OpenFile(string path, bool select)
         {
             if (string.IsNullOrEmpty(path)) return;
             try
