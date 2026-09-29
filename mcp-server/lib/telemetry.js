@@ -19,7 +19,11 @@ export function summarize(tool, args, result, ms, error) {
   if (tool === "execute_revit_code" || tool === "run_saved_script") {
     entry.mode = args?.mode;
     entry.dryRun = !!args?.dry_run;
-    if (args?.code) entry.codeHash = codeHash(args.code);
+    if (args?.code) {
+      entry.codeHash = codeHash(args.code);
+      // A short, normalised head of the code so repeated patterns can be spotted (stays on this PC).
+      entry.codeHead = String(args.code).replace(/\s+/g, " ").trim().slice(0, 160);
+    }
     if (args?.name) entry.script = args.name;
     try {
       const r = JSON.parse(firstText);

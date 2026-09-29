@@ -65,7 +65,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["backup_model", "check_setup", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_saved_script", "save_script", "select_elements", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image"]);
+assert.deepEqual(tools, ["backup_model", "check_setup", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_saved_script", "save_script", "select_elements", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -219,6 +219,11 @@ assert.match(rep, /Copied to the team folder/);
 assert.ok(fs.readFileSync(path.join(tmp, "logs", "mcp-calls.jsonl"), "utf8").includes('"tool":"execute_revit_code"'));
 
 // Revit down -> friendly error, not a crash
+await call("execute_revit_code", { code: "boom", dry_run: true });   // a compile failure for the report
+const lr = (await call("learning_report", { days: 7 })).content[0].text;
+assert.match(lr, /First-time right/);
+assert.match(lr, /Repeated API mistakes/, "the failed compile in this test run shows up");
+assert.match(lr, /Saved: /);
 bridge.close();
 const down = await call("revit_status");
 assert.equal(down.isError, true);

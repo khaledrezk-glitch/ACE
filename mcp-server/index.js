@@ -17,6 +17,7 @@ import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
 import { buildReport, runChecks } from "./lib/diagnostics.js";
 import { lessonsFor, recordLesson, retireLesson } from "./lib/lessons.js";
+import { learningReport } from "./lib/learning.js";
 
 const INSTRUCTIONS = fs.readFileSync(path.join(ROOT, "instructions.md"), "utf8");
 
@@ -121,6 +122,16 @@ tool("recall_lessons", {
   inputSchema: { query: z.string().optional(), model: z.string().optional(), project: z.string().optional() },
   annotations: readOnly,
 }, async (a) => text(lessonsFor({ ...a, limit: 60 })));
+
+tool("learning_report", {
+  title: "Learning report",
+  description: "How well ACE is working and what to improve, from this PC's local call log and the lessons: first-time-right rate for code tasks and its trend, repeated API mistakes, code written again and again (candidates for saved scripts), failing scripts, slow calls, lessons learned, and concrete recommendations. Saves a Markdown report; share_with_team copies it to the team reports folder for the maintainers.",
+  inputSchema: { days: z.number().int().optional().describe("Default 30"), share_with_team: z.boolean().optional() },
+  annotations: benign,
+}, async (a) => {
+  const r = learningReport(a);
+  return { content: [{ type: "text", text: r.text + `\n\nSaved: ${r.file}${r.shared ? `\nShared: ${r.shared}` : ""}` }] };
+});
 
 tool("forget_lesson", {
   title: "Retire a lesson",

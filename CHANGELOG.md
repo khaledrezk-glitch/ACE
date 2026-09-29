@@ -14,6 +14,12 @@
   (Mark, Comments, workset, phase), by category and, in workshared models, by person. Snapshots are taken automatically
   when a model is opened (once a day) and after saves or syncs (at most every 2 hours), or by name with `snapshot_model`
   (e.g. "Stage 3 issue"). Report in Revit (select added / moved / changed elements) and as HTML.
+- **Learning report** (`learning_report`): first-time-right rate of code tasks and its trend, repeated API mistakes with
+  hints, code written again and again (recipe candidates), failing scripts, slow calls, lessons learned, and
+  recommendations; shareable with the team. `node lib/learning.js` for maintainers.
+- **Benchmark** (`tools/bench`): fixed tasks with expected results on the Snowdon sample (brief, family, test fits,
+  preview pictures, QA scripts, dashboard, change tracker), run through the bridge before each release.
+- CLAUDE.md: the learning loop (collect, review, improve, prove, release).
 - The dashboard window is now a shared ACE report window (also used by the change tracker).
 - Instructions: brief first; keep learning as part of every task; change tracking and linked models.
 

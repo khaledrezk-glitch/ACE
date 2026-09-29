@@ -33,6 +33,19 @@ them with `CodeRunner.BuildSource` and compile with `AceRevitMcp.Compiler.Script
 - Keep Add-in and MCP server versions in step (`AceRevitMcp.csproj` `<Version>` = `mcp-server/package.json` version);
   add a line to `CHANGELOG.md` for each release.
 
+## The learning loop (keep it running with every change)
+ACE is meant to get better continuously. Every release should pass through this loop:
+1. **Collect:** team members run `learning_report` (ask Claude, `share_with_team: true`) and share `issue-*.md` reports.
+   Claude saves lessons as it works (`remember_lesson`, team-shared ones land in the team `lessons` folder).
+2. **Review:** read the learning reports (first-time-right trend, repeated compile errors, recipe candidates, failing
+   scripts, slow calls) and the team lessons.
+3. **Improve:** fix guides/instructions for repeated API mistakes, add ScriptContext helpers, turn recipe candidates into
+   tested built-in scripts, and **promote good team lessons** into `mcp-server/lessons/built-in.jsonl` (reviewed wording,
+   stable `id`). Wrong or outdated built-in lessons are removed there.
+4. **Prove:** add or extend a case in `tools/bench/cases.json` for every fix or new capability, then run the benchmark with
+   the Snowdon sample open: `node tools/bench/run.mjs` (all cases must pass; history in `logs/bench-history.jsonl`).
+5. **Release:** bump the version, CHANGELOG, `build-package.ps1`.
+
 ## Working on a user report (`issue-*.md` / `improvement-*.md` from report_issue or doctor)
 1. Read "What happened", **Health checks** and **Recommendations** first. Setup problems (❌ rows) usually
    mean an installer or doctor improvement, not a code bug.
