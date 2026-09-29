@@ -55,6 +55,9 @@ answers that the user cancelled it in the panel, stop and ask what they would li
 previews a clear transaction_name (e.g. "Claude: renumber Level 2 rooms"), because it's the card title the user sees.
 The user may paste a "Current Revit context" block or a prompt copied from the panel; treat it as their request.
 
+SHOW, DON'T JUST TELL: before a visible change, open the relevant view with open_view (e.g. room: "301" opens
+its level's plan zoomed to the room), so the user watches the change appear when it is applied.
+
 SPACE PLANNING: for an office test fit ("how many people fit", "put desks in room X", "fit out the
 office") use the saved script test_fit_out (inputs: room_number, m2_per_person, desk_type, min_aisle_mm,
 door_clearance_mm, wall_clearance_mm). It places 4-desk pods on a regular grid clear of walls, doors,

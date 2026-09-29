@@ -269,6 +269,13 @@ tool("list_views", {
   annotations: readOnly,
 }, async (a) => text(await callRevit("list_views", a)));
 
+tool("open_view", {
+  title: "Open a view in Revit",
+  description: "Show the user something in Revit: open a view by name (optionally view_type, e.g. FloorPlan) and/or zoom to a room number or element ids (selected). room alone opens that room's level floor plan. Use it before and after a visible change so the user sees it happen.",
+  inputSchema: { name: z.string().optional(), view_type: z.string().optional(), room: z.string().optional(), ids: z.array(z.number().int()).optional() },
+  annotations: benign,
+}, async (a) => text(await callRevit("open_view", a, 60)));
+
 tool("view_image", {
   title: "Look at a view",
   description: "Export a view (default: active view) as a PNG and return it so you can SEE the model: verify edits, check layouts, understand a plan.",

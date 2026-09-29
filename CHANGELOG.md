@@ -25,6 +25,7 @@
   the ARC model's columns and load-bearing walls (sizes matched or new types made, levels mapped by name or height,
   existing ones skipped); `check_only` lists what is missing on each side.
 - `coordination_sources`: which models take part, with their disciplines.
+- `open_view`: opens a view and zooms to a room or elements directly (reliable even when Revit is not the focused window; found in the management demo), so users watch changes appear.
 - `tools/script-check`: compile-checks every script against the Revit 2025 API without Revit.
 - **Learning report** (`learning_report`): first-time-right rate of code tasks and its trend, repeated API mistakes with
   hints, code written again and again (recipe candidates), failing scripts, slow calls, lessons learned, and

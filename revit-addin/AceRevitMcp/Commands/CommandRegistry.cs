@@ -21,6 +21,7 @@ namespace AceRevitMcp.Commands
                 ["select_elements"] = EditCommands.SelectElements,
                 ["export_view_image"] = ViewCommands.ExportImage,
                 ["list_views"] = ViewCommands.ListViews,
+                ["open_view"] = ViewCommands.OpenView,
                 ["execute_code"] = CodeRunner.Run,
                 ["backup_model"] = BackupCommands.Backup,
                 ["undo_last_claude_change"] = UndoCommands.UndoLast,

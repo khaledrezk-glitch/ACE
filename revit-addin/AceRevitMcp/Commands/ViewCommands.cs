@@ -10,6 +10,46 @@ namespace AceRevitMcp.Commands
 {
     internal static class ViewCommands
     {
+        /// <summary>
+        /// Opens a view in Revit (by name, optionally of a type) and zooms to elements or a room number.
+        /// { name: "L3", view_type: "FloorPlan", room: "301", ids: [..] }
+        /// </summary>
+        public static JsonNode OpenView(UIApplication app, JsonObject args)
+        {
+            var uidoc = app.ActiveUIDocument ?? throw new CommandException("No document is open in Revit.");
+            var doc = uidoc.Document;
+            var name = Args.Str(args, "name");
+            var type = Args.Str(args, "view_type");
+            var room = Args.Str(args, "room");
+            var ids = Args.Ids(args, "ids");
+            if (room != null)
+            {
+                var r = new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Rooms).WhereElementIsNotElementType()
+                    .Cast<Autodesk.Revit.DB.Architecture.Room>().FirstOrDefault(x => x.Number == room && x.Area > 0)
+                    ?? throw new CommandException($"No placed room numbered {room}.");
+                ids.Add(r.Id);
+                if (name == null) name = doc.GetElement(r.LevelId)?.Name;
+                type ??= "FloorPlan";
+            }
+            View view = null;
+            if (name != null)
+            {
+                var views = new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>()
+                    .Where(v => !v.IsTemplate && v.CanBePrinted && (type == null || v.ViewType.ToString().Equals(type, StringComparison.OrdinalIgnoreCase))).ToList();
+                view = views.FirstOrDefault(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                       ?? views.FirstOrDefault(v => v.Name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
+                       ?? throw new CommandException($"No view named '{name}'{(type != null ? $" of type {type}" : "")}.");
+                // Setting ActiveView directly works from the bridge (outside any transaction) even when Revit's window is not focused.
+                if (uidoc.ActiveView.Id != view.Id) uidoc.ActiveView = view;
+            }
+            if (ids.Count > 0)
+            {
+                uidoc.Selection.SetElementIds(ids);
+                try { uidoc.ShowElements(ids); } catch { }
+            }
+            return new JsonObject { ["view"] = uidoc.ActiveView.Name, ["viewType"] = uidoc.ActiveView.ViewType.ToString(), ["selected"] = ids.Count };
+        }
+
         public static JsonNode ListViews(UIApplication app, JsonObject args)
         {
             var doc = Args.RequireDoc(app);
