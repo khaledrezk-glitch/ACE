@@ -29,7 +29,7 @@ Copy-Item (Join-Path $Root (Join-Path 'revit-addin' 'AceRevitMcp.addin.template'
 
 $mcp = Join-Path $stage 'mcp-server'
 New-Item -ItemType Directory -Force -Path $mcp | Out-Null
-foreach ($item in 'index.js', 'instructions.md', 'package.json', 'package-lock.json', 'lib', 'guides', 'scripts') {
+foreach ($item in 'index.js', 'instructions.md', 'package.json', 'package-lock.json', 'lib', 'guides', 'scripts', 'lessons') {
     Copy-Item (Join-Path (Join-Path $Root 'mcp-server') $item) -Destination $mcp -Recurse -Force
 }
 Push-Location $mcp

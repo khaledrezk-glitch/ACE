@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased (core v2)
+- **Model brief** (`get_model_brief`): what Claude reads before any task. The building, levels with room types, room
+  types with counts, areas, levels, numbers and whether furnished, the families available per purpose with their real
+  footprint, insertion point and facing, naming conventions, and the **linked and other open models** (ARC / STR / MEP
+  guess) with a level, grid and coordinate **alignment check** against this model.
+- **`describe_family`**: footprint, insertion point, placement type, host, type dimensions, nested families, sample facing.
+- **Lessons** (`remember_lesson`, `recall_lessons`, `forget_lesson`): Claude saves facts, techniques, mistakes and
+  preferences (model, project or ACE-wide; personal or shared with the team) and gets them back in every brief.
+  Reviewed lessons ship with the package (`mcp-server/lessons/built-in.jsonl`), seeded with what the Snowdon tests taught.
+- Instructions: brief first; keep learning as part of every task.
+
 ## 1.6.0
 - **Preview pictures:** a preview (`dry_run`) with `preview_image: true` also returns a plan and a 3D picture of the
   area that would change, with the changed elements in ACE Red. They are taken inside the dry run on temporary

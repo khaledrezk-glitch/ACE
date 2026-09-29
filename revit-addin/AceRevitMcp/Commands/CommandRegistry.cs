@@ -28,6 +28,8 @@ namespace AceRevitMcp.Commands
                 ["describe_category"] = InsightCommands.DescribeCategory,
                 ["list_types"] = InsightCommands.ListTypes,
                 ["get_model_insights"] = Dashboard.DashboardCommands.Insights,
+                ["model_brief"] = BriefCommands.ModelBrief,
+                ["describe_family"] = BriefCommands.DescribeFamily,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

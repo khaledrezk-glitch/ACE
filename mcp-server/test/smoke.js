@@ -33,6 +33,10 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
       case "set_parameters":
         return reply({ ok: true, result: { applied: args.changes.length, failed: 0, dryRun: !!args.dry_run, results: [] } });
+      case "model_brief":
+        return reply({ ok: true, result: { model: { title: "Test", project: "Tower (P-01)", discipline: "ARC" }, rooms: [{ type: "Office Unit", count: 3 }], otherModels: [{ relation: "link", discipline: "STR", alignment: { verdict: "aligned" } }] } });
+      case "describe_family":
+        return reply({ ok: true, result: [{ name: "Chair-Breuer : Chair-Breuer", footprintMm: "560 x 600 x 800 (W x D x H, local)" }] });
       case "get_model_insights":
         return reply({ ok: true, result: { model: "Test", score: 81, grade: "Fair", checks: [{ check: "Revit warnings", status: "warn" }], htmlReport: "C:/Users/x/Documents/ACE Insights/Test/Test - Insights.html", shown: !!args.show } });
       case "backup_model":
@@ -50,7 +54,7 @@ fs.writeFileSync(path.join(tmp, "config.json"), JSON.stringify({ port, token }))
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [path.join(path.dirname(new URL(import.meta.url).pathname), "..", "index.js")],
-  env: { ...process.env, ACE_REVIT_CONFIG: path.join(tmp, "config.json"), ACE_REVIT_URL: `http://127.0.0.1:${port}`, ACE_REVIT_SCRIPTS: path.join(tmp, "scripts"), ACE_REVIT_JOURNAL: path.join(tmp, "journal"), ACE_REVIT_LOGS: path.join(tmp, "logs"), ACE_REVIT_REPORTS: path.join(tmp, "reports"), ACE_TEAM_SCRIPTS: path.join(tmp, "team"), ACE_TEAM_REPORTS: path.join(tmp, "team-reports") },
+  env: { ...process.env, ACE_REVIT_CONFIG: path.join(tmp, "config.json"), ACE_REVIT_URL: `http://127.0.0.1:${port}`, ACE_REVIT_SCRIPTS: path.join(tmp, "scripts"), ACE_REVIT_JOURNAL: path.join(tmp, "journal"), ACE_REVIT_LOGS: path.join(tmp, "logs"), ACE_REVIT_REPORTS: path.join(tmp, "reports"), ACE_TEAM_SCRIPTS: path.join(tmp, "team"), ACE_TEAM_REPORTS: path.join(tmp, "team-reports"), ACE_REVIT_LESSONS: path.join(tmp, "lessons"), ACE_TEAM_LESSONS: path.join(tmp, "team-lessons") },
 });
 const client = new Client({ name: "smoke", version: "1.0.0" });
 await client.connect(transport);
@@ -59,7 +63,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["backup_model", "check_setup", "describe_category", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_overview", "get_selection", "list_saved_scripts", "list_types", "list_views", "model_dashboard", "read_saved_script", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_saved_script", "save_script", "select_elements", "set_parameters", "undo_last_claude_change", "view_image"]);
+assert.deepEqual(tools, ["backup_model", "check_setup", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "list_saved_scripts", "list_types", "list_views", "model_dashboard", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_saved_script", "save_script", "select_elements", "set_parameters", "undo_last_claude_change", "view_image"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -76,6 +80,25 @@ assert.equal(json(await call("describe_category", { category: "Doors" })).comman
 assert.equal(json(await call("list_types", { category: "Doors" })).command, "list_types");
 
 assert.equal(json(await call("revit_status")).activeDocument, "Test.rvt");
+// --- brief + lessons ---
+let brief = json(await call("get_model_brief"));
+assert.equal(brief.model.title, "Test");
+assert.ok(brief.lessons.every((l) => l.source === "built-in"), "only built-in lessons at first");
+const saved = json(await call("remember_lesson", { lesson: "The offices are rooms 301, 401 and 501 on L3 to L5.", model: "Test", share_with_team: true }));
+assert.equal(saved.sharedWithTeam, true);
+assert.match(json(await call("remember_lesson", { lesson: "The offices are rooms 301, 401 and 501 on L3 to L5.", model: "Test" })).note, /Already known/);
+json(await call("remember_lesson", { lesson: "Chair-Breuer faces +Y when unrotated.", kind: "howto", scope: "ace" }));
+json(await call("remember_lesson", { lesson: "Use 1.2 m aisles for Tower offices.", kind: "preference", scope: "project", project: "Tower" }));
+json(await call("remember_lesson", { lesson: "Something about another model entirely.", model: "Other" }));
+brief = json(await call("get_model_brief", { refresh: true }));
+const myLessons = brief.lessons.filter((l) => l.source !== "built-in");
+assert.equal(myLessons.length, 3, "model + project + ace lessons, not the other model's");
+assert.ok(brief.lessons.some((l) => l.source === "built-in" && /Chair-Breuer/.test(l.lesson)), "built-in ACE lessons are served too");
+assert.equal((await call("remember_lesson", { lesson: "x" })).isError, true);
+assert.ok(json(await call("recall_lessons", { query: "chair" })).length >= 2);
+json(await call("forget_lesson", { id: saved.id, reason: "test" }));
+assert.equal(json(await call("get_model_brief", { refresh: true })).lessons.filter((l) => l.source !== "built-in").length, 2);
+assert.match(json(await call("describe_family", { name: "Chair" }))[0].footprintMm, /560/);
 const dash = json(await call("model_dashboard", { show: true }));
 assert.equal(dash.score, 81);
 assert.equal(dash.shown, true);

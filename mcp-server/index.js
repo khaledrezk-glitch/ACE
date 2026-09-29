@@ -16,6 +16,7 @@ import { fingerprint, journal, outcomeOf, previews, requirePreview, screenCode }
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
 import { buildReport, runChecks } from "./lib/diagnostics.js";
+import { lessonsFor, recordLesson, retireLesson } from "./lib/lessons.js";
 
 const INSTRUCTIONS = fs.readFileSync(path.join(ROOT, "instructions.md"), "utf8");
 
@@ -58,10 +59,75 @@ tool("revit_status", {
 
 tool("get_model_overview", {
   title: "Model overview",
-  description: "Summary of the active model: title, path, display units, project info, active view, levels (with elevations), phases, element counts per category. Start every task here.",
+  description: "Summary of the active model: title, path, display units, project info, active view, levels (with elevations), phases, element counts per category. For understanding the building before a task, prefer get_model_brief.",
   inputSchema: {},
   annotations: readOnly,
 }, async () => text(await callRevit("get_document_info", {}, 120)));
+
+// The brief is cached per model for a few minutes (it reads the whole model and its links).
+const briefCache = new Map();
+
+tool("get_model_brief", {
+  title: "Model brief (read this before planning)",
+  description: "What you must know about the building before acting: the model and its discipline, levels with room types, room types with counts, areas, levels, numbers and whether they are furnished, the families available for each purpose (real footprint in mm, where the insertion point sits, facing), naming conventions, the linked and other open models (ARC/STR/MEP) and whether their levels and grids line up, and the LESSONS learned earlier about this model, project and ACE work. Call it at the start of any task that touches the model; it is cached for 10 minutes (refresh: true re-reads).",
+  inputSchema: {
+    refresh: z.boolean().optional(),
+    include_families: z.boolean().optional().describe("Default true"),
+  },
+  annotations: readOnly,
+}, async ({ refresh, include_families }) => {
+  const status = await callRevit("ping", {}, 20).catch(() => null);
+  const key = `${status?.activeDocument}|${include_families !== false}`;
+  const hit = briefCache.get(key);
+  let brief;
+  if (!refresh && hit && Date.now() - hit.at < 10 * 60_000) brief = hit.brief;
+  else {
+    brief = await callRevit("model_brief", { include_families: include_families !== false }, 300);
+    briefCache.set(key, { at: Date.now(), brief });
+  }
+  const project = String(brief?.model?.project || "").replace(/\s*\(.*\)$/, "");
+  const lessons = lessonsFor({ model: brief?.model?.title, project });
+  return text({
+    ...brief,
+    lessons: lessons.length ? lessons : "None yet. When you learn something non-obvious about this model or a technique that worked, save it with remember_lesson.",
+  });
+});
+
+tool("describe_family", {
+  title: "Describe a family",
+  description: "Everything needed to place a family correctly: footprint (W x D x H in its own coordinates), where the insertion point sits relative to the footprint centre, placement type and whether it needs a host, type dimensions, nested families, and a sample instance's facing and rotation. Use before placing furniture, fixtures or equipment.",
+  inputSchema: { name: z.string().describe("Family or type name, partial is fine") },
+  annotations: readOnly,
+}, async (a) => text(await callRevit("describe_family", a, 60)));
+
+tool("remember_lesson", {
+  title: "Remember a lesson",
+  description: "Save something you learned so you (and, if shared, the whole ACE team) get it automatically next time in get_model_brief. Use it when you discover a non-obvious fact about the model (where things are, how it is organised), a technique that worked, a mistake and its fix, or a user preference. One or two plain sentences; be specific (names, numbers). Don't save things that are obvious from the brief.",
+  inputSchema: {
+    lesson: z.string(),
+    kind: z.enum(["fact", "howto", "mistake", "preference"]).optional().describe("Default fact"),
+    scope: z.enum(["model", "project", "ace"]).optional().describe("model (default): this model only; project: all its models; ace: everywhere"),
+    model: z.string().optional().describe("Model title (from get_model_brief), for scope model"),
+    project: z.string().optional().describe("Project name or number, for scope project"),
+    tags: z.array(z.string()).optional(),
+    share_with_team: z.boolean().optional().describe("Also save to the team folder so colleagues benefit"),
+  },
+  annotations: benign,
+}, async (a) => text(recordLesson(a)));
+
+tool("recall_lessons", {
+  title: "Recall lessons",
+  description: "Search the lessons learned (personal and team) for a model, project or topic, e.g. before a kind of task you have done before.",
+  inputSchema: { query: z.string().optional(), model: z.string().optional(), project: z.string().optional() },
+  annotations: readOnly,
+}, async (a) => text(lessonsFor({ ...a, limit: 60 })));
+
+tool("forget_lesson", {
+  title: "Retire a lesson",
+  description: "Retire a lesson that turned out wrong or outdated (by id from the brief or recall_lessons). Say why.",
+  inputSchema: { id: z.string(), reason: z.string() },
+  annotations: benign,
+}, async ({ id, reason }) => text(retireLesson(id, reason)));
 
 tool("model_dashboard", {
   title: "Model insights dashboard",
