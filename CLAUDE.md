@@ -20,9 +20,13 @@ dotnet run --project tools/tracker-test                                   # chan
 cd mcp-server && npm ci && npm run check                                   # syntax + smoke test (fake Revit bridge)
 pwsh -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$e); $e"
 ```
-Scripts in `mcp-server/scripts/*.cs` and any API usage in `guides/*.md` should be compile-checked
-against the Revit 2025 reference assemblies (NuGet `Nice3point.Revit.Api.RevitAPI` 2025.0.2): wrap
-them with `CodeRunner.BuildSource` and compile with `AceRevitMcp.Compiler.ScriptCompiler.Compile`.
+Scripts in `mcp-server/scripts/*.cs` and any API usage in `guides/*.md` must compile against the Revit 2025 reference
+assemblies (NuGet `Nice3point.Revit.Api.RevitAPI` 2025.0.2), exactly as the add-in wraps them:
+```bash
+dotnet publish revit-addin/AceRevitMcp.Compiler -c Release -o tools/script-check/compiler   # once
+dotnet run --project tools/script-check -- mcp-server/scripts                                # every script must PASS
+```
+With Revit open (on a Windows PC), also run the benchmark: `node tools/bench/run.mjs`.
 
 ## Invariants (don't break)
 - A real (non-dry-run) modification requires an identical, successful dry run in the same session (`lib/safety.js`).

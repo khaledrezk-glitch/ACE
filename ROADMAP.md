@@ -111,7 +111,7 @@ reused with attribution; pyRevit is GPL-3 and DiRoots/ProSheets are commercial, 
 File-writing features (exports, Excel) get a **dedicated safe tool** that writes only inside a
 configured exports folder, so they don't need the risky-code permission.
 
-## Phase 4: Clash detection
+## Phase 4: Clash detection (first version live)
 
 - **In-Revit clash tests** between categories or links, e.g. ducts vs beams, or pipes vs walls in a
   structural link. It uses a fast bounding-box pass, then exact solid intersection, with

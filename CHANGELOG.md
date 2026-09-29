@@ -14,6 +14,18 @@
   (Mark, Comments, workset, phase), by category and, in workshared models, by person. Snapshots are taken automatically
   when a model is opened (once a day) and after saves or syncs (at most every 2 hours), or by name with `snapshot_model`
   (e.g. "Stage 3 issue"). Report in Revit (select added / moved / changed elements) and as HTML.
+- **Clash detection with responsibility** (ACE tab → Coordination → *Run Clash Test* / *Clash Results*, or
+  `run_clash_test`): across this model, its links and the other open models (ARC / STR / MEP by model). Standard tests
+  STR vs MEP, ARC vs STR, MEP vs ARC, MEP vs MEP, or custom categories; Revit's solid intersection after a box pre-filter,
+  with a tolerance (touching or joined elements are not clashes) and optional clearance. Each clash gets the
+  **responsible discipline** from ACE priority rules (the element that is easier to move gives way; override in
+  `clash-rules.json`). Status kept between runs (new, active, resolved, approved; `set_clash_status`). HTML report and a
+  Revit window grouped by responsible discipline and level.
+- **Structure from ARC** (`derive_structure_from_arc` script): in the STR model, creates structural columns and walls from
+  the ARC model's columns and load-bearing walls (sizes matched or new types made, levels mapped by name or height,
+  existing ones skipped); `check_only` lists what is missing on each side.
+- `coordination_sources`: which models take part, with their disciplines.
+- `tools/script-check`: compile-checks every script against the Revit 2025 API without Revit.
 - **Learning report** (`learning_report`): first-time-right rate of code tasks and its trend, repeated API mistakes with
   hints, code written again and again (recipe candidates), failing scripts, slow calls, lessons learned, and
   recommendations; shareable with the team. `node lib/learning.js` for maintainers.

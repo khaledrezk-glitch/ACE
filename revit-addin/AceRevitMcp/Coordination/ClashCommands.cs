@@ -1,0 +1,244 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Nodes;
+using AceRevitMcp.Bridge;
+using AceRevitMcp.Commands;
+using AceRevitMcp.Dashboard;
+using AceRevitMcp.Util;
+using Autodesk.Revit.Attributes;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+
+namespace AceRevitMcp.Coordination
+{
+    internal static class ClashCommands
+    {
+        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, show }</summary>
+        public static JsonNode Run(UIApplication app, JsonObject args)
+        {
+            var host = Args.RequireDoc(app);
+            var tests = PickTests(args);
+            var level = Args.Str(args, "level");
+            var max = Args.Int(args, "max_elements", 5000);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var all = new List<Clash>();
+            var perTest = new JsonArray();
+            var notes = new List<string>();
+            foreach (var t in tests)
+            {
+                var testNotes = new List<string>();
+                var found = Clashes.Run(app, host, t, level, max, testNotes);
+                var merged = Clashes.Merge(Clashes.Load(host, t.Name), found);
+                Clashes.Save(host, t.Name, merged);
+                all.AddRange(merged);
+                notes.AddRange(testNotes.Select(n => $"{t.Name}: {n}"));
+                perTest.Add(new JsonObject
+                {
+                    ["test"] = t.Name, ["toleranceMm"] = t.ToleranceMm, ["clearanceMm"] = t.ClearanceMm,
+                    ["open"] = merged.Count(c => c.Status == "new" || c.Status == "active"),
+                    ["new"] = merged.Count(c => c.Status == "new"), ["active"] = merged.Count(c => c.Status == "active"),
+                    ["resolved"] = merged.Count(c => c.Status == "resolved"), ["approved"] = merged.Count(c => c.Status == "approved"),
+                    ["byResponsible"] = Group(merged.Where(Open), c => c.Responsible),
+                    ["byLevel"] = Group(merged.Where(Open), c => c.Level),
+                    ["byPair"] = Group(merged.Where(Open), c => $"{c.CatA} x {c.CatB}"),
+                    ["notes"] = new JsonArray(testNotes.Select(n => (JsonNode)n).ToArray()),
+                });
+            }
+            Clashes.Last = all;
+            Clashes.LastTest = string.Join(", ", tests.Select(t => t.Name));
+            Clashes.LastHost = host.Title;
+            Clashes.LastPath = DashboardHtml.SaveAs(host.Title, "Clashes", DateTime.Now, ClashHtml.Render(host.Title, all, notes, sw.ElapsedMilliseconds));
+            if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Clash results", "run_clash_test", State);
+            return new JsonObject
+            {
+                ["tests"] = perTest,
+                ["topOpen"] = new JsonArray(all.Where(Open).OrderByDescending(c => c.DepthMm).Take(30).Select(c => (JsonNode)new JsonObject
+                {
+                    ["key"] = c.Key, ["status"] = c.Status, ["kind"] = c.Kind, ["level"] = c.Level, ["depthMm"] = c.DepthMm,
+                    ["a"] = $"{c.CatA}: {c.NameA} (id {c.IdA}, {c.SourceA})", ["b"] = $"{c.CatB}: {c.NameB} (id {c.IdB}, {c.SourceB})",
+                    ["pointMm"] = $"{c.X}, {c.Y}, {c.Z}", ["responsible"] = c.Responsible, ["reason"] = c.Reason,
+                }).ToArray()),
+                ["htmlReport"] = Clashes.LastPath,
+                ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1),
+                ["note"] = "Ids are ids inside the model named in brackets; only ids of this model can be selected here. Status is kept between runs (new, active, resolved, approved).",
+            };
+        }
+
+        internal static bool Open(Clash c) => c.Status == "new" || c.Status == "active";
+
+        private static JsonObject Group(IEnumerable<Clash> clashes, Func<Clash, string> key)
+        {
+            var o = new JsonObject();
+            foreach (var g in clashes.GroupBy(c => key(c) ?? "-").OrderByDescending(g => g.Count()).Take(15)) o[g.Key] = g.Count();
+            return o;
+        }
+
+        private static List<Clashes.TestSpec> PickTests(JsonObject args)
+        {
+            var name = Args.Str(args, "test") ?? "all";
+            var tol = args["tolerance_mm"] is JsonValue tv && tv.TryGetValue<double>(out var t) ? t : (double?)null;
+            var clear = args["clearance_mm"] is JsonValue cv && cv.TryGetValue<double>(out var c) ? c : 0;
+            List<Clashes.TestSpec> chosen;
+            if (name.Equals("all", StringComparison.OrdinalIgnoreCase)) chosen = Clashes.Standard.ToList();
+            else if (args["a_categories"] is JsonArray || args["b_categories"] is JsonArray)
+            {
+                BuiltInCategory[] Cats(string key) => Args.Strings(args, key).Select(s => Enum.TryParse<BuiltInCategory>(s.StartsWith("OST_") ? s : "OST_" + s.Replace(" ", ""), true, out var b) ? b : BuiltInCategory.INVALID).Where(b => b != BuiltInCategory.INVALID).ToArray();
+                chosen = new List<Clashes.TestSpec> { new Clashes.TestSpec
+                {
+                    Name = name,
+                    A = new Clashes.SetSpec { Disciplines = Args.Strings(args, "a_disciplines").ToArray(), Categories = Cats("a_categories") },
+                    B = new Clashes.SetSpec { Disciplines = Args.Strings(args, "b_disciplines").ToArray(), Categories = Cats("b_categories") },
+                } };
+                if (chosen[0].A.Categories.Length == 0 || chosen[0].B.Categories.Length == 0)
+                    throw new CommandException("Custom test: give a_categories and b_categories as category names, e.g. [\"OST_PipeCurves\"] and [\"OST_StructuralFraming\"].");
+            }
+            else
+            {
+                var t0 = Clashes.Standard.FirstOrDefault(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                         ?? throw new CommandException($"Unknown test '{name}'. Standard tests: {string.Join(", ", Clashes.Standard.Select(s => s.Name))}, or 'all', or a custom test with a_categories / b_categories.");
+                chosen = new List<Clashes.TestSpec> { t0 };
+            }
+            return chosen.Select(s => new Clashes.TestSpec { Name = s.Name, A = s.A, B = s.B, ToleranceMm = tol ?? s.ToleranceMm, ClearanceMm = clear }).ToList();
+        }
+
+        /// <summary>{ test, keys: [...], status: approved | active | new, note }</summary>
+        public static JsonNode SetStatus(UIApplication app, JsonObject args)
+        {
+            var host = Args.RequireDoc(app);
+            var test = Args.Str(args, "test") ?? throw new CommandException("Give 'test'.");
+            var status = Args.Str(args, "status") ?? "approved";
+            if (!new[] { "approved", "active", "new" }.Contains(status)) throw new CommandException("status must be approved, active or new.");
+            var keys = new HashSet<string>(Args.Strings(args, "keys"));
+            var clashes = Clashes.Load(host, test);
+            var changed = 0;
+            foreach (var c in clashes.Where(c => keys.Contains(c.Key)))
+            {
+                c.Status = status;
+                if (Args.Str(args, "note") is string n) c.Note = n;
+                changed++;
+            }
+            Clashes.Save(host, test, clashes);
+            return new JsonObject { ["updated"] = changed, ["status"] = status };
+        }
+
+        public static JsonNode Sources(UIApplication app, JsonObject args)
+        {
+            var host = Args.RequireDoc(app);
+            return new JsonObject
+            {
+                ["models"] = new JsonArray(Clashes.Sources(app, host).Select(s => (JsonNode)new JsonObject { ["name"] = s.Name, ["discipline"] = s.Discipline, ["relation"] = s.Relation }).ToArray()),
+                ["standardTests"] = new JsonArray(Clashes.Standard.Select(t => (JsonNode)$"{t.Name} (tolerance {t.ToleranceMm} mm)").ToArray()),
+                ["rules"] = "Responsibility: the element that is easier to move gives way (structure first, then ARC walls/floors, ducts, pipes, cable trays, conduits). Override in %APPDATA%\\ACE-RevitMCP\\clash-rules.json: {\"ranks\": {\"Pipes\": {\"rank\": 60, \"discipline\": \"MEP (plumbing)\"}}}.",
+            };
+        }
+
+        /// <summary>Only elements of the active model can be selected in it.</summary>
+        private static long[] HostIds(IEnumerable<Clash> clashes) =>
+            clashes.SelectMany(c => new[] { c.SourceA == Clashes.LastHost ? c.IdA : 0, c.SourceB == Clashes.LastHost ? c.IdB : 0 }).Where(i => i > 0).Distinct().ToArray();
+
+        internal static ReportWindow.State State()
+        {
+            if (Clashes.Last == null) return null;
+            var open = Clashes.Last.Where(Open).ToList();
+            var st = new ReportWindow.State
+            {
+                Path = Clashes.LastPath,
+                Status = $"{open.Count} open clashes ({Clashes.LastTest}). Saved to Documents\\ACE Insights.",
+            };
+            // Only elements of the active model can be selected.
+            foreach (var g in open.GroupBy(c => c.Responsible).OrderByDescending(g => g.Count()))
+            {
+                st.Findings.Add(($"{g.Key}: {g.Count()} clashes", HostIds(g)));
+            }
+            foreach (var g in open.GroupBy(c => c.Level).OrderBy(g => g.Key))
+                st.Findings.Add(($"   Level {g.Key}: {g.Count()}", HostIds(g)));
+            return st;
+        }
+    }
+
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class RunClashCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            try
+            {
+                if (commandData.Application.ActiveUIDocument?.Document == null) { TaskDialog.Show("ACE Clash test", "Open a model first."); return Result.Cancelled; }
+                ClashCommands.Run(commandData.Application, new JsonObject { ["test"] = "all", ["show"] = true });
+                return Result.Succeeded;
+            }
+            catch (Exception ex) { Log.Error($"Clash test: {ex}"); message = ex.Message; return Result.Failed; }
+        }
+    }
+
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class ClashResultsCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        {
+            var doc = commandData.Application.ActiveUIDocument?.Document;
+            if (doc == null) { TaskDialog.Show("ACE Clash results", "Open a model first."); return Result.Cancelled; }
+            if (Clashes.Last == null)
+            {
+                // Show the stored results of the last runs without re-running.
+                var stored = Clashes.Standard.SelectMany(t => Clashes.Load(doc, t.Name)).ToList();
+                if (stored.Count == 0) { TaskDialog.Show("ACE Clash results", "No clash results yet for this model. Click Run Clash Test first."); return Result.Cancelled; }
+                Clashes.Last = stored; Clashes.LastTest = "stored results"; Clashes.LastHost = doc.Title;
+                Clashes.LastPath = DashboardHtml.SaveAs(doc.Title, "Clashes", DateTime.Now, ClashHtml.Render(doc.Title, stored, new List<string> { "Stored results of the last runs (not re-run)." }, 0));
+            }
+            ReportWindow.ShowOrRefresh(commandData.Application.MainWindowHandle, "Clash results", "run_clash_test", ClashCommands.State);
+            return Result.Succeeded;
+        }
+    }
+
+    internal static class ClashHtml
+    {
+        private static string E(string s) => DashboardHtml.E(s);
+
+        public static string Render(string model, List<Clash> clashes, List<string> notes, long ms)
+        {
+            var open = clashes.Where(ClashCommands.Open).ToList();
+            var sb = DashboardHtml.Begin($"{model} | Clashes", "Clash detection",
+                $"{E(model)} &nbsp;·&nbsp; {DateTime.Now:d MMMM yyyy, HH:mm} &nbsp;·&nbsp; {string.Join(", ", clashes.Select(c => c.Test).Distinct())}",
+                "The model, its links and the other open discipline models");
+            var red = DashboardHtml.Hex(Branding.Accent);
+            sb.Append("<table class=\"row\"><tr>");
+            foreach (var (label, n, key) in new[] { ("Open clashes", open.Count, true), ("New since last run", clashes.Count(c => c.Status == "new"), false), ("Resolved", clashes.Count(c => c.Status == "resolved"), false), ("Approved", clashes.Count(c => c.Status == "approved"), false) })
+                sb.Append($"<td class=\"cell\" style=\"width:25%\"><div class=\"card\"><h3>{E(label)}</h3><div class=\"big\"{(key && n > 0 ? $" style=\"color:{red}\"" : "")}>{n}</div></div></td>");
+            sb.Append("</tr></table>");
+
+            sb.Append("<table class=\"row\" style=\"margin-top:18px\"><tr><td class=\"cell\" style=\"width:50%\"><div class=\"card\"><h3>Responsible discipline (open)</h3>");
+            var maxR = Math.Max(1, open.GroupBy(c => c.Responsible).Select(g => g.Count()).DefaultIfEmpty(1).Max());
+            var first = true;
+            foreach (var g in open.GroupBy(c => c.Responsible).OrderByDescending(g => g.Count()))
+            {
+                sb.Append($"<div style=\"margin-bottom:8px\"><table style=\"width:100%;border-collapse:collapse\"><tr><td>{E(g.Key)}</td><td class=\"num\"><b>{g.Count()}</b></td></tr></table><div class=\"bar\"><i class=\"{(first ? "key" : "")}\" style=\"width:{100 * g.Count() / maxR}%\"></i></div></div>");
+                first = false;
+            }
+            if (open.Count == 0) sb.Append("<div class=\"muted\">No open clashes.</div>");
+            sb.Append("</div></td><td class=\"cell\" style=\"width:50%\"><div class=\"card\"><h3>By level (open)</h3><table class=\"list\"><tr><th>Level</th><th class=\"num\">Clashes</th><th>Most frequent pair</th></tr>");
+            foreach (var g in open.GroupBy(c => c.Level).OrderBy(g => g.Key))
+                sb.Append($"<tr><td>{E(g.Key)}</td><td class=\"num\">{g.Count()}</td><td class=\"muted\">{E(g.GroupBy(c => $"{c.CatA} x {c.CatB}").OrderByDescending(x => x.Count()).First().Key)}</td></tr>");
+            sb.Append("</table></div></td></tr></table>");
+
+            sb.Append("<h2>Clashes</h2><table class=\"list\"><tr><th>Status</th><th>Level</th><th>Element A</th><th>Element B</th><th class=\"num\">Depth</th><th>Responsible</th><th>Location (mm)</th></tr>");
+            foreach (var c in clashes.OrderBy(c => c.Status == "resolved" || c.Status == "approved" ? 1 : 0).ThenByDescending(c => c.DepthMm).Take(400))
+            {
+                var tag = c.Status == "new" ? "fail" : c.Status == "active" ? "warn" : "plan";
+                sb.Append($"<tr><td><span class=\"tag {tag}\">{E(c.Status)}</span><div class=\"muted\">{E(c.Kind)}</div></td><td>{E(c.Level)}</td>" +
+                          $"<td><b>{E(c.CatA)}</b><div class=\"muted\">{E(DashboardHtml.Trim(c.NameA, 50))} · id {c.IdA} · {E(c.SourceA)}</div></td>" +
+                          $"<td><b>{E(c.CatB)}</b><div class=\"muted\">{E(DashboardHtml.Trim(c.NameB, 50))} · id {c.IdB} · {E(c.SourceB)}</div></td>" +
+                          $"<td class=\"num\">{c.DepthMm:0} mm</td><td>{E(c.Responsible)}<div class=\"muted\">{E(c.Reason)}</div></td><td class=\"muted\">{c.X:0}, {c.Y:0}, {c.Z:0}</td></tr>");
+            }
+            if (clashes.Count > 400) sb.Append($"<tr><td colspan=\"7\" class=\"muted\">... and {clashes.Count - 400} more.</td></tr>");
+            sb.Append("</table>");
+            if (notes.Count > 0) sb.Append("<h2>Test notes</h2>" + string.Join("", notes.Select(n => $"<div class=\"muted\">{E(n)}</div>")));
+            sb.Append($"<div class=\"foot\">Hard clash = the solids overlap by at least the tolerance (depth = smallest overlap dimension); clearance = closer than the clearance distance (box distance, approximate). " +
+                      "Responsibility follows ACE priority: the element that is easier to move gives way (structure first, then walls and floors, ducts, pipes, cable trays, conduits); equal priority = coordinate. " +
+                      $"Status is kept between runs: new, active (still there), resolved (gone), approved (accepted). {(ms > 0 ? $"Run time {ms / 1000.0:0.0} s." : "")}</div>");
+            sb.Append("</div></body></html>");
+            return DashboardHtml.Ascii(sb.ToString());
+        }
+    }
+}

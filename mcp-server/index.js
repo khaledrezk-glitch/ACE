@@ -166,6 +166,36 @@ tool("list_snapshots", {
   annotations: readOnly,
 }, async () => text(await callRevit("list_snapshots", {}, 60)));
 
+tool("coordination_sources", {
+  title: "Coordination: which models take part",
+  description: "The models that coordination and clash tests use: this model, its Revit links and the other models open in this session, each with its discipline (ARC / STR / MEP), plus the standard clash tests and the responsibility rules.",
+  inputSchema: {},
+  annotations: readOnly,
+}, async () => text(await callRevit("coordination_sources", {}, 60)));
+
+tool("run_clash_test", {
+  title: "Clash detection",
+  description: "Find clashes across this model, its links and the other open models (read-only). Standard tests: \"STR vs MEP\", \"ARC vs STR\", \"MEP vs ARC\", \"MEP vs MEP\", or \"all\"; or a custom test with a_categories / b_categories (e.g. [\"OST_PipeCurves\"], [\"OST_StructuralFraming\"]) and optional a_disciplines / b_disciplines. Each clash has its depth, level, location and the RESPONSIBLE discipline (the element that is easier to move gives way: structure first, then walls and floors, ducts, pipes, cable trays, conduits). Status is kept between runs: new, active, resolved, approved. Saves an HTML report; show: true opens the results in Revit.",
+  inputSchema: {
+    test: z.string().optional().describe("Standard test name, \"all\" (default), or a name for a custom test"),
+    tolerance_mm: z.number().optional().describe("Ignore overlaps smaller than this (default per test, 10-25 mm)"),
+    clearance_mm: z.number().optional().describe("Also report elements closer than this (soft clashes)"),
+    level: z.string().optional().describe("Only clashes on this level"),
+    max_elements: z.number().int().optional().describe("Cap on elements in set A (default 5000)"),
+    a_categories: z.array(z.string()).optional(), b_categories: z.array(z.string()).optional(),
+    a_disciplines: z.array(z.string()).optional(), b_disciplines: z.array(z.string()).optional(),
+    show: z.boolean().optional(),
+  },
+  annotations: readOnly,
+}, async (a) => text(await callRevit("run_clash_test", a, 1800)));
+
+tool("set_clash_status", {
+  title: "Approve or reopen clashes",
+  description: "Mark clashes (by key, from run_clash_test) as approved (accepted, e.g. a pipe through a sleeve), active or new, with an optional note. Kept for the next runs.",
+  inputSchema: { test: z.string(), keys: z.array(z.string()), status: z.enum(["approved", "active", "new"]).optional(), note: z.string().optional() },
+  annotations: benign,
+}, async (a) => text(await callRevit("set_clash_status", a, 60)));
+
 tool("model_dashboard", {
   title: "Model insights dashboard",
   description: "Read-only health check of the open model: a 0-100 health score with every audit finding (warnings, imported CAD, in-place families, rooms not enclosed or without doors, narrow doors, duplicate marks, views not on sheets, view templates, parameter completeness, sheet title block data, project information), warnings by type, per-level statistics, Claude's activity and the status of every ACE tool. Saves an ACE-branded HTML report (path in htmlReport) in Documents\\ACE Insights. show: true also opens the dashboard inside Revit. Use for 'how healthy is this model', 'dashboard', 'status report', 'audit'.",

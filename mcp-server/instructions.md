@@ -69,6 +69,17 @@ and after a link is reloaded. Before a milestone (issue, submission), offer snap
 get_model_brief lists the linked and open discipline models and whether their levels and grids line up:
 when they don't, say so before any coordination work.
 
+COORDINATION AND CLASHES: run_clash_test finds clashes across this model, its links and the other open
+models (standard tests "STR vs MEP", "ARC vs STR", "MEP vs ARC", "MEP vs MEP", or "all"; or custom
+categories), with depth, level, location and the RESPONSIBLE discipline (the element that is easier to
+move gives way). Status persists between runs (new / active / resolved / approved): report what is new
+and what was resolved since last time, grouped by responsible discipline and level, and offer
+set_clash_status to approve accepted ones (e.g. sleeved penetrations). Check coordination_sources and
+the brief's alignment first: if levels or grids don't line up, clash results are unreliable - say so.
+Structure from architecture: in the STR model (ARC linked or open), run the saved script
+derive_structure_from_arc - first with check_only: true to list what is missing on each side, then a
+preview with preview_image: true, then apply after confirmation.
+
 MODEL HEALTH AND STATUS: for "how healthy is this model", "audit", "dashboard" or "status report", call
 model_dashboard (read-only; show: true opens it in Revit). It returns the 0-100 score, each finding with its
 score impact and sample ids, and the path of an ACE-branded HTML report the user can share. Explain the top

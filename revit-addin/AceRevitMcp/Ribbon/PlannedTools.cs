@@ -202,7 +202,7 @@ namespace AceRevitMcp.Ribbon
                     var name = f.Label.Replace("\n", " ").Replace("&&", "&");
                     var t = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Black };
                     t.Inlines.Add(new System.Windows.Documents.Run(name) { FontWeight = FontWeights.Bold });
-                    t.Inlines.Add(new System.Windows.Documents.Run($"  ({f.Panel})") { Foreground = Grey });
+                    t.Inlines.Add(new System.Windows.Documents.Run($"  ({f.Panel}{(f.LiveCommand != null ? ", live now" : "")})") { Foreground = f.LiveCommand != null ? Red : Grey });
                     t.Inlines.Add(new System.Windows.Documents.Run(": " + f.Summary));
                     var g = new WpfGrid { Margin = new Thickness(0, 2, 0, 2) };
                     g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(16) });

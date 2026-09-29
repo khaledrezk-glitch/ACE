@@ -81,13 +81,14 @@ namespace AceRevitMcp
         {
             PushButtonData Data(Ribbon.Feature f)
             {
-                var d = new PushButtonData("AcePlanned_" + f.Key, f.Label.Replace("&&", "&"), path, "AceRevitMcp.Ribbon.Planned_" + f.Key)
+                var live = f.LiveCommand != null;
+                var d = new PushButtonData("AcePlanned_" + f.Key, f.Label.Replace("&&", "&"), path, f.LiveCommand ?? "AceRevitMcp.Ribbon.Planned_" + f.Key)
                 {
-                    ToolTip = f.Summary,
-                    LongDescription = $"Coming soon (Phase {f.Phase}: {Ribbon.Roadmap.Phases[f.Phase]}). Click to see what it will do" +
+                    ToolTip = live ? f.LiveSummary ?? f.Summary : f.Summary,
+                    LongDescription = live ? "Live." : $"Coming soon (Phase {f.Phase}: {Ribbon.Roadmap.Phases[f.Phase]}). Click to see what it will do" +
                                       (f.TodayWithClaude != null ? " and what Claude can already do today." : "."),
                 };
-                try { d.LargeImage = Icons.Line(32, f.Glyph, planned: true); d.Image = Icons.Line(16, f.Glyph, planned: true); }
+                try { d.LargeImage = Icons.Line(32, f.Glyph, planned: !live); d.Image = Icons.Line(16, f.Glyph, planned: !live); }
                 catch (Exception ex) { Log.Warn($"Icon {f.Key}: {ex.Message}"); }
                 return d;
             }

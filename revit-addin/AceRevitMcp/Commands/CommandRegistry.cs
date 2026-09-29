@@ -33,6 +33,9 @@ namespace AceRevitMcp.Commands
                 ["snapshot_model"] = Tracking.ChangeTracking.SnapshotCommand,
                 ["list_snapshots"] = Tracking.ChangeTracking.ListCommand,
                 ["model_changes"] = Tracking.ChangeTracking.ChangesCommand,
+                ["run_clash_test"] = Coordination.ClashCommands.Run,
+                ["set_clash_status"] = Coordination.ClashCommands.SetStatus,
+                ["coordination_sources"] = Coordination.ClashCommands.Sources,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

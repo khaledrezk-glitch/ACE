@@ -13,6 +13,9 @@ namespace AceRevitMcp.Ribbon
         /// <summary>What a user can already do today by asking Claude, and a prompt to paste (optional).</summary>
         public string TodayWithClaude, Prompt;
         public string Note;
+        /// <summary>When set, the tool is live: the button runs this command (full type name) instead of the roadmap card.</summary>
+        public string LiveCommand;
+        public string LiveSummary;
     }
 
     internal static class Roadmap
@@ -40,7 +43,8 @@ namespace AceRevitMcp.Ribbon
                 Prompt = "Undo your last change in Revit, and tell me exactly what was reverted." },
 
             // ---- Audit ----
-            new Feature { Key = "health", Panel = "Audit", Label = "Model\nHealth", Phase = 2, Glyph = Glyphs.Gauge,
+            new Feature { Key = "health", Panel = "Audit", Label = "Model\nHealth", Phase = 2, Glyph = Glyphs.Gauge, LiveCommand = "AceRevitMcp.Dashboard.DashboardCommand",
+                LiveSummary = "Health score out of 100 with every finding, trend, submission readiness and the status of every ACE tool (read-only).",
                 Summary = "A health score from 0 to 100 for the open model, with a report of every finding.",
                 WillDo = new[] {
                     "Scores warnings, CAD imports, in-place families, unused items, views not on sheets, unplaced rooms and more.",
@@ -105,10 +109,12 @@ namespace AceRevitMcp.Ribbon
                 WillDo = new[] { "One profile per client or deliverable type.", "Shared through the team folder so everyone exports the same way." } },
 
             // ---- Coordination ----
-            new Feature { Key = "clash", Panel = "Coordination", Label = "Run Clash\nTest", Phase = 4, Glyph = Glyphs.Clash,
+            new Feature { Key = "clash", Panel = "Coordination", Label = "Run Clash\nTest", Phase = 4, Glyph = Glyphs.Clash, LiveCommand = "AceRevitMcp.Coordination.RunClashCommand",
+                LiveSummary = "Runs the standard clash tests (STR vs MEP, ARC vs STR, MEP vs ARC, MEP vs MEP) across this model, its links and the other open models, with the responsible discipline for each clash (read-only).",
                 Summary = "Clash tests inside Revit between categories or linked models.",
                 WillDo = new[] { "For example ducts against beams, or pipes against walls in the structural link.", "Tolerance and clearance rules (for example pipes within 50 mm of beams).", "A fast bounding-box pass, then exact solid intersection." } },
-            new Feature { Key = "clashresults", Panel = "Coordination", Label = "Clash\nResults", Phase = 4, Glyph = Glyphs.ClashList,
+            new Feature { Key = "clashresults", Panel = "Coordination", Label = "Clash\nResults", Phase = 4, Glyph = Glyphs.ClashList, LiveCommand = "AceRevitMcp.Coordination.ClashResultsCommand",
+                LiveSummary = "The last clash results: open, new, resolved and approved clashes by responsible discipline and level; select the elements in this model.",
                 Summary = "Review clashes by level or zone and track their status between runs.",
                 WillDo = new[] { "Status per clash: new, active, resolved, approved.", "A 3D section-box view per clash.", "HTML, Excel and BCF export for Navisworks and ACC users.", "Claude explains clashes and proposes fixes, applied only after preview and confirmation." } },
 
