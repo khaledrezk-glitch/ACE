@@ -29,6 +29,12 @@ dotnet run --project tools/script-check -- mcp-server/scripts                   
 ```
 With Revit open (on a Windows PC), also run the benchmark: `node tools/bench/run.mjs`.
 
+## Company reference material
+The repository is private. Keep ACE reference documents the user supplies in the repo so every session and
+build has them: brand material in `branding/` (`ACE_BRAND_GUIDELINES.md`, logo files), other standards and
+references in `docs/reference/`. Apply them (e.g. brand colours and fonts in `branding/brand.json`) rather than
+guessing. Before committing such files, confirm the GitHub repository is still private.
+
 ## Invariants (don't break)
 - A real (non-dry-run) modification requires an identical, successful dry run in the same session (`lib/safety.js`).
 - `readonly` runs are always rolled back. Every applied run is exactly ONE undo step.
