@@ -45,6 +45,12 @@ guessing. Before committing such files, confirm the GitHub repository is still p
 - Keep Add-in and MCP server versions in step (`AceRevitMcp.csproj` `<Version>` = `mcp-server/package.json` version);
   add a line to `CHANGELOG.md` for each release.
 
+## Architecture and integration (read before adding a capability)
+`docs/ARCHITECTURE-CONCEPT.md` is the map of layers, engines and capabilities. Before building anything new, answer its
+integration rule (which engine, where its rules come from, what it publishes, what it connects to, what it merges) and
+update the inventory and the duplication list. Prefer extending an engine over adding a parallel one. Changes to the
+add-in or MCP server wait for the user's go-ahead while the concept is under review.
+
 ## The learning loop (keep it running with every change)
 ACE is meant to get better continuously. Every release should pass through this loop:
 1. **Collect:** team members run `learning_report` (ask Claude, `share_with_team: true`) and share `issue-*.md` reports.
