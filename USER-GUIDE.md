@@ -82,6 +82,13 @@ The **Work mode** list at the start of the ACE tab sets up the ribbon for what y
 in full, less relevant ones are dimmed (still usable) and unrelated panels are hidden. The Companion shows the mode's
 prompts first and Claude leads with the mode's tools. You can also tell Claude: *"switch to coordination mode"*.
 
+### Worksets per the BEP
+
+Ask Claude: *"Check the worksets against our BEP"* or *"Put the elements on the right worksets"*. It uses the BEP rules
+file (by category, wall function, structural, MEP system, family or type name, level, zone or room department),
+shows what would move, and applies only after you confirm (one undo step). Your BIM manager keeps the rules in
+`worksets.json` (example in the package: `mcp-server\bep\worksets.example.json`).
+
 ### Clash Browser (coordination)
 
 **ACE tab → Coordination → Clash Browser**: choose the **primary** model (this model; a BIM manager can pick a link)

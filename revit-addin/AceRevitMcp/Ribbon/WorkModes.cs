@@ -50,6 +50,7 @@ namespace AceRevitMcp.Ribbon
                     ("Run the model check", "Using ace-revit: run the model check (model_dashboard, show: true) and explain the five findings that matter most, with what to do about each." + ro),
                     ("Worst warnings first", "Using ace-revit: which Revit warnings should we fix first and why? Group them by type and tell me which ones distort quantities or rooms." + ro),
                     ("Fix duplicate marks", "Using ace-revit: find duplicate door and window marks and propose a renumbering." + gated),
+                    ("Worksets against the BEP", "Using ace-revit: check which elements are on the wrong workset according to our BEP rules (assign_worksets, check_only: true), by category and workset." + ro),
                     ("Unused content to purge", "Using ace-revit: list unused family types, view templates and single-use groups that could be purged before issue." + ro),
                 },
             },
@@ -76,13 +77,14 @@ namespace AceRevitMcp.Ribbon
                 Panels = { ["Data"] = PanelLook.Focus, ["Export"] = PanelLook.Focus, ["Inspect"] = PanelLook.Focus,
                            ["Insights"] = PanelLook.Dim, ["Audit"] = PanelLook.Dim, ["Deliver"] = PanelLook.Dim,
                            ["Coordination"] = PanelLook.Hide, ["Compliance"] = PanelLook.Hide, ["Team Tools"] = PanelLook.Hide, ["Admin"] = PanelLook.Hide },
-                ClaudeTools = new[] { "set_parameters", "execute_revit_code", "run_saved_script", "list_views", "find_elements", "select_elements" },
+                ClaudeTools = new[] { "set_parameters", "execute_revit_code", "run_saved_script", "assign_worksets", "list_views", "find_elements", "select_elements" },
                 Prompts = new[]
                 {
                     ("Create sheets for all plans", "Using ace-revit: create a sheet for every floor plan that is not on a sheet yet, using our title block and numbering." + gated),
                     ("Renumber rooms by level", "Using ace-revit: renumber the rooms level by level (e.g. 301, 302...) from left to right." + gated),
                     ("Fill empty parameters", "Using ace-revit: find doors, windows and rooms with empty key parameters and propose values from their type or neighbours." + gated),
                     ("Batch-rename views", "Using ace-revit: rename the views to our naming standard (level - discipline - purpose) and show me the list first." + gated),
+                    ("Assign worksets per the BEP", "Using ace-revit: put the elements on the right worksets per our BEP rules (assign_worksets): first check only and show me what would move, then preview." + gated),
                 },
             },
             new WorkMode

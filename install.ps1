@@ -206,7 +206,7 @@ Step "Installing the MCP server"
 $McpDir = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\mcp-server'
 if (Test-Path $McpDir) { Remove-Item $McpDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $McpDir | Out-Null
-foreach ($item in 'index.js', 'instructions.md', 'package.json', 'package-lock.json', 'lib', 'guides', 'scripts', 'lessons') {
+foreach ($item in 'index.js', 'instructions.md', 'package.json', 'package-lock.json', 'lib', 'guides', 'scripts', 'lessons', 'bep') {
     Copy-Item (Join-Path $Root "mcp-server\$item") -Destination $McpDir -Recurse -Force
 }
 if ($BundledNodeModules) {

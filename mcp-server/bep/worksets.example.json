@@ -1,0 +1,25 @@
+{
+  "name": "ACE BEP worksets (example)",
+  "about": "Workset rules from the BEP. Rules are checked top to bottom; the first match wins. Each rule: workset (name; may use {level}, {zone}, {category}) and any of: category (names or OST_ names), function (regex on wall function Interior/Exterior/Foundation/Retaining/Soffit/CoreShaft, 'Structural', framing type Beam/Column/Brace, MEP system classification or name), family, type (regex on names), level (regex), zone (regex on the scope box the element sits in), department (regex on the room department), parameter + value (regex). Adapt the names to the project BEP, save as %APPDATA%\\ACE-RevitMCP\\worksets.json or on the team share (config.json \"worksetRules\": \"<path>\").",
+  "default_workset": "",
+  "rules": [
+    { "workset": "Shared Levels and Grids", "category": ["Levels", "Grids", "Scope Boxes", "Reference Planes"] },
+    { "workset": "ARC_Site", "category": ["Topography", "Toposolid", "Site", "Parking", "Planting", "Entourage", "Roads", "Hardscape"] },
+    { "workset": "ARC_Core", "category": ["Walls"], "function": "CoreShaft|Core|Shaft" },
+    { "workset": "ARC_Core", "category": ["Walls"], "type": "Core|Shaft|Lift" },
+    { "workset": "ARC_Facade", "category": ["Walls"], "function": "Exterior" },
+    { "workset": "ARC_Facade", "category": ["Curtain Panels", "Curtain Wall Mullions", "Windows"] },
+    { "workset": "ARC_Interior Walls", "category": ["Walls"], "function": "Interior" },
+    { "workset": "ARC_Floors and Ceilings", "category": ["Floors", "Ceilings", "Roofs"] },
+    { "workset": "ARC_Doors", "category": ["Doors"] },
+    { "workset": "ARC_Vertical Circulation", "category": ["Stairs", "Railings", "Ramps", "Vertical Circulation"] },
+    { "workset": "ARC_FF&E", "category": ["Furniture", "Furniture Systems", "Casework", "Specialty Equipment", "Plumbing Fixtures", "Lighting Fixtures"] },
+    { "workset": "ARC_Rooms and Areas", "category": ["Rooms", "Areas"] },
+    { "workset": "STR_Structure", "category": ["Structural Columns", "Structural Framing", "Structural Foundations"] },
+    { "workset": "STR_Structure", "category": ["Walls", "Floors"], "function": "Structural" },
+    { "workset": "MEP_HVAC", "category": ["Ducts", "Duct Fittings", "Duct Accessories", "Flex Ducts", "Air Terminals", "Mechanical Equipment"] },
+    { "workset": "MEP_Plumbing", "category": ["Pipes", "Pipe Fittings", "Pipe Accessories", "Flex Pipes"], "function": "Sanitary|Domestic|Vent|Storm" },
+    { "workset": "MEP_Fire", "category": ["Pipes", "Pipe Fittings", "Pipe Accessories", "Sprinklers"], "function": "Fire" },
+    { "workset": "MEP_Electrical", "category": ["Cable Trays", "Cable Tray Fittings", "Conduits", "Conduit Fittings", "Electrical Equipment", "Electrical Fixtures"] }
+  ]
+}

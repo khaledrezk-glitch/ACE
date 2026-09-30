@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, failure, text } from "./lib/core.js";
+import { DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, failure, readConfig, text } from "./lib/core.js";
 import { fingerprint, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
@@ -541,6 +541,46 @@ tool("read_saved_script", {
   inputSchema: { name: z.string() },
   annotations: readOnly,
 }, async ({ name }) => text(fs.readFileSync(findScript(name).file, "utf8")));
+
+// Workset rules from the BEP: the tool's rules > rules_file > config "worksetRules" > %APPDATA%\ACE-RevitMCP\worksets.json > the packaged example.
+function worksetRules(rulesFile) {
+  const candidates = [rulesFile, readConfig()?.worksetRules, path.join(DATA_DIR, "worksets.json"), path.join(ROOT, "bep", "worksets.example.json")].filter(Boolean);
+  for (const f of candidates) {
+    if (fs.existsSync(f)) return { file: f, ...JSON.parse(fs.readFileSync(f, "utf8")) };
+  }
+  throw new RevitError("No workset rules found. Save the BEP rules as %APPDATA%\\ACE-RevitMCP\\worksets.json (see bep/worksets.example.json).");
+}
+
+tool("assign_worksets", {
+  title: "Assign worksets per the BEP",
+  description: "Put elements on the right worksets by the BEP rules: category, function (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or a parameter value; the first matching rule wins and names can use {level}, {zone}, {category}. Rules come from the office / project rules file (worksets.json; the example follows the ACE naming) unless given. check_only: true reports what is on the wrong workset (read-only in effect). Otherwise it moves elements, with the usual dry_run preview and confirmation; elements borrowed by others are skipped. One undo step.",
+  inputSchema: {
+    check_only: z.boolean().optional().describe("Only report elements on the wrong workset"),
+    only_workset1: z.boolean().optional().describe("Move only elements still on Workset1 (leave deliberate choices alone)"),
+    create_missing: z.boolean().optional().describe("Create worksets named in the rules that do not exist yet"),
+    default_workset: z.string().optional().describe("Workset for elements no rule matches (default: leave them)"),
+    rules: z.array(z.record(z.any())).optional().describe("Rules to use instead of the rules file"),
+    rules_file: z.string().optional(),
+    dry_run: z.boolean().optional(),
+    explanation: z.string().optional(),
+  },
+  annotations: writes,
+}, async (a) => {
+  const src = a.rules ? { file: "given in the request", rules: a.rules } : worksetRules(a.rules_file);
+  const script = findScript("assign_worksets");
+  const inputs = {
+    rules: src.rules, default_workset: a.default_workset ?? src.default_workset ?? "",
+    only_workset1: !!a.only_workset1, create_missing: !!a.create_missing, check_only: !!a.check_only,
+  };
+  const result = await runCode({
+    // check_only is read-only: always rolled back, no Apply card.
+    code: fs.readFileSync(script.file, "utf8"), mode: a.check_only ? "readonly" : "auto", inputs,
+    dry_run: a.check_only ? undefined : a.dry_run, explanation: a.explanation,
+    transaction_name: `Claude: assign worksets per the BEP${a.only_workset1 ? " (Workset1 only)" : ""}`,
+  });
+  const note = { type: "text", text: `Workset rules: ${src.name || "rules"} (${src.file}), ${src.rules?.length ?? 0} rules.` };
+  return { ...result, content: [...(result.content || []), note] };
+});
 
 tool("run_saved_script", {
   title: "Run a saved script",

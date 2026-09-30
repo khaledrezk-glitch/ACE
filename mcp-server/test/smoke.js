@@ -71,7 +71,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["backup_model", "check_setup", "clash_results", "clash_view", "coordination_report", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "focus_clash", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "pending_changes", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "reset_clash_view", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_results", "clash_view", "coordination_report", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "focus_clash", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "pending_changes", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "reset_clash_view", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -236,6 +236,16 @@ const cr = (await call("coordination_report", { max_issues: 5 })).content[0].tex
 assert.match(cr, /Coordination\.csv/, "coordination report returns the CSV issue list");
 const fc = (await call("focus_clash", { key: "STR vs MEP|u1|u2" })).content[0].text;
 assert.match(fc, /200 x 200 x 250/, "focus_clash passes the key and returns the intersection");
+const wsCheck = await call("assign_worksets", { check_only: true });
+const wsText = wsCheck.content.map((c) => c.text).join("\n");
+assert.match(wsText, /"echoMode": ?"readonly"/, "workset check is read-only");
+assert.match(wsText, /Shared Levels and Grids/, "BEP rules are passed to the script");
+assert.match(wsText, /Workset rules: ACE BEP worksets/, "the rules file is named");
+const wsBlocked = await call("assign_worksets", { explanation: "move to BEP worksets" });
+assert.ok(wsBlocked.isError || /not been previewed/.test(wsBlocked.content[0].text), "applying needs a preview first");
+await call("assign_worksets", { dry_run: true });
+const wsApplied = (await call("assign_worksets", { explanation: "move to BEP worksets" })).content[0].text;
+assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
 const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
 assert.match(wm, /Coordination/, "working mode can be set");
 const pc = (await call("pending_changes")).content[0].text;

@@ -1,6 +1,12 @@
 # Changelog
 
 ## 1.7.0 (core v2)
+- **Workset assignment per the BEP** (`assign_worksets`, built-in script `assign_worksets`): rules by category, function
+  (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or
+  parameter value; first match wins; names can use `{level}`, `{zone}`, `{category}`. Rules file `worksets.json`
+  (`%APPDATA%\ACE-RevitMCP` or `"worksetRules"` in config.json for the team share); example `bep/worksets.example.json`.
+  Check only (read-only report), Workset1 only, create missing worksets; borrowed elements are skipped; the usual
+  preview, Apply card and one undo step. Prompts in the Production and Model audit modes.
 - **Working modes** (ACE tab → *Work mode*, first on the tab): Model audit, Coordination, Production (mass
   production: data, sheets, exports), Submission, All tools. A mode shows the panels for the task in full, dims the less
   relevant ones (faded icons, still usable) and hides unrelated panels; the Companion shows the mode's prompts first;
