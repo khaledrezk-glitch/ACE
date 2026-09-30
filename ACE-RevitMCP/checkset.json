@@ -1,5 +1,0 @@
-{ "name": "Test office", "checks": {
-      "in-place-families": { "warnAt": 1, "failAt": 5 },
-      "design-options": { "enabled": false },
-      "Revit warnings": { "maxImpact": 5 },
-      "detail-lines": { "warnAt": 100000 } } }

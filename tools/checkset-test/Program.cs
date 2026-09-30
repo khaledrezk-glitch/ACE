@@ -6,8 +6,11 @@ class P {
   static void Main() {
     // A private settings folder for this test (ApplicationData follows XDG_CONFIG_HOME on Linux, APPDATA on Windows).
     var tmp = Path.Combine(Path.GetTempPath(), "ace-checkset-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(tmp);   // GetFolderPath returns "" for a folder that does not exist
     Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", tmp); Environment.SetEnvironmentVariable("APPDATA", tmp);
-    var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ACE-RevitMCP");
+    var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+    if (string.IsNullOrEmpty(appData) || !appData.StartsWith(tmp)) { Console.WriteLine("check set test FAILED (could not redirect the settings folder)"); Environment.Exit(1); }
+    var dir = Path.Combine(appData, "ACE-RevitMCP");
     Directory.CreateDirectory(dir);
     File.WriteAllText(Path.Combine(dir, "checkset.json"), @"{ ""name"": ""Test office"", ""checks"": {
       ""in-place-families"": { ""warnAt"": 1, ""failAt"": 5 },
