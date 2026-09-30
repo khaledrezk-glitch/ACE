@@ -145,10 +145,10 @@ uses, all driven by the requirements hub.
 | Group | Tools | Main mode |
 |---|---|---|
 | Claude | Work mode, Companion, MCP Status, Undo | all |
-| **BIM Tools** (new) | **Project Hub**, **Requirements** (analyse, contradictions, compliance), Model Check, Worksets (BEP), Naming Check, Change Tracker / Snapshots, Standards (check set) | Model audit, BIM management |
+| **BIM Tools** (new) | **Project Hub**, **Requirements** (analyse, contradictions, compliance), Model Check, Worksets (BEP), Naming Check, **Family Checker**, Change Tracker / Snapshots, Standards (check set) | Model audit, BIM management |
 | Coordination | Clash Browser, Clash View, Coordination Report | Coordination |
 | Production | Data (Excel in/out, parameters, smart select), Sheets and Views, Export | Production |
-| Design | Test Fit, Structure from ARC, Design / Code Check | Design (new mode) |
+| Design | Test Fit, Structure from ARC, **Family Creator**, Design / Code Check | Design (new mode) |
 | Delivery | Submission Check (requirements at issue), Prepare Submission, Transmittal | Submission |
 | Team and Admin | Team Scripts, Users, Usage, Policy | hidden by default |
 
@@ -300,4 +300,57 @@ hidden capability and the thinking behind it) and the demo that proves it.
 | **Learning loop** | ACE gets better from its own mistakes: lessons, first-time-right trend, benchmark before every release | Learning report over a month | Running |
 | **The requirements hub** (planned) | The BEP, LOD and LOIN become rules that every tool follows; contradictions are found between documents, settings and the model, and raised like Revit warnings | A BEP revision that contradicts the LOIN, then a door without Fire Rating raising a warning | Concept |
 | **Project Hub** (planned) | Everything the project knows, analysed and decided, in one place, with every point linked to its sources, so the circles can be seen | The map view: clause → rule → failing elements → decision | Concept |
+
+## 12. Family creator and checker (idea, studied with the integration rule)
+
+**Idea:** Claude creates Revit families from a description, a catalogue sheet or a sketch, and checks families (one, a
+project's families, or a whole library folder) against the office and project standards.
+
+### Integration rule answers
+
+| Question | Answer |
+|---|---|
+| Which engine? | **Family intelligence** (today `describe_family`: footprint, insertion point, placement, nested families), extended to open family documents. The **rules engine** holds the family standard; the **model check engine** runs it; the **issue view engine** makes the pictures |
+| Where do the rules come from? | The requirements hub: the office family standard (naming, category, required and shared parameters, subcategories, materials, detail levels) and the project LOIN (geometry level and parameters per stage) |
+| What does it publish? | Family check results to the Project Hub (a Families branch: each family a point, its findings, its compliance); notifications when a non-compliant family is loaded into a project |
+| What does it connect to? | Test fit and space planning (they read the families' real footprint and facing), LOIN compliance, the model check (in-place families, unused types), the Excel parameter tools, and the lessons (for example "this office desk's origin is at its centre") |
+| What does it merge? | The planned *Parameter Manager* (shared parameters in families) and part of *Design Check*. Family naming joins the naming check |
+
+### The checker
+
+It checks each family for:
+
+- **Naming** (family, types, parameters).
+- **Category and subcategories.**
+- **Parameters:** the required and shared ones, with their groups and units.
+- **Origin and insertion point:** sensible reference planes, the insertion point at the right place.
+- **Flexing:** every type is loaded and the key dimensions are stepped, reporting what fails to regenerate.
+- **Graphics:** visibility per detail level, materials assigned.
+- **Size:** file size and nested families.
+- **Content:** no CAD imports, no in-place families.
+- **Level of detail:** the geometry level against the LOIN for the stage.
+
+It works in three places:
+
+- in the **project** (the loaded families);
+- in the **family editor** (the open family);
+- on a **library folder** (batch, read-only, with a report).
+
+### The creator
+
+1. Claude drafts the family: template, reference planes and labelled dimensions, geometry (extrusions, sweeps,
+   voids), parameters and types, subcategories and materials.
+2. It checks the draft with the checker.
+3. It flexes the draft.
+4. It shows a preview picture.
+5. It saves the family only after approval.
+
+It starts from office templates and keeps to the family standard, so a new family passes the checker by construction.
+It suits simple, parametric families (furniture, equipment, casework, generic components); complex families stay
+manual, with Claude's help.
+
+### Circle it forms
+
+**Families that are right from the start.** The standard defines them, the creator makes them, the checker proves
+them, the notifications catch non-compliant ones at load time, and the test fit and LOIN checks rely on their data.
 
