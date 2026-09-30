@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (core v2)
+## 1.7.0 (core v2)
 - **What caused each new clash**: the clash test now uses the change tracker's snapshots. A new clash says which side
   was added, moved or retyped since the snapshot before the last run, in which model, and by whom (workshared). This is
   kept separate from the responsible discipline (who should give way). Shown in the report, in Revit ("New from changes
