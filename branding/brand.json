@@ -1,11 +1,12 @@
 {
   "name": "ACE",
-  "fullName": "ACE | AlAin Consulting Engineers",
-  "primary": "#000000",
-  "accent": "#C8102E",
-  "greyDark": "#4A4A4A",
-  "greyLight": "#F5F5F5",
-  "font": "Arial",
+  "fullName": "ACE | Al Ain Consulting Engineers",
+  "primary": "#212121",
+  "accent": "#EF3340",
+  "greyDark": "#414042",
+  "greyLight": "#E6E6E6",
+  "font": "Poppins",
+  "headingFont": "BW Gradual",
   "mark": "ace-mark.png",
   "logo": "",
   "useLogoOnRibbon": false

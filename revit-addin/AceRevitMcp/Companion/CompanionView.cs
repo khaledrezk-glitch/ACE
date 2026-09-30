@@ -31,7 +31,7 @@ namespace AceRevitMcp.Companion
         {
             _c = Palette.Current();
             Background = _c.Background;
-            FontFamily = new FontFamily(Branding.FontFamily);
+            FontFamily = new FontFamily(Branding.FontFamily + ", Arial");
             FontSize = 12;
             Foreground = _c.Text;
 
@@ -465,9 +465,9 @@ namespace AceRevitMcp.Companion
                 Brush c(Color col) => new SolidColorBrush(col);
                 // Brand: black / white / greys, with the accent colour (ACE Red) for thin rules and the main action only.
                 return Branding.IsDarkTheme
-                    ? new Palette { Background = b("#2B2B2B"), Card = b("#363636"), Border = b("#4D4D4D"), Text = b("#F2F2F2"), Muted = b("#BDBDBD"),
-                                    Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = b("#F2F2F2"), Error = b("#F2F2F2"), Rule = c(Branding.Accent) }
-                    : new Palette { Background = c(Branding.GreyLight), Card = Brushes.White, Border = b("#D9D9D9"), Text = c(Branding.Primary), Muted = c(Branding.GreyDark),
+                    ? new Palette { Background = b("#212121"), Card = b("#414042"), Border = b("#A0A0A0"), Text = b("#E6E7E8"), Muted = b("#C4C4C4"),
+                                    Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = b("#E6E7E8"), Error = b("#E6E7E8"), Rule = c(Branding.Accent) }
+                    : new Palette { Background = c(Branding.GreyLight), Card = Brushes.White, Border = b("#A0A0A0"), Text = c(Branding.Primary), Muted = c(Branding.GreyDark),
                                     Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = c(Branding.Primary), Error = c(Branding.Primary), Rule = c(Branding.Accent) };
             }
         }

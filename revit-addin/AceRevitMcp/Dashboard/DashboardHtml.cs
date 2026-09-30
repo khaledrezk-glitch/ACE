@@ -28,6 +28,7 @@ namespace AceRevitMcp.Dashboard
             var grey = Hex(Branding.GreyDark);
             var light = Hex(Branding.GreyLight);
             var font = E(Branding.FontFamily) + ", Arial, Helvetica, sans-serif";
+            var headFont = (Branding.HeadingFont != null ? E(Branding.HeadingFont) + ", " : "") + font;
             var sb = new StringBuilder();
             sb.Append("<!DOCTYPE html><html lang=\"en-GB\"><head><meta charset=\"utf-8\"><meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">");
             sb.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
@@ -39,31 +40,31 @@ body{{margin:0;background:#FFFFFF;color:{black};font-family:{font};font-size:13p
 .head table{{width:100%;border-collapse:collapse}}
 .logo{{height:52px;vertical-align:middle}}
 .rule{{width:2px;background:{red};height:52px;display:inline-block;vertical-align:middle;margin:0 18px}}
-h1{{font-size:26px;margin:0;font-weight:bold}}
-h2{{font-size:17px;margin:28px 0 10px;font-weight:bold}}
+h1{{font-size:26px;margin:0;font-weight:bold;font-family:{headFont}}}
+h2{{font-size:17px;margin:28px 0 10px;font-weight:normal;font-family:{headFont}}}
 .meta{{color:{grey};font-size:12px}}
 .row{{width:100%;width:calc(100% + 24px);border-collapse:separate;border-spacing:12px 0;margin:0 -12px 4px}}
 .row td.cell{{vertical-align:top;background:{light};padding:16px 18px}}
-.row td.soonc{{background:#FFFFFF;border:1px dashed #BDBDBD}}
+.row td.soonc{{background:#FFFFFF;border:1px dashed #A0A0A0}}
 .card h3{{margin:0 0 10px;font-size:14px}}
-.big{{font-size:44px;font-weight:bold;line-height:1}}
+.big{{font-size:44px;font-weight:bold;line-height:1;font-family:{headFont}}}
 .kpi{{display:inline-block;width:31%;margin:0 2% 12px 0;vertical-align:top}}
 .kpi b{{display:block;font-size:22px}}
 .kpi span{{color:{grey};font-size:11px}}
 table.list{{width:100%;border-collapse:collapse;background:#FFFFFF}}
-table.list th{{text-align:left;font-size:11px;color:{grey};font-weight:normal;border-bottom:1px solid #D9D9D9;padding:6px 8px}}
-table.list td{{border-bottom:1px solid #EDEDED;padding:7px 8px;vertical-align:top}}
+table.list th{{text-align:left;font-size:11px;color:{grey};font-weight:normal;border-bottom:1px solid #E6E6E6;padding:6px 8px}}
+table.list td{{border-bottom:1px solid #E6E6E6;padding:7px 8px;vertical-align:top}}
 .num{{text-align:right;white-space:nowrap}}
 .tag{{display:inline-block;padding:1px 7px;font-size:11px;white-space:nowrap;border:1px solid {grey};color:{grey}}}
 .tag.fail{{border-color:{red};color:#FFFFFF;background:{red}}}
 .tag.warn{{border-color:{black};color:{black}}}
 .tag.live{{border-color:{black};color:#FFFFFF;background:{black}}}
 .tag.plan{{border-color:{grey};color:{grey};background:#FFFFFF}}
-.bar{{background:#E4E4E4;height:8px;margin-top:4px}}
+.bar{{background:#E6E6E6;height:8px;margin-top:4px}}
 .bar i{{display:block;height:8px;background:{black}}}
 .bar i.key{{background:{red}}}
 .muted{{color:{grey}}}
-.foot{{margin-top:34px;border-top:1px solid #D9D9D9;padding-top:12px;color:{grey};font-size:11px}}
+.foot{{margin-top:34px;border-top:1px solid #E6E6E6;padding-top:12px;color:{grey};font-size:11px}}
 ");
             sb.Append("</style></head><body><div class=\"page\">");
 
@@ -228,7 +229,7 @@ table.list td{{border-bottom:1px solid #EDEDED;padding:7px 8px;vertical-align:to
             const double r = 42, c = 2 * Math.PI * r;
             var filled = c * score / 100.0;
             var colour = score < 65 ? red : black;
-            return $"<svg width=\"104\" height=\"104\" viewBox=\"0 0 104 104\"><circle cx=\"52\" cy=\"52\" r=\"{N(r)}\" fill=\"none\" stroke=\"#DDDDDD\" stroke-width=\"10\"/>" +
+            return $"<svg width=\"104\" height=\"104\" viewBox=\"0 0 104 104\"><circle cx=\"52\" cy=\"52\" r=\"{N(r)}\" fill=\"none\" stroke=\"#E6E6E6\" stroke-width=\"10\"/>" +
                    $"<circle cx=\"52\" cy=\"52\" r=\"{N(r)}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"10\" stroke-dasharray=\"{N(filled, "0.0")} {N(c, "0.0")}\" transform=\"rotate(-90 52 52)\"/></svg>";
         }
 
@@ -236,13 +237,13 @@ table.list td{{border-bottom:1px solid #EDEDED;padding:7px 8px;vertical-align:to
         {
             const int w = 240, h = 90;
             if (history.Count < 2)
-                return $"<svg width=\"{w}\" height=\"{h}\"><line x1=\"0\" y1=\"{h - 1}\" x2=\"{w}\" y2=\"{h - 1}\" stroke=\"#CCCCCC\"/></svg><div class=\"muted\">The trend appears after the next snapshot.</div>";
+                return $"<svg width=\"{w}\" height=\"{h}\"><line x1=\"0\" y1=\"{h - 1}\" x2=\"{w}\" y2=\"{h - 1}\" stroke=\"#A0A0A0\"/></svg><div class=\"muted\">The trend appears after the next snapshot.</div>";
             var pts = history.Select((p, i) => (x: 6 + i * (w - 12.0) / (history.Count - 1), y: h - 8 - p.Score * (h - 16) / 100.0)).ToList();
             var line = string.Join(" ", pts.Select(p => $"{N(p.x, "0.0")},{N(p.y, "0.0")}"));
             var last = pts.Last();
             var first = history.First().Score;
             var now = history.Last().Score;
-            return $"<svg width=\"{w}\" height=\"{h}\"><line x1=\"0\" y1=\"{h - 1}\" x2=\"{w}\" y2=\"{h - 1}\" stroke=\"#CCCCCC\"/>" +
+            return $"<svg width=\"{w}\" height=\"{h}\"><line x1=\"0\" y1=\"{h - 1}\" x2=\"{w}\" y2=\"{h - 1}\" stroke=\"#A0A0A0\"/>" +
                    $"<polyline points=\"{line}\" fill=\"none\" stroke=\"{black}\" stroke-width=\"2\"/><circle cx=\"{N(last.x, "0.0")}\" cy=\"{N(last.y, "0.0")}\" r=\"4\" fill=\"{red}\"/></svg>" +
                    $"<div class=\"muted\">From {first} to <b style=\"color:{black}\">{now}</b> since {history.First().Time:d MMM}</div>";
         }

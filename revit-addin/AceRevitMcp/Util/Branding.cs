@@ -10,7 +10,7 @@ namespace AceRevitMcp.Util
     /// <summary>
     /// Company branding for the ribbon icons and the Companion panel, from
     /// %APPDATA%\ACE-RevitMCP\branding\brand.json (installed from the package's branding folder):
-    /// { "name": "ACE", "primary": "#0B3A6E", "accent": "#E4572E", "logo": "logo.png", "useLogoOnRibbon": false }
+    /// { "name": "ACE", "primary": "#212121", "accent": "#EF3340", "font": "Poppins", "headingFont": "BW Gradual", "mark": "ace-mark.png" }
     /// Missing or invalid values fall back to neutral defaults.
     /// </summary>
     internal static class Branding
@@ -20,6 +20,8 @@ namespace AceRevitMcp.Util
         public static Color Accent { get; private set; } = (Color)ColorConverter.ConvertFromString("#2F80ED");
         public static string FullName { get; private set; } = "";
         public static string FontFamily { get; private set; } = "Segoe UI";
+        /// <summary>Headline typeface (ACE: BW Gradual); falls back to the body font where it is not installed.</summary>
+        public static string HeadingFont { get; private set; }
         public static Color GreyDark { get; private set; } = (Color)ColorConverter.ConvertFromString("#5F6773");
         public static Color GreyLight { get; private set; } = (Color)ColorConverter.ConvertFromString("#F7F8FA");
         public static ImageSource Logo { get; private set; }
@@ -51,6 +53,7 @@ namespace AceRevitMcp.Util
                 GreyLight = ParseColor(json["greyLight"]?.ToString(), GreyLight);
                 if (json["fullName"]?.ToString() is string fn) FullName = fn.Trim();
                 if (json["font"]?.ToString() is string font && font.Trim().Length > 0) FontFamily = font.Trim();
+                if (json["headingFont"]?.ToString() is string hf && hf.Trim().Length > 0) HeadingFont = hf.Trim();
                 UseLogoOnRibbon = json["useLogoOnRibbon"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
                 Logo = Image(json["logo"]?.ToString());
                 Mark = Image(json["mark"]?.ToString());
