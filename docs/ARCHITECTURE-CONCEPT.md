@@ -16,10 +16,47 @@ capability than either point alone. Circles join into **bigger circles**. For ex
 This only works if every new capability is studied with the others first. **The integration rule** (section 7)
 makes that a step in every release, and the **Project Hub** (section 7) keeps every point and link in one place.
 
+### Principle: smart and proactive, not rigid
+
+Every capability should behave like an experienced colleague, not a form.
+
+**Proactive: it notices and offers.**
+- When a model opens: "The MEP link changed since yesterday: 40 elements moved near your beams. Run the STR vs MEP test?"
+- When it sees a pattern: "You renamed 12 views to the new standard by hand. Shall I do the other 86? (preview first)"
+- When it sees the stage: "Stage 4 starts next week per the BEP. 37 doors still miss Fire Rating."
+- When the work changes: "You're resolving clashes. Switch to Coordination mode?"
+- When a task is done: it offers the natural next step, e.g. after a clash run, "prepare the coordination report?"
+
+**Smart: it understands, rather than matching exactly.**
+- **Engines give facts; Claude gives judgement.** The engines are exact and repeatable (clashes, counts, rules), and
+  Claude interprets them: what matters most, why, and what to do first. That's the difference from a rigid checker.
+- **Intent over literal rules.** It matches names and categories loosely ("Door - Single" and "SGL_Door"), reads a BEP
+  written in prose, and asks when it's unsure instead of failing.
+- **Context decides.** The same finding matters more at issue than at concept stage, in the owner's discipline than
+  in a link, and on a new element than on an accepted one.
+- **Rules are strong defaults, not walls.** Any rule can be accepted as a deviation with a reason. The reason becomes
+  a decision in the Project Hub, and ACE stops repeating it.
+- **It adapts.** Thresholds and priorities learn from the project's history (what the team fixes, what it accepts).
+  Lessons carry across projects.
+- **It explains itself.** Every suggestion says why, from which source (clause, rule, model change), and what the
+  fix would change.
+
+**Guardrails, so being proactive never becomes risky or noisy:**
+- Suggestions never change the model by themselves. Acting on one runs the tool with the usual preview and approval.
+- **Proactivity dial**, per user: *off*, *quiet* (a count only), *normal* (cards), *eager* (also as you work). The work
+  mode tunes it; for example, Production batches suggestions until you pause.
+- The learning loop measures which suggestions people accept or ignore, and drops the ones that don't help.
+
+In the architecture this is an **observer layer**: it watches events (open, sync, element changes, link reloads,
+stage dates, repeated actions, idle time), asks the engines, and posts **suggestions** through the same channel as the
+notifications (section 8). Each suggestion has a one-click action.
+
 ## 2. Architecture in layers
 
 ```
  Surfaces     Ribbon (work modes, BIM Tools group) | Companion | Claude (MCP tools) | HTML / Excel reports
+ ------------------------------------------------------------------------------------------------------------
+ Observer     Watches events and patterns → suggestions and notifications (proactive, with a dial per user)
  ------------------------------------------------------------------------------------------------------------
  Workflows    Model check · Clash Browser · Coordination report · Worksets per BEP · Test fit · Structure
               from ARC · Change tracker · Submission check (planned) · Requirements monitor (planned)
@@ -271,6 +308,8 @@ Before building:
    into a private file.
 7. **Does it raise notifications?** Findings that people must act on use the one notification system (section 8),
    with severity from the requirements.
+8. **Is it smart and proactive?** Does it adapt to context, explain why, allow a reasoned deviation, and offer the next
+   step through the observer, instead of waiting to be asked?
 
 After releasing: a benchmark case, the learning loop, and a review of this document each quarter (or every minor
 version).

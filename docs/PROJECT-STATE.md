@@ -68,6 +68,9 @@ released as verified).
 16. **Creative names**, and a future rename away from ACE, as a personal tool. *`docs/NAMING.md`.*
 17. A **family creator and checker**. *Concept (section 12): the checker checks the family standard and LOIN in the
     project, in the family editor or on a library folder; the creator drafts, checks, flexes and previews before saving.*
+18. The tool must be **smart and proactive, not rigid**. *Principle for everything (concept section 1): it notices
+    and offers, understands intent, adapts to context, explains why, allows reasoned deviations; an observer layer
+    with a proactivity dial per user; never changes the model without approval.*
 
 ## 4. Decisions and constraints to keep
 
