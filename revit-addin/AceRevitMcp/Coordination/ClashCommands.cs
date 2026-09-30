@@ -14,7 +14,7 @@ namespace AceRevitMcp.Coordination
 {
     internal static class ClashCommands
     {
-        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, with_model, show }</summary>
+        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, primary_model, with_model, show }</summary>
         public static JsonNode Run(UIApplication app, JsonObject args)
         {
             var host = Args.RequireDoc(app);
@@ -29,11 +29,16 @@ namespace AceRevitMcp.Coordination
             {
                 var testNotes = new List<string>();
                 var withModel = Args.Str(args, "with_model");
-                var found = Clashes.Run(app, host, t, level, max, testNotes, out var complete, withModel);
+                var primaryModel = Args.Str(args, "primary_model");
+                var found = Clashes.Run(app, host, t, level, max, testNotes, out var complete, withModel, primaryModel);
                 // Only what this run looked at can become resolved: one level, one compared model, or nothing if it was cut short.
                 bool InLevel(Clash c) => level == null || string.Equals(c.Level, level, StringComparison.OrdinalIgnoreCase);
-                bool InModel(Clash c) => withModel == null || string.Equals(c.SourceA, withModel, StringComparison.OrdinalIgnoreCase) || string.Equals(c.SourceB, withModel, StringComparison.OrdinalIgnoreCase);
-                Func<Clash, bool> scope = !complete ? (c => false) : (level != null || withModel != null) ? (c => InLevel(c) && InModel(c)) : null;
+                var primaryName = primaryModel ?? host.Title;
+                bool Is(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+                bool InModel(Clash c) => withModel == null
+                    ? (primaryModel == null || Is(c.SourceA, primaryName) || Is(c.SourceB, primaryName))
+                    : ((Is(c.SourceA, withModel) || Is(c.SourceA, primaryName)) && (Is(c.SourceB, withModel) || Is(c.SourceB, primaryName)));
+                Func<Clash, bool> scope = !complete ? (c => false) : (level != null || withModel != null || primaryModel != null) ? (c => InLevel(c) && InModel(c)) : null;
                 if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
                 var stored = Clashes.Load(host, t.Name);
                 DateTime? previousRun = stored.Count > 0 ? stored.Max(c => c.LastSeen) : (DateTime?)null;

@@ -47,7 +47,9 @@ namespace AceRevitMcp.Coordination
     internal sealed class ClashBrowser : Window
     {
         private static ClashBrowser _open;
-        private readonly ComboBox _with = new ComboBox { MinWidth = 260, Margin = new Thickness(6, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center };
+        private readonly ComboBox _primary = new ComboBox { MinWidth = 220, Margin = new Thickness(6, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center };
+        private readonly ComboBox _with = new ComboBox { MinWidth = 240, Margin = new Thickness(6, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center };
+        private List<Clash> _clashes = new List<Clash>();
         private readonly ComboBox _filter = new ComboBox { Width = 120, Margin = new Thickness(6, 0, 10, 0) };
         private readonly TextBox _search = new TextBox { Width = 200, Margin = new Thickness(6, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center };
         private readonly ListView _list = new ListView { BorderThickness = new Thickness(0) };
@@ -64,6 +66,7 @@ namespace AceRevitMcp.Coordination
             var doc = app.ActiveUIDocument.Document;
             var models = Clashes.Sources(app, doc).Where(s => !s.IsHost)
                 .Select(s => (s.Name, $"{s.Name} ({s.Discipline}, {s.Relation})")).ToList();
+            if (_open != null && _open._host != doc.Title) ClashView.PrimaryModel = null;   // another model: start from it as the primary
             if (_open == null)
             {
                 _open = new ClashBrowser();
@@ -117,16 +120,18 @@ namespace AceRevitMcp.Coordination
 
             // Row 1: compare with, run, show models, reset.
             var top = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 10, 12, 6) };
-            top.Children.Add(Label("Compare this model with:"));
+            top.Children.Add(Label("Primary (red):"));
+            top.Children.Add(_primary);
+            top.Children.Add(Label("Compare with (green):"));
             top.Children.Add(_with);
             top.Children.Add(Btn("Run clash test", true, async (s, e) => await Run()));
-            top.Children.Add(Btn("Show both models", false, async (s, e) => await Call("clash_view", new JsonObject { ["with_model"] = WithModel() }, r => "Both models in colour in the ACE Clash View.")));
+            top.Children.Add(Btn("Show both models", false, async (s, e) => await Call("clash_view", new JsonObject { ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() }, r => "Primary red, secondary green in the ACE Clash View.")));
             top.Children.Add(Btn("Coordination report", false, async (s, e) => await Call("coordination_report", new JsonObject { ["open"] = true }, r => $"Report saved: {r?["htmlReport"]}")));
 
             // Row 2: legend.
             var legend = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 12, 8) };
-            legend.Children.Add(Swatch(ClashView.HostColour, _legendHost));
-            legend.Children.Add(Swatch(ClashView.OtherColour, _legendOther));
+            legend.Children.Add(Swatch(ClashView.PrimaryColour, _legendHost));
+            legend.Children.Add(Swatch(ClashView.SecondaryColour, _legendOther));
             legend.Children.Add(Swatch(ClashView.HitColour, new TextBlock { Text = "Intersection" }));
             legend.Children.Add(new TextBlock { Text = "Click a clash: everything else is dimmed and the view zooms to where the elements meet.", Foreground = grey, VerticalAlignment = VerticalAlignment.Center });
 
@@ -146,8 +151,8 @@ namespace AceRevitMcp.Coordination
             void Col(string header, string path, double width) => grid.Columns.Add(new GridViewColumn { Header = header, DisplayMemberBinding = new Binding(path), Width = width });
             Col("Status", nameof(ClashRow.Status), 80);
             Col("Level", nameof(ClashRow.Level), 70);
-            Col("This model (red)", nameof(ClashRow.ThisSide), 250);
-            Col("Other model (green)", nameof(ClashRow.OtherSide), 250);
+            Col("Primary (red)", nameof(ClashRow.ThisSide), 250);
+            Col("Secondary (green)", nameof(ClashRow.OtherSide), 250);
             Col("Depth", nameof(ClashRow.Depth), 70);
             Col("Responsible", nameof(ClashRow.Responsible), 150);
             Col("Cause", nameof(ClashRow.Cause), 220);
@@ -192,26 +197,52 @@ namespace AceRevitMcp.Coordination
             return t;
         }
 
+        /// <summary>The primary model's name: null = this model.</summary>
+        private string PrimaryModel() => (_primary.SelectedItem as ComboBoxItem)?.Tag as string;
+        private string PrimaryName() => PrimaryModel() ?? _host;
         private string WithModel() => (_with.SelectedItem as ComboBoxItem)?.Tag as string;
 
         private void FillModels()
         {
-            var keep = WithModel() ?? ClashView.WithModel;
-            _with.Items.Clear();
-            _with.Items.Add(new ComboBoxItem { Content = "All loaded models", Tag = null });
-            foreach (var (name, label) in _models) _with.Items.Add(new ComboBoxItem { Content = label, Tag = name });
-            _with.SelectedIndex = Math.Max(0, _with.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => (i.Tag as string) == keep));
-            _with.SelectionChanged -= WithChanged;
-            _with.SelectionChanged += WithChanged;
+            _primary.SelectionChanged -= PrimaryChanged; _with.SelectionChanged -= WithChanged;
+            var keepPrimary = PrimaryModel() ?? ClashView.PrimaryModel;
+            _primary.Items.Clear();
+            _primary.Items.Add(new ComboBoxItem { Content = $"This model ({_host})", Tag = null });
+            foreach (var (name, label) in _models) _primary.Items.Add(new ComboBoxItem { Content = label + "  [BIM manager: link vs link]", Tag = name });
+            _primary.SelectedIndex = Math.Max(0, _primary.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => (i.Tag as string) == keepPrimary));
+            FillWith();
+            _primary.SelectionChanged += PrimaryChanged; _with.SelectionChanged += WithChanged;
             UpdateLegend();
         }
 
-        private void WithChanged(object s, SelectionChangedEventArgs e) { ClashView.WithModel = WithModel(); UpdateLegend(); Apply(); }
+        /// <summary>The secondary list: every model except the primary (this model too, when a link is the primary).</summary>
+        private void FillWith()
+        {
+            var keep = WithModel() ?? ClashView.WithModel;
+            var primary = PrimaryModel();
+            _with.Items.Clear();
+            _with.Items.Add(new ComboBoxItem { Content = primary == null ? "All loaded links" : "All other models", Tag = null });
+            if (primary != null) _with.Items.Add(new ComboBoxItem { Content = $"This model ({_host})", Tag = _host });
+            foreach (var (name, label) in _models.Where(m => m.Name != primary)) _with.Items.Add(new ComboBoxItem { Content = label, Tag = name });
+            _with.SelectedIndex = Math.Max(0, _with.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => (i.Tag as string) == keep));
+        }
+
+        private void PrimaryChanged(object s, SelectionChangedEventArgs e)
+        {
+            _with.SelectionChanged -= WithChanged;
+            ClashView.PrimaryModel = PrimaryModel();
+            FillWith();
+            ClashView.WithModel = WithModel();
+            _with.SelectionChanged += WithChanged;
+            UpdateLegend(); Build(_clashes);
+        }
+
+        private void WithChanged(object s, SelectionChangedEventArgs e) { ClashView.WithModel = WithModel(); UpdateLegend(); Build(_clashes); }
 
         private void UpdateLegend()
         {
-            _legendHost.Text = $"This model: {_host}";
-            _legendOther.Text = WithModel() != null ? $"Compared: {WithModel()}" : "Other models";
+            _legendHost.Text = $"Primary: {PrimaryName()}";
+            _legendOther.Text = WithModel() != null ? $"Secondary: {WithModel()}" : "Secondary: other models";
         }
 
         /// <summary>Reads the clash results (the last run, else the stored ones) into rows.</summary>
@@ -241,14 +272,15 @@ namespace AceRevitMcp.Coordination
 
         private void Build(List<Clash> clashes)
         {
+            _clashes = clashes ?? new List<Clash>();
+            var primary = PrimaryName();
             var issues = ClashLogic.Issues(clashes);
             var issueOf = new Dictionary<string, string>();
             var n = 0;
             foreach (var i in issues) { n++; foreach (var c in i.Clashes) issueOf[c.Key] = $"Issue {n}: {DashboardHelpers.Trim(i.Title, 110)}  |  {i.Responsible}"; }
             _rows = clashes.Select(c =>
             {
-                var aHost = c.SourceA == _host;
-                var thisSide = aHost || c.SourceB != _host;   // show this model's element first
+                var thisSide = c.SourceA == primary || c.SourceB != primary;   // show the primary model's element first
                 string Side(string cat, string name, long id, string src) => $"{cat}: {name} (id {id}{(src != _host ? ", " + src : "")})";
                 var a = Side(c.CatA, c.NameA, c.IdA, c.SourceA); var b = Side(c.CatB, c.NameB, c.IdB, c.SourceB);
                 return new ClashRow
@@ -272,9 +304,13 @@ namespace AceRevitMcp.Coordination
             var f = (_filter.SelectedItem as ComboBoxItem)?.Content as string ?? "Open";
             var q = (_search.Text ?? "").Trim();
             var with = WithModel();
+            var primary = PrimaryName();
+            bool Pair(ClashRow r) => with == null
+                ? (r.SourceA == primary || r.SourceB == primary)
+                : ((r.SourceA == primary && r.SourceB == with) || (r.SourceA == with && r.SourceB == primary) || (primary == with && r.SourceA == primary && r.SourceB == primary));
             var rows = _rows.Where(r =>
                 (f == "All" || (f == "Open" && (r.Status == "new" || r.Status == "active" || r.Status == "reopened")) || string.Equals(r.Status, f, StringComparison.OrdinalIgnoreCase)) &&
-                (with == null || r.SourceA == with || r.SourceB == with) &&
+                Pair(r) &&
                 (q.Length == 0 || $"{r.Issue} {r.ThisSide} {r.OtherSide} {r.Level} {r.Responsible} {r.Cause}".IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0))
                 .OrderBy(r => r.Issue.StartsWith("Issue ") ? int.Parse(new string(r.Issue.Substring(6).TakeWhile(char.IsDigit).ToArray())) : int.MaxValue)
                 .ThenByDescending(r => r.DepthMm).ToList();
@@ -305,7 +341,7 @@ namespace AceRevitMcp.Coordination
 
         private async System.Threading.Tasks.Task Run()
         {
-            await Call("run_clash_test", new JsonObject { ["test"] = "all", ["with_model"] = WithModel() },
+            await Call("run_clash_test", new JsonObject { ["test"] = "all", ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() },
                 r => "Clash test finished.", TimeSpan.FromMinutes(15));
             if (Clashes.Last != null) Build(Clashes.Last);
         }
@@ -339,7 +375,7 @@ namespace AceRevitMcp.Coordination
         private async System.Threading.Tasks.Task SelectInRevit()
         {
             if (!(_list.SelectedItem is ClashRow r)) { _status.Text = "Choose a clash first."; return; }
-            if (r.HostIds.Length == 0) { _status.Text = "Both elements are in other models: they cannot be selected here."; return; }
+            if (r.HostIds.Length == 0) { _status.Text = "Both elements are in linked models: they cannot be selected here (shown in the ACE Clash View instead)."; return; }
             await Call("select_elements", new JsonObject { ["ids"] = new JsonArray(r.HostIds.Select(i => (JsonNode)i).ToArray()) },
                 res => $"Selected {res?["selected"]} element(s) of this model.");
         }

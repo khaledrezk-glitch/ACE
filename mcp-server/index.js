@@ -184,7 +184,8 @@ tool("run_clash_test", {
     max_elements: z.number().int().optional().describe("Cap on elements in set A (default 5000)"),
     a_categories: z.array(z.string()).optional(), b_categories: z.array(z.string()).optional(),
     a_disciplines: z.array(z.string()).optional(), b_disciplines: z.array(z.string()).optional(),
-    with_model: z.string().optional().describe("Compare this model with one linked or open model only (its name, from coordination_sources)"),
+    with_model: z.string().optional().describe("Secondary model: compare the primary with this linked or open model only (its name, from coordination_sources)"),
+    primary_model: z.string().optional().describe("Primary model (default: this model). A BIM manager can set a link here to check link against link"),
     show: z.boolean().optional(),
   },
   annotations: readOnly,
@@ -279,14 +280,17 @@ tool("open_view", {
 
 tool("clash_view", {
   title: "Show both models in colour",
-  description: "Open the ACE Clash View (a 3D view per user, the only thing ACE changes): this model in ACE Red, the compared model (with_model, a link) in green, other links hidden, no section box. Use it to show the user how two models sit together before or after a clash test.",
-  inputSchema: { with_model: z.string().optional().describe("Linked model to compare with (default: all loaded links)") },
+  description: "Open the ACE Clash View (a 3D view per user, the only thing ACE changes): the primary model (this model by default) in ACE Red, the secondary (with_model, a link) in green, other links hidden, no section box. For a BIM manager, primary_model can be a link (link vs link; this model is then ghosted). Use it to show the user how two models sit together before or after a clash test.",
+  inputSchema: {
+    with_model: z.string().optional().describe("Secondary model (a link; default: all other loaded links)"),
+    primary_model: z.string().optional().describe("Primary model (default: this model; a link for link vs link)"),
+  },
   annotations: benign,
 }, async (a) => text(await callRevit("clash_view", a, 120)));
 
 tool("focus_clash", {
   title: "Show one clash",
-  description: "Show one clash in the ACE Clash View, like Navisworks: everything else dimmed, the two elements drawn in their model colours (this model red, the other green) cut to a box around the clash, the intersection in gold, a section box and zoom on where they meet (a large slab shows only the area around the pipe). key comes from run_clash_test (topIssues / topOpen) or clash_results. Walk the user through issues one by one with this.",
+  description: "Show one clash in the ACE Clash View, like Navisworks: everything else dimmed, the two elements drawn by role (primary model red, secondary green) cut to a box around the clash, the intersection in gold, a section box and zoom on where they meet (a large slab shows only the area around the pipe). key comes from run_clash_test (topIssues / topOpen) or clash_results. Walk the user through issues one by one with this.",
   inputSchema: { key: z.string(), margin_mm: z.number().int().optional().describe("Space around the intersection (default 800 mm)") },
   annotations: benign,
 }, async (a) => text(await callRevit("focus_clash", a, 120)));

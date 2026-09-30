@@ -201,16 +201,17 @@ namespace AceRevitMcp.Coordination
 
         // ---- run -----------------------------------------------------------------------------------------------
 
-        public static List<Clash> Run(UIApplication app, Document host, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null)
+        public static List<Clash> Run(UIApplication app, Document host, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null, string primaryModel = null)
         {
             complete = true;
             var sources = Sources(app, host);
             var aSources = Pick(sources, test.A); var bSources = Pick(sources, test.B);
-            // Compare this model with one chosen model only (Clash Browser): this model on one side, that model on the other.
-            var comparingSelf = withModel != null && string.Equals(withModel, host.Title, StringComparison.OrdinalIgnoreCase);
+            // Compare two chosen models only (Clash Browser): the primary (this model, or a link for a BIM manager) and the secondary.
+            var primary = string.IsNullOrEmpty(primaryModel) ? host.Title : primaryModel;
+            var comparingSelf = withModel != null && string.Equals(withModel, primary, StringComparison.OrdinalIgnoreCase);
             if (withModel != null)
             {
-                bool Allowed(Source s) => s.IsHost || string.Equals(s.Name, withModel, StringComparison.OrdinalIgnoreCase);
+                bool Allowed(Source s) => string.Equals(s.Name, primary, StringComparison.OrdinalIgnoreCase) || string.Equals(s.Name, withModel, StringComparison.OrdinalIgnoreCase);
                 aSources = aSources.Where(Allowed).ToList(); bSources = bSources.Where(Allowed).ToList();
                 if (aSources.Count == 0 || bSources.Count == 0) { notes.Add($"Nothing to compare with {withModel} in this test."); return new List<Clash>(); }
             }
@@ -233,6 +234,7 @@ namespace AceRevitMcp.Coordination
                 foreach (var sb in bSources)
                 {
                     if (withModel != null && !comparingSelf && sa.Doc.Equals(sb.Doc)) continue;   // only across the two models
+                    if (withModel == null && primaryModel != null && !string.Equals(sa.Name, primary, StringComparison.OrdinalIgnoreCase) && !string.Equals(sb.Name, primary, StringComparison.OrdinalIgnoreCase)) continue;   // a link as primary: only its clashes
                     // A's geometry in B's coordinates: A -> host -> B.
                     var toB = sb.ToHost.Inverse.Multiply(sa.ToHost);
                     foreach (var solid in solidsA)

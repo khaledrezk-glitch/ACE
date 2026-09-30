@@ -87,7 +87,9 @@ report what is new and what was resolved since last time, grouped by responsible
 walk-through ("show me the clashes", "go through them with me") use focus_clash issue by issue (the user sees
 only the two elements, coloured by model, zoomed to the intersection) and clash_view to show both models in
 colour; the user can do the same in ACE > Coordination > Clash Browser. To compare with one model use
-run_clash_test with_model. For a coordination meeting ("prepare the clash report", "issues for the meeting") use coordination_report: a picture
+run_clash_test with_model (the secondary; the primary is this model). A BIM manager can compare two links:
+primary_model = one link, with_model = the other (this model is then ghosted). Colours always follow the role:
+primary red, secondary green. For a coordination meeting ("prepare the clash report", "issues for the meeting") use coordination_report: a picture
 per issue, responsible, cause, location, and a CSV list for Excel; give the user both file paths. Offer
 set_clash_status to approve accepted ones (e.g. sleeved penetrations). Check coordination_sources and
 the brief's alignment first: if levels or grids don't line up, clash results are unreliable - say so.

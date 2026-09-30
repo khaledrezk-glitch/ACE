@@ -13,29 +13,39 @@ namespace AceRevitMcp.Coordination
 {
     /// <summary>
     /// The ACE Clash View: one 3D view per user in which ACE shows coordination.
-    /// Overview: this model in ACE Red, the compared model in UAE Flag Green, other links hidden.
+    /// Overview: the primary model (this model, or a link) in ACE Red, the secondary in UAE Flag Green, other links hidden.
     /// Focus: one clash; everything else dimmed, the two elements drawn in their colours, the intersection in gold,
     /// a section box around the intersection (so a large slab is cut down to the area around the pipe) and zoomed to it.
     /// Only this view's own settings change; ACE never touches other views or elements.
     /// </summary>
     internal static class ClashView
     {
-        // Brand colours: ACE Red for this model, UAE Flag Green (secondary palette) for the other, Bright Gold for the intersection.
-        internal static System.Windows.Media.Color HostColour => Branding.Accent;
-        internal static readonly System.Windows.Media.Color OtherColour = System.Windows.Media.Color.FromRgb(0x00, 0x8B, 0x45);
+        // Brand colours by role: ACE Red for the primary model, UAE Flag Green (secondary palette) for the secondary,
+        // Bright Gold for the intersection.
+        internal static System.Windows.Media.Color PrimaryColour => Branding.Accent;
+        internal static readonly System.Windows.Media.Color SecondaryColour = System.Windows.Media.Color.FromRgb(0x00, 0x8B, 0x45);
         internal static readonly System.Windows.Media.Color HitColour = System.Windows.Media.Color.FromRgb(0xD1, 0xA1, 0x4A);
-        internal static readonly System.Windows.Media.Color ThirdColour = System.Windows.Media.Color.FromRgb(0x2A, 0x9F, 0xBC);   // two linked models: cyan-blue
 
-        /// <summary>Colours of the two sides: this model red, the other green; two elements of one model red and green; two links green and blue.</summary>
-        internal static (System.Windows.Media.Color A, string NameA, System.Windows.Media.Color B, string NameB) Colours(bool aHost, bool bHost)
+        /// <summary>The primary model: this model (null), or a link for a BIM manager comparing two links.</summary>
+        internal static string PrimaryModel;
+        /// <summary>The secondary model chosen to compare with (null = all loaded links).</summary>
+        internal static string WithModel;
+
+        internal static string PrimaryName(Document doc) => string.IsNullOrEmpty(PrimaryModel) ? doc.Title : PrimaryModel;
+        private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Colours of the two sides of a clash: the side in the primary model red, the other green. Two elements of one
+        /// model (e.g. MEP vs MEP): A red, B green.
+        /// </summary>
+        internal static (System.Windows.Media.Color A, string NameA, System.Windows.Media.Color B, string NameB) Colours(string primary, string sourceA, string sourceB)
         {
-            if (aHost && bHost) return (HostColour, "red", OtherColour, "green");
-            if (aHost) return (HostColour, "red", OtherColour, "green");
-            if (bHost) return (OtherColour, "green", HostColour, "red");
-            return (OtherColour, "green", ThirdColour, "blue");
+            var aPrimary = Same(sourceA, primary);
+            var bPrimary = Same(sourceB, primary);
+            if (bPrimary && !aPrimary) return (SecondaryColour, "green", PrimaryColour, "red");
+            return (PrimaryColour, "red", SecondaryColour, "green");
         }
 
-        internal static string WithModel;        // the model compared with (Clash Browser choice)
         internal static string FocusedKey;
 
         private static Color Rc(System.Windows.Media.Color c) => new Color(c.R, c.G, c.B);
@@ -69,25 +79,31 @@ namespace AceRevitMcp.Coordination
             doc.Settings.Categories.Cast<Category>().Where(c => c.CategoryType == CategoryType.Model && RevitJson.Safe(() => v.CanCategoryBeHidden(c.Id)));
 
         /// <summary>Prepares the view: no template, colours per model (overview) or dimmed (focus), other links hidden.</summary>
-        private static View3D Prepare(UIApplication app, Document doc, List<Source> sources, string withModel, bool focus)
+        private static View3D Prepare(UIApplication app, Document doc, List<Source> sources, string primary, string withModel, bool focus)
         {
             var v = FindOrCreate(app, doc);
             if (v.ViewTemplateId != ElementId.InvalidElementId) v.ViewTemplateId = ElementId.InvalidElementId;
             v.DetailLevel = ViewDetailLevel.Fine;
             v.DisplayStyle = DisplayStyle.ShadingWithEdges;
-            var hostLook = focus ? Dimmed() : Solid(doc, HostColour, 0);
+            // This model: red when it is the primary, green when it is the secondary, ghosted when a BIM manager
+            // compares two links. In focus mode everything is dimmed (the clash is drawn on top).
+            var hostLook = focus ? Dimmed()
+                : Same(doc.Title, primary) ? Solid(doc, PrimaryColour, 0)
+                : Same(doc.Title, withModel) ? Solid(doc, SecondaryColour, 0)
+                : Dimmed();
             foreach (var c in ModelCategories(doc, v))
                 try { v.SetCategoryOverrides(c.Id, hostLook); } catch { }
-            // Links: the compared one coloured (overview) or dimmed (focus); every other link hidden.
+            // Links: the primary red, the secondary green (all links green when none is chosen), every other link hidden.
             var links = sources.Where(s => s.LinkInstanceId != null).ToList();
             var hide = new List<ElementId>(); var show = new List<ElementId>();
             foreach (var l in links)
             {
-                var compared = withModel == null || string.Equals(l.Name, withModel, StringComparison.OrdinalIgnoreCase);
-                if (compared)
+                var isPrimary = Same(l.Name, primary);
+                var isSecondary = withModel == null ? !isPrimary : Same(l.Name, withModel);
+                if (isPrimary || isSecondary)
                 {
                     show.Add(l.LinkInstanceId);
-                    try { v.SetElementOverrides(l.LinkInstanceId, focus ? Dimmed() : Solid(doc, OtherColour, 0)); } catch { }
+                    try { v.SetElementOverrides(l.LinkInstanceId, focus ? Dimmed() : Solid(doc, isPrimary ? PrimaryColour : SecondaryColour, 0)); } catch { }
                 }
                 else hide.Add(l.LinkInstanceId);
             }
@@ -127,19 +143,25 @@ namespace AceRevitMcp.Coordination
 
         // ---- commands ------------------------------------------------------------------------------------------------
 
-        /// <summary>Bridge "clash_view": { with_model: "MEP.rvt" (default: all links) } - both models in colour.</summary>
+        /// <summary>
+        /// Bridge "clash_view": { primary_model (default: this model), with_model: "MEP.rvt" (default: all links) } -
+        /// the primary model red, the secondary green.
+        /// </summary>
         public static JsonNode Overview(UIApplication app, JsonObject args)
         {
             var doc = Args.RequireDoc(app);
-            var withModel = Args.Str(args, "with_model") ?? WithModel;
+            if (args.ContainsKey("primary_model")) PrimaryModel = Args.Str(args, "primary_model");
+            if (Same(PrimaryModel, doc.Title)) PrimaryModel = null;
+            var withModel = args.ContainsKey("with_model") ? Args.Str(args, "with_model") : WithModel;
             WithModel = withModel;
+            var primary = PrimaryName(doc);
             FocusedKey = null;
             var sources = Clashes.Sources(app, doc);
             View3D v;
             using (var t = new Transaction(doc, "ACE clash view"))
             {
                 t.Start();
-                v = Prepare(app, doc, sources, withModel, focus: false);
+                v = Prepare(app, doc, sources, primary, withModel, focus: false);
                 if (v.IsSectionBoxActive) v.IsSectionBoxActive = false;
                 t.Commit();
             }
@@ -149,8 +171,9 @@ namespace AceRevitMcp.Coordination
             return new JsonObject
             {
                 ["view"] = v.Name,
-                ["thisModel"] = $"{doc.Title}: ACE Red",
-                ["compared"] = withModel == null ? "all loaded links: green" : $"{withModel}: green" + (other != null && other.LinkInstanceId == null ? " (an open model, not a link: only the clash elements can be drawn here; link it to see it whole)" : ""),
+                ["primary"] = $"{primary}: red",
+                ["secondary"] = withModel == null ? "all other loaded links: green" : $"{withModel}: green" + (other != null && other.LinkInstanceId == null ? " (an open model, not a link: only the clash elements can be drawn here; link it to see it whole)" : ""),
+                ["thisModel"] = Same(doc.Title, primary) ? "primary (red)" : Same(doc.Title, withModel) ? "secondary (green)" : "ghosted (a BIM manager view of two links)",
             };
         }
 
@@ -193,16 +216,17 @@ namespace AceRevitMcp.Coordination
             using (var t = new Transaction(doc, "ACE clash view"))
             {
                 t.Start();
-                var withModel = WithModel ?? (sa.IsHost ? sb.Name : sa.Name);
-                v = Prepare(app, doc, sources, withModel, focus: true);
+                var primaryName = PrimaryName(doc);
+                var withModel = WithModel ?? (Same(sa.Name, primaryName) ? sb.Name : sa.Name);
+                v = Prepare(app, doc, sources, primaryName, withModel, focus: true);
                 v.SetSectionBox(new BoundingBoxXYZ { Min = fmin, Max = fmax });
                 v.IsSectionBoxActive = true;
                 t.Commit();
             }
 
-            // Highlight: element colours by model (this model red, the other green), cut to the focus box, and the intersection in gold.
+            // Highlight: element colours by role (primary red, secondary green), cut to the focus box, and the intersection in gold.
             var box = BoxSolid(fmin, fmax);
-            var colours = Colours(sa.IsHost, sb.IsHost);
+            var colours = Colours(PrimaryName(doc), sa.Name, sb.Name);
             var colourA = colours.A; var colourB = colours.B;
             var off = Ft(3);
             var shapes = new List<ClashHighlight.Shape>
@@ -229,7 +253,7 @@ namespace AceRevitMcp.Coordination
         }
 
         /// <summary>Bridge "reset_clash_view": clears the highlight and the section box; colours stay per model.</summary>
-        public static JsonNode Reset(UIApplication app, JsonObject args) => Overview(app, new JsonObject { ["with_model"] = WithModel });
+        public static JsonNode Reset(UIApplication app, JsonObject args) => Overview(app, new JsonObject());
 
         // ---- geometry ----------------------------------------------------------------------------------------------------
 
