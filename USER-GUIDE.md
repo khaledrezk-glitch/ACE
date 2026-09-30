@@ -93,7 +93,8 @@ shows what would move, and applies only after you confirm (one undo step). Your 
 
 **ACE tab → Coordination → Clash Browser**: choose the **primary** model (this model; a BIM manager can pick a link)
 and the model to **compare with**, click **Run clash test**, then click a clash in the list. The **ACE Clash View**
-shows it alone: everything else dimmed, the primary model's element in red, the other in green, the intersection in
+shows it alone: everything else dimmed, the primary model's element in green, the other in red (with several links, each link in its own colour: click
+a colour square in the legend to change it), the intersection in
 gold, zoomed to where they meet. **Show both models** colours the two models whole. Approve, mark active, select, or
 open the **Coordination Report** for the meeting (a picture per issue, who should fix it, and an Excel list).
 

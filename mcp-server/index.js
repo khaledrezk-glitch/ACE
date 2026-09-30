@@ -287,17 +287,18 @@ tool("working_mode", {
 
 tool("clash_view", {
   title: "Show both models in colour",
-  description: "Open the ACE Clash View (a 3D view per user, the only thing ACE changes): the primary model (this model by default) in ACE Red, the secondary (with_model, a link) in green, other links hidden, no section box. For a BIM manager, primary_model can be a link (link vs link; this model is then ghosted). Use it to show the user how two models sit together before or after a clash test.",
+  description: "Open the ACE Clash View (a 3D view per user, the only thing ACE changes): the primary model (this model by default) in green, the secondary (with_model, a link) in red, or with no with_model each other link in its own colour; other links hidden, no section box. For a BIM manager, primary_model can be a link (link vs link; this model is then ghosted). Use it to show the user how two models sit together before or after a clash test.",
   inputSchema: {
     with_model: z.string().optional().describe("Secondary model (a link; default: all other loaded links)"),
     primary_model: z.string().optional().describe("Primary model (default: this model; a link for link vs link)"),
+    colours: z.record(z.string()).optional().describe("Colour per model name, e.g. {\"MEP.rvt\": \"blue\"} (green, red, blue, berry, navy, lime, grey, silver or #RRGGBB); remembered"),
   },
   annotations: benign,
 }, async (a) => text(await callRevit("clash_view", a, 120)));
 
 tool("focus_clash", {
   title: "Show one clash",
-  description: "Show one clash in the ACE Clash View, like Navisworks: everything else dimmed, the two elements drawn by role (primary model red, secondary green) cut to a box around the clash, the intersection in gold, a section box and zoom on where they meet (a large slab shows only the area around the pipe). key comes from run_clash_test (topIssues / topOpen) or clash_results. Walk the user through issues one by one with this.",
+  description: "Show one clash in the ACE Clash View, like Navisworks: everything else dimmed, the two elements drawn in their model colours (primary green, secondary red, or each link its chosen colour) cut to a box around the clash, the intersection in gold, a section box and zoom on where they meet (a large slab shows only the area around the pipe). key comes from run_clash_test (topIssues / topOpen) or clash_results. Walk the user through issues one by one with this.",
   inputSchema: { key: z.string(), margin_mm: z.number().int().optional().describe("Space around the intersection (default 800 mm)") },
   annotations: benign,
 }, async (a) => text(await callRevit("focus_clash", a, 120)));

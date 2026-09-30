@@ -13,6 +13,8 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Binding = System.Windows.Data.Binding;
+using ContextMenu = System.Windows.Controls.ContextMenu;
+using MenuItem = System.Windows.Controls.MenuItem;
 using Brushes = System.Windows.Media.Brushes;
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
@@ -54,7 +56,7 @@ namespace AceRevitMcp.Coordination
         private readonly TextBox _search = new TextBox { Width = 200, Margin = new Thickness(6, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center };
         private readonly ListView _list = new ListView { BorderThickness = new Thickness(0) };
         private readonly TextBlock _status = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextWrapping = TextWrapping.Wrap };
-        private readonly TextBlock _legendHost = new TextBlock(), _legendOther = new TextBlock();
+        private readonly StackPanel _legendModels = new StackPanel { Orientation = Orientation.Horizontal };
         private List<ClashRow> _rows = new List<ClashRow>();
         private string _host;
         private List<(string Name, string Label)> _models = new List<(string, string)>();
@@ -120,20 +122,19 @@ namespace AceRevitMcp.Coordination
 
             // Row 1: compare with, run, show models, reset.
             var top = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 10, 12, 6) };
-            top.Children.Add(Label("Primary (red):"));
+            top.Children.Add(Label("Primary:"));
             top.Children.Add(_primary);
-            top.Children.Add(Label("Compare with (green):"));
+            top.Children.Add(Label("Compare with:"));
             top.Children.Add(_with);
             top.Children.Add(Btn("Run clash test", true, async (s, e) => await Run()));
-            top.Children.Add(Btn("Show both models", false, async (s, e) => await Call("clash_view", new JsonObject { ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() }, r => "Primary red, secondary green in the ACE Clash View.")));
+            top.Children.Add(Btn("Show both models", false, async (s, e) => await Call("clash_view", new JsonObject { ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() }, r => "Both models in their colours in the ACE Clash View.")));
             top.Children.Add(Btn("Coordination report", false, async (s, e) => await Call("coordination_report", new JsonObject { ["open"] = true }, r => $"Report saved: {r?["htmlReport"]}")));
 
             // Row 2: legend.
             var legend = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 12, 8) };
-            legend.Children.Add(Swatch(ClashView.PrimaryColour, _legendHost));
-            legend.Children.Add(Swatch(ClashView.SecondaryColour, _legendOther));
+            legend.Children.Add(_legendModels);
             legend.Children.Add(Swatch(ClashView.HitColour, new TextBlock { Text = "Intersection" }));
-            legend.Children.Add(new TextBlock { Text = "Click a clash: everything else is dimmed and the view zooms to where the elements meet.", Foreground = grey, VerticalAlignment = VerticalAlignment.Center });
+            legend.Children.Add(new TextBlock { Text = "Click a colour to change it. Click a clash: the rest is dimmed and the view zooms to where they meet.", Foreground = grey, VerticalAlignment = VerticalAlignment.Center });
 
             // Row 3: filters.
             var filters = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 0, 12, 8) };
@@ -151,8 +152,8 @@ namespace AceRevitMcp.Coordination
             void Col(string header, string path, double width) => grid.Columns.Add(new GridViewColumn { Header = header, DisplayMemberBinding = new Binding(path), Width = width });
             Col("Status", nameof(ClashRow.Status), 80);
             Col("Level", nameof(ClashRow.Level), 70);
-            Col("Primary (red)", nameof(ClashRow.ThisSide), 250);
-            Col("Secondary (green)", nameof(ClashRow.OtherSide), 250);
+            Col("Primary", nameof(ClashRow.ThisSide), 250);
+            Col("Compared with", nameof(ClashRow.OtherSide), 250);
             Col("Depth", nameof(ClashRow.Depth), 70);
             Col("Responsible", nameof(ClashRow.Responsible), 150);
             Col("Cause", nameof(ClashRow.Cause), 220);
@@ -239,10 +240,48 @@ namespace AceRevitMcp.Coordination
 
         private void WithChanged(object s, SelectionChangedEventArgs e) { ClashView.WithModel = WithModel(); UpdateLegend(); Build(_clashes); }
 
+        /// <summary>One colour square per model shown (the primary, and the compared model or every other link); click to choose its colour.</summary>
         private void UpdateLegend()
         {
-            _legendHost.Text = $"Primary: {PrimaryName()}";
-            _legendOther.Text = WithModel() != null ? $"Secondary: {WithModel()}" : "Secondary: other models";
+            _legendModels.Children.Clear();
+            var primary = PrimaryName();
+            var others = new List<string> { _host }.Concat(_models.Select(m => m.Name)).Where(n => n != primary).ToList();
+            var shown = new List<(string Name, string Role)> { (primary, "Primary") };
+            if (WithModel() != null) shown.Add((WithModel(), "Compared"));
+            else shown.AddRange(_models.Select(m => m.Name).Where(n => n != primary).Select(n => (n, "Link")));
+            foreach (var (name, role) in shown)
+            {
+                var colour = ClashColours.For(name, primary, WithModel(), others);
+                var chip = new Button
+                {
+                    Background = Brushes.Transparent, BorderThickness = new Thickness(0), Padding = new Thickness(0), Margin = new Thickness(0, 0, 16, 0),
+                    Cursor = System.Windows.Input.Cursors.Hand, ToolTip = $"{role}: {name}. Click to choose its colour.",
+                };
+                var p = new StackPanel { Orientation = Orientation.Horizontal };
+                p.Children.Add(new Rectangle { Width = 16, Height = 16, Fill = new SolidColorBrush(colour), Stroke = Brushes.Black, StrokeThickness = 0.5, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center });
+                p.Children.Add(new TextBlock { Text = $"{role}: {DashboardHelpers.Trim(name, 40)}", VerticalAlignment = VerticalAlignment.Center });
+                chip.Content = p;
+                var menu = new ContextMenu();
+                foreach (var (label, c) in ClashColours.Palette)
+                {
+                    var item = new MenuItem { Header = label, Icon = new Rectangle { Width = 14, Height = 14, Fill = new SolidColorBrush(c) } };
+                    item.Click += async (s, e) => { ClashColours.Set(name, c); UpdateLegend(); await Repaint(); };
+                    menu.Items.Add(item);
+                }
+                var reset = new MenuItem { Header = "Default colour" };
+                reset.Click += async (s, e) => { ClashColours.Reset(name); UpdateLegend(); await Repaint(); };
+                menu.Items.Add(new Separator()); menu.Items.Add(reset);
+                chip.ContextMenu = menu;
+                chip.Click += (s, e) => { menu.PlacementTarget = chip; menu.IsOpen = true; };
+                _legendModels.Children.Add(chip);
+            }
+        }
+
+        /// <summary>Redraws the ACE Clash View with the new colours (the focused clash, or both models).</summary>
+        private async System.Threading.Tasks.Task Repaint()
+        {
+            if (ClashView.FocusedKey != null) await Call("focus_clash", new JsonObject { ["key"] = ClashView.FocusedKey }, r => "Colours updated.");
+            else await Call("clash_view", new JsonObject { ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() }, r => "Colours updated.");
         }
 
         /// <summary>Reads the clash results (the last run, else the stored ones) into rows.</summary>

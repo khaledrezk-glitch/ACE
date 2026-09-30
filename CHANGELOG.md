@@ -23,8 +23,9 @@
 - **Clash Browser and ACE Clash View** (ACE tab → Coordination → *Clash Browser*; after Navisworks Clash Detective and
   ACC Model Coordination): choose the model to compare with, run the test against that model only, browse the clashes
   grouped by issue (filter by status, search), Previous / Next, Approve, Mark active, Select in Revit. Colours follow
-  the role: the primary model (this model by default) in ACE Red, the secondary (the chosen link) in UAE Flag Green,
-  other links hidden. For BIM managers the primary can be a link (link vs link; this model is then ghosted). Click a
+  the role: the primary model (this model by default) in green, the secondary (the chosen link) in red; compared
+  with all links, each link has its own colour from the brand palette, and any model's colour can be chosen in the
+  legend (remembered). Other links hidden. For BIM managers the primary can be a link (link vs link; this model is then ghosted). Click a
   clash: everything else is dimmed, only the two elements are drawn in their colours, cut to a box around the clash (a
   large slab shows just the area around the pipe), the intersection in gold, with a section box and zoom on where they
   meet. Linked and open-model elements are drawn with Revit's temporary 3D graphics (DirectContext3D); only the ACE Clash
