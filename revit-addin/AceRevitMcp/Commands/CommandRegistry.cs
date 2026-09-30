@@ -39,6 +39,10 @@ namespace AceRevitMcp.Commands
                 ["coordination_sources"] = Coordination.ClashCommands.Sources,
                 ["pending_changes"] = Companion.ActivityHub.PendingCommand,
                 ["coordination_report"] = Coordination.CoordinationReport.Build,
+                ["clash_results"] = Coordination.ClashCommands.Results,
+                ["clash_view"] = Coordination.ClashView.Overview,
+                ["focus_clash"] = Coordination.ClashView.Focus,
+                ["reset_clash_view"] = Coordination.ClashView.Reset,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

@@ -1,6 +1,15 @@
 # Changelog
 
 ## 1.7.0 (core v2)
+- **Clash Browser and ACE Clash View** (ACE tab → Coordination → *Clash Browser*; after Navisworks Clash Detective and
+  ACC Model Coordination): choose the model to compare with, run the test against that model only, browse the clashes
+  grouped by issue (filter by status, search), Previous / Next, Approve, Mark active, Select in Revit. The ACE Clash View
+  (one 3D view per user) shows this model in ACE Red and the compared model in UAE Flag Green, other links hidden. Click a
+  clash: everything else is dimmed, only the two elements are drawn in their colours, cut to a box around the clash (a
+  large slab shows just the area around the pipe), the intersection in gold, with a section box and zoom on where they
+  meet. Linked and open-model elements are drawn with Revit's temporary 3D graphics (DirectContext3D); only the ACE Clash
+  View's own settings change. Claude: `clash_view`, `focus_clash`, `reset_clash_view`, `clash_results`, and
+  `run_clash_test` with `with_model`.
 - **Coordination report** (ACE tab → Coordination → *Coordination Report*, or `coordination_report`): the meeting-ready
   report of the clash issues. A 3D picture per issue (section box around it, this model's elements in ACE Red), the
   responsible discipline and reason, the cause (what changed and who), level and location, blank Action / Owner / Due

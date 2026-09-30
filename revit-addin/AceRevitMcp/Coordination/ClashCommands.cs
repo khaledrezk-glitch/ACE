@@ -14,7 +14,7 @@ namespace AceRevitMcp.Coordination
 {
     internal static class ClashCommands
     {
-        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, show }</summary>
+        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, with_model, show }</summary>
         public static JsonNode Run(UIApplication app, JsonObject args)
         {
             var host = Args.RequireDoc(app);
@@ -28,10 +28,12 @@ namespace AceRevitMcp.Coordination
             foreach (var t in tests)
             {
                 var testNotes = new List<string>();
-                var found = Clashes.Run(app, host, t, level, max, testNotes, out var complete);
-                // Only what this run looked at can become resolved: one level, or nothing if it was cut short.
-                Func<Clash, bool> scope = !complete ? (c => false)
-                    : level != null ? (c => string.Equals(c.Level, level, StringComparison.OrdinalIgnoreCase)) : null;
+                var withModel = Args.Str(args, "with_model");
+                var found = Clashes.Run(app, host, t, level, max, testNotes, out var complete, withModel);
+                // Only what this run looked at can become resolved: one level, one compared model, or nothing if it was cut short.
+                bool InLevel(Clash c) => level == null || string.Equals(c.Level, level, StringComparison.OrdinalIgnoreCase);
+                bool InModel(Clash c) => withModel == null || string.Equals(c.SourceA, withModel, StringComparison.OrdinalIgnoreCase) || string.Equals(c.SourceB, withModel, StringComparison.OrdinalIgnoreCase);
+                Func<Clash, bool> scope = !complete ? (c => false) : (level != null || withModel != null) ? (c => InLevel(c) && InModel(c)) : null;
                 if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
                 var stored = Clashes.Load(host, t.Name);
                 DateTime? previousRun = stored.Count > 0 ? stored.Max(c => c.LastSeen) : (DateTime?)null;
@@ -124,6 +126,28 @@ namespace AceRevitMcp.Coordination
             return chosen.Select(s => new Clashes.TestSpec { Name = s.Name, A = s.A, B = s.B, ToleranceMm = tol ?? s.ToleranceMm, ClearanceMm = clear }).ToList();
         }
 
+        /// <summary>Bridge "clash_results": the stored results of this model (no re-run), for the Clash Browser and Claude.</summary>
+        public static JsonNode Results(UIApplication app, JsonObject args)
+        {
+            var host = Args.RequireDoc(app);
+            if (Clashes.Last == null || Clashes.LastHost != host.Title)
+            {
+                var stored = Clashes.LoadAll(host);
+                if (stored.Count > 0) { Clashes.Last = stored; Clashes.LastHost = host.Title; Clashes.LastTest = "stored results"; }
+            }
+            var all = Clashes.Last != null && Clashes.LastHost == host.Title ? Clashes.Last : new List<Clash>();
+            var issues = ClashLogic.Issues(all);
+            return new JsonObject
+            {
+                ["clashes"] = all.Count, ["open"] = all.Count(Open), ["issues"] = issues.Count,
+                ["issueList"] = new JsonArray(issues.Take(30).Select(i => (JsonNode)new JsonObject
+                {
+                    ["issue"] = i.Title, ["responsible"] = i.Responsible, ["levels"] = i.Levels, ["clashes"] = i.Count,
+                    ["keys"] = new JsonArray(i.Clashes.Select(c => (JsonNode)c.Key).ToArray()),
+                }).ToArray()),
+            };
+        }
+
         /// <summary>{ test, keys: [...], status: approved | active | new, note }</summary>
         public static JsonNode SetStatus(UIApplication app, JsonObject args)
         {
@@ -141,6 +165,8 @@ namespace AceRevitMcp.Coordination
                 changed++;
             }
             Clashes.Save(host, test, clashes);
+            if (Clashes.Last != null)
+                foreach (var c in Clashes.Last.Where(c => keys.Contains(c.Key))) { c.Status = status; if (Args.Str(args, "note") is string n2) c.Note = n2; }
             return new JsonObject { ["updated"] = changed, ["status"] = status };
         }
 

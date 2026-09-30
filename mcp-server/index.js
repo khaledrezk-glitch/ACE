@@ -184,6 +184,7 @@ tool("run_clash_test", {
     max_elements: z.number().int().optional().describe("Cap on elements in set A (default 5000)"),
     a_categories: z.array(z.string()).optional(), b_categories: z.array(z.string()).optional(),
     a_disciplines: z.array(z.string()).optional(), b_disciplines: z.array(z.string()).optional(),
+    with_model: z.string().optional().describe("Compare this model with one linked or open model only (its name, from coordination_sources)"),
     show: z.boolean().optional(),
   },
   annotations: readOnly,
@@ -275,6 +276,34 @@ tool("open_view", {
   inputSchema: { name: z.string().optional(), view_type: z.string().optional(), room: z.string().optional(), ids: z.array(z.number().int()).optional() },
   annotations: benign,
 }, async (a) => text(await callRevit("open_view", a, 60)));
+
+tool("clash_view", {
+  title: "Show both models in colour",
+  description: "Open the ACE Clash View (a 3D view per user, the only thing ACE changes): this model in ACE Red, the compared model (with_model, a link) in green, other links hidden, no section box. Use it to show the user how two models sit together before or after a clash test.",
+  inputSchema: { with_model: z.string().optional().describe("Linked model to compare with (default: all loaded links)") },
+  annotations: benign,
+}, async (a) => text(await callRevit("clash_view", a, 120)));
+
+tool("focus_clash", {
+  title: "Show one clash",
+  description: "Show one clash in the ACE Clash View, like Navisworks: everything else dimmed, the two elements drawn in their model colours (this model red, the other green) cut to a box around the clash, the intersection in gold, a section box and zoom on where they meet (a large slab shows only the area around the pipe). key comes from run_clash_test (topIssues / topOpen) or clash_results. Walk the user through issues one by one with this.",
+  inputSchema: { key: z.string(), margin_mm: z.number().int().optional().describe("Space around the intersection (default 800 mm)") },
+  annotations: benign,
+}, async (a) => text(await callRevit("focus_clash", a, 120)));
+
+tool("reset_clash_view", {
+  title: "Reset the clash view",
+  description: "Clear the clash highlight and section box in the ACE Clash View (models stay in their colours).",
+  inputSchema: {},
+  annotations: benign,
+}, async () => text(await callRevit("reset_clash_view", {}, 120)));
+
+tool("clash_results", {
+  title: "Stored clash results",
+  description: "The stored clash results of this model without re-running: counts and the top issues with their clash keys (for focus_clash).",
+  inputSchema: {},
+  annotations: readOnly,
+}, async () => text(await callRevit("clash_results", {}, 60)));
 
 tool("coordination_report", {
   title: "Coordination meeting report",

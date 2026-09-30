@@ -291,6 +291,36 @@
           "value": 0
         }
       ]
+    },
+    {
+      "name": "Clash view opens with both models in colour",
+      "command": "clash_view",
+      "args": {},
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "view",
+          "op": "contains",
+          "value": "ACE Clash View"
+        }
+      ]
+    },
+    {
+      "name": "Stored clash results load for the browser",
+      "command": "clash_results",
+      "args": {},
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "clashes",
+          "op": ">=",
+          "value": 0
+        },
+        {
+          "path": "issueList",
+          "op": "exists"
+        }
+      ]
     }
   ]
 }

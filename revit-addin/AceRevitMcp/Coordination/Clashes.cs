@@ -17,6 +17,7 @@ namespace AceRevitMcp.Coordination
         public Document Doc;
         public string Name, Discipline, Relation;
         public Transform ToHost = Transform.Identity;   // this model's coordinates -> the active model's
+        public ElementId LinkInstanceId;                  // for links: the instance in the active model
         public bool IsHost => Relation == "this model";
     }
 
@@ -40,7 +41,7 @@ namespace AceRevitMcp.Coordination
             {
                 var ld = RevitJson.Safe(() => li.GetLinkDocument());
                 if (ld == null || !seen.Add((ld.PathName ?? ld.Title) + "#" + li.Id.Value)) continue;
-                list.Add(new Source { Doc = ld, Name = ld.Title, Discipline = BriefCommands.Discipline(ld), Relation = "link", ToHost = li.GetTotalTransform() });
+                list.Add(new Source { Doc = ld, Name = ld.Title, Discipline = BriefCommands.Discipline(ld), Relation = "link", ToHost = li.GetTotalTransform(), LinkInstanceId = li.Id });
             }
             Transform shared(Document d) { try { return d.ActiveProjectLocation.GetTotalTransform(); } catch { return null; } }
             var hs = shared(host);
@@ -200,11 +201,19 @@ namespace AceRevitMcp.Coordination
 
         // ---- run -----------------------------------------------------------------------------------------------
 
-        public static List<Clash> Run(UIApplication app, Document host, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete)
+        public static List<Clash> Run(UIApplication app, Document host, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null)
         {
             complete = true;
             var sources = Sources(app, host);
             var aSources = Pick(sources, test.A); var bSources = Pick(sources, test.B);
+            // Compare this model with one chosen model only (Clash Browser): this model on one side, that model on the other.
+            var comparingSelf = withModel != null && string.Equals(withModel, host.Title, StringComparison.OrdinalIgnoreCase);
+            if (withModel != null)
+            {
+                bool Allowed(Source s) => s.IsHost || string.Equals(s.Name, withModel, StringComparison.OrdinalIgnoreCase);
+                aSources = aSources.Where(Allowed).ToList(); bSources = bSources.Where(Allowed).ToList();
+                if (aSources.Count == 0 || bSources.Count == 0) { notes.Add($"Nothing to compare with {withModel} in this test."); return new List<Clash>(); }
+            }
             var aItems = aSources.SelectMany(s => Collect(s, test.A.Categories).Select(e => (s, e))).ToList();
             var bCats = new ElementMulticategoryFilter(test.B.Categories.Select(c => new ElementId(c)).ToList());
             notes.Add($"A: {aItems.Count} elements in {string.Join(", ", aSources.Select(s => $"{s.Name} ({s.Discipline})"))}");
@@ -223,6 +232,7 @@ namespace AceRevitMcp.Coordination
                 if (solidsA.Count == 0) continue;
                 foreach (var sb in bSources)
                 {
+                    if (withModel != null && !comparingSelf && sa.Doc.Equals(sb.Doc)) continue;   // only across the two models
                     // A's geometry in B's coordinates: A -> host -> B.
                     var toB = sb.ToHost.Inverse.Multiply(sa.ToHost);
                     foreach (var solid in solidsA)
@@ -366,6 +376,17 @@ namespace AceRevitMcp.Coordination
         }
 
         private static readonly JsonSerializerOptions Json = new JsonSerializerOptions { WriteIndented = false, IncludeFields = true };
+
+        /// <summary>Every stored result for this model (all standard tests and any custom ones).</summary>
+        public static List<Clash> LoadAll(Document host)
+        {
+            var dir = Path.Combine(AceConfig.Directory, "clashes", Tracking.Snapshots.ModelKey(host));
+            var all = new List<Clash>();
+            if (!Directory.Exists(dir)) return all;
+            foreach (var f in Directory.GetFiles(dir, "*.json"))
+                try { all.AddRange(JsonSerializer.Deserialize<List<Clash>>(File.ReadAllText(f), Json) ?? new List<Clash>()); } catch { }
+            return all;
+        }
 
         public static List<Clash> Load(Document host, string test)
         {
