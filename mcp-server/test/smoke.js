@@ -35,6 +35,7 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { applied: args.changes.length, failed: 0, dryRun: !!args.dry_run, results: [] } });
       case "coordination_report": return reply({ ok: true, result: { htmlReport: "C:/x/Model - Coordination.html", excelList: "C:/x/Model - Coordination.csv", issues: 7, withPictures: 7 } });
       case "focus_clash": return reply({ ok: true, result: { view: "ACE Clash View - khaled", clash: args.key, intersectionMm: "200 x 200 x 250", a: "Pipes (red)", b: "Floors (green)" } });
+      case "working_mode": return reply({ ok: true, result: { mode: args.mode ? "Coordination" : "All tools", focus: ["Coordination"], leadWith: ["run_clash_test"] } });
       case "pending_changes": return reply({ ok: true, result: { waiting: [{ card: 1, title: "Claude: Test fit (301, 10 m2)" }, { card: 2, title: "Claude: Test fit (301, 8 m2)" }], recentlyDecided: [] } });
       case "model_brief":
         return reply({ ok: true, result: { model: { title: "Test", project: "Tower (P-01)", discipline: "ARC" }, rooms: [{ type: "Office Unit", count: 3 }], otherModels: [{ relation: "link", discipline: "STR", alignment: { verdict: "aligned" } }] } });
@@ -70,7 +71,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["backup_model", "check_setup", "clash_results", "clash_view", "coordination_report", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "focus_clash", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "pending_changes", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "reset_clash_view", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image"]);
+assert.deepEqual(tools, ["backup_model", "check_setup", "clash_results", "clash_view", "coordination_report", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "focus_clash", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "pending_changes", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "reset_clash_view", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -235,6 +236,8 @@ const cr = (await call("coordination_report", { max_issues: 5 })).content[0].tex
 assert.match(cr, /Coordination\.csv/, "coordination report returns the CSV issue list");
 const fc = (await call("focus_clash", { key: "STR vs MEP|u1|u2" })).content[0].text;
 assert.match(fc, /200 x 200 x 250/, "focus_clash passes the key and returns the intersection");
+const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
+assert.match(wm, /Coordination/, "working mode can be set");
 const pc = (await call("pending_changes")).content[0].text;
 assert.match(pc, /8 m2/, "the panel's waiting cards reach Claude");
 bridge.close();

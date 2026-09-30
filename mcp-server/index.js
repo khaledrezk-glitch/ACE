@@ -278,6 +278,13 @@ tool("open_view", {
   annotations: benign,
 }, async (a) => text(await callRevit("open_view", a, 60)));
 
+tool("working_mode", {
+  title: "Working mode",
+  description: "Get or set the ACE working mode (Model audit, Coordination, Production, Submission, All tools). A mode shows the ribbon tools for that task, dims the less relevant ones and hides unrelated panels, and puts its prompts first in the Companion. Returns the mode, its focus / dimmed / hidden panels and the tools to lead with. Set it when the user says what they are about to do (\"I'm coordinating with MEP today\").",
+  inputSchema: { mode: z.string().optional().describe("audit | coordination | production | submission | all (omit to just read the current mode)") },
+  annotations: benign,
+}, async (a) => text(await callRevit("working_mode", a, 30)));
+
 tool("clash_view", {
   title: "Show both models in colour",
   description: "Open the ACE Clash View (a 3D view per user, the only thing ACE changes): the primary model (this model by default) in ACE Red, the secondary (with_model, a link) in green, other links hidden, no section box. For a BIM manager, primary_model can be a link (link vs link; this model is then ghosted). Use it to show the user how two models sit together before or after a clash test.",

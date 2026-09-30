@@ -334,6 +334,23 @@
           "op": "exists"
         }
       ]
+    },
+    {
+      "name": "Working mode can be read",
+      "command": "working_mode",
+      "args": {},
+      "maxMs": 5000,
+      "expect": [
+        {
+          "path": "mode",
+          "op": "exists"
+        },
+        {
+          "path": "modes",
+          "op": "length>=",
+          "value": 5
+        }
+      ]
     }
   ]
 }

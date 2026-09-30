@@ -111,12 +111,13 @@ namespace AceRevitMcp.Util
         private const string Pulse = "M2,12 H6 L8.5,5 L12.5,19 L15,10 L16.5,12 H22 V13.6 H15.6 L15,12.8 L12.5,21.5 L8.5,8.5 L7,13.6 H2 Z";
 
         // The company mark is not used on 16/32 px ribbon icons (brand minimum logo size is 72 px wide).
-        public static ImageSource Companion(int size) => Render(size, ChatCheck, useMark: false);
-        public static ImageSource Status(int size) => Render(size, Pulse, useMark: false);
+        public static ImageSource Companion(int size, bool dim = false) => Render(size, ChatCheck, useMark: false, dim: dim);
+        public static ImageSource Status(int size, bool dim = false) => Render(size, Pulse, useMark: false, dim: dim);
         /// <summary>A line icon (24 × 24 stroked path). Planned tools get a hollow accent ring instead of a solid dot.</summary>
-        public static ImageSource Line(int size, string glyph, bool planned) => Render(size, glyph, useMark: false, stroke: true, planned: planned);
+        public static ImageSource Line(int size, string glyph, bool planned, bool dim = false) => Render(size, glyph, useMark: false, stroke: true, planned: planned, dim: dim);
 
-        private static ImageSource Render(int size, string glyph, bool useMark, bool stroke = false, bool planned = false)
+        /// <param name="dim">Faded (working mode: a tool that is less relevant to the current task; still usable).</param>
+        private static ImageSource Render(int size, string glyph, bool useMark, bool stroke = false, bool planned = false, bool dim = false)
         {
             if (Branding.UseLogoOnRibbon && Branding.Logo != null) return Branding.Logo;
             var dark = Branding.IsDarkTheme;
@@ -134,6 +135,7 @@ namespace AceRevitMcp.Util
             var visual = new DrawingVisual();
             using (var dc = visual.RenderOpen())
             {
+                if (dim) dc.PushOpacity(0.32);
                 double S = size;
                 // The tile's rectangle. Bevel: inset so a soft shadow fits below and behind it; 3D: a darker lip below.
                 Rect face;
@@ -231,6 +233,7 @@ namespace AceRevitMcp.Util
                     : new SolidColorBrush(accentColor);
                 if (planned) dc.DrawEllipse(new SolidColorBrush(Shade(tile, embossed && !lightTile ? 0.1 : 0)), new Pen(new SolidColorBrush(accentColor), Math.Max(1.0, S * 0.045)), dot, S * 0.085, S * 0.085);
                 else dc.DrawEllipse(accent, null, dot, S * 0.095, S * 0.095);
+                if (dim) dc.Pop();
             }
             var bmp = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
             bmp.Render(visual);

@@ -83,6 +83,7 @@ namespace AceRevitMcp.Companion
             Content = root;
 
             ActivityHub.Changed += QueueRender;
+            Ribbon.WorkModes.Changed += QueueRender;
             _clock.Tick += (s, e) => QueueRender();
             _clock.Start();
             Render();
@@ -351,6 +352,16 @@ namespace AceRevitMcp.Companion
         }
 
         private static (string, (string, Func<string>, bool)[])[] Prompts()
+        {
+            // The working mode's prompts come first.
+            var mode = Ribbon.WorkModes.Current;
+            var general = GeneralPrompts();
+            if (mode.Prompts.Length == 0) return general;
+            var first = ($"{mode.Label} mode", mode.Prompts.Select(p => (p.Label, (Func<string>)(() => p.Prompt), false)).ToArray());
+            return new[] { first }.Concat(general).ToArray();
+        }
+
+        private static (string, (string, Func<string>, bool)[])[] GeneralPrompts()
         {
             string sel() => SelectionText();
             const string ro = " Read-only, don't change anything.";

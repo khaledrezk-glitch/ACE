@@ -1,6 +1,10 @@
 # Changelog
 
 ## 1.7.0 (core v2)
+- **Working modes** (ACE tab → *Work mode*, first on the tab): Model audit, Coordination, Production (mass
+  production: data, sheets, exports), Submission, All tools. A mode shows the panels for the task in full, dims the less
+  relevant ones (faded icons, still usable) and hides unrelated panels; the Companion shows the mode's prompts first;
+  Claude leads with the mode's tools (`working_mode`, and `workingMode` in `revit_status`). Remembered per user.
 - **Model check after Autodesk's Model Checker** (BIM Interoperability Tools): 19 new checks in its sections: file and
   project (file size, starting view), worksets (elements on Workset1), levels, grids and links (not pinned), warnings
   (duplicate and overlapping elements), model content (linked CAD in 3D, raster images, groups used once, unused family

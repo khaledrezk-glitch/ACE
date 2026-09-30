@@ -65,14 +65,32 @@ Click **ACE tab → Insights → Dashboard** (read-only, takes a few seconds on 
 - a **health score out of 100** and its trend, with every finding ranked by its impact on the score;
 - the most frequent warnings, key parameters filled, statistics by level, submission readiness
   (project information and sheet title block data), and Claude's activity this week;
-- the **status of every ACE tool**, including the planned ones (clash detection, code compliance).
+- a **model check** in the sections of Autodesk's Model Checker (file and project, worksets, levels and grids,
+  warnings, model content, views, annotation, naming): Pass / Review / Action needed per check and per section;
+  your office can set the rules in a check set (`checkset.example.json` in the package);
+- the latest **clash results** and the **status of every ACE tool**, including the planned ones.
 
 In the window: **Refresh** after you fix things, choose a finding and click **Select in Revit** to select and
 zoom to its elements, **Open in browser** to view or print it. Every run is saved as an HTML file in
 `Documents\ACE Insights\<model name>\`: send it to your team lead or attach it to a submission. You can also
 ask Claude: *"Show me the model dashboard and explain the top issues."*
 
-The ribbon also shows the **planned tools** (buttons with a hollow red ring). Click one to see what it will do,
+### Working modes
+
+The **Work mode** list at the start of the ACE tab sets up the ribbon for what you are doing: **Model audit**,
+**Coordination**, **Production** (data, sheets, exports), **Submission** or **All tools**. The tools for the task stay
+in full, less relevant ones are dimmed (still usable) and unrelated panels are hidden. The Companion shows the mode's
+prompts first and Claude leads with the mode's tools. You can also tell Claude: *"switch to coordination mode"*.
+
+### Clash Browser (coordination)
+
+**ACE tab → Coordination → Clash Browser**: choose the **primary** model (this model; a BIM manager can pick a link)
+and the model to **compare with**, click **Run clash test**, then click a clash in the list. The **ACE Clash View**
+shows it alone: everything else dimmed, the primary model's element in red, the other in green, the intersection in
+gold, zoomed to where they meet. **Show both models** colours the two models whole. Approve, mark active, select, or
+open the **Coordination Report** for the meeting (a picture per issue, who should fix it, and an Excel list).
+
+The ribbon also shows the **planned tools** (white buttons with a hollow red ring). Click one to see what it will do,
 or **ACE tab → Roadmap** for the whole plan.
 
 ## 4. What Claude does before changing anything (your safety)

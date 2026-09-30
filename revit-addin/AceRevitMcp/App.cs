@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using AceRevitMcp.Bridge;
 using AceRevitMcp.Commands;
@@ -53,7 +54,11 @@ namespace AceRevitMcp
         {
             const string tab = "ACE";
             try { application.CreateRibbonTab(tab); } catch { /* already exists */ }
+            // Working mode first: it decides which panels lead, which are dimmed and which are hidden.
+            try { Ribbon.WorkModes.CreateSelector(application.CreateRibbonPanel(tab, "Work mode")); }
+            catch (Exception ex) { Log.Warn($"Work mode selector: {ex.Message}"); }
             var panel = application.CreateRibbonPanel(tab, "Claude MCP");
+            Ribbon.WorkModes.RegisterPanel(panel);
             var path = typeof(App).Assembly.Location;
             var companion = new PushButtonData("AceCompanion", "Companion", path, typeof(Companion.ToggleCompanionCommand).FullName)
             {
@@ -69,12 +74,14 @@ namespace AceRevitMcp
                 status.LargeImage = Icons.Status(32); status.Image = Icons.Status(16);
             }
             catch (Exception ex) { Log.Warn($"Ribbon icons: {ex.Message}"); }
-            panel.AddItem(companion);
-            panel.AddItem(status);
+            Ribbon.WorkModes.RegisterButton(panel.Name, panel.AddItem(companion), (sz, dim) => Icons.Companion(sz, dim));
+            Ribbon.WorkModes.RegisterButton(panel.Name, panel.AddItem(status), (sz, dim) => Icons.Status(sz, dim));
 
             // Planned tools (roadmap): real buttons that open a card explaining what each will do.
             try { AddPlannedTools(application, tab, panel, path); }
             catch (Exception ex) { Log.Warn($"Roadmap buttons: {ex.Message}"); }
+            try { Ribbon.WorkModes.Restore(); }
+            catch (Exception ex) { Log.Warn($"Work mode: {ex.Message}"); }
         }
 
         private static void AddPlannedTools(UIControlledApplication application, string tab, RibbonPanel claudePanel, string path)
@@ -93,10 +100,15 @@ namespace AceRevitMcp
                 return d;
             }
 
-            foreach (var f in Ribbon.Roadmap.Features.Where(x => x.Panel == claudePanel.Name)) claudePanel.AddItem(Data(f));
+            Func<int, bool, System.Windows.Media.ImageSource> IconOf(Ribbon.Feature f) => (sz, dim) => Icons.Line(sz, f.Glyph, planned: f.LiveCommand == null, dim: dim);
+            void Reg(RibbonPanel p, RibbonItem item, Func<int, bool, System.Windows.Media.ImageSource> icon) => Ribbon.WorkModes.RegisterButton(p.Name, item, icon);
+            Func<int, bool, System.Windows.Media.ImageSource> Fixed(string glyph) => (sz, dim) => Icons.Line(sz, glyph, planned: false, dim: dim);
+
+            foreach (var f in Ribbon.Roadmap.Features.Where(x => x.Panel == claudePanel.Name)) Reg(claudePanel, claudePanel.AddItem(Data(f)), IconOf(f));
 
             // Live: the Insights dashboard (model health, QA, submission readiness, Claude activity, tool status).
             var insights = application.CreateRibbonPanel(tab, "Insights");
+            Ribbon.WorkModes.RegisterPanel(insights);
             var dashboard = new PushButtonData("AceDashboard", "Dashboard", path, typeof(Dashboard.DashboardCommand).FullName)
             {
                 ToolTip = "Model insights: health score, audit findings, warnings, rooms and doors QA, parameters, submission readiness, Claude activity and the status of every ACE tool.",
@@ -104,7 +116,7 @@ namespace AceRevitMcp
             };
             try { dashboard.LargeImage = Icons.Line(32, Ribbon.Glyphs.Dashboard, planned: false); dashboard.Image = Icons.Line(16, Ribbon.Glyphs.Dashboard, planned: false); }
             catch (Exception ex) { Log.Warn($"Icon dashboard: {ex.Message}"); }
-            insights.AddItem(dashboard);
+            Reg(insights, insights.AddItem(dashboard), Fixed(Ribbon.Glyphs.Dashboard));
             var changes = new PushButtonData("AceChangeTracker", "Change\nTracker", path, typeof(Tracking.ChangeTrackerCommand).FullName)
             {
                 ToolTip = "What changed in this model and its linked models since the last snapshot: added, deleted, moved, retyped and changed elements, by category and by person.",
@@ -112,27 +124,32 @@ namespace AceRevitMcp
             };
             try { changes.LargeImage = Icons.Line(32, Ribbon.Glyphs.History, planned: false); changes.Image = Icons.Line(16, Ribbon.Glyphs.History, planned: false); }
             catch (Exception ex) { Log.Warn($"Icon change tracker: {ex.Message}"); }
-            insights.AddItem(changes);
+            Reg(insights, insights.AddItem(changes), Fixed(Ribbon.Glyphs.History));
 
             foreach (var name in Ribbon.Roadmap.Panels)
             {
                 var panel = application.CreateRibbonPanel(tab, name);
+                Ribbon.WorkModes.RegisterPanel(panel);
                 var features = Ribbon.Roadmap.Features.Where(x => x.Panel == name).ToList();
-                foreach (var f in features.Where(x => x.Large)) panel.AddItem(Data(f));
-                var small = features.Where(x => !x.Large).Select(Data).ToList();
-                if (small.Count == 1) panel.AddItem(small[0]);
-                else if (small.Count == 2) panel.AddStackedItems(small[0], small[1]);
-                else if (small.Count >= 3) panel.AddStackedItems(small[0], small[1], small[2]);
+                foreach (var f in features.Where(x => x.Large)) Reg(panel, panel.AddItem(Data(f)), IconOf(f));
+                var smallF = features.Where(x => !x.Large).ToList();
+                var small = smallF.Select(Data).ToList();
+                IList<RibbonItem> stacked = null;
+                if (small.Count == 1) stacked = new List<RibbonItem> { panel.AddItem(small[0]) };
+                else if (small.Count == 2) stacked = panel.AddStackedItems(small[0], small[1]);
+                else if (small.Count >= 3) stacked = panel.AddStackedItems(small[0], small[1], small[2]);
+                if (stacked != null) for (var i = 0; i < stacked.Count && i < smallF.Count; i++) Reg(panel, stacked[i], IconOf(smallF[i]));
             }
 
             var about = application.CreateRibbonPanel(tab, "Roadmap");
+            Ribbon.WorkModes.RegisterPanel(about);
             var roadmap = new PushButtonData("AceRoadmap", "Roadmap", path, typeof(Ribbon.RoadmapCommand).FullName)
             {
                 ToolTip = "What ACE can do today, and the tools planned for the ACE ribbon.",
             };
             try { roadmap.LargeImage = Icons.Line(32, Ribbon.Glyphs.Map, planned: false); roadmap.Image = Icons.Line(16, Ribbon.Glyphs.Map, planned: false); }
             catch (Exception ex) { Log.Warn($"Icon roadmap: {ex.Message}"); }
-            about.AddItem(roadmap);
+            Reg(about, about.AddItem(roadmap), Fixed(Ribbon.Glyphs.Map));
         }
     }
 

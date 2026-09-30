@@ -23,6 +23,7 @@ namespace AceRevitMcp.Commands
                 ["language"] = app.Application.Language.ToString(),
                 ["activeDocument"] = doc?.Title,
                 ["openDocuments"] = new JsonArray(app.Application.Documents.Cast<Document>().Select(d => (JsonNode)d.Title).ToArray()),
+                ["workingMode"] = Ribbon.WorkModes.Current.Label,
             };
         }
 
