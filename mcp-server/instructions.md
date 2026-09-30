@@ -83,7 +83,9 @@ Connected MEP parts and hosted elements are not clashes. A new clash carries its
 exist: which side was added, moved or retyped since the last run, and by whom (workshared). Keep the
 two apart when you report: "responsible" says who should give way, "caused by" says whose change made it. Status persists between runs (new / active /
 resolved / approved; a resolved clash that comes back is new again and "reopened", worth pointing out):
-report what is new and what was resolved since last time, grouped by responsible discipline and level, and offer
+report what is new and what was resolved since last time, grouped by responsible discipline and level. For a
+coordination meeting ("prepare the clash report", "issues for the meeting") use coordination_report: a picture
+per issue, responsible, cause, location, and a CSV list for Excel; give the user both file paths. Offer
 set_clash_status to approve accepted ones (e.g. sleeved penetrations). Check coordination_sources and
 the brief's alignment first: if levels or grids don't line up, clash results are unreliable - say so.
 Structure from architecture: in the STR model (ARC linked or open), run the saved script

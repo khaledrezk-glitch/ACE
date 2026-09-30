@@ -266,6 +266,31 @@
           "value": 1
         }
       ]
+    },
+    {
+      "name": "Coordination report with pictures",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "coordination_report",
+      "args": {
+        "max_issues": 3,
+        "rerun": true
+      },
+      "maxMs": 600000,
+      "expect": [
+        {
+          "path": "htmlReport",
+          "op": "exists"
+        },
+        {
+          "path": "excelList",
+          "op": "exists"
+        },
+        {
+          "path": "issues",
+          "op": ">=",
+          "value": 0
+        }
+      ]
     }
   ]
 }

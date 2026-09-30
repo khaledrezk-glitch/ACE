@@ -1,6 +1,11 @@
 # Changelog
 
 ## 1.7.0 (core v2)
+- **Coordination report** (ACE tab → Coordination → *Coordination Report*, or `coordination_report`): the meeting-ready
+  report of the clash issues. A 3D picture per issue (section box around it, this model's elements in ACE Red), the
+  responsible discipline and reason, the cause (what changed and who), level and location, blank Action / Owner / Due
+  lines, a summary of actions by discipline, and an Excel-ready CSV of all issues. Pictures come from temporary views
+  that are rolled back; the model is not changed.
 - **Bevelled ribbon icons**: ACE Rich Black tiles with seamless bevelled edges lit from the top left and a soft shadow below (like PowerPoint's
   bevel), an embossed glyph and a shaded red dot. Live tools are black, planned tools white (`"iconMix": "none"` for all
   black). `brand.json`: `"iconStyle": "bevel" | "3d" | "flat"`, `"iconColor"`, `"iconMix"`.

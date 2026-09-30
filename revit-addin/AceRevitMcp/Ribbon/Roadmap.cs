@@ -118,6 +118,11 @@ namespace AceRevitMcp.Ribbon
                 Summary = "Review clashes by level or zone and track their status between runs.",
                 WillDo = new[] { "Status per clash: new, active, resolved, approved.", "A 3D section-box view per clash.", "HTML, Excel and BCF export for Navisworks and ACC users.", "Claude explains clashes and proposes fixes, applied only after preview and confirmation." } },
 
+            new Feature { Key = "coordreport", Panel = "Coordination", Label = "Coordination\nReport", Phase = 4, Glyph = Glyphs.Checklist, LiveCommand = "AceRevitMcp.Coordination.CoordinationReportCommand",
+                LiveSummary = "The coordination meeting report: each clash issue with a 3D picture, the responsible discipline, what caused it and where it is, plus an Excel (CSV) issue list with Action / Owner / Due columns. Runs the clash tests first if there are no results yet.",
+                Summary = "A meeting-ready report of the clash issues.",
+                WillDo = new[] { "A 3D picture per issue, with this model's elements in ACE Red.", "Responsible discipline, cause and location per issue.", "An issue list for Excel with Action, Owner and Due columns." } },
+
             // ---- Deliver ----
             new Feature { Key = "subcheck", Panel = "Deliver", Label = "Submission\nCheck", Phase = 5, Glyph = Glyphs.Clipboard,
                 Summary = "Checks a model against the client's submission requirements before issue.",

@@ -276,6 +276,19 @@ tool("open_view", {
   annotations: benign,
 }, async (a) => text(await callRevit("open_view", a, 60)));
 
+tool("coordination_report", {
+  title: "Coordination meeting report",
+  description: "Build the coordination meeting report from the clash results (read-only; the model is not changed): every open clash issue with a 3D picture (section box around the issue, this model's elements in red), the responsible discipline, the cause (what changed and who) and the location, plus an Excel-ready CSV issue list with Action / Owner / Due columns. Saved to Documents\\ACE Insights. rerun: true runs the clash tests first. open: true opens the report for the user.",
+  inputSchema: {
+    max_issues: z.number().int().optional().describe("Issues with pictures (default 12, max 40); the CSV always lists all"),
+    test: z.string().optional().describe("Only one test, e.g. \"STR vs MEP\" (default: all stored tests)"),
+    rerun: z.boolean().optional().describe("Run the clash tests again first"),
+    pictures: z.boolean().optional().describe("false = no pictures (faster)"),
+    open: z.boolean().optional().describe("Open the report in the browser"),
+  },
+  annotations: readOnly,
+}, async (a) => text(await callRevit("coordination_report", a, 900)));
+
 tool("pending_changes", {
   title: "What is waiting in the Companion panel",
   description: "List the Apply cards the user sees in ACE > Companion > Approvals (each previewed change, newest first, with its inputs and age) and the ones recently applied or cancelled. Call this before telling the user which options they can apply; never guess what the panel shows.",
