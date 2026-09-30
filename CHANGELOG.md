@@ -1,6 +1,12 @@
 # Changelog
 
 ## 1.7.0 (core v2)
+- **Companion redesigned**: a header with a connection light, the model name and the work mode (switchable); a tab bar
+  with counts; a new **Home** page (what needs you, the model at a glance: health score, clash issues, changes; quick
+  actions that run straight away: model check, Clash Browser, clash view, what changed, coordination report, snapshot;
+  and *Ask Claude*: your text plus the view and selection, copied for Claude Desktop). Approvals: option cards with
+  added / modified / deleted chips, expiry, pictures that enlarge on click, *Ask for changes*. Activity: markers by
+  kind, grouped by day, a changes-and-failures filter. Results: search. Prompts: the mode's first, foldable groups, search.
 - **Workset assignment per the BEP** (`assign_worksets`, built-in script `assign_worksets`): rules by category, function
   (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or
   parameter value; first match wins; names can use `{level}`, `{zone}`, `{category}`. Rules file `worksets.json`

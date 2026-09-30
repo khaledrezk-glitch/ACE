@@ -42,6 +42,7 @@ namespace AceRevitMcp.Commands
                 ["clash_results"] = Coordination.ClashCommands.Results,
                 ["working_mode"] = Ribbon.WorkModes.Command,
                 ["clash_view"] = Coordination.ClashView.Overview,
+                ["open_clash_browser"] = (app, args) => { Coordination.ClashBrowser.ShowFor(app); return new System.Text.Json.Nodes.JsonObject { ["opened"] = true }; },
                 ["focus_clash"] = Coordination.ClashView.Focus,
                 ["reset_clash_view"] = Coordination.ClashView.Reset,
             };

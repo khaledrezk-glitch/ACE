@@ -1,31 +1,48 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using AceRevitMcp.Util;
 using Autodesk.Revit.UI;
+using ComboBox = System.Windows.Controls.ComboBox;
+using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
+using Grid = System.Windows.Controls.Grid;
+using Rectangle = System.Windows.Shapes.Rectangle;
+using TextBox = System.Windows.Controls.TextBox;
 
 namespace AceRevitMcp.Companion
 {
     /// <summary>
     /// The ACE Companion dockable pane: works alongside Claude Desktop (no AI of its own).
-    /// Tabs: Approvals (Apply/Cancel Claude's previews), Activity (live feed), Results (click to select),
-    /// Context & prompts (selection/view summary and ready-made prompts copied to the clipboard).
+    /// Home (what needs you, the model at a glance, quick actions, ask Claude), Approvals (Apply / Cancel Claude's
+    /// previews), Activity (live feed), Results (click to select) and Prompts (ready-made, the work mode's first).
     /// Written in code (no XAML) so it builds everywhere.
     /// </summary>
     internal sealed class CompanionView : UserControl
     {
         private readonly Palette _c;
-        private readonly TabControl _tabs = new TabControl();
-        private readonly TabItem _approvalsTab, _activityTab, _resultsTab, _contextTab;
+        private readonly WrapPanel _nav = new WrapPanel { Margin = new Thickness(8, 0, 8, 0) };
+        private readonly ContentControl _page = new ContentControl();
+        private readonly Dictionary<string, Button> _navButtons = new Dictionary<string, Button>();
+        private string _current = "Home";
         private readonly TextBlock _status = new TextBlock();
+        private readonly Ellipse _light = new Ellipse { Width = 9, Height = 9, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+        private readonly TextBlock _model = new TextBlock();
+        private readonly ComboBox _mode = new ComboBox { MinWidth = 130, Margin = new Thickness(6, 0, 0, 0), VerticalContentAlignment = VerticalAlignment.Center };
         private readonly TextBlock _toast = new TextBlock();
+        private readonly TextBox _ask = new TextBox();
+        private readonly TextBox _promptSearch = new TextBox(), _resultSearch = new TextBox();
         private readonly DispatcherTimer _clock = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
-        private bool _renderQueued;
+        private bool _renderQueued, _changesOnly, _modeUpdating;
+        private readonly HashSet<string> _collapsed = new HashSet<string>();
 
         public CompanionView()
         {
@@ -36,51 +53,38 @@ namespace AceRevitMcp.Companion
             Foreground = _c.Text;
 
             var root = new DockPanel { LastChildFill = true };
-            var header = new StackPanel { Margin = new Thickness(10, 10, 10, 6) };
-            // ACE layout (as in the email signature): logo on a white field | thin ACE Red divider | text.
-            var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
-            if (Branding.Mark != null)
-            {
-                const double markHeight = 44; // ~84 px wide: above the 72 px digital minimum
-                titleRow.Children.Add(new Border
-                {
-                    Background = Brushes.White,
-                    Padding = new Thickness(markHeight * 0.25), // clear space: 25% of logo height
-                    CornerRadius = new CornerRadius(2),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Child = MarkImage(markHeight),
-                });
-                titleRow.Children.Add(new Border { Width = 2, Background = _c.Rule, Margin = new Thickness(12, 4, 12, 4) });
-            }
-            var titleText = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            titleText.Children.Add(new TextBlock { Text = Branding.Mark != null ? "Companion" : $"{Branding.Name} Companion", FontSize = 17, FontWeight = FontWeights.Bold, Foreground = _c.Text });
-            if (!string.IsNullOrEmpty(Branding.FullName))
-                titleText.Children.Add(new TextBlock { Text = Branding.FullName, FontSize = 11, Foreground = _c.Muted });
-            titleRow.Children.Add(titleText);
-            header.Children.Add(titleRow);
-            if (Branding.Mark == null)
-                header.Children.Add(new Border { Height = 2, Background = _c.Rule, Margin = new Thickness(0, 6, 0, 4), HorizontalAlignment = HorizontalAlignment.Left, Width = 56 });
-            _status.Foreground = _c.Muted;
-            _status.TextWrapping = TextWrapping.Wrap;
-            _status.Margin = new Thickness(0, 8, 0, 0);
-            header.Children.Add(_status);
+            var header = BuildHeader();
             DockPanel.SetDock(header, Dock.Top);
             root.Children.Add(header);
 
+            foreach (var name in new[] { "Home", "Approvals", "Activity", "Results", "Prompts" })
+            {
+                var b = new Button { Background = Brushes.Transparent, BorderThickness = new Thickness(0, 0, 0, 2), Padding = new Thickness(8, 6, 8, 5), Margin = new Thickness(0, 0, 2, 0), Cursor = System.Windows.Input.Cursors.Hand, Foreground = _c.Text };
+                var n = name;
+                b.Click += (s, e) => Show(n);
+                _navButtons[name] = b;
+                _nav.Children.Add(b);
+            }
+            var navBar = new Border { BorderBrush = _c.Border, BorderThickness = new Thickness(0, 0, 0, 1), Child = _nav };
+            DockPanel.SetDock(navBar, Dock.Top);
+            root.Children.Add(navBar);
+
             _toast.Foreground = _c.Text;
-            _toast.Margin = new Thickness(10, 4, 10, 8);
+            _toast.Margin = new Thickness(10, 6, 10, 8);
             _toast.TextWrapping = TextWrapping.Wrap;
             DockPanel.SetDock(_toast, Dock.Bottom);
             root.Children.Add(_toast);
-
-            _tabs.Background = _c.Background;
-            _tabs.BorderBrush = _c.Border;
-            _approvalsTab = Tab("Approvals");
-            _activityTab = Tab("Activity");
-            _resultsTab = Tab("Results");
-            _contextTab = Tab("Context & prompts");
-            root.Children.Add(_tabs);
+            root.Children.Add(_page);
             Content = root;
+
+            foreach (var t in new[] { _ask, _promptSearch, _resultSearch })
+            {
+                t.Background = _c.Card; t.Foreground = _c.Text; t.BorderBrush = _c.Border; t.Padding = new Thickness(6, 4, 6, 4);
+            }
+            _ask.AcceptsReturn = true; _ask.TextWrapping = TextWrapping.Wrap; _ask.MinHeight = 54; _ask.MaxHeight = 140;
+            _ask.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+            _promptSearch.TextChanged += (s, e) => { if (_current == "Prompts") Render(); };
+            _resultSearch.TextChanged += (s, e) => { if (_current == "Results") Render(); };
 
             ActivityHub.Changed += QueueRender;
             Ribbon.WorkModes.Changed += QueueRender;
@@ -89,11 +93,48 @@ namespace AceRevitMcp.Companion
             Render();
         }
 
-        private TabItem Tab(string header)
+        private UIElement BuildHeader()
         {
-            var t = new TabItem { Header = header };
-            _tabs.Items.Add(t);
-            return t;
+            var header = new StackPanel { Margin = new Thickness(10, 10, 10, 8) };
+            // ACE layout (as in the email signature): logo on a white field | thin ACE Red divider | text.
+            var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
+            if (Branding.Mark != null)
+            {
+                const double markHeight = 36; // ~70 px wide: at the digital minimum and crisp
+                titleRow.Children.Add(new Border
+                {
+                    Background = Brushes.White, Padding = new Thickness(markHeight * 0.25), CornerRadius = new CornerRadius(2),
+                    VerticalAlignment = VerticalAlignment.Center, Child = MarkImage(markHeight),
+                });
+                titleRow.Children.Add(new Border { Width = 2, Background = _c.Rule, Margin = new Thickness(10, 4, 10, 4) });
+            }
+            var titleText = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            titleText.Children.Add(new TextBlock { Text = Branding.Mark != null ? "Companion" : $"{Branding.Name} Companion", FontSize = 16, FontWeight = FontWeights.Bold, Foreground = _c.Text });
+            _model.Foreground = _c.Muted; _model.FontSize = 11; _model.TextTrimming = TextTrimming.CharacterEllipsis;
+            titleText.Children.Add(_model);
+            titleRow.Children.Add(titleText);
+            header.Children.Add(titleRow);
+
+            var statusRow = new DockPanel { Margin = new Thickness(0, 8, 0, 0), LastChildFill = true };
+            var modeBox = new StackPanel { Orientation = Orientation.Horizontal };
+            modeBox.Children.Add(new TextBlock { Text = "Mode", Foreground = _c.Muted, VerticalAlignment = VerticalAlignment.Center });
+            foreach (var m in Ribbon.WorkModes.All) _mode.Items.Add(new ComboBoxItem { Content = m.Label, Tag = m.Key, ToolTip = m.Summary });
+            _mode.SelectionChanged += (s, e) =>
+            {
+                if (_modeUpdating || !(_mode.SelectedItem is ComboBoxItem item)) return;
+                try { Ribbon.WorkModes.Apply((string)item.Tag); Toast($"{item.Content} mode: {Ribbon.WorkModes.Current.Summary}"); }
+                catch (Exception ex) { Toast("Could not switch mode: " + ex.Message); }
+            };
+            modeBox.Children.Add(_mode);
+            DockPanel.SetDock(modeBox, Dock.Right);
+            statusRow.Children.Add(modeBox);
+            var left = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            left.Children.Add(_light);
+            _status.Foreground = _c.Muted; _status.TextWrapping = TextWrapping.Wrap; _status.VerticalAlignment = VerticalAlignment.Center;
+            left.Children.Add(_status);
+            statusRow.Children.Add(left);
+            header.Children.Add(statusRow);
+            return header;
         }
 
         private void QueueRender()
@@ -103,26 +144,55 @@ namespace AceRevitMcp.Companion
             Dispatcher.BeginInvoke(new Action(() => { _renderQueued = false; Render(); }), DispatcherPriority.Background);
         }
 
+        private void Show(string page) { _current = page; Render(); }
+
         // ------------------------------------------------------------------------------------------------
 
         private void Render()
         {
             var server = App.Server;
+            var running = server?.IsRunning == true;
             var last = ActivityHub.Activity.FirstOrDefault();
-            _status.Text = (server?.IsRunning == true ? "Connected. Claude can work in this Revit session." : "Connection stopped (ACE tab > MCP Status).") +
-                           (last != null ? $"\nLast activity: {Ago(last.Time)}" : "\nWaiting for Claude, ask it something in Claude Desktop.");
+            _light.Fill = running ? new SolidColorBrush(Coordination.ClashColours.Green) : _c.Rule;
+            _status.Text = running ? (last != null ? $"Connected · last activity {Ago(last.Time)}" : "Connected · waiting for Claude") : "Not connected (ACE tab > MCP Status)";
+            _model.Text = ActivityHub.Context.Document ?? "No model open";
+            _modeUpdating = true;
+            _mode.SelectedIndex = Array.FindIndex(Ribbon.WorkModes.All, m => m.Key == Ribbon.WorkModes.Current.Key);
+            _modeUpdating = false;
 
             var waiting = ActivityHub.Waiting.ToList();
-            _approvalsTab.Header = waiting.Count > 0 ? $"Approvals ({waiting.Count})" : "Approvals";
-            _approvalsTab.Content = Scroll(RenderApprovals(waiting));
-            _activityTab.Content = Scroll(RenderActivity());
-            _resultsTab.Header = ActivityHub.Results.Count > 0 ? $"Results ({ActivityHub.Results.Count})" : "Results";
-            _resultsTab.Content = Scroll(RenderResults());
-            _contextTab.Content = Scroll(RenderContext());
-
-            if (waiting.Count > 0 && _tabs.SelectedItem != _approvalsTab && waiting.Any(w => DateTime.Now - w.PreviewedAt < TimeSpan.FromSeconds(5)))
-                _tabs.SelectedItem = _approvalsTab; // bring new previews to the user's attention
-            if (_tabs.SelectedItem == null) _tabs.SelectedIndex = 0;
+            // Bring new previews to the user's attention.
+            if (waiting.Any(w => DateTime.Now - w.PreviewedAt < TimeSpan.FromSeconds(5)) && _current != "Approvals") _current = "Approvals";
+            foreach (var (name, b) in _navButtons)
+            {
+                var count = name == "Approvals" ? waiting.Count : name == "Results" ? ActivityHub.Results.Count : 0;
+                b.Content = count > 0 ? $"{name} ({count})" : name;
+                var on = name == _current;
+                b.BorderBrush = on ? _c.Rule : Brushes.Transparent;
+                b.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal;
+                b.Foreground = on ? _c.Text : _c.Muted;
+            }
+            // The text boxes are kept between renders (so typing is not lost): detach them from the old page first.
+            var focused = System.Windows.Input.Keyboard.FocusedElement as TextBox;
+            foreach (var t in new[] { _ask, _promptSearch, _resultSearch })
+                if (t.Parent is Panel owner) owner.Children.Remove(t);
+            UIElement content = _current switch
+            {
+                "Approvals" => RenderApprovals(waiting),
+                "Activity" => RenderActivity(),
+                "Results" => RenderResults(),
+                "Prompts" => RenderPrompts(),
+                _ => RenderHome(waiting),
+            };
+            // Keep the scroll position when the same page re-renders.
+            var old = _page.Content as ScrollViewer;
+            var offset = old != null && (string)old.Tag == _current ? old.VerticalOffset : 0;
+            var scroll = Scroll(content);
+            scroll.Tag = _current;
+            _page.Content = scroll;
+            if (offset > 0) scroll.ScrollToVerticalOffset(offset);
+            if (focused != null && (focused == _ask || focused == _promptSearch || focused == _resultSearch))
+                Dispatcher.BeginInvoke(new Action(() => focused.Focus()), DispatcherPriority.Input);
         }
 
         // The logo file is used as supplied (never recoloured or stretched); high-quality scaling keeps it crisp.
@@ -133,37 +203,169 @@ namespace AceRevitMcp.Companion
             return img;
         }
 
-        private UIElement RenderApprovals(System.Collections.Generic.List<PendingChange> waiting)
+        // ---- Home ---------------------------------------------------------------------------------------
+
+        private UIElement RenderHome(List<PendingChange> waiting)
         {
-            var panel = new StackPanel { Margin = new Thickness(8) };
-            if (waiting.Count == 0)
+            var panel = new StackPanel { Margin = new Thickness(10) };
+            var model = ActivityHub.Context.Document;
+
+            // Needs you
+            var needs = Card();
+            var nb = (StackPanel)needs.Child;
+            nb.Children.Add(Section("Needs you"));
+            if (waiting.Count > 0)
             {
-                panel.Children.Add(Hint("No changes waiting.\n\nWhen Claude previews a change to your model, it appears here. Click Apply to make the change " +
-                                        "(one undo step), or Cancel. You can also just answer Claude in the chat."));
+                nb.Children.Add(new TextBlock { Text = $"{waiting.Count} change{(waiting.Count == 1 ? "" : "s")} previewed by Claude, waiting for your decision.", TextWrapping = TextWrapping.Wrap, Foreground = _c.Text });
+                var review = ActionButton("Review", true);
+                review.HorizontalAlignment = HorizontalAlignment.Left;
+                review.Click += (s, e) => Show("Approvals");
+                nb.Children.Add(review);
             }
+            else nb.Children.Add(new TextBlock { Text = "Nothing waiting. Claude's previews appear here for you to apply or cancel.", TextWrapping = TextWrapping.Wrap, Foreground = _c.Muted });
+            panel.Children.Add(needs);
+
+            // At a glance
+            var glance = Card();
+            var gb = (StackPanel)glance.Child;
+            gb.Children.Add(Section("At a glance"));
+            var tiles = new UniformGrid { Columns = 3 };
+            var health = Dashboard.DashboardCommands.Last;
+            if (health != null && health.Model == model)
+                tiles.Children.Add(Stat(health.Score.ToString(), $"Health · {health.Grade}", $"{health.Checks.Count(c => c.Status == "fail")} to act on · {health.Time:HH:mm}", health.Score < 65));
+            else tiles.Children.Add(Stat("-", "Health", "Run the model check", false));
+            var clashes = Coordination.Clashes.Last != null && Coordination.Clashes.LastHost == model ? Coordination.Clashes.Last : null;
+            if (clashes != null)
+            {
+                var open = clashes.Where(Coordination.ClashLogic.IsOpen).ToList();
+                tiles.Children.Add(Stat(Coordination.ClashLogic.Issues(open).Count.ToString(), "Clash issues", $"{open.Count} clashes · {open.Count(c => c.Status == "new")} new", open.Count > 0));
+            }
+            else tiles.Children.Add(Stat("-", "Clash issues", "Open the Clash Browser", false));
+            var diffs = Tracking.ChangeTracking.LastDiffs;
+            if (diffs != null && diffs.Count > 0 && diffs[0].Model == model)
+                tiles.Children.Add(Stat(diffs.Sum(d => d.Changes.Count).ToString(), "Changes", diffs[0].Since.HasValue ? $"since {diffs[0].Since:d MMM HH:mm}" : "first snapshot taken", false));
+            else tiles.Children.Add(Stat("-", "Changes", "See what changed", false));
+            gb.Children.Add(tiles);
+            panel.Children.Add(glance);
+
+            // Quick actions (run in Revit straight away; no Claude needed)
+            var actions = Card();
+            var ab = (StackPanel)actions.Child;
+            ab.Children.Add(Section("Quick actions"));
+            var grid = new UniformGrid { Columns = 2 };
+            void Act(string label, string glyph, string command, JsonObject args, Func<JsonNode, string> done, int minutes = 10)
+            {
+                var b = TileButton(label, glyph);
+                b.Click += async (s, e) =>
+                {
+                    b.IsEnabled = false; Toast($"{label}: working in Revit...");
+                    try { var r = await App.Dispatcher.EnqueueAsync(command, args, TimeSpan.FromMinutes(minutes)); Toast(done(r)); }
+                    catch (Exception ex) { Toast($"{label}: {ex.Message}"); }
+                    finally { b.IsEnabled = true; QueueRender(); }
+                };
+                grid.Children.Add(b);
+            }
+            Act("Model check", Ribbon.Glyphs.Dashboard, "get_model_insights", new JsonObject { ["show"] = true }, r => $"Model check: score {r?["score"]}/100 ({r?["grade"]}).");
+            Act("Clash Browser", Ribbon.Glyphs.Search, "open_clash_browser", new JsonObject(), r => "Clash Browser opened.", 2);
+            Act("What changed", Ribbon.Glyphs.History, "model_changes", new JsonObject { ["show"] = true }, r => "Change tracker opened.");
+            Act("Clash view", Ribbon.Glyphs.Clash, "clash_view", new JsonObject(), r => "ACE Clash View: the models in their colours.", 2);
+            Act("Coordination report", Ribbon.Glyphs.Checklist, "coordination_report", new JsonObject { ["open"] = true }, r => $"Report saved: {r?["htmlReport"]}", 15);
+            Act("Take snapshot", Ribbon.Glyphs.Bookmark, "snapshot_model", new JsonObject { ["label"] = "Companion" }, r => "Snapshot saved: the change tracker compares with it later.", 5);
+            ab.Children.Add(grid);
+            panel.Children.Add(actions);
+
+            // Ask Claude
+            var ask = Card();
+            var kb = (StackPanel)ask.Child;
+            kb.Children.Add(Section("Ask Claude"));
+            kb.Children.Add(new TextBlock { Text = $"Your view and selection are added. Selection: {SelectionText()}", Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4), FontSize = 11 });
+            kb.Children.Add(_ask);
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            var copy = ActionButton("Copy for Claude", true);
+            copy.Click += (s, e) =>
+            {
+                var q = (_ask.Text ?? "").Trim();
+                if (q.Length == 0) { Toast("Type what you want Claude to do first."); return; }
+                Copy($"Using ace-revit: {q}\n\n{ContextText()}", "Copied with your context. Paste it into Claude Desktop (Ctrl+V).");
+            };
+            var openClaude = ActionButton("Open Claude", false);
+            openClaude.Click += (s, e) =>
+            {
+                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("claude://") { UseShellExecute = true }); }
+                catch { Toast("Could not open Claude Desktop from here: open it from the Start menu."); }
+            };
+            row.Children.Add(copy); row.Children.Add(openClaude);
+            kb.Children.Add(row);
+            panel.Children.Add(ask);
+            return panel;
+        }
+
+        private Border Stat(string value, string label, string note, bool key)
+        {
+            var p = new StackPanel { Margin = new Thickness(0, 2, 8, 2) };
+            p.Children.Add(new TextBlock { Text = value, FontSize = 22, FontWeight = FontWeights.Bold, Foreground = key ? _c.Rule : _c.Text });
+            p.Children.Add(new TextBlock { Text = label, FontWeight = FontWeights.SemiBold, Foreground = _c.Text, TextTrimming = TextTrimming.CharacterEllipsis });
+            p.Children.Add(new TextBlock { Text = note, Foreground = _c.Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap });
+            return new Border { Child = p };
+        }
+
+        private Button TileButton(string label, string glyph)
+        {
+            var p = new StackPanel { Orientation = Orientation.Horizontal };
+            try { p.Children.Add(new Image { Source = Icons.Line(32, glyph, planned: false), Width = 24, Height = 24, Margin = new Thickness(0, 0, 8, 0) }); } catch { }
+            p.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text });
+            return new Button
+            {
+                Content = p, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 0, 6, 6),
+                Background = _c.Background, BorderBrush = _c.Border, Cursor = System.Windows.Input.Cursors.Hand,
+            };
+        }
+
+        private TextBlock Section(string text) =>
+            new TextBlock { Text = text.ToUpperInvariant(), FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = _c.Muted, Margin = new Thickness(0, 0, 0, 6) };
+
+        // ---- Approvals ----------------------------------------------------------------------------------
+
+        private UIElement RenderApprovals(List<PendingChange> waiting)
+        {
+            var panel = new StackPanel { Margin = new Thickness(10) };
+            if (waiting.Count == 0)
+                panel.Children.Add(Hint("No changes waiting.\n\nWhen Claude previews a change to your model, it appears here with pictures. Click Apply to make the change " +
+                                        "(one undo step), or Cancel. You can also just answer Claude in the chat."));
+            var n = 0;
             foreach (var p in waiting)
             {
+                n++;
                 var card = Card();
                 var body = (StackPanel)card.Child;
-                body.Children.Add(new TextBlock { Text = p.Title, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text });
-                body.Children.Add(new TextBlock { Text = p.Summary, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text, Margin = new Thickness(0, 4, 0, 0) });
+                var left = PendingState.Waiting == p.State ? ActivityHub.PendingLifetime - (DateTime.Now - p.PreviewedAt) : TimeSpan.Zero;
+                body.Children.Add(new TextBlock { Text = $"OPTION {n} · PREVIEWED {Ago(p.PreviewedAt).ToUpperInvariant()} · EXPIRES IN {Math.Max(0, (int)left.TotalMinutes)} MIN", FontSize = 10, Foreground = _c.Muted });
+                body.Children.Add(new TextBlock { Text = p.Title, FontWeight = FontWeights.SemiBold, FontSize = 13, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text, Margin = new Thickness(0, 2, 0, 4) });
+                var m = System.Text.RegularExpressions.Regex.Match(p.Summary ?? "", @"add (\d+), modify (\d+), delete (\d+)");
+                if (m.Success)
+                {
+                    var chips = new WrapPanel();
+                    foreach (var (label, value) in new[] { ("Added", m.Groups[1].Value), ("Modified", m.Groups[2].Value), ("Deleted", m.Groups[3].Value) })
+                        chips.Children.Add(Chip($"{label} {value}", label == "Deleted" && value != "0"));
+                    body.Children.Add(chips);
+                    var rest = (p.Summary ?? "").Substring(m.Index + m.Length).Trim(' ', '·');
+                    if (rest.Length > 0) body.Children.Add(new TextBlock { Text = rest, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+                }
+                else body.Children.Add(new TextBlock { Text = p.Summary, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text });
                 foreach (var bytes in p.Images.Take(2))
                 {
-                    try
-                    {
-                        var bmp = new System.Windows.Media.Imaging.BitmapImage();
-                        bmp.BeginInit(); bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
-                        bmp.StreamSource = new System.IO.MemoryStream(bytes); bmp.EndInit(); bmp.Freeze();
-                        var img = new Image { Source = bmp, Stretch = Stretch.Uniform, MaxHeight = 260, Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
-                        RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
-                        body.Children.Add(new Border { BorderBrush = _c.Border, BorderThickness = new Thickness(1), Background = Brushes.White, Child = img, Margin = new Thickness(0, 6, 0, 0) });
-                    }
-                    catch { }
+                    var bmp = Bitmap(bytes);
+                    if (bmp == null) continue;
+                    var img = new Image { Source = bmp, Stretch = Stretch.Uniform, MaxHeight = 240, HorizontalAlignment = HorizontalAlignment.Left, Cursor = System.Windows.Input.Cursors.Hand, ToolTip = "Click to enlarge" };
+                    RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+                    img.MouseLeftButtonUp += (s, e) => Enlarge(bmp, p.Title);
+                    body.Children.Add(new Border { BorderBrush = _c.Border, BorderThickness = new Thickness(1), Background = Brushes.White, Child = img, Margin = new Thickness(0, 6, 0, 0) });
                 }
-                body.Children.Add(new TextBlock { Text = $"Previewed {Ago(p.PreviewedAt)}. The model is unchanged until you apply.", Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6) });
-                var buttons = new StackPanel { Orientation = Orientation.Horizontal };
+                body.Children.Add(new TextBlock { Text = "The model is unchanged until you apply.", Foreground = _c.Muted, FontSize = 11, Margin = new Thickness(0, 6, 0, 2) });
+                var buttons = new WrapPanel();
                 var apply = ActionButton("Apply", true);
                 var cancel = ActionButton("Cancel", false);
+                var change = ActionButton("Ask for changes", false);
                 apply.Click += async (s, e) =>
                 {
                     apply.IsEnabled = cancel.IsEnabled = false;
@@ -176,16 +378,17 @@ namespace AceRevitMcp.Companion
                     Journal.Append($"Cancelled in ACE panel: {p.Title}", null, "The user cancelled this previewed change. Nothing was changed.");
                     Toast("Cancelled. Nothing was changed. Claude will be told if it tries to apply it.");
                 };
-                buttons.Children.Add(apply);
-                buttons.Children.Add(cancel);
+                var title = p.Title;
+                change.Click += (s, e) => Copy($"Using ace-revit: about the previewed change \"{title}\": please change it so that ", "Copied. Paste into Claude and finish the sentence with what to change.");
+                buttons.Children.Add(apply); buttons.Children.Add(cancel); buttons.Children.Add(change);
                 body.Children.Add(buttons);
                 panel.Children.Add(card);
             }
 
-            var decided = ActivityHub.Pending.Where(p => p.State != PendingState.Waiting && p.DecidedAt.HasValue).Take(5).ToList();
+            var decided = ActivityHub.Pending.Where(p => p.State != PendingState.Waiting && p.DecidedAt.HasValue).Take(6).ToList();
             if (decided.Count > 0)
             {
-                panel.Children.Add(new TextBlock { Text = "Recent decisions", FontWeight = FontWeights.SemiBold, Margin = new Thickness(2, 12, 0, 4), Foreground = _c.Text });
+                panel.Children.Add(Section("Recent decisions"));
                 foreach (var p in decided)
                 {
                     var state = p.State switch
@@ -195,14 +398,34 @@ namespace AceRevitMcp.Companion
                         PendingState.Rejected => "Cancelled",
                         _ => "Failed",
                     };
-                    panel.Children.Add(new TextBlock
-                    {
-                        Text = $"{state} · {p.Title} · {p.DecidedAt:HH:mm}" + (string.IsNullOrEmpty(p.Outcome) ? "" : $"\n   {p.Outcome}"),
-                        Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(2, 2, 0, 2),
-                    });
+                    panel.Children.Add(Row(p.State == PendingState.Failed ? _c.Rule : p.State == PendingState.Rejected ? _c.Border : _c.Text,
+                        $"{p.DecidedAt:HH:mm}  {state}: {p.Title}", p.Outcome));
                 }
             }
             return panel;
+        }
+
+        private static BitmapImage Bitmap(byte[] bytes)
+        {
+            try
+            {
+                var bmp = new BitmapImage();
+                bmp.BeginInit(); bmp.CacheOption = BitmapCacheOption.OnLoad; bmp.StreamSource = new System.IO.MemoryStream(bytes); bmp.EndInit(); bmp.Freeze();
+                return bmp;
+            }
+            catch { return null; }
+        }
+
+        private void Enlarge(ImageSource img, string title)
+        {
+            var image = new Image { Source = img, Stretch = Stretch.Uniform };
+            RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+            var w = new Window
+            {
+                Title = $"{Branding.Name} | {title}", Width = 1100, Height = 780, Background = Brushes.White,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen, Content = new Border { Padding = new Thickness(10), Child = image },
+            };
+            w.Show();
         }
 
         private async System.Threading.Tasks.Task ApplyAsync(PendingChange p)
@@ -243,34 +466,44 @@ namespace AceRevitMcp.Companion
             }
         }
 
+        // ---- Activity -----------------------------------------------------------------------------------
+
+        private static bool IsChange(ActivityItem a) => a.Command is "execute_code" or "set_parameters" or "undo_last_claude_change" || (a.Title ?? "").StartsWith("Changed", StringComparison.OrdinalIgnoreCase);
+
         private UIElement RenderActivity()
         {
-            var panel = new StackPanel { Margin = new Thickness(8) };
-            if (ActivityHub.Activity.Count == 0)
+            var panel = new StackPanel { Margin = new Thickness(10) };
+            var filter = new CheckBox { Content = "Changes and failures only", IsChecked = _changesOnly, Foreground = _c.Text, Margin = new Thickness(0, 0, 0, 8) };
+            filter.Click += (s, e) => { _changesOnly = filter.IsChecked == true; Render(); };
+            panel.Children.Add(filter);
+            var items = ActivityHub.Activity.Where(a => !_changesOnly || IsChange(a) || !a.Ok).Take(100).ToList();
+            if (items.Count == 0)
                 panel.Children.Add(Hint("Everything Claude does in this Revit session appears here: what it read, previewed and changed."));
-            foreach (var a in ActivityHub.Activity.Take(80))
+            DateTime? day = null;
+            foreach (var a in items)
             {
-                // Failed rows get a thin ACE Red marker (accent, not red text).
-                var row = new StackPanel();
-                row.Children.Add(new TextBlock
-                {
-                    Text = $"{a.Time:HH:mm:ss}   {a.Title}{(a.Ok ? "" : "  (failed)")}",
-                    Foreground = _c.Text, FontWeight = a.Ok ? FontWeights.Normal : FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap,
-                });
-                if (!string.IsNullOrEmpty(a.Detail))
-                    row.Children.Add(new TextBlock { Text = a.Detail, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 1, 0, 0) });
-                panel.Children.Add(new Border
-                {
-                    BorderBrush = a.Ok ? Brushes.Transparent : _c.Rule, BorderThickness = new Thickness(2, 0, 0, 0),
-                    Padding = new Thickness(6, 3, 0, 3), Margin = new Thickness(0, 1, 0, 1), Child = row,
-                });
+                if (day != a.Time.Date) { day = a.Time.Date; panel.Children.Add(Section(a.Time.Date == DateTime.Today ? "Today" : a.Time.ToString("ddd d MMM"))); }
+                // Marker: black = a change, grey = a read or preview, red = failed.
+                var marker = !a.Ok ? _c.Rule : IsChange(a) ? _c.Text : _c.Border;
+                panel.Children.Add(Row(marker, $"{a.Time:HH:mm:ss}  {a.Title}{(a.Ok ? "" : "  (failed)")}{(a.Ms > 3000 ? $"  · {a.Ms / 1000.0:0.0} s" : "")}", a.Detail, bold: !a.Ok));
             }
             return panel;
         }
 
+        private Border Row(Brush marker, string title, string detail, bool bold = false)
+        {
+            var row = new StackPanel();
+            row.Children.Add(new TextBlock { Text = title, Foreground = _c.Text, FontWeight = bold ? FontWeights.SemiBold : FontWeights.Normal, TextWrapping = TextWrapping.Wrap });
+            if (!string.IsNullOrEmpty(detail))
+                row.Children.Add(new TextBlock { Text = detail, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, FontSize = 11, Margin = new Thickness(0, 1, 0, 0) });
+            return new Border { BorderBrush = marker, BorderThickness = new Thickness(3, 0, 0, 0), Padding = new Thickness(8, 4, 0, 4), Margin = new Thickness(0, 1, 0, 3), Child = row };
+        }
+
+        // ---- Results ------------------------------------------------------------------------------------
+
         private UIElement RenderResults()
         {
-            var panel = new StackPanel { Margin = new Thickness(8) };
+            var panel = new StackPanel { Margin = new Thickness(10) };
             var results = ActivityHub.Results;
             if (results.Count == 0)
             {
@@ -278,25 +511,26 @@ namespace AceRevitMcp.Companion
                 return panel;
             }
             panel.Children.Add(new TextBlock { Text = ActivityHub.ResultsTitle, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 6) });
-            var selectAll = ActionButton($"Select all {results.Count} in Revit", true);
+            panel.Children.Add(Labelled("Search", _resultSearch));
+            var q = (_resultSearch.Text ?? "").Trim();
+            var shown = results.Where(r => q.Length == 0 || $"{r.Id} {r.Label}".IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+            var selectAll = ActionButton($"Select {(q.Length > 0 ? "these" : "all")} {shown.Count} in Revit", true);
             selectAll.HorizontalAlignment = HorizontalAlignment.Left;
-            selectAll.Click += async (s, e) => await SelectAsync(results.Select(r => r.Id).ToArray(), zoom: false);
+            selectAll.Click += async (s, e) => await SelectAsync(shown.Select(r => r.Id).ToArray(), zoom: false);
             panel.Children.Add(selectAll);
-            foreach (var r in results.Take(300))
+            foreach (var r in shown.Take(300))
             {
                 var link = new Button
                 {
-                    Content = new TextBlock { Text = $"{r.Id}  {r.Label}", TextWrapping = TextWrapping.Wrap, TextDecorations = TextDecorations.Underline },
-                    HorizontalContentAlignment = HorizontalAlignment.Left,
-                    Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-                    Foreground = _c.Link, Cursor = System.Windows.Input.Cursors.Hand,
-                    Padding = new Thickness(2, 3, 2, 3), ToolTip = "Select and zoom to this element",
+                    Content = new TextBlock { Text = $"{r.Label}   ({r.Id})", TextWrapping = TextWrapping.Wrap },
+                    HorizontalContentAlignment = HorizontalAlignment.Left, Background = _c.Card, BorderBrush = _c.Border, BorderThickness = new Thickness(0, 0, 0, 1),
+                    Foreground = _c.Link, Cursor = System.Windows.Input.Cursors.Hand, Padding = new Thickness(6, 5, 6, 5), ToolTip = "Select and zoom to this element",
                 };
                 var id = r.Id;
                 link.Click += async (s, e) => await SelectAsync(new[] { id }, zoom: true);
                 panel.Children.Add(link);
             }
-            if (results.Count > 300) panel.Children.Add(Hint($"... and {results.Count - 300} more (use Select all)."));
+            if (shown.Count > 300) panel.Children.Add(Hint($"... and {shown.Count - 300} more (use Select)."));
             return panel;
         }
 
@@ -311,27 +545,45 @@ namespace AceRevitMcp.Companion
             catch (Exception ex) { Toast($"Could not select: {ex.Message}"); }
         }
 
-        private UIElement RenderContext()
+        // ---- Prompts ------------------------------------------------------------------------------------
+
+        private UIElement RenderPrompts()
         {
-            var panel = new StackPanel { Margin = new Thickness(8) };
+            var panel = new StackPanel { Margin = new Thickness(10) };
             var ctx = ActivityHub.Context;
-            panel.Children.Add(new TextBlock { Text = "Right now in Revit", FontWeight = FontWeights.SemiBold, Foreground = _c.Text });
-            panel.Children.Add(new TextBlock
+            var now = Card();
+            var nb = (StackPanel)now.Child;
+            nb.Children.Add(Section("Right now in Revit"));
+            nb.Children.Add(new TextBlock
             {
-                Text = $"Model: {ctx.Document ?? "(none open)"}\nView: {ctx.View ?? "-"}{(ctx.ViewType != null ? $" ({ctx.ViewType})" : "")}\nSelection: {ctx.SelectionSummary ?? "nothing selected"}",
-                Foreground = _c.Text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 6),
+                Text = $"View: {ctx.View ?? "-"}{(ctx.ViewType != null ? $" ({ctx.ViewType})" : "")}\nSelection: {ctx.SelectionSummary ?? "nothing selected"}",
+                Foreground = _c.Text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4),
             });
-            var copyContext = ActionButton("Copy this context for Claude", true);
+            var copyContext = ActionButton("Copy this context for Claude", false);
             copyContext.HorizontalAlignment = HorizontalAlignment.Left;
             copyContext.Click += (s, e) => Copy(ContextText(), "Context copied. Paste it into Claude (Ctrl+V).");
-            panel.Children.Add(copyContext);
+            nb.Children.Add(copyContext);
+            panel.Children.Add(now);
 
-            panel.Children.Add(new TextBlock { Text = "Quick prompts (copied to the clipboard, paste into Claude)", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 4), Foreground = _c.Text, TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(Labelled("Search prompts", _promptSearch));
+            panel.Children.Add(new TextBlock { Text = "Click a prompt to copy it, then paste it into Claude Desktop.", Foreground = _c.Muted, FontSize = 11, Margin = new Thickness(0, 2, 0, 6) });
+            var q = (_promptSearch.Text ?? "").Trim();
             var hasSelection = ctx.SelectedIds.Count > 0;
             foreach (var (group, prompts) in Prompts())
             {
-                panel.Children.Add(new TextBlock { Text = group, Foreground = _c.Muted, FontSize = 11, Margin = new Thickness(0, 8, 0, 2) });
-                foreach (var (label, prompt, needsSelection) in prompts)
+                var matching = prompts.Where(p => q.Length == 0 || p.Item1.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+                if (matching.Count == 0) continue;
+                var collapsed = q.Length == 0 && _collapsed.Contains(group);
+                var head = new Button
+                {
+                    Content = $"{(collapsed ? "+" : "-")}  {group}  ({matching.Count})", Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+                    HorizontalContentAlignment = HorizontalAlignment.Left, FontWeight = FontWeights.SemiBold, Foreground = _c.Text, Padding = new Thickness(0, 6, 0, 4), Cursor = System.Windows.Input.Cursors.Hand,
+                };
+                var g = group;
+                head.Click += (s, e) => { if (!_collapsed.Remove(g)) _collapsed.Add(g); Render(); };
+                panel.Children.Add(head);
+                if (collapsed) continue;
+                foreach (var (label, prompt, needsSelection) in matching)
                 {
                     var available = !needsSelection || hasSelection;
                     var b = ActionButton(label, false);
@@ -350,6 +602,22 @@ namespace AceRevitMcp.Companion
             }
             return panel;
         }
+
+        private UIElement Labelled(string label, UIElement input)
+        {
+            var p = new DockPanel { Margin = new Thickness(0, 4, 0, 4) };
+            var l = new TextBlock { Text = label, Foreground = _c.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+            DockPanel.SetDock(l, Dock.Left);
+            p.Children.Add(l); p.Children.Add(input);
+            return p;
+        }
+
+        private Border Chip(string text, bool key) => new Border
+        {
+            Background = key ? _c.Rule : _c.Background, BorderBrush = key ? _c.Rule : _c.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(8, 1, 8, 1), Margin = new Thickness(0, 0, 6, 4),
+            Child = new TextBlock { Text = text, FontSize = 11, Foreground = key ? Brushes.White : _c.Text },
+        };
 
         private static (string, (string, Func<string>, bool)[])[] Prompts()
         {
@@ -452,14 +720,14 @@ namespace AceRevitMcp.Companion
         private Border Card() => new Border
         {
             Background = _c.Card, BorderBrush = _c.Border, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(10), Margin = new Thickness(0, 0, 0, 8), Child = new StackPanel(),
+            Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(0, 0, 0, 10), Child = new StackPanel(),
         };
 
         private Button ActionButton(string text, bool primary) => new Button
         {
             Content = text,
-            Padding = new Thickness(12, 4, 12, 4),
-            Margin = new Thickness(0, 4, 8, 4),
+            Padding = new Thickness(12, 5, 12, 5),
+            Margin = new Thickness(0, 6, 8, 2),
             Background = primary ? _c.Accent : _c.Card,
             Foreground = primary ? _c.OnAccent : _c.Text,
             BorderBrush = primary ? _c.Accent : _c.Border,
