@@ -35,6 +35,8 @@ namespace AceRevitMcp.Util
         /// <summary>The mark that reads well on the current Revit theme.</summary>
         public static ImageSource MarkForTheme => IsDarkTheme ? (MarkOnDark ?? Mark) : (Mark ?? MarkOnDark);
         public static bool UseLogoOnRibbon { get; private set; }
+        /// <summary>Ribbon icon style: "3d" (raised tile, default) or "flat".</summary>
+        public static bool Icons3D { get; private set; } = true;
 
         public static string Folder => Path.Combine(AceConfig.Directory, "branding");
 
@@ -55,6 +57,7 @@ namespace AceRevitMcp.Util
                 if (json["font"]?.ToString() is string font && font.Trim().Length > 0) FontFamily = font.Trim();
                 if (json["headingFont"]?.ToString() is string hf && hf.Trim().Length > 0) HeadingFont = hf.Trim();
                 UseLogoOnRibbon = json["useLogoOnRibbon"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+                if (json["iconStyle"]?.ToString() is string style) Icons3D = !style.Trim().Equals("flat", StringComparison.OrdinalIgnoreCase);
                 Logo = Image(json["logo"]?.ToString());
                 Mark = Image(json["mark"]?.ToString());
                 MarkOnDark = Image(json["markOnDark"]?.ToString());
@@ -118,7 +121,24 @@ namespace AceRevitMcp.Util
             using (var dc = visual.RenderOpen())
             {
                 var radius = size * 0.22;
-                dc.DrawRoundedRectangle(new SolidColorBrush(tile), null, new Rect(0, 0, size, size), radius, radius);
+                var full = new Rect(0, 0, size, size);
+                var raised = Branding.Icons3D;
+                // 3D: a darker base shows as a lip under the tile, so the tile looks raised off the ribbon.
+                var depth = raised ? Math.Max(1.0, size * 0.07) : 0;
+                var face = new Rect(0, 0, size, size - depth);
+                if (raised)
+                {
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Shade(tile, dark ? -0.30 : -0.45)), null, full, radius, radius);
+                    var faceBrush = new LinearGradientBrush(Shade(tile, dark ? 0.0 : 0.28), Shade(tile, dark ? -0.10 : -0.06), 90);
+                    dc.DrawRoundedRectangle(faceBrush, null, face, radius, radius);
+                    // Light from above: a soft highlight over the upper half of the face.
+                    var gloss = new LinearGradientBrush(Color.FromArgb(dark ? (byte)120 : (byte)80, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), 90);
+                    dc.DrawRoundedRectangle(gloss, null, new Rect(size * 0.06, size * 0.04, size * 0.88, face.Height * 0.5), radius * 0.8, radius * 0.8);
+                    dc.DrawRoundedRectangle(null, new Pen(new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)), Math.Max(0.6, size * 0.03)),
+                        new Rect(size * 0.02, size * 0.02, size * 0.96, face.Height - size * 0.04), radius, radius);
+                }
+                else dc.DrawRoundedRectangle(new SolidColorBrush(tile), null, full, radius, radius);
+
                 var mark = useMark ? (dark ? (Branding.Mark ?? Branding.MarkOnDark) : (Branding.MarkOnDark ?? Branding.Mark)) : null;
                 if (mark != null)
                 {
@@ -128,32 +148,54 @@ namespace AceRevitMcp.Util
                     var w = ratio >= 1 ? box : box * ratio;
                     var h = ratio >= 1 ? box / ratio : box;
                     RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.HighQuality);
-                    dc.DrawImage(mark, new Rect((size - w) / 2, (size - h) / 2, w, h));
+                    dc.DrawImage(mark, new Rect((size - w) / 2, (face.Height - h) / 2, w, h));
                 }
                 else
                 {
-                    var geometry = Geometry.Parse(glyph).Clone();
                     var scale = size * (stroke ? 0.64 : 0.72) / 24.0;
                     var offset = (size - 24 * scale) / 2;
-                    geometry.Transform = new TransformGroup { Children = { new ScaleTransform(scale, scale), new TranslateTransform(offset, offset) } };
+                    var lift = depth / 2;   // centre the glyph on the raised face
+                    Geometry Placed(double dx, double dy)
+                    {
+                        var g = Geometry.Parse(glyph).Clone();
+                        g.Transform = new TransformGroup { Children = { new ScaleTransform(scale, scale), new TranslateTransform(offset + dx, offset - lift + dy) } };
+                        return g;
+                    }
+                    var inkBrush = new SolidColorBrush(ink);
+                    var shadowBrush = new SolidColorBrush(Color.FromArgb(dark ? (byte)40 : (byte)110, 0, 0, 0));
+                    var sh = Math.Max(0.7, size * 0.035);
                     if (stroke)
                     {
-                        var pen = new Pen(new SolidColorBrush(ink), Math.Max(1.0, 2.0 * scale))
-                        { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
-                        dc.DrawGeometry(null, pen, geometry);
+                        Pen P(Brush br) => new Pen(br, Math.Max(1.0, 2.0 * scale)) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
+                        if (raised) dc.DrawGeometry(null, P(shadowBrush), Placed(0, sh));
+                        dc.DrawGeometry(null, P(inkBrush), Placed(0, 0));
                     }
-                    else dc.DrawGeometry(new SolidColorBrush(ink), null, geometry);
+                    else
+                    {
+                        if (raised) dc.DrawGeometry(shadowBrush, null, Placed(0, sh));
+                        dc.DrawGeometry(inkBrush, null, Placed(0, 0));
+                    }
                 }
                 // Small accent punctuation (e.g. ACE Red), never a large fill.
-                var accent = new SolidColorBrush(Branding.Accent);
+                var accentColor = Branding.Accent;
                 var dot = new Point(size * 0.84, size * 0.16);
-                if (planned) dc.DrawEllipse(new SolidColorBrush(tile), new Pen(accent, Math.Max(1.0, size * 0.05)), dot, size * 0.09, size * 0.09);
+                Brush accent = raised
+                    ? new RadialGradientBrush(Shade(accentColor, 0.45), Shade(accentColor, -0.25)) { GradientOrigin = new Point(0.35, 0.3), Center = new Point(0.45, 0.4), RadiusX = 0.6, RadiusY = 0.6 }
+                    : new SolidColorBrush(accentColor);
+                if (planned) dc.DrawEllipse(new SolidColorBrush(Shade(tile, raised && !dark ? 0.2 : 0)), new Pen(new SolidColorBrush(accentColor), Math.Max(1.0, size * 0.05)), dot, size * 0.09, size * 0.09);
                 else dc.DrawEllipse(accent, null, dot, size * 0.1, size * 0.1);
             }
             var bmp = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
             bmp.Render(visual);
             bmp.Freeze();
             return bmp;
+        }
+
+        /// <summary>Lighter (amount &gt; 0, towards white) or darker (amount &lt; 0, towards black) version of a colour.</summary>
+        private static Color Shade(Color c, double amount)
+        {
+            byte Mix(byte v) => (byte)Math.Round(amount >= 0 ? v + (255 - v) * amount : v * (1 + amount));
+            return Color.FromArgb(c.A, Mix(c.R), Mix(c.G), Mix(c.B));
         }
     }
 }
