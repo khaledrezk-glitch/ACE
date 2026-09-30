@@ -14,7 +14,7 @@ capability than either point alone. Circles join into **bigger circles**. For ex
   rules, and the model check, worksets, clash tests, naming and submission checks all read from it.
 
 This only works if every new capability is studied with the others first. **The integration rule** (section 7)
-makes that a step in every release.
+makes that a step in every release, and the **Project Hub** (section 7) keeps every point and link in one place.
 
 ## 2. Architecture in layers
 
@@ -145,7 +145,7 @@ uses, all driven by the requirements hub.
 | Group | Tools | Main mode |
 |---|---|---|
 | Claude | Work mode, Companion, MCP Status, Undo | all |
-| **BIM Tools** (new) | **Requirements** (hub: analyse, contradictions, compliance), Model Check, Worksets (BEP), Naming Check, Change Tracker / Snapshots, Standards (check set) | Model audit, BIM management |
+| **BIM Tools** (new) | **Project Hub**, **Requirements** (analyse, contradictions, compliance), Model Check, Worksets (BEP), Naming Check, Change Tracker / Snapshots, Standards (check set) | Model audit, BIM management |
 | Coordination | Clash Browser, Clash View, Coordination Report | Coordination |
 | Production | Data (Excel in/out, parameters, smart select), Sheets and Views, Export | Production |
 | Design | Test Fit, Structure from ARC, Design / Code Check | Design (new mode) |
@@ -155,7 +155,69 @@ uses, all driven by the requirements hub.
 Two modes follow from this: **BIM management** (BIM Tools first) and **Design** (test fits, derivations, design
 checks).
 
-## 7. The integration rule (for every new capability)
+## 7. The Project Hub: one container for everything
+
+Every analysis, rule and conclusion lives in **one container per project**. It opens from the ribbon (BIM Tools →
+**Project Hub**) and from the Companion. It is the project's memory, and the place where all the circles can be seen.
+
+### What it holds
+
+Everything in the Hub is a **point** with an id, a type, its content, its source, who made it and when, and links to
+the other points it depends on.
+
+| Branch | Points | Where they come from |
+|---|---|---|
+| **Documents** | BEP, EIR, LOIN / LOD matrix, naming convention, MIDP / TIDP, client standards, each with its revisions | Added by the BIM manager (a file or a CDE link) |
+| **Models** | This model, its links, the other discipline models: discipline, alignment, snapshots | Model brief, change tracker |
+| **Requirements** | The project requirements (section 5), rule by rule, each quoting its clause | Analyser (Claude), reviewed by the BIM manager |
+| **Rules** | Check set, workset rules, clash matrix and responsibility, naming rules, colours | Requirements, office settings |
+| **Analyses** | Every run: model check, clash test, requirements compliance, document analysis, each with its date and inputs | The engines |
+| **Findings** | Contradictions, compliance issues, clash issues, recommendations, with severity and status | The analyses |
+| **Decisions** | Approved clashes, accepted deviations, answers to open questions, with who decided and why | The team |
+| **Lessons** | What ACE learnt on this project | Lessons store |
+
+The links make the circles visible, e.g. *LOIN clause 4.2 → rule "Doors need Fire Rating at stage 4" → 37
+doors failing on L3 → decision "fire strategy pending, accept until stage 5"*.
+
+### Click a point to edit it (where that is efficient)
+
+Not everything should be edited the same way. The rule is: **edit what people own, annotate what engines compute,
+reference what comes from outside.**
+
+| Point | On click | Why |
+|---|---|---|
+| Requirements and rules | **Edit in place** (a form: value, threshold, workset name, tolerance). The Hub shows what depends on it, marks those analyses *out of date* and offers to re-run them | People own the rules; one edit updates every tool that reads them |
+| Findings | **Change status** (open, accepted, fixed, not an issue) and **add a note**; *Show in model* selects and zooms; *Fix* runs the tool that fixes it, with the usual preview | A finding is computed: editing its text would break the link to the model |
+| Analyses | **Read-only**, with *Run again* and *Compare with the previous run* | They are records; changing them would lose history |
+| Decisions | **Edit**, with the history kept | They record a judgement that may change |
+| Documents | **Open**, see revisions, see which requirements quote it; *Analyse this revision* | The source stays untouched |
+| Models | *Open*, *Show in the clash view*, its snapshots and alignment | They are references |
+
+Every edit is saved with who and when (an audit trail). Rules and requirements can be locked to the BIM manager's role.
+
+### How it works
+
+- **One store, many readers.** The Hub is the status store and the requirements store together (D2, D8). The model
+  check, clash engine, workset tool, Companion, dashboard and Claude all read from it and write their results to it.
+  Nothing keeps a private copy.
+- **Where it lives.** It sits in the project folder on the shared drive or the CDE, next to the central model, so the
+  whole team sees the same Hub. A local copy is kept for offline work. The format is plain files (JSON per branch plus
+  the documents), so it can be backed up, compared and versioned. Personal notes can stay local.
+- **Out-of-date tracking.** Every analysis records the rules and model snapshot it used. When a rule changes or the
+  model changes a lot, the analysis is marked out of date, and the Hub offers to re-run it.
+- **Claude.** One tool, *project_hub* (read, search, propose an edit), so Claude always works from the project's
+  current rules and past conclusions, and quotes them. Claude proposes edits to rules; people approve them.
+
+### The window
+
+- **Left:** the branches as a tree, with counts and red markers where something is out of date or contradictory.
+- **Middle:** the list of the selected branch, with a search and filters (stage, discipline, status, severity).
+- **Right:** the point itself. Content, source, links in and out ("depends on", "used by"), history, and the actions
+  (edit, status, show in model, fix, run again).
+- **Later:** a **map view** that draws the points and links as circles, showing management how requirements, rules,
+  models and findings connect.
+
+## 8. The integration rule (for every new capability)
 
 Before building:
 
@@ -165,14 +227,17 @@ Before building:
    see it.
 4. **Which existing capabilities does it connect to, and what new circle does that form?** Write it in section 3.
 5. **What does it replace or merge?** Add it to section 4.
+6. **What does it store in the Project Hub?** Its rules, results and decisions go there as points with links, not
+   into a private file.
 
 After releasing: a benchmark case, the learning loop, and a review of this document each quarter (or every minor
 version).
 
-## 8. Proposed order (for approval)
+## 9. Proposed order (for approval)
 
 1. **Status store and quick merges:** D3, D5, D6, D8, D9. These are small and make the base cleaner.
 2. **Rules engine and project requirements file:** D2 and D7, which also feed D1 and D10. Existing files keep working.
-3. **Requirements hub:** analyser, contradiction monitor (documents, settings, model) and the BIM Tools group.
+3. **Project Hub (store and window) and requirements hub:** the container first, then the analyser and the
+   contradiction monitor (documents, settings, model), and the BIM Tools group.
 4. **Issue view engine:** D4, then BCF export.
 5. **Rule packs:** D11 and D12 (submission, design and code checks), all on the same engine.
