@@ -11,5 +11,6 @@
   "logo": "",
   "useLogoOnRibbon": false,
   "iconColor": "#000000",
-  "iconStyle": "bevel"
+  "iconStyle": "bevel",
+  "iconMix": "planned"
 }

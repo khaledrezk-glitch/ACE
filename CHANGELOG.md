@@ -2,7 +2,8 @@
 
 ## 1.7.0 (core v2)
 - **Bevelled ribbon icons**: ACE Rich Black tiles with seamless bevelled edges lit from the top left and a soft shadow below (like PowerPoint's
-  bevel), an embossed glyph and a shaded red dot. `brand.json`: `"iconStyle": "bevel" | "3d" | "flat"`, `"iconColor"`.
+  bevel), an embossed glyph and a shaded red dot. Live tools are black, planned tools white (`"iconMix": "none"` for all
+  black). `brand.json`: `"iconStyle": "bevel" | "3d" | "flat"`, `"iconColor"`, `"iconMix"`.
 - **Official ACE brand values** (ACE Brand Guideline and Brand Card): UAE Flag Red `#EF3340` (was `#C8102E`), Charcoal
   Black `#212121`, Grey `#414042`, Platinum `#E6E6E6`, Quick Silver `#A0A0A0`; Poppins for text and BW Gradual for report
   headlines (Arial where not installed); company name "Al Ain Consulting Engineers". All other greys replaced by brand greys.

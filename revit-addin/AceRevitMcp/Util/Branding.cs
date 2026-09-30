@@ -40,6 +40,8 @@ namespace AceRevitMcp.Util
         public static string IconStyle { get; private set; } = "bevel";
         /// <summary>Tile colour of the ribbon icons (ACE: Rich Black); defaults to the primary colour.</summary>
         public static Color? IconColor { get; private set; }
+        /// <summary>"planned" (default): live tools get black buttons, planned tools white ones. "none": all the same.</summary>
+        public static bool MixByStatus { get; private set; } = true;
 
         public static string Folder => Path.Combine(AceConfig.Directory, "branding");
 
@@ -61,6 +63,7 @@ namespace AceRevitMcp.Util
                 if (json["headingFont"]?.ToString() is string hf && hf.Trim().Length > 0) HeadingFont = hf.Trim();
                 UseLogoOnRibbon = json["useLogoOnRibbon"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
                 if (json["iconColor"]?.ToString() is string ic && ic.Trim().Length > 0) IconColor = ParseColor(ic, Primary);
+                if (json["iconMix"]?.ToString() is string mix) MixByStatus = !mix.Trim().Equals("none", StringComparison.OrdinalIgnoreCase);
                 if (json["iconStyle"]?.ToString() is string style && new[] { "bevel", "3d", "flat" }.Contains(style.Trim().ToLowerInvariant()))
                     IconStyle = style.Trim().ToLowerInvariant();
                 Logo = Image(json["logo"]?.ToString());
@@ -120,10 +123,13 @@ namespace AceRevitMcp.Util
             var style = Branding.IconStyle;
             var bevel = style == "bevel";
             var raised = style == "3d";
-            var tile = dark ? (bevel ? Color.FromRgb(0xE6, 0xE7, 0xE8) : Colors.White) : (Branding.IconColor ?? Branding.Primary);
-            var ink = dark ? Branding.Primary : Colors.White;
-            // A very light primary on a light theme would vanish: fall back to a dark tile.
-            if (!dark && (0.299 * tile.R + 0.587 * tile.G + 0.114 * tile.B) > 200) { tile = Color.FromRgb(0x22, 0x22, 0x22); ink = Colors.White; }
+            // Light tiles on the dark theme; with the status mix, planned tools swap: white on light, black on dark.
+            var lightTile = dark ^ (Branding.MixByStatus && planned);
+            var darkTile = Branding.IconColor ?? Branding.Primary;
+            // A very light primary would vanish on a light ribbon: fall back to a dark tile.
+            if ((0.299 * darkTile.R + 0.587 * darkTile.G + 0.114 * darkTile.B) > 200) darkTile = Color.FromRgb(0x22, 0x22, 0x22);
+            var tile = lightTile ? (bevel ? Color.FromRgb(0xE6, 0xE7, 0xE8) : Colors.White) : darkTile;
+            var ink = lightTile ? Branding.Primary : Colors.White;
 
             var visual = new DrawingVisual();
             using (var dc = visual.RenderOpen())
@@ -148,7 +154,7 @@ namespace AceRevitMcp.Util
                         dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb((byte)Math.Round(255 * alpha), 0, 0, 0)), null, r, radius + grow / 2, radius + grow / 2);
                     }
                     // Face: a gentle top-to-bottom gradient, then four edge glows that fade into it (no seams, no inner square).
-                    dc.DrawRoundedRectangle(new LinearGradientBrush(Shade(tile, dark ? 0 : 0.10), Shade(tile, dark ? -0.08 : 0), 90), null, face, radius, radius);
+                    dc.DrawRoundedRectangle(new LinearGradientBrush(Shade(tile, lightTile ? 0 : 0.10), Shade(tile, lightTile ? -0.08 : 0), 90), null, face, radius, radius);
                     var b = Math.Max(2.0, face.Width * 0.16);
                     void Edge(Color c, double alpha, Point from, Point to)
                     {
@@ -157,10 +163,10 @@ namespace AceRevitMcp.Util
                             from, to) { MappingMode = BrushMappingMode.Absolute };
                         dc.DrawRoundedRectangle(brush, null, face, radius, radius);
                     }
-                    Edge(Colors.White, dark ? 0.55 : 0.42, new Point(0, face.Top), new Point(0, face.Top + b));          // top, lit
-                    Edge(Colors.White, dark ? 0.30 : 0.20, new Point(face.Left, 0), new Point(face.Left + b, 0));        // left
-                    Edge(Colors.Black, dark ? 0.22 : 0.50, new Point(face.Right, 0), new Point(face.Right - b, 0));      // right
-                    Edge(Colors.Black, dark ? 0.35 : 0.70, new Point(0, face.Bottom), new Point(0, face.Bottom - b));    // bottom, in shade
+                    Edge(Colors.White, lightTile ? 0.55 : 0.42, new Point(0, face.Top), new Point(0, face.Top + b));          // top, lit
+                    Edge(Colors.White, lightTile ? 0.30 : 0.20, new Point(face.Left, 0), new Point(face.Left + b, 0));        // left
+                    Edge(Colors.Black, lightTile ? 0.22 : 0.50, new Point(face.Right, 0), new Point(face.Right - b, 0));      // right
+                    Edge(Colors.Black, lightTile ? 0.35 : 0.70, new Point(0, face.Bottom), new Point(0, face.Bottom - b));    // bottom, in shade
                 }
                 else if (raised)
                 {
@@ -203,7 +209,7 @@ namespace AceRevitMcp.Util
                         return g;
                     }
                     var inkBrush = new SolidColorBrush(ink);
-                    var shadowBrush = new SolidColorBrush(Color.FromArgb(dark ? (byte)46 : (byte)115, 0, 0, 0));
+                    var shadowBrush = new SolidColorBrush(Color.FromArgb(lightTile ? (byte)46 : (byte)115, 0, 0, 0));
                     var sh = Math.Max(0.6, S * (bevel ? 0.025 : 0.035));
                     if (stroke)
                     {
@@ -223,7 +229,7 @@ namespace AceRevitMcp.Util
                 Brush accent = embossed
                     ? new RadialGradientBrush(Shade(accentColor, 0.45), Shade(accentColor, -0.25)) { GradientOrigin = new Point(0.35, 0.3), Center = new Point(0.45, 0.4), RadiusX = 0.6, RadiusY = 0.6 }
                     : new SolidColorBrush(accentColor);
-                if (planned) dc.DrawEllipse(new SolidColorBrush(Shade(tile, embossed && !dark ? 0.1 : 0)), new Pen(new SolidColorBrush(accentColor), Math.Max(1.0, S * 0.045)), dot, S * 0.085, S * 0.085);
+                if (planned) dc.DrawEllipse(new SolidColorBrush(Shade(tile, embossed && !lightTile ? 0.1 : 0)), new Pen(new SolidColorBrush(accentColor), Math.Max(1.0, S * 0.045)), dot, S * 0.085, S * 0.085);
                 else dc.DrawEllipse(accent, null, dot, S * 0.095, S * 0.095);
             }
             var bmp = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
