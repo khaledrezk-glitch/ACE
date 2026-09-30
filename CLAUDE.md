@@ -51,6 +51,11 @@ integration rule (which engine, where its rules come from, what it publishes, wh
 update the inventory and the duplication list. Prefer extending an engine over adding a parallel one. Changes to the
 add-in or MCP server wait for the user's go-ahead while the concept is under review.
 
+## Showcase reminder (the user asked for this)
+When a circle in `docs/ARCHITECTURE-CONCEPT.md` is complete AND verified live in Revit (a real model, not only offline
+tests), remind the user to create a presentation on it, highlighting the hidden capabilities and the thinking behind
+them. Keep the "Showcase" list in that document up to date (what is ready to show, with the story and the demo).
+
 ## The learning loop (keep it running with every change)
 ACE is meant to get better continuously. Every release should pass through this loop:
 1. **Collect:** team members run `learning_report` (ask Claude, `share_with_team: true`) and share `issue-*.md` reports.

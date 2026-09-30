@@ -284,3 +284,20 @@ version).
    before-sync summary) and the BIM Tools group.
 4. **Issue view engine:** D4, then BCF export.
 5. **Rule packs:** D11 and D12 (submission, design and code checks), all on the same engine.
+
+## 11. Showcase: what to present when it is strong
+
+A presentation is due when a circle is **complete and verified live in Revit**. Each entry has the story (the
+hidden capability and the thinking behind it) and the demo that proves it.
+
+| Circle | Story | Demo | Ready? |
+|---|---|---|---|
+| **Who caused this clash** | Clash detection alone says *what* clashes. Joined with the change tracker, ACE says *whose change made it and when*, and separately *who should give way* by the priority rules | Move a duct in the MEP link, re-run: the new clash names the change and the person | Built, not yet verified live |
+| **Navisworks-style review inside Revit** | Two models in colour, one clash at a time: everything else dimmed, zoomed to the intersection even on a large slab, and linked elements coloured, which Revit itself can't do | Clash Browser → click through issues → Coordination report for the meeting | Built, not yet verified live |
+| **Issues, not clashes** | 40 clashes can be 3 real problems: one duct through 8 beams is one issue, with one responsible discipline | The same test as a raw list, then grouped | Built, not yet verified live |
+| **Office test fits** | "How many people fit in this office?" answered by placing real desks, with options applied one by one | Management demo (done 29 Sep) | Shown |
+| **The model knows its own health** | Model Checker-style checks with an office check set, a score and a trend, plus coordination status on one page | Dashboard before and after a clean-up | Built, not yet verified live |
+| **Learning loop** | ACE gets better from its own mistakes: lessons, first-time-right trend, benchmark before every release | Learning report over a month | Running |
+| **The requirements hub** (planned) | The BEP, LOD and LOIN become rules that every tool follows; contradictions are found between documents, settings and the model, and raised like Revit warnings | A BEP revision that contradicts the LOIN, then a door without Fire Rating raising a warning | Concept |
+| **Project Hub** (planned) | Everything the project knows, analysed and decided, in one place, with every point linked to its sources, so the circles can be seen | The map view: clause → rule → failing elements → decision | Concept |
+
