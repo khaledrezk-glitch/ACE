@@ -284,6 +284,78 @@ namespace AceRevitMcp.Coordination
 
         private static string Name(Element e) => e is FamilyInstance fi ? $"{fi.Symbol.FamilyName} : {fi.Symbol.Name}" : (e.Document.GetElement(e.GetTypeId())?.Name ?? e.Name);
 
+        // ---- cause: what changed since the snapshot before the previous run -----------------------------------
+
+        private static readonly Dictionary<string, Dictionary<string, Tracking.ElementRecord>> SnapshotCache = new Dictionary<string, Dictionary<string, Tracking.ElementRecord>>();
+
+        /// <summary>
+        /// For new clashes: which side was added, moved or retyped since the latest snapshot taken at or before the
+        /// previous clash run (or the latest one if there was no run), and in workshared models, by whom.
+        /// </summary>
+        public static void Explain(UIApplication app, Document host, List<Clash> fresh, DateTime? previousRun, List<string> notes)
+        {
+            if (fresh.Count == 0) return;
+            var sources = Sources(app, host).GroupBy(s => s.Name).ToDictionary(g => g.Key, g => g.First());
+            var baselines = new Dictionary<string, (Dictionary<string, Tracking.ElementRecord> Records, DateTime Time)?>();
+            (Dictionary<string, Tracking.ElementRecord> Records, DateTime Time)? Baseline(Source s)
+            {
+                if (baselines.TryGetValue(s.Name, out var b)) return b;
+                b = null;
+                try
+                {
+                    var all = Tracking.Snapshots.List(s.Doc);
+                    var pick = previousRun != null ? all.FirstOrDefault(x => x.Time <= previousRun.Value) : all.FirstOrDefault();
+                    if (pick.File != null)
+                    {
+                        var cacheKey = pick.File;
+                        if (!SnapshotCache.TryGetValue(cacheKey, out var records))
+                        {
+                            if (SnapshotCache.Count > 8) SnapshotCache.Clear();
+                            records = Tracking.Snapshots.Load(pick.File).Elements.GroupBy(e => e.U).ToDictionary(g => g.Key, g => g.First());
+                            SnapshotCache[cacheKey] = records;
+                        }
+                        b = (records, pick.Time);
+                    }
+                }
+                catch (Exception ex) { Log.Warn($"Clash cause, snapshot of {s.Name}: {ex.Message}"); }
+                return baselines[s.Name] = b;
+            }
+
+            ClashLogic.Side Side(string model, string u, string cat)
+            {
+                if (model == null || !sources.TryGetValue(model, out var src)) return null;
+                var bl = Baseline(src);
+                if (bl == null) return null;
+                var e = src.Doc.GetElement(u);
+                if (e == null) return null;
+                var side = new ClashLogic.Side { Cat = cat, Model = src.IsHost ? null : model };
+                if (!bl.Value.Records.TryGetValue(u, out var rec)) side.Change = "added";
+                else if (rec.Loc != null && Tracking.Snapshots.Location(e) is string loc && loc != rec.Loc) side.Change = "moved";
+                else if (rec.Type != null && Tracking.Snapshots.TypeName(src.Doc, e) != rec.Type) side.Change = "retyped";
+                if (side.Change != null && src.Doc.IsWorkshared)
+                    try
+                    {
+                        var info = WorksharingUtils.GetWorksharingTooltipInfo(src.Doc, e.Id);
+                        var by = side.Change == "added" ? info.Creator : info.LastChangedBy;
+                        if (!string.IsNullOrWhiteSpace(by)) side.By = by;
+                    }
+                    catch { }
+                return side;
+            }
+
+            var explained = 0;
+            foreach (var c in fresh.Take(500))
+            {
+                var a = Side(c.SourceA, c.UA, c.CatA);
+                var b = Side(c.SourceB, c.UB, c.CatB);
+                var time = new[] { c.SourceA, c.SourceB }.Where(m => m != null && sources.ContainsKey(m)).Select(m => Baseline(sources[m])).FirstOrDefault(x => x != null);
+                var since = time != null ? $"the snapshot of {time.Value.Time:d MMM HH:mm}" : "the last snapshot";
+                (c.Cause, c.CausedBy) = ClashLogic.Cause(a, b, since);
+                if (c.Cause != null) explained++;
+            }
+            if (explained == 0) notes.Add("No snapshots to explain new clashes yet: the change tracker's snapshots (taken on open and save) let the next run say which change caused each new clash.");
+        }
+
         // ---- status between runs -------------------------------------------------------------------------------
 
         private static string StoreFile(Document host, string test)

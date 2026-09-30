@@ -33,7 +33,11 @@ namespace AceRevitMcp.Coordination
                 Func<Clash, bool> scope = !complete ? (c => false)
                     : level != null ? (c => string.Equals(c.Level, level, StringComparison.OrdinalIgnoreCase)) : null;
                 if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
-                var merged = ClashLogic.Merge(Clashes.Load(host, t.Name), found, scope, DateTime.Now);
+                var stored = Clashes.Load(host, t.Name);
+                DateTime? previousRun = stored.Count > 0 ? stored.Max(c => c.LastSeen) : (DateTime?)null;
+                var merged = ClashLogic.Merge(stored, found, scope, DateTime.Now);
+                try { Clashes.Explain(app, host, merged.Where(c => c.Status == "new" && c.Cause == null).ToList(), previousRun, testNotes); }
+                catch (Exception ex) { Log.Warn($"Clash causes: {ex.Message}"); }
                 var testIssues = ClashLogic.Issues(merged);
                 Clashes.Save(host, t.Name, merged);
                 all.AddRange(merged);
@@ -67,12 +71,15 @@ namespace AceRevitMcp.Coordination
                     ["issue"] = i.Title, ["clashes"] = i.Count, ["responsible"] = i.Responsible, ["levels"] = i.Levels,
                     ["elementId"] = i.ElementId, ["model"] = i.Model, ["maxDepthMm"] = i.MaxDepthMm, ["pointMm"] = $"{i.X}, {i.Y}, {i.Z}",
                     ["keys"] = new JsonArray(i.Clashes.Select(c => (JsonNode)c.Key).ToArray()),
+                    ["causedBy"] = i.Clashes.Select(c => c.CausedBy).FirstOrDefault(x => x != null),
+                    ["cause"] = i.Clashes.Select(c => c.Cause).FirstOrDefault(x => x != null && !x.StartsWith("both elements are unchanged")),
                 }).ToArray()),
                 ["topOpen"] = new JsonArray(all.Where(Open).OrderByDescending(c => c.DepthMm).Take(30).Select(c => (JsonNode)new JsonObject
                 {
                     ["key"] = c.Key, ["status"] = c.Status, ["reopened"] = c.Reopened > 0 ? c.Reopened : null, ["kind"] = c.Kind, ["level"] = c.Level, ["depthMm"] = c.DepthMm,
                     ["a"] = $"{c.CatA}: {c.NameA} (id {c.IdA}, {c.SourceA})", ["b"] = $"{c.CatB}: {c.NameB} (id {c.IdB}, {c.SourceB})",
                     ["pointMm"] = $"{c.X}, {c.Y}, {c.Z}", ["responsible"] = c.Responsible, ["reason"] = c.Reason,
+                    ["cause"] = c.Cause, ["causedBy"] = c.CausedBy,
                 }).ToArray()),
                 ["htmlReport"] = Clashes.LastPath,
                 ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1),
@@ -164,6 +171,9 @@ namespace AceRevitMcp.Coordination
             // Only elements of the active model can be selected.
             var issues = ClashLogic.Issues(Clashes.Last);
             st.Status = $"{issues.Count} issues ({open.Count} open clashes, {Clashes.LastTest}). Saved to Documents\\ACE Insights.";
+            var caused = open.Where(c => c.CausedBy != null).GroupBy(c => c.CausedBy).OrderByDescending(g => g.Count());
+            foreach (var g in caused)
+                st.Findings.Add(($"New from changes by {g.Key}: {g.Count()} clashes", HostIds(g)));
             foreach (var i in issues.Take(15))
                 st.Findings.Add(($"Issue: {DashboardHtml.Trim(i.Title, 70)} ({i.Responsible})", HostIds(i.Clashes)));
             foreach (var g in open.GroupBy(c => c.Responsible).OrderByDescending(g => g.Count()))
@@ -247,7 +257,7 @@ namespace AceRevitMcp.Coordination
             var row = 0;
             foreach (var i in issues.Take(100))
                 sb.Append($"<tr><td>{++row}</td><td><b>{E(DashboardHtml.Trim(i.Title, 110))}</b><div class=\"muted\">id {i.ElementId} · {E(i.Model)}{(i.Clashes.Any(c => c.Reopened > 0) ? " · <b>reopened</b>" : "")}</div></td>" +
-                          $"<td class=\"num\">{i.Count}</td><td>{E(i.Levels)}</td><td>{E(i.Responsible)}</td><td class=\"num\">{i.MaxDepthMm:0} mm</td><td class=\"muted\">{i.X:0}, {i.Y:0}, {i.Z:0}</td></tr>");
+                          $"<td class=\"num\">{i.Count}</td><td>{E(i.Levels)}</td><td>{E(i.Responsible)}{(i.Clashes.Select(c => c.CausedBy).FirstOrDefault(x => x != null) is string who ? $"<div class='muted'>changed by {E(who)}</div>" : "")}</td><td class=\"num\">{i.MaxDepthMm:0} mm</td><td class=\"muted\">{i.X:0}, {i.Y:0}, {i.Z:0}</td></tr>");
             if (issues.Count == 0) sb.Append("<tr><td colspan=\"7\" class=\"muted\">No open issues.</td></tr>");
             if (issues.Count > 100) sb.Append($"<tr><td colspan=\"7\" class=\"muted\">... and {issues.Count - 100} more.</td></tr>");
             sb.Append("</table>");
@@ -259,7 +269,7 @@ namespace AceRevitMcp.Coordination
                 sb.Append($"<tr><td><span class=\"tag {tag}\">{E(c.Status)}</span>{(c.Reopened > 0 ? "<div class='muted'><b>reopened</b></div>" : "")}<div class=\"muted\">{E(c.Kind)}</div></td><td>{E(c.Level)}</td>" +
                           $"<td><b>{E(c.CatA)}</b><div class=\"muted\">{E(DashboardHtml.Trim(c.NameA, 50))} · id {c.IdA} · {E(c.SourceA)}</div></td>" +
                           $"<td><b>{E(c.CatB)}</b><div class=\"muted\">{E(DashboardHtml.Trim(c.NameB, 50))} · id {c.IdB} · {E(c.SourceB)}</div></td>" +
-                          $"<td class=\"num\">{c.DepthMm:0} mm</td><td>{E(c.Responsible)}<div class=\"muted\">{E(c.Reason)}</div></td><td class=\"muted\">{c.X:0}, {c.Y:0}, {c.Z:0}</td></tr>");
+                          $"<td class=\"num\">{c.DepthMm:0} mm</td><td>{E(c.Responsible)}<div class=\"muted\">{E(c.Reason)}</div>{(c.Cause != null ? $"<div class='muted'>Cause: {E(c.Cause)}</div>" : "")}</td><td class=\"muted\">{c.X:0}, {c.Y:0}, {c.Z:0}</td></tr>");
             }
             if (clashes.Count > 400) sb.Append($"<tr><td colspan=\"7\" class=\"muted\">... and {clashes.Count - 400} more.</td></tr>");
             sb.Append("</table>");

@@ -92,7 +92,7 @@ namespace AceRevitMcp.Tracking
             return snap;
         }
 
-        private static string TypeName(Document doc, Element e)
+        internal static string TypeName(Document doc, Element e)
         {
             if (e is FamilyInstance fi) return $"{fi.Symbol.FamilyName} : {fi.Symbol.Name}";
             var t = doc.GetElement(e.GetTypeId());
@@ -101,7 +101,7 @@ namespace AceRevitMcp.Tracking
 
         private static string R(double feet) => Math.Round(feet * 304.8).ToString(CultureInfo.InvariantCulture);
 
-        private static string Location(Element e)
+        internal static string Location(Element e)
         {
             switch (e.Location)
             {

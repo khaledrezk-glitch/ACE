@@ -79,7 +79,9 @@ models (standard tests "STR vs MEP", "ARC vs STR", "MEP vs ARC", "MEP vs MEP", o
 categories), with depth, level, location and the RESPONSIBLE discipline (the element that is easier to
 move gives way). Clashes are grouped into ISSUES (one element that has to move and everything it hits,
 e.g. one duct through 8 beams): report and coordinate by issue (topIssues), not clash by clash.
-Connected MEP parts and hosted elements are not clashes. Status persists between runs (new / active /
+Connected MEP parts and hosted elements are not clashes. A new clash carries its CAUSE when snapshots
+exist: which side was added, moved or retyped since the last run, and by whom (workshared). Keep the
+two apart when you report: "responsible" says who should give way, "caused by" says whose change made it. Status persists between runs (new / active /
 resolved / approved; a resolved clash that comes back is new again and "reopened", worth pointing out):
 report what is new and what was resolved since last time, grouped by responsible discipline and level, and offer
 set_clash_status to approve accepted ones (e.g. sleeved penetrations). Check coordination_sources and

@@ -89,6 +89,28 @@ class P {
     Check(((string)F(issues[1], "Key")).EndsWith("|p1") && (int)F(issues[1], "Count") == 2, "pipe issue led by the pipe in both clashes");
     Check(F(clashes[5], "Group") == null, "resolved clashes are not grouped");
 
+    // 5. Cause: which side changed since the baseline snapshot.
+    var sideT = logic.GetNestedType("Side", BindingFlags.NonPublic | BindingFlags.Public);
+    object Side(string change, string by, string cat, string model = null) {
+      var x = Activator.CreateInstance(sideT);
+      sideT.GetField("Change").SetValue(x, change); sideT.GetField("By").SetValue(x, by); sideT.GetField("Cat").SetValue(x, cat); sideT.GetField("Model").SetValue(x, model);
+      return x; }
+    var cause = M("Cause");
+    (string, string) Cause(object sa, object sb) { var r = cause.Invoke(null, new[] { sa, sb, "the snapshot of 29 Sep 09:00" }); return ((string, string))r; }
+    var r1 = Cause(Side("added", "Ahmed", "Ducts", "MEP.rvt"), Side(null, null, "Structural Framing"));
+    Check(r1.Item1 == "Ducts added in MEP.rvt by Ahmed since the snapshot of 29 Sep 09:00" && r1.Item2 == "Ahmed", "new duct caused the clash, by Ahmed");
+    var r2 = Cause(Side("moved", "Sara", "Structural Framing"), Side("retyped", null, "Pipes"));
+    Check(r2.Item1.StartsWith("Structural Framing moved by Sara and Pipes retyped") && r2.Item2 == "Sara", "both sides changed: both named");
+    var r3 = Cause(Side(null, null, "Ducts"), Side(null, null, "Walls"));
+    Check(r3.Item1.StartsWith("both elements are unchanged") && r3.Item2 == null, "unchanged: not from a recent change");
+    Check(Cause(null, null).Item1 == null, "no snapshot: no cause claimed");
+    // Causes survive the next run while the clash stays; a reopened clash loses the old cause.
+    var pc = C("q1", "new", "a", "b", "Ducts", "Walls", "L3"); clashT.GetField("Cause").SetValue(pc, "Ducts added"); clashT.GetField("CausedBy").SetValue(pc, "Ahmed");
+    var pr = C("q2", "resolved", "c", "d", "Ducts", "Walls", "L3"); clashT.GetField("Cause").SetValue(pr, "old cause");
+    var m2 = ((IEnumerable)merge.Invoke(null, new object[] { List(pc, pr), List(C("q1", "new", "a", "b", "Ducts", "Walls", "L3"), C("q2", "new", "c", "d", "Ducts", "Walls", "L3")), null, t1 })).Cast<object>().ToList();
+    Check((string)F(m2.First(c => (string)F(c, "Key") == "q1"), "CausedBy") == "Ahmed", "cause kept while the clash stays");
+    Check(F(m2.First(c => (string)F(c, "Key") == "q2"), "Cause") == null, "reopened clash gets a fresh cause");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

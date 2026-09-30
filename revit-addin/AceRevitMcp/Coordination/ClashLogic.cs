@@ -16,6 +16,7 @@ namespace AceRevitMcp.Coordination
         public string Mover;             // "A" or "B": the side that gives way; null = coordinate (equal priority)
         public string Group;             // the issue this clash belongs to (see ClashLogic.Issues)
         public int Reopened;             // times it came back after being resolved
+        public string Cause, CausedBy;   // for new clashes: what changed since the last snapshot, and by whom
         public DateTime FirstSeen, LastSeen;
     }
 
@@ -70,6 +71,24 @@ namespace AceRevitMcp.Coordination
             c.Reason = aMoves ? $"{c.CatA} gives way to {c.CatB}" : $"{c.CatB} gives way to {c.CatA}";
         }
 
+        /// <summary>What one side of a clash did since the baseline snapshot: added | moved | retyped | null (unchanged).</summary>
+        internal sealed class Side { public string Change, By, Cat, Model; }
+
+        /// <summary>
+        /// Why a new clash appeared: the side that was added, moved or retyped since the snapshot before the last
+        /// clash run caused it. Both changed = both named. Neither = it existed before (first run, a new test,
+        /// a changed tolerance, or a model that was not loaded).
+        /// </summary>
+        public static (string Cause, string By) Cause(Side a, Side b, string since)
+        {
+            string Text(Side s) => $"{s.Cat} {s.Change}" + (s.Model != null ? $" in {s.Model}" : "") + (s.By != null ? $" by {s.By}" : "");
+            var changed = new[] { a, b }.Where(s => s?.Change != null).ToList();
+            if (a == null && b == null) return (null, null);
+            if (changed.Count == 0) return ($"both elements are unchanged since {since}: the clash is not from a recent change", null);
+            var by = string.Join(", ", changed.Select(s => s.By).Where(x => x != null).Distinct());
+            return ($"{string.Join(" and ", changed.Select(Text))} since {since}", by.Length > 0 ? by : null);
+        }
+
         public static bool IsOpen(Clash c) => c.Status == "new" || c.Status == "active";
 
         /// <summary>
@@ -95,6 +114,7 @@ namespace AceRevitMcp.Coordination
                     if (p.Status == "approved") c.Status = "approved";
                     else if (p.Status == "resolved") { c.Status = "new"; c.Reopened++; }
                     else c.Status = "active";
+                    if (c.Status != "new") { c.Cause = p.Cause; c.CausedBy = p.CausedBy; }   // a reopened clash gets a fresh cause
                 }
                 c.LastSeen = time;
                 result.Add(c);

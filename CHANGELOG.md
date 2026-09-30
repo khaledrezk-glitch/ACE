@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased (core v2)
+- **What caused each new clash**: the clash test now uses the change tracker's snapshots. A new clash says which side
+  was added, moved or retyped since the snapshot before the last run, in which model, and by whom (workshared). This is
+  kept separate from the responsible discipline (who should give way). Shown in the report, in Revit ("New from changes
+  by ...", selectable) and to Claude (`cause`, `causedBy`).
 - **Clash issues**: clashes are grouped into issues (one element that has to move and everything it hits, e.g. one duct
   through 8 beams), shown first in the report, in Revit (select an issue's elements) and to Claude (`topIssues`).
 - Clash fixes: a pair of elements is one clash whichever side found it (MEP vs MEP counted pairs twice); connected
