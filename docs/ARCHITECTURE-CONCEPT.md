@@ -131,8 +131,8 @@ action: the ACE tool that fixes it, with preview.
 
 ### Monitoring over time
 
-- **Model compliance:** checked cheaply when a model is opened and after syncs, like the snapshots. It's shown in
-  the dashboard, on a Companion tile and to Claude.
+- **Model compliance:** checked cheaply as you model (only the changed elements), when a model is opened and before
+  syncs. It's raised as notifications (section 8) and shown in the dashboard, on a Companion tile and to Claude.
 - **Documents:** analysed again when a new BEP or LOIN revision arrives. The monitor shows what changed between
   revisions and which rules that affects.
 - **Trend per project:** compliance per stage and per discipline, for management.
@@ -217,7 +217,47 @@ Every edit is saved with who and when (an audit trail). Rules and requirements c
 - **Later:** a **map view** that draws the points and links as circles, showing management how requirements, rules,
   models and findings connect.
 
-## 8. The integration rule (for every new capability)
+## 8. Notifications, like Revit warnings
+
+The requirements monitor and the other engines don't wait to be asked. When something breaks a requirement, ACE
+tells the person who caused it, at the moment they cause it, the same way Revit warns about overlapping walls.
+
+### When a notification appears
+
+| Moment | Example | How it is shown |
+|---|---|---|
+| **While modelling** (an element is added or changed) | A door placed at stage 4 without Fire Rating; a wall on the wrong workset; a view named against the convention; a duct entering a beam | A **Revit warning** with ACE's text, listing the elements (the same dialog and Show button as Revit's own warnings), or a quiet ACE toast, depending on the rule's severity |
+| **Before Sync with Central** | "5 new BEP issues since your last sync" | A summary with *Show*, *Fix* and *Sync anyway*. Only rules marked *error* in the requirements can ask you to fix before syncing, and only if the BIM manager turns that on |
+| **When a model is opened** | "12 open requirement issues, 3 new since yesterday; the MEP link changed" | A Companion card and the Home tile |
+| **When a document or a link changes** | A new BEP revision contradicts the LOIN; the STR link now clashes with your ducts | A Companion card with the contradiction and both sources quoted |
+
+### How it works in Revit
+
+- **Real Revit warnings.** ACE registers its own warning types when Revit starts (Revit's `FailureDefinition`), and
+  a model updater (Revit's `IUpdater`) checks only the elements that changed against the rules that concern them. So
+  the check is fast, and the warnings look and behave like Revit's.
+- **One list, like Manage > Warnings.** Revit forgets posted warnings between sessions, so ACE keeps its own
+  persistent list in the **Project Hub** (Findings branch). It's opened from the ribbon and the Companion, grouped by
+  rule and severity. Each row has *Show in model*, *Fix* (the tool that fixes it, with preview) and *Accept with a
+  reason* (which becomes a decision).
+- **Counts everywhere.** The number of open ACE warnings appears on the Companion tab, the Home page, the dashboard and
+  Claude's status. The count per model gives a trend, like Revit's warning count.
+
+### Keeping it useful, not noisy
+
+- **Severity from the requirements:**
+  - *info*: listed only;
+  - *warning*: a toast or a Revit warning;
+  - *error*: a Revit warning, and optionally a check before sync.
+- **Once per element and rule.** It doesn't repeat until something changes. Accepted items stay silent and carry
+  their reason.
+- **Only what applies now:** the current stage, the user's discipline and model, and the work mode. For example, the
+  Production mode can batch warnings until you pause.
+- **Personal settings:** *show as toast*, *show as Revit warning* or *list only*, per severity. The BIM manager sets
+  the minimum.
+- **Batched.** One message for a group of elements ("14 doors without Fire Rating"), not fourteen.
+
+## 9. The integration rule (for every new capability)
 
 Before building:
 
@@ -229,15 +269,18 @@ Before building:
 5. **What does it replace or merge?** Add it to section 4.
 6. **What does it store in the Project Hub?** Its rules, results and decisions go there as points with links, not
    into a private file.
+7. **Does it raise notifications?** Findings that people must act on use the one notification system (section 8),
+   with severity from the requirements.
 
 After releasing: a benchmark case, the learning loop, and a review of this document each quarter (or every minor
 version).
 
-## 9. Proposed order (for approval)
+## 10. Proposed order (for approval)
 
 1. **Status store and quick merges:** D3, D5, D6, D8, D9. These are small and make the base cleaner.
 2. **Rules engine and project requirements file:** D2 and D7, which also feed D1 and D10. Existing files keep working.
 3. **Project Hub (store and window) and requirements hub:** the container first, then the analyser and the
-   contradiction monitor (documents, settings, model), and the BIM Tools group.
+   contradiction monitor (documents, settings, model), its **notifications** (Revit warnings, the ACE warnings list,
+   before-sync summary) and the BIM Tools group.
 4. **Issue view engine:** D4, then BCF export.
 5. **Rule packs:** D11 and D12 (submission, design and code checks), all on the same engine.
