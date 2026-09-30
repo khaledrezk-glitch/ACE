@@ -28,8 +28,13 @@ namespace AceRevitMcp.Coordination
             foreach (var t in tests)
             {
                 var testNotes = new List<string>();
-                var found = Clashes.Run(app, host, t, level, max, testNotes);
-                var merged = Clashes.Merge(Clashes.Load(host, t.Name), found);
+                var found = Clashes.Run(app, host, t, level, max, testNotes, out var complete);
+                // Only what this run looked at can become resolved: one level, or nothing if it was cut short.
+                Func<Clash, bool> scope = !complete ? (c => false)
+                    : level != null ? (c => string.Equals(c.Level, level, StringComparison.OrdinalIgnoreCase)) : null;
+                if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
+                var merged = ClashLogic.Merge(Clashes.Load(host, t.Name), found, scope, DateTime.Now);
+                var testIssues = ClashLogic.Issues(merged);
                 Clashes.Save(host, t.Name, merged);
                 all.AddRange(merged);
                 notes.AddRange(testNotes.Select(n => $"{t.Name}: {n}"));
@@ -39,13 +44,17 @@ namespace AceRevitMcp.Coordination
                     ["open"] = merged.Count(c => c.Status == "new" || c.Status == "active"),
                     ["new"] = merged.Count(c => c.Status == "new"), ["active"] = merged.Count(c => c.Status == "active"),
                     ["resolved"] = merged.Count(c => c.Status == "resolved"), ["approved"] = merged.Count(c => c.Status == "approved"),
+                    ["issues"] = testIssues.Count,
+                    ["reopened"] = merged.Count(c => Open(c) && c.Reopened > 0),
                     ["byResponsible"] = Group(merged.Where(Open), c => c.Responsible),
                     ["byLevel"] = Group(merged.Where(Open), c => c.Level),
                     ["byPair"] = Group(merged.Where(Open), c => $"{c.CatA} x {c.CatB}"),
                     ["notes"] = new JsonArray(testNotes.Select(n => (JsonNode)n).ToArray()),
                 });
             }
+            var issues = ClashLogic.Issues(all);
             Clashes.Last = all;
+            Clashes.LastIssues = issues;
             Clashes.LastTest = string.Join(", ", tests.Select(t => t.Name));
             Clashes.LastHost = host.Title;
             Clashes.LastPath = DashboardHtml.SaveAs(host.Title, "Clashes", DateTime.Now, ClashHtml.Render(host.Title, all, notes, sw.ElapsedMilliseconds));
@@ -53,19 +62,25 @@ namespace AceRevitMcp.Coordination
             return new JsonObject
             {
                 ["tests"] = perTest,
+                ["topIssues"] = new JsonArray(issues.Take(20).Select(i => (JsonNode)new JsonObject
+                {
+                    ["issue"] = i.Title, ["clashes"] = i.Count, ["responsible"] = i.Responsible, ["levels"] = i.Levels,
+                    ["elementId"] = i.ElementId, ["model"] = i.Model, ["maxDepthMm"] = i.MaxDepthMm, ["pointMm"] = $"{i.X}, {i.Y}, {i.Z}",
+                    ["keys"] = new JsonArray(i.Clashes.Select(c => (JsonNode)c.Key).ToArray()),
+                }).ToArray()),
                 ["topOpen"] = new JsonArray(all.Where(Open).OrderByDescending(c => c.DepthMm).Take(30).Select(c => (JsonNode)new JsonObject
                 {
-                    ["key"] = c.Key, ["status"] = c.Status, ["kind"] = c.Kind, ["level"] = c.Level, ["depthMm"] = c.DepthMm,
+                    ["key"] = c.Key, ["status"] = c.Status, ["reopened"] = c.Reopened > 0 ? c.Reopened : null, ["kind"] = c.Kind, ["level"] = c.Level, ["depthMm"] = c.DepthMm,
                     ["a"] = $"{c.CatA}: {c.NameA} (id {c.IdA}, {c.SourceA})", ["b"] = $"{c.CatB}: {c.NameB} (id {c.IdB}, {c.SourceB})",
                     ["pointMm"] = $"{c.X}, {c.Y}, {c.Z}", ["responsible"] = c.Responsible, ["reason"] = c.Reason,
                 }).ToArray()),
                 ["htmlReport"] = Clashes.LastPath,
                 ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1),
-                ["note"] = "Ids are ids inside the model named in brackets; only ids of this model can be selected here. Status is kept between runs (new, active, resolved, approved).",
+                ["note"] = "Ids are ids inside the model named in brackets; only ids of this model can be selected here. Status is kept between runs (new, active, resolved, approved; a resolved clash that comes back is new again and counted as reopened). Issues group the clashes of one element that has to move: coordinate issue by issue, not clash by clash.",
             };
         }
 
-        internal static bool Open(Clash c) => c.Status == "new" || c.Status == "active";
+        internal static bool Open(Clash c) => ClashLogic.IsOpen(c);
 
         private static JsonObject Group(IEnumerable<Clash> clashes, Func<Clash, string> key)
         {
@@ -147,6 +162,10 @@ namespace AceRevitMcp.Coordination
                 Status = $"{open.Count} open clashes ({Clashes.LastTest}). Saved to Documents\\ACE Insights.",
             };
             // Only elements of the active model can be selected.
+            var issues = ClashLogic.Issues(Clashes.Last);
+            st.Status = $"{issues.Count} issues ({open.Count} open clashes, {Clashes.LastTest}). Saved to Documents\\ACE Insights.";
+            foreach (var i in issues.Take(15))
+                st.Findings.Add(($"Issue: {DashboardHtml.Trim(i.Title, 70)} ({i.Responsible})", HostIds(i.Clashes)));
             foreach (var g in open.GroupBy(c => c.Responsible).OrderByDescending(g => g.Count()))
             {
                 st.Findings.Add(($"{g.Key}: {g.Count()} clashes", HostIds(g)));
@@ -204,8 +223,8 @@ namespace AceRevitMcp.Coordination
                 "The model, its links and the other open discipline models");
             var red = DashboardHtml.Hex(Branding.Accent);
             sb.Append("<table class=\"row\"><tr>");
-            foreach (var (label, n, key) in new[] { ("Open clashes", open.Count, true), ("New since last run", clashes.Count(c => c.Status == "new"), false), ("Resolved", clashes.Count(c => c.Status == "resolved"), false), ("Approved", clashes.Count(c => c.Status == "approved"), false) })
-                sb.Append($"<td class=\"cell\" style=\"width:25%\"><div class=\"card\"><h3>{E(label)}</h3><div class=\"big\"{(key && n > 0 ? $" style=\"color:{red}\"" : "")}>{n}</div></div></td>");
+            foreach (var (label, n, key) in new[] { ("Open issues", ClashLogic.Issues(open).Count, true), ("Open clashes", open.Count, false), ("New since last run", clashes.Count(c => c.Status == "new"), false), ("Resolved", clashes.Count(c => c.Status == "resolved"), false), ("Approved", clashes.Count(c => c.Status == "approved"), false) })
+                sb.Append($"<td class=\"cell\" style=\"width:20%\"><div class=\"card\"><h3>{E(label)}</h3><div class=\"big\"{(key && n > 0 ? $" style=\"color:{red}\"" : "")}>{n}</div></div></td>");
             sb.Append("</tr></table>");
 
             sb.Append("<table class=\"row\" style=\"margin-top:18px\"><tr><td class=\"cell\" style=\"width:50%\"><div class=\"card\"><h3>Responsible discipline (open)</h3>");
@@ -222,11 +241,22 @@ namespace AceRevitMcp.Coordination
                 sb.Append($"<tr><td>{E(g.Key)}</td><td class=\"num\">{g.Count()}</td><td class=\"muted\">{E(g.GroupBy(c => $"{c.CatA} x {c.CatB}").OrderByDescending(x => x.Count()).First().Key)}</td></tr>");
             sb.Append("</table></div></td></tr></table>");
 
+            var issues = ClashLogic.Issues(clashes);
+            sb.Append("<h2>Issues</h2><div class=\"muted\" style=\"margin-bottom:8px\">Each issue is one element that has to move and everything it hits. Coordinate issue by issue.</div>");
+            sb.Append("<table class=\"list\"><tr><th>#</th><th>Issue</th><th class=\"num\">Clashes</th><th>Level</th><th>Responsible</th><th class=\"num\">Max depth</th><th>Location (mm)</th></tr>");
+            var row = 0;
+            foreach (var i in issues.Take(100))
+                sb.Append($"<tr><td>{++row}</td><td><b>{E(DashboardHtml.Trim(i.Title, 110))}</b><div class=\"muted\">id {i.ElementId} · {E(i.Model)}{(i.Clashes.Any(c => c.Reopened > 0) ? " · <b>reopened</b>" : "")}</div></td>" +
+                          $"<td class=\"num\">{i.Count}</td><td>{E(i.Levels)}</td><td>{E(i.Responsible)}</td><td class=\"num\">{i.MaxDepthMm:0} mm</td><td class=\"muted\">{i.X:0}, {i.Y:0}, {i.Z:0}</td></tr>");
+            if (issues.Count == 0) sb.Append("<tr><td colspan=\"7\" class=\"muted\">No open issues.</td></tr>");
+            if (issues.Count > 100) sb.Append($"<tr><td colspan=\"7\" class=\"muted\">... and {issues.Count - 100} more.</td></tr>");
+            sb.Append("</table>");
+
             sb.Append("<h2>Clashes</h2><table class=\"list\"><tr><th>Status</th><th>Level</th><th>Element A</th><th>Element B</th><th class=\"num\">Depth</th><th>Responsible</th><th>Location (mm)</th></tr>");
             foreach (var c in clashes.OrderBy(c => c.Status == "resolved" || c.Status == "approved" ? 1 : 0).ThenByDescending(c => c.DepthMm).Take(400))
             {
                 var tag = c.Status == "new" ? "fail" : c.Status == "active" ? "warn" : "plan";
-                sb.Append($"<tr><td><span class=\"tag {tag}\">{E(c.Status)}</span><div class=\"muted\">{E(c.Kind)}</div></td><td>{E(c.Level)}</td>" +
+                sb.Append($"<tr><td><span class=\"tag {tag}\">{E(c.Status)}</span>{(c.Reopened > 0 ? "<div class='muted'><b>reopened</b></div>" : "")}<div class=\"muted\">{E(c.Kind)}</div></td><td>{E(c.Level)}</td>" +
                           $"<td><b>{E(c.CatA)}</b><div class=\"muted\">{E(DashboardHtml.Trim(c.NameA, 50))} · id {c.IdA} · {E(c.SourceA)}</div></td>" +
                           $"<td><b>{E(c.CatB)}</b><div class=\"muted\">{E(DashboardHtml.Trim(c.NameB, 50))} · id {c.IdB} · {E(c.SourceB)}</div></td>" +
                           $"<td class=\"num\">{c.DepthMm:0} mm</td><td>{E(c.Responsible)}<div class=\"muted\">{E(c.Reason)}</div></td><td class=\"muted\">{c.X:0}, {c.Y:0}, {c.Z:0}</td></tr>");

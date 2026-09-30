@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <NoWarn>MSB3277</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Build the add-in first (Release); only its plain C# clash logic (ClashLogic) is exercised. -->
+    <Reference Include="AceRevitMcp"><HintPath>../../revit-addin/AceRevitMcp/bin/Release/net8.0-windows/AceRevitMcp.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

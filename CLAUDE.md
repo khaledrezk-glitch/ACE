@@ -17,6 +17,7 @@
 dotnet build revit-addin/AceRevitMcp/AceRevitMcp.csproj -c Release       # must be warning-free
 dotnet build revit-addin/AceRevitMcp.Compiler/AceRevitMcp.Compiler.csproj -c Release
 dotnet run --project tools/tracker-test                                   # change-tracker comparison (after the add-in build)
+dotnet run --project tools/clash-test                                     # clash logic: responsibility, merge, issues (after the add-in build)
 cd mcp-server && npm ci && npm run check                                   # syntax + smoke test (fake Revit bridge)
 pwsh -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$e); $e"
 ```

@@ -201,6 +201,14 @@
           "path": "tests",
           "op": "length>=",
           "value": 4
+        },
+        {
+          "path": "topIssues",
+          "op": "exists"
+        },
+        {
+          "path": "tests[0].issues",
+          "op": "exists"
         }
       ]
     },

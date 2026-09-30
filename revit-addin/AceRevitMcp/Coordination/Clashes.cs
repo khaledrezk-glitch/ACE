@@ -20,18 +20,6 @@ namespace AceRevitMcp.Coordination
         public bool IsHost => Relation == "this model";
     }
 
-    internal sealed class Clash
-    {
-        public string Key, Test, Status = "new", Note;
-        public string SourceA, SourceB, CatA, CatB, NameA, NameB, Level, Kind;   // Kind: hard | clearance
-        public long IdA, IdB;
-        public string UA, UB;
-        public double X, Y, Z;          // host coordinates, mm
-        public double DepthMm;           // penetration (hard) or gap (clearance)
-        public string Responsible, Reason;
-        public DateTime FirstSeen, LastSeen;
-    }
-
     /// <summary>
     /// Clash detection across the active model, its links and the other open models, with the responsible
     /// discipline for each clash (from ACE's priority rules) and status tracking between runs.
@@ -39,6 +27,7 @@ namespace AceRevitMcp.Coordination
     internal static class Clashes
     {
         internal static List<Clash> Last;
+        internal static List<ClashIssue> LastIssues;
         internal static string LastPath, LastTest, LastHost;
 
         // ---- sources ------------------------------------------------------------------------------------------
@@ -136,16 +125,35 @@ namespace AceRevitMcp.Coordination
             return _rules = r;
         }
 
-        private static void Assign(Clash c, Document doc, string discA, string discB)
+        private static void Assign(Clash c, Document doc, string discA, string discB) => ClashLogic.Assign(c, Rules(doc), discA, discB);
+
+        /// <summary>Pairs that are one piece of work, not a clash: MEP parts connected to each other, an element and its host.</summary>
+        private static bool Related(Element a, Element b)
         {
-            var rules = Rules(doc);
-            var a = rules.TryGetValue(c.CatA, out var ra) ? ra : (50, discA);
-            var b = rules.TryGetValue(c.CatB, out var rb) ? rb : (50, discB);
-            string Who(string ruleDisc, string modelDisc) => modelDisc != null && modelDisc != "unknown" && ruleDisc.Contains('/') ? modelDisc : ruleDisc;
-            if (a.Item1 == b.Item1) { c.Responsible = "Coordinate (" + Who(a.Item2, discA) + " and " + Who(b.Item2, discB) + ")"; c.Reason = "equal priority"; return; }
-            var (mover, keeper, moverCat, keeperCat, moverDisc) = a.Item1 < b.Item1 ? (a, b, c.CatA, c.CatB, discA) : (b, a, c.CatB, c.CatA, discB);
-            c.Responsible = Who(mover.Item2, moverDisc);
-            c.Reason = $"{moverCat} gives way to {keeperCat}";
+            if (!a.Document.Equals(b.Document)) return false;
+            if (a is FamilyInstance fa && fa.Host?.Id == b.Id) return true;
+            if (b is FamilyInstance fb && fb.Host?.Id == a.Id) return true;
+            var cm = Connectors(a);
+            if (cm == null) return false;
+            foreach (Connector c in cm.Connectors)
+                try
+                {
+                    if (!c.IsConnected) continue;
+                    foreach (Connector r in c.AllRefs) if (r.Owner?.Id == b.Id) return true;
+                }
+                catch { /* logical connectors can throw */ }
+            return false;
+        }
+
+        private static ConnectorManager Connectors(Element e)
+        {
+            try
+            {
+                if (e is MEPCurve mc) return mc.ConnectorManager;
+                if (e is FamilyInstance fi) return fi.MEPModel?.ConnectorManager;
+            }
+            catch { }
+            return null;
         }
 
         // ---- geometry -------------------------------------------------------------------------------------------
@@ -192,15 +200,16 @@ namespace AceRevitMcp.Coordination
 
         // ---- run -----------------------------------------------------------------------------------------------
 
-        public static List<Clash> Run(UIApplication app, Document host, TestSpec test, string levelFilter, int maxElements, List<string> notes)
+        public static List<Clash> Run(UIApplication app, Document host, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete)
         {
+            complete = true;
             var sources = Sources(app, host);
             var aSources = Pick(sources, test.A); var bSources = Pick(sources, test.B);
             var aItems = aSources.SelectMany(s => Collect(s, test.A.Categories).Select(e => (s, e))).ToList();
             var bCats = new ElementMulticategoryFilter(test.B.Categories.Select(c => new ElementId(c)).ToList());
             notes.Add($"A: {aItems.Count} elements in {string.Join(", ", aSources.Select(s => $"{s.Name} ({s.Discipline})"))}");
             notes.Add($"B: {string.Join(", ", test.B.Categories.Length)} categories in {string.Join(", ", bSources.Select(s => $"{s.Name} ({s.Discipline})"))}");
-            if (aItems.Count > maxElements) { notes.Add($"Only the first {maxElements} A elements were tested (max_elements)."); aItems = aItems.Take(maxElements).ToList(); }
+            if (aItems.Count > maxElements) { notes.Add($"Only the first {maxElements} A elements were tested (max_elements)."); aItems = aItems.Take(maxElements).ToList(); complete = false; }
 
             var hostLevels = new FilteredElementCollector(host).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.ProjectElevation).ToList();
             string LevelAt(double zFeet) => hostLevels.LastOrDefault(l => l.ProjectElevation <= zFeet + 0.01)?.Name ?? hostLevels.FirstOrDefault()?.Name;
@@ -228,8 +237,9 @@ namespace AceRevitMcp.Coordination
                         {
                             if (sb.Doc.Equals(sa.Doc) && eb.Id == ea.Id) continue;
                             if (eb is FamilyInstance fb && fb.SuperComponent != null) continue;
-                            var key = $"{test.Name}|{ea.UniqueId}|{eb.UniqueId}";
+                            var key = ClashLogic.PairKey(test.Name, ea.UniqueId, eb.UniqueId);
                             if (clashes.ContainsKey(key)) continue;
+                            if (Related(ea, eb)) continue;
                             double depth = 0; XYZ centre = null; var kind = (string)null;
                             foreach (var solidB in Solids(eb))
                             {
@@ -293,32 +303,5 @@ namespace AceRevitMcp.Coordination
         }
 
         public static void Save(Document host, string test, List<Clash> clashes) => File.WriteAllText(StoreFile(host, test), JsonSerializer.Serialize(clashes, Json));
-
-        /// <summary>Merges a new run with the stored one: new / active / resolved, keeping approvals and notes.</summary>
-        public static List<Clash> Merge(List<Clash> previous, List<Clash> now)
-        {
-            var before = previous.GroupBy(c => c.Key).ToDictionary(g => g.Key, g => g.First());
-            var result = new List<Clash>();
-            foreach (var c in now)
-            {
-                if (before.TryGetValue(c.Key, out var p))
-                {
-                    c.FirstSeen = p.FirstSeen;
-                    c.Note = p.Note;
-                    c.Status = p.Status == "approved" ? "approved" : "active";
-                }
-                result.Add(c);
-            }
-            var nowKeys = new HashSet<string>(now.Select(c => c.Key));
-            foreach (var p in previous.Where(p => !nowKeys.Contains(p.Key) && p.Status != "resolved"))
-            {
-                p.Status = "resolved";
-                p.LastSeen = DateTime.Now;
-                result.Add(p);
-            }
-            // Keep resolved ones for a while so the report shows progress.
-            result.AddRange(previous.Where(p => p.Status == "resolved" && !nowKeys.Contains(p.Key) && DateTime.Now - p.LastSeen < TimeSpan.FromDays(30) && !result.Contains(p)));
-            return result;
-        }
     }
 }

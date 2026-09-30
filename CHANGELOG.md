@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased (core v2)
+- **Clash issues**: clashes are grouped into issues (one element that has to move and everything it hits, e.g. one duct
+  through 8 beams), shown first in the report, in Revit (select an issue's elements) and to Claude (`topIssues`).
+- Clash fixes: a pair of elements is one clash whichever side found it (MEP vs MEP counted pairs twice); connected
+  MEP parts and hosted elements are no longer clashes; a run on one level (or one cut short by `max_elements`) no
+  longer marks the other clashes resolved; a resolved clash that comes back is new again and marked reopened; named
+  disciplines such as "MEP (plumbing / fire)" are no longer replaced by the model's discipline.
+- `tools/clash-test`: the clash logic (responsibility, status between runs, issues) is tested without Revit.
 - **`pending_changes`**: Claude reads the Apply cards waiting in the Companion panel instead of guessing (in the demo it
   wrongly said only the last option was left). Every previewed option keeps its own card. Two lessons from the demo
   added to the built-in lessons, and two benchmark cases (panel cards, `open_view` on room 301).
