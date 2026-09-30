@@ -117,7 +117,10 @@ namespace AceRevitMcp.Util
         {
             if (Branding.UseLogoOnRibbon && Branding.Logo != null) return Branding.Logo;
             var dark = Branding.IsDarkTheme;
-            var tile = dark ? Colors.White : (Branding.IconColor ?? Branding.Primary);
+            var style = Branding.IconStyle;
+            var bevel = style == "bevel";
+            var raised = style == "3d";
+            var tile = dark ? (bevel ? Color.FromRgb(0xE6, 0xE7, 0xE8) : Colors.White) : (Branding.IconColor ?? Branding.Primary);
             var ink = dark ? Branding.Primary : Colors.White;
             // A very light primary on a light theme would vanish: fall back to a dark tile.
             if (!dark && (0.299 * tile.R + 0.587 * tile.G + 0.114 * tile.B) > 200) { tile = Color.FromRgb(0x22, 0x22, 0x22); ink = Colors.White; }
@@ -125,97 +128,103 @@ namespace AceRevitMcp.Util
             var visual = new DrawingVisual();
             using (var dc = visual.RenderOpen())
             {
-                var style = Branding.IconStyle;
-                var bevel = style == "bevel";
-                var raised = style == "3d";
-                var radius = size * (bevel ? 0.16 : 0.22);
-                var full = new Rect(0, 0, size, size);
-                // 3D: a darker base shows as a lip under the tile, so the tile looks raised off the ribbon.
-                var depth = raised ? Math.Max(1.0, size * 0.07) : 0;
-                // Bevel: four angled edges around a flat face, lit from the top left (like PowerPoint's bevel preset).
-                var edge = bevel ? Math.Max(2.0, size * 0.13) : 0;
-                var face = new Rect(0, 0, size, size - depth);
+                double S = size;
+                // The tile's rectangle. Bevel: inset so a soft shadow fits below and behind it; 3D: a darker lip below.
+                Rect face;
+                double radius;
                 if (bevel)
                 {
-                    dc.PushClip(new RectangleGeometry(full, radius, radius));
-                    // Smooth bevel: each edge fades from full light (or shade) at the rim into the face colour.
-                    var faceColor = Shade(tile, dark ? -0.02 : 0.06);
-                    void Facet(double amount, Point from, Point to, params Point[] pts)
+                    var m = Math.Max(1.0, S * 0.04);
+                    var drop = Math.Max(1.5, S * 0.08);
+                    face = new Rect(m, 0, S - 2 * m, S - drop - m * 0.5);
+                    radius = face.Width * 0.18;
+                    // Soft shadow: layered rounded rectangles, darkest near the tile, offset downwards.
+                    const int layers = 6;
+                    for (var i = layers; i >= 1; i--)
                     {
-                        var g = new StreamGeometry();
-                        using (var ctx = g.Open()) { ctx.BeginFigure(pts[0], true, true); ctx.PolyLineTo(pts.Skip(1).ToList(), false, false); }
-                        g.Freeze();
-                        var brush = new LinearGradientBrush(Shade(tile, amount), faceColor, from, to) { MappingMode = BrushMappingMode.Absolute };
-                        dc.DrawGeometry(brush, null, g);
+                        var grow = i * drop / layers;
+                        var alpha = (dark ? 0.06 : 0.09) * (layers - i + 1) / layers * 1.6;
+                        var r = new Rect(face.X - grow * 0.3 + drop * 0.1, face.Y + drop * 0.6 - grow * 0.1, face.Width + grow, face.Height + grow);
+                        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb((byte)Math.Round(255 * alpha), 0, 0, 0)), null, r, radius + grow / 2, radius + grow / 2);
                     }
-                    double S = size, b = edge;
-                    Facet(dark ? 0.0 : 0.42, new Point(0, 0), new Point(0, b), new Point(0, 0), new Point(S, 0), new Point(S - b, b), new Point(b, b));            // top, lit
-                    Facet(dark ? -0.05 : 0.22, new Point(0, 0), new Point(b, 0), new Point(0, 0), new Point(b, b), new Point(b, S - b), new Point(0, S));          // left
-                    Facet(dark ? -0.30 : -0.35, new Point(S, 0), new Point(S - b, 0), new Point(S, 0), new Point(S, S), new Point(S - b, S - b), new Point(S - b, b)); // right
-                    Facet(dark ? -0.45 : -0.60, new Point(0, S), new Point(0, S - b), new Point(0, S), new Point(b, S - b), new Point(S - b, S - b), new Point(S, S)); // bottom, in shade
-                    dc.DrawRectangle(new LinearGradientBrush(Shade(faceColor, dark ? 0.0 : 0.02), Shade(faceColor, dark ? -0.04 : -0.03), 45), null, new Rect(b, b, S - 2 * b, S - 2 * b));
-                    dc.Pop();
+                    // Face: a gentle top-to-bottom gradient, then four edge glows that fade into it (no seams, no inner square).
+                    dc.DrawRoundedRectangle(new LinearGradientBrush(Shade(tile, dark ? 0 : 0.10), Shade(tile, dark ? -0.08 : 0), 90), null, face, radius, radius);
+                    var b = Math.Max(2.0, face.Width * 0.16);
+                    void Edge(Color c, double alpha, Point from, Point to)
+                    {
+                        var brush = new LinearGradientBrush(
+                            new GradientStopCollection { new GradientStop(Color.FromArgb((byte)Math.Round(255 * alpha), c.R, c.G, c.B), 0), new GradientStop(Color.FromArgb(0, c.R, c.G, c.B), 1) },
+                            from, to) { MappingMode = BrushMappingMode.Absolute };
+                        dc.DrawRoundedRectangle(brush, null, face, radius, radius);
+                    }
+                    Edge(Colors.White, dark ? 0.55 : 0.42, new Point(0, face.Top), new Point(0, face.Top + b));          // top, lit
+                    Edge(Colors.White, dark ? 0.30 : 0.20, new Point(face.Left, 0), new Point(face.Left + b, 0));        // left
+                    Edge(Colors.Black, dark ? 0.22 : 0.50, new Point(face.Right, 0), new Point(face.Right - b, 0));      // right
+                    Edge(Colors.Black, dark ? 0.35 : 0.70, new Point(0, face.Bottom), new Point(0, face.Bottom - b));    // bottom, in shade
                 }
                 else if (raised)
                 {
-                    dc.DrawRoundedRectangle(new SolidColorBrush(Shade(tile, dark ? -0.30 : -0.45)), null, full, radius, radius);
-                    var faceBrush = new LinearGradientBrush(Shade(tile, dark ? 0.0 : 0.28), Shade(tile, dark ? -0.10 : -0.06), 90);
-                    dc.DrawRoundedRectangle(faceBrush, null, face, radius, radius);
-                    // Light from above: a soft highlight over the upper half of the face.
+                    var depth = Math.Max(1.0, S * 0.07);
+                    radius = S * 0.22;
+                    face = new Rect(0, 0, S, S - depth);
+                    dc.DrawRoundedRectangle(new SolidColorBrush(Shade(tile, dark ? -0.30 : -0.45)), null, new Rect(0, 0, S, S), radius, radius);
+                    dc.DrawRoundedRectangle(new LinearGradientBrush(Shade(tile, dark ? 0.0 : 0.28), Shade(tile, dark ? -0.10 : -0.06), 90), null, face, radius, radius);
                     var gloss = new LinearGradientBrush(Color.FromArgb(dark ? (byte)120 : (byte)80, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), 90);
-                    dc.DrawRoundedRectangle(gloss, null, new Rect(size * 0.06, size * 0.04, size * 0.88, face.Height * 0.5), radius * 0.8, radius * 0.8);
-                    dc.DrawRoundedRectangle(null, new Pen(new SolidColorBrush(Color.FromArgb(60, 255, 255, 255)), Math.Max(0.6, size * 0.03)),
-                        new Rect(size * 0.02, size * 0.02, size * 0.96, face.Height - size * 0.04), radius, radius);
+                    dc.DrawRoundedRectangle(gloss, null, new Rect(S * 0.06, S * 0.04, S * 0.88, face.Height * 0.5), radius * 0.8, radius * 0.8);
                 }
-                else dc.DrawRoundedRectangle(new SolidColorBrush(tile), null, full, radius, radius);
+                else
+                {
+                    radius = S * 0.22;
+                    face = new Rect(0, 0, S, S);
+                    dc.DrawRoundedRectangle(new SolidColorBrush(tile), null, face, radius, radius);
+                }
+                var embossed = bevel || raised;
 
                 var mark = useMark ? (dark ? (Branding.Mark ?? Branding.MarkOnDark) : (Branding.MarkOnDark ?? Branding.Mark)) : null;
                 if (mark != null)
                 {
                     // Fit the lettermark inside the tile with a margin, keeping its aspect ratio.
-                    var box = size * 0.78;
+                    var box = face.Width * 0.78;
                     var ratio = mark.Width / mark.Height;
                     var w = ratio >= 1 ? box : box * ratio;
                     var h = ratio >= 1 ? box / ratio : box;
                     RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.HighQuality);
-                    dc.DrawImage(mark, new Rect((size - w) / 2, (face.Height - h) / 2, w, h));
+                    dc.DrawImage(mark, new Rect(face.X + (face.Width - w) / 2, face.Y + (face.Height - h) / 2, w, h));
                 }
                 else
                 {
-                    var scale = bevel ? (size - 2 * edge) * (stroke ? 0.80 : 0.86) / 24.0 : size * (stroke ? 0.64 : 0.72) / 24.0;
-                    var offset = (size - 24 * scale) / 2;
-                    var lift = depth / 2;   // centre the glyph on the raised face
-                    Geometry Placed(double dx, double dy)
+                    var scale = bevel ? face.Width * (stroke ? 0.56 : 0.62) / 24.0 : S * (stroke ? 0.64 : 0.72) / 24.0;
+                    var ox = face.X + (face.Width - 24 * scale) / 2;
+                    var oy = face.Y + (face.Height - 24 * scale) / 2;
+                    Geometry Placed(double dy)
                     {
                         var g = Geometry.Parse(glyph).Clone();
-                        g.Transform = new TransformGroup { Children = { new ScaleTransform(scale, scale), new TranslateTransform(offset + dx, offset - lift + dy) } };
+                        g.Transform = new TransformGroup { Children = { new ScaleTransform(scale, scale), new TranslateTransform(ox, oy + dy) } };
                         return g;
                     }
                     var inkBrush = new SolidColorBrush(ink);
-                    var shadowBrush = new SolidColorBrush(Color.FromArgb(dark ? (byte)40 : (byte)110, 0, 0, 0));
-                    var sh = Math.Max(0.6, size * (bevel ? 0.025 : 0.035));
-                    var embossed = raised || bevel;
+                    var shadowBrush = new SolidColorBrush(Color.FromArgb(dark ? (byte)46 : (byte)115, 0, 0, 0));
+                    var sh = Math.Max(0.6, S * (bevel ? 0.025 : 0.035));
                     if (stroke)
                     {
                         Pen P(Brush br) => new Pen(br, Math.Max(1.0, 2.0 * scale)) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
-                        if (embossed) dc.DrawGeometry(null, P(shadowBrush), Placed(0, sh));
-                        dc.DrawGeometry(null, P(inkBrush), Placed(0, 0));
+                        if (embossed) dc.DrawGeometry(null, P(shadowBrush), Placed(sh));
+                        dc.DrawGeometry(null, P(inkBrush), Placed(0));
                     }
                     else
                     {
-                        if (embossed) dc.DrawGeometry(shadowBrush, null, Placed(0, sh));
-                        dc.DrawGeometry(inkBrush, null, Placed(0, 0));
+                        if (embossed) dc.DrawGeometry(shadowBrush, null, Placed(sh));
+                        dc.DrawGeometry(inkBrush, null, Placed(0));
                     }
                 }
                 // Small accent punctuation (e.g. ACE Red), never a large fill.
                 var accentColor = Branding.Accent;
-                var dot = bevel ? new Point(size * 0.8, size * 0.2) : new Point(size * 0.84, size * 0.16);
-                var shaded = raised || bevel;
-                Brush accent = shaded
+                var dot = bevel ? new Point(face.X + face.Width * 0.8, face.Y + face.Height * 0.2) : new Point(S * 0.84, S * 0.16);
+                Brush accent = embossed
                     ? new RadialGradientBrush(Shade(accentColor, 0.45), Shade(accentColor, -0.25)) { GradientOrigin = new Point(0.35, 0.3), Center = new Point(0.45, 0.4), RadiusX = 0.6, RadiusY = 0.6 }
                     : new SolidColorBrush(accentColor);
-                if (planned) dc.DrawEllipse(new SolidColorBrush(Shade(tile, shaded && !dark ? 0.1 : 0)), new Pen(new SolidColorBrush(accentColor), Math.Max(1.0, size * 0.05)), dot, size * 0.09, size * 0.09);
-                else dc.DrawEllipse(accent, null, dot, size * 0.1, size * 0.1);
+                if (planned) dc.DrawEllipse(new SolidColorBrush(Shade(tile, embossed && !dark ? 0.1 : 0)), new Pen(new SolidColorBrush(accentColor), Math.Max(1.0, S * 0.045)), dot, S * 0.085, S * 0.085);
+                else dc.DrawEllipse(accent, null, dot, S * 0.095, S * 0.095);
             }
             var bmp = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
             bmp.Render(visual);

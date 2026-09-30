@@ -1,7 +1,7 @@
 # Changelog
 
 ## 1.7.0 (core v2)
-- **Bevelled ribbon icons**: ACE Rich Black tiles with smooth bevelled edges lit from the top left (like PowerPoint's
+- **Bevelled ribbon icons**: ACE Rich Black tiles with seamless bevelled edges lit from the top left and a soft shadow below (like PowerPoint's
   bevel), an embossed glyph and a shaded red dot. `brand.json`: `"iconStyle": "bevel" | "3d" | "flat"`, `"iconColor"`.
 - **Official ACE brand values** (ACE Brand Guideline and Brand Card): UAE Flag Red `#EF3340` (was `#C8102E`), Charcoal
   Black `#212121`, Grey `#414042`, Platinum `#E6E6E6`, Quick Silver `#A0A0A0`; Poppins for text and BW Gradual for report
