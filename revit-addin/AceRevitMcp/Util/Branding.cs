@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Media;
@@ -35,8 +36,10 @@ namespace AceRevitMcp.Util
         /// <summary>The mark that reads well on the current Revit theme.</summary>
         public static ImageSource MarkForTheme => IsDarkTheme ? (MarkOnDark ?? Mark) : (Mark ?? MarkOnDark);
         public static bool UseLogoOnRibbon { get; private set; }
-        /// <summary>Ribbon icon style: "3d" (raised tile, default) or "flat".</summary>
-        public static bool Icons3D { get; private set; } = true;
+        /// <summary>Ribbon icon style: "bevel" (angled edges lit from the top left, default), "3d" (soft raised tile) or "flat".</summary>
+        public static string IconStyle { get; private set; } = "bevel";
+        /// <summary>Tile colour of the ribbon icons (ACE: Rich Black); defaults to the primary colour.</summary>
+        public static Color? IconColor { get; private set; }
 
         public static string Folder => Path.Combine(AceConfig.Directory, "branding");
 
@@ -57,7 +60,9 @@ namespace AceRevitMcp.Util
                 if (json["font"]?.ToString() is string font && font.Trim().Length > 0) FontFamily = font.Trim();
                 if (json["headingFont"]?.ToString() is string hf && hf.Trim().Length > 0) HeadingFont = hf.Trim();
                 UseLogoOnRibbon = json["useLogoOnRibbon"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
-                if (json["iconStyle"]?.ToString() is string style) Icons3D = !style.Trim().Equals("flat", StringComparison.OrdinalIgnoreCase);
+                if (json["iconColor"]?.ToString() is string ic && ic.Trim().Length > 0) IconColor = ParseColor(ic, Primary);
+                if (json["iconStyle"]?.ToString() is string style && new[] { "bevel", "3d", "flat" }.Contains(style.Trim().ToLowerInvariant()))
+                    IconStyle = style.Trim().ToLowerInvariant();
                 Logo = Image(json["logo"]?.ToString());
                 Mark = Image(json["mark"]?.ToString());
                 MarkOnDark = Image(json["markOnDark"]?.ToString());
@@ -112,7 +117,7 @@ namespace AceRevitMcp.Util
         {
             if (Branding.UseLogoOnRibbon && Branding.Logo != null) return Branding.Logo;
             var dark = Branding.IsDarkTheme;
-            var tile = dark ? Colors.White : Branding.Primary;
+            var tile = dark ? Colors.White : (Branding.IconColor ?? Branding.Primary);
             var ink = dark ? Branding.Primary : Colors.White;
             // A very light primary on a light theme would vanish: fall back to a dark tile.
             if (!dark && (0.299 * tile.R + 0.587 * tile.G + 0.114 * tile.B) > 200) { tile = Color.FromRgb(0x22, 0x22, 0x22); ink = Colors.White; }
@@ -120,13 +125,38 @@ namespace AceRevitMcp.Util
             var visual = new DrawingVisual();
             using (var dc = visual.RenderOpen())
             {
-                var radius = size * 0.22;
+                var style = Branding.IconStyle;
+                var bevel = style == "bevel";
+                var raised = style == "3d";
+                var radius = size * (bevel ? 0.16 : 0.22);
                 var full = new Rect(0, 0, size, size);
-                var raised = Branding.Icons3D;
                 // 3D: a darker base shows as a lip under the tile, so the tile looks raised off the ribbon.
                 var depth = raised ? Math.Max(1.0, size * 0.07) : 0;
+                // Bevel: four angled edges around a flat face, lit from the top left (like PowerPoint's bevel preset).
+                var edge = bevel ? Math.Max(2.0, size * 0.13) : 0;
                 var face = new Rect(0, 0, size, size - depth);
-                if (raised)
+                if (bevel)
+                {
+                    dc.PushClip(new RectangleGeometry(full, radius, radius));
+                    // Smooth bevel: each edge fades from full light (or shade) at the rim into the face colour.
+                    var faceColor = Shade(tile, dark ? -0.02 : 0.06);
+                    void Facet(double amount, Point from, Point to, params Point[] pts)
+                    {
+                        var g = new StreamGeometry();
+                        using (var ctx = g.Open()) { ctx.BeginFigure(pts[0], true, true); ctx.PolyLineTo(pts.Skip(1).ToList(), false, false); }
+                        g.Freeze();
+                        var brush = new LinearGradientBrush(Shade(tile, amount), faceColor, from, to) { MappingMode = BrushMappingMode.Absolute };
+                        dc.DrawGeometry(brush, null, g);
+                    }
+                    double S = size, b = edge;
+                    Facet(dark ? 0.0 : 0.42, new Point(0, 0), new Point(0, b), new Point(0, 0), new Point(S, 0), new Point(S - b, b), new Point(b, b));            // top, lit
+                    Facet(dark ? -0.05 : 0.22, new Point(0, 0), new Point(b, 0), new Point(0, 0), new Point(b, b), new Point(b, S - b), new Point(0, S));          // left
+                    Facet(dark ? -0.30 : -0.35, new Point(S, 0), new Point(S - b, 0), new Point(S, 0), new Point(S, S), new Point(S - b, S - b), new Point(S - b, b)); // right
+                    Facet(dark ? -0.45 : -0.60, new Point(0, S), new Point(0, S - b), new Point(0, S), new Point(b, S - b), new Point(S - b, S - b), new Point(S, S)); // bottom, in shade
+                    dc.DrawRectangle(new LinearGradientBrush(Shade(faceColor, dark ? 0.0 : 0.02), Shade(faceColor, dark ? -0.04 : -0.03), 45), null, new Rect(b, b, S - 2 * b, S - 2 * b));
+                    dc.Pop();
+                }
+                else if (raised)
                 {
                     dc.DrawRoundedRectangle(new SolidColorBrush(Shade(tile, dark ? -0.30 : -0.45)), null, full, radius, radius);
                     var faceBrush = new LinearGradientBrush(Shade(tile, dark ? 0.0 : 0.28), Shade(tile, dark ? -0.10 : -0.06), 90);
@@ -152,7 +182,7 @@ namespace AceRevitMcp.Util
                 }
                 else
                 {
-                    var scale = size * (stroke ? 0.64 : 0.72) / 24.0;
+                    var scale = bevel ? (size - 2 * edge) * (stroke ? 0.80 : 0.86) / 24.0 : size * (stroke ? 0.64 : 0.72) / 24.0;
                     var offset = (size - 24 * scale) / 2;
                     var lift = depth / 2;   // centre the glyph on the raised face
                     Geometry Placed(double dx, double dy)
@@ -163,26 +193,28 @@ namespace AceRevitMcp.Util
                     }
                     var inkBrush = new SolidColorBrush(ink);
                     var shadowBrush = new SolidColorBrush(Color.FromArgb(dark ? (byte)40 : (byte)110, 0, 0, 0));
-                    var sh = Math.Max(0.7, size * 0.035);
+                    var sh = Math.Max(0.6, size * (bevel ? 0.025 : 0.035));
+                    var embossed = raised || bevel;
                     if (stroke)
                     {
                         Pen P(Brush br) => new Pen(br, Math.Max(1.0, 2.0 * scale)) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
-                        if (raised) dc.DrawGeometry(null, P(shadowBrush), Placed(0, sh));
+                        if (embossed) dc.DrawGeometry(null, P(shadowBrush), Placed(0, sh));
                         dc.DrawGeometry(null, P(inkBrush), Placed(0, 0));
                     }
                     else
                     {
-                        if (raised) dc.DrawGeometry(shadowBrush, null, Placed(0, sh));
+                        if (embossed) dc.DrawGeometry(shadowBrush, null, Placed(0, sh));
                         dc.DrawGeometry(inkBrush, null, Placed(0, 0));
                     }
                 }
                 // Small accent punctuation (e.g. ACE Red), never a large fill.
                 var accentColor = Branding.Accent;
-                var dot = new Point(size * 0.84, size * 0.16);
-                Brush accent = raised
+                var dot = bevel ? new Point(size * 0.8, size * 0.2) : new Point(size * 0.84, size * 0.16);
+                var shaded = raised || bevel;
+                Brush accent = shaded
                     ? new RadialGradientBrush(Shade(accentColor, 0.45), Shade(accentColor, -0.25)) { GradientOrigin = new Point(0.35, 0.3), Center = new Point(0.45, 0.4), RadiusX = 0.6, RadiusY = 0.6 }
                     : new SolidColorBrush(accentColor);
-                if (planned) dc.DrawEllipse(new SolidColorBrush(Shade(tile, raised && !dark ? 0.2 : 0)), new Pen(new SolidColorBrush(accentColor), Math.Max(1.0, size * 0.05)), dot, size * 0.09, size * 0.09);
+                if (planned) dc.DrawEllipse(new SolidColorBrush(Shade(tile, shaded && !dark ? 0.1 : 0)), new Pen(new SolidColorBrush(accentColor), Math.Max(1.0, size * 0.05)), dot, size * 0.09, size * 0.09);
                 else dc.DrawEllipse(accent, null, dot, size * 0.1, size * 0.1);
             }
             var bmp = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);

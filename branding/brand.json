@@ -9,5 +9,7 @@
   "headingFont": "BW Gradual",
   "mark": "ace-mark.png",
   "logo": "",
-  "useLogoOnRibbon": false
+  "useLogoOnRibbon": false,
+  "iconColor": "#000000",
+  "iconStyle": "bevel"
 }

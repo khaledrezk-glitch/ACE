@@ -13,7 +13,8 @@ Put the company's visual identity here. The installer copies this folder to
 | `headingFont` | Headline font of the reports (ACE: BW Gradual); Arial is used where a font is not installed |
 | `mark` | The company lettermark only (e.g. just "ACE"): the official black artwork on a white or transparent background, cropped tightly (the panel adds the 25% clear space). Shown in the panel header on a white logo field, at 72 px wide or more. Never recoloured. |
 | `logo` | File name of a full logo in this folder, e.g. `logo.png` (transparent PNG, about 256 px tall). Shown in the panel header. |
-| `iconStyle` | `"3d"` (default: raised tile with light from above and an embossed glyph) or `"flat"` |
+| `iconStyle` | `"bevel"` (default: smooth bevelled edges lit from the top left, like PowerPoint's bevel), `"3d"` (soft raised tile) or `"flat"` |
+| `iconColor` | Tile colour of the ribbon icons (ACE: Rich Black `#000000`); defaults to `primary` |
 | `useLogoOnRibbon` | `true` to use the logo as the ribbon button icon instead of the drawn icons. Use a square logo mark for this. |
 
 Colours are hex codes (`#RRGGBB`). Replace the defaults with the official ACE brand colours and logo
