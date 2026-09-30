@@ -13,12 +13,23 @@ namespace AceRevitMcp.Dashboard
     /// <summary>One audit check: what was found, and how much it costs the health score.</summary>
     internal sealed class Check
     {
-        public string Area, Name, Detail, Hint;
+        public string Key, Area, Name, Detail, Hint;
         public int Count;
         public double Penalty, MaxPenalty;
         public List<long> Ids = new List<long>();
+        /// <summary>The pass rule shown in reports, e.g. "warn at 1, fail at 5" (from the check set).</summary>
+        public string Rule;
+        /// <summary>Set by the check set's warnAt / failAt; otherwise the status follows the score impact.</summary>
+        public string StatusOverride;
         /// <summary>ok, warn or fail.</summary>
-        public string Status => Penalty <= 0.001 ? "ok" : Penalty >= MaxPenalty * 0.6 ? "fail" : "warn";
+        public string Status => StatusOverride ?? (Penalty <= 0.001 ? "ok" : Penalty >= MaxPenalty * 0.6 ? "fail" : "warn");
+    }
+
+    internal sealed class ClashSummary
+    {
+        public int Open, Issues, New, Approved, Resolved;
+        public DateTime? LastRun;
+        public List<(string Responsible, int Issues)> ByResponsible = new List<(string, int)>();
     }
 
     internal sealed class Completeness { public string Category, Parameter; public int Filled, Total; public int Percent => Total == 0 ? 100 : (int)Math.Round(100.0 * Filled / Total); }
@@ -48,10 +59,13 @@ namespace AceRevitMcp.Dashboard
         public readonly List<(string Field, bool Filled, string Value)> ProjectInfo = new List<(string, bool, string)>();
         public readonly List<(string Field, int Missing)> SheetFields = new List<(string, int)>();
         public Activity Activity = new Activity();
+        public string CheckSetName = "ACE Standard";
+        public string CheckSetSource = "built-in";
+        public ClashSummary Clashes;
         public List<(DateTime Time, int Score)> History = new List<(DateTime, int)>();
     }
 
-    internal static class ModelInsights
+    internal static partial class ModelInsights
     {
         private const double NarrowDoorMm = 900;
 
@@ -87,6 +101,9 @@ namespace AceRevitMcp.Dashboard
             ParameterCompleteness(doc, x);
             ProjectInformation(doc, x);
             PerLevel(doc, x);
+            StandardChecks(doc, x);
+            ClashStatus(doc, x);
+            CheckSet.Apply(x);
 
             var penalty = x.Checks.Sum(c => c.Penalty);
             x.Score = (int)Math.Round(Math.Max(0, Math.Min(100, 100 - penalty)));
@@ -101,13 +118,16 @@ namespace AceRevitMcp.Dashboard
         {
             var c = new Check
             {
-                Area = area, Name = name, Count = count, MaxPenalty = max, Penalty = Math.Min(max, count * perItem),
+                Key = KeyOf(name), Area = area, Name = name, Count = count, MaxPenalty = max, Penalty = Math.Min(max, count * perItem),
                 Detail = detail, Hint = hint,
             };
             if (ids != null) c.Ids = ids.Select(i => i.Value).Distinct().Take(2000).ToList();
             x.Checks.Add(c);
             return c;
         }
+
+        internal static string KeyOf(string name) =>
+            new string(name.ToLowerInvariant().Select(ch => char.IsLetterOrDigit(ch) ? ch : '-').ToArray()).Trim('-').Replace("--", "-");
 
         private static void Warnings(Document doc, Insights x)
         {
@@ -350,7 +370,7 @@ namespace AceRevitMcp.Dashboard
             foreach (var c in x.Checks)
                 checks.Add(new JsonObject
                 {
-                    ["area"] = c.Area, ["check"] = c.Name, ["status"] = c.Status, ["count"] = c.Count,
+                    ["key"] = c.Key, ["area"] = c.Area, ["check"] = c.Name, ["status"] = c.Status, ["count"] = c.Count, ["rule"] = c.Rule,
                     ["scoreImpact"] = -Math.Round(c.Penalty, 1), ["maxImpact"] = -c.MaxPenalty, ["detail"] = c.Detail, ["hint"] = c.Hint,
                     ["sampleIds"] = new JsonArray(c.Ids.Take(25).Select(i => (JsonNode)i).ToArray()),
                 });
@@ -359,13 +379,16 @@ namespace AceRevitMcp.Dashboard
             return new JsonObject
             {
                 ["model"] = x.Model, ["time"] = x.Time.ToString("s"), ["score"] = x.Score, ["grade"] = x.Grade,
+                ["checkSet"] = $"{x.CheckSetName} ({x.CheckSetSource})",
+                ["results"] = new JsonObject { ["pass"] = x.Checks.Count(c => c.Status == "ok"), ["warning"] = x.Checks.Count(c => c.Status == "warn"), ["fail"] = x.Checks.Count(c => c.Status == "fail") },
+                ["clashes"] = x.Clashes == null ? null : new JsonObject { ["openIssues"] = x.Clashes.Issues, ["openClashes"] = x.Clashes.Open, ["new"] = x.Clashes.New, ["lastRun"] = x.Clashes.LastRun?.ToString("s") },
                 ["scoreHistory"] = new JsonArray(x.History.Select(h => (JsonNode)new JsonObject { ["time"] = h.Time.ToString("s"), ["score"] = h.Score }).ToArray()),
                 ["counts"] = counts,
                 ["checks"] = checks,
                 ["topWarnings"] = new JsonArray(x.WarningTypes.Select(w => (JsonNode)new JsonObject { ["warning"] = w.Text, ["count"] = w.Count }).ToArray()),
                 ["parameterCompleteness"] = new JsonArray(x.Completeness.Select(c => (JsonNode)new JsonObject { ["category"] = c.Category, ["parameter"] = c.Parameter, ["percent"] = c.Percent, ["total"] = c.Total }).ToArray()),
                 ["claudeActivity7Days"] = new JsonObject { ["previews"] = x.Activity.Previews, ["changes"] = x.Activity.Changes, ["appliedInPanel"] = x.Activity.PanelApplied, ["cancelledInPanel"] = x.Activity.PanelCancelled },
-                ["notYetAvailable"] = new JsonArray("Clash detection (Phase 4)", "Code compliance (Phase 6)", "Full submission check (Phase 5)"),
+                ["notYetAvailable"] = new JsonArray("Code compliance (Phase 6)", "Full submission check (Phase 5)"),
                 ["htmlReport"] = htmlPath,
                 ["elapsedMs"] = x.ElapsedMs,
             };

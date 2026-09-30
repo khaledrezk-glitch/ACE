@@ -170,6 +170,19 @@
           "path": "checks",
           "op": "length>=",
           "value": 15
+        },
+        {
+          "path": "results.pass",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "checkSet",
+          "op": "exists"
+        },
+        {
+          "path": "checks[key=file-size].status",
+          "op": "exists"
         }
       ]
     },

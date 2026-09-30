@@ -1,0 +1,116 @@
+{
+  "name": "ACE Standard",
+  "about": "ACE model check set (like an Autodesk Model Checker configuration). Copy to %APPDATA%\\\\ACE-RevitMCP\\\\checkset.json, or put it on the team share and set \"checkSet\": \"<path>\" in %APPDATA%\\\\ACE-RevitMCP\\\\config.json. Per check: enabled (false = skip), warnAt / failAt (count at which it becomes Review / Action needed), maxImpact (most points it can take off the score). Checks not listed keep ACE's defaults.",
+  "checks": {
+    "file-size": {
+      "enabled": true
+    },
+    "starting-view-not-set": {
+      "enabled": true
+    },
+    "elements-on-workset1": {
+      "enabled": true
+    },
+    "levels-and-grids-not-pinned": {
+      "enabled": true
+    },
+    "revit-links-not-pinned": {
+      "enabled": true
+    },
+    "duplicate-and-overlapping-elements": {
+      "enabled": true
+    },
+    "linked-cad-in-3d-not-view-specific": {
+      "enabled": true
+    },
+    "raster-images": {
+      "enabled": true
+    },
+    "model-groups-used-once": {
+      "enabled": true
+    },
+    "unused-family-types": {
+      "enabled": true,
+      "warnAt": 50,
+      "failAt": 300
+    },
+    "design-options": {
+      "enabled": false
+    },
+    "generic-models": {
+      "enabled": true
+    },
+    "unused-view-templates": {
+      "enabled": true
+    },
+    "views-named-copy": {
+      "enabled": true
+    },
+    "detail-lines": {
+      "enabled": true
+    },
+    "dimensions-with-overridden-values": {
+      "enabled": true
+    },
+    "line-styles": {
+      "enabled": true
+    },
+    "text-types": {
+      "enabled": true
+    },
+    "types-named-copy-or-ending-in-2": {
+      "enabled": true
+    },
+    "revit-warnings": {
+      "enabled": true,
+      "warnAt": 50,
+      "failAt": 300
+    },
+    "imported-cad-not-linked": {
+      "enabled": true,
+      "warnAt": 1,
+      "failAt": 1
+    },
+    "in-place-families": {
+      "enabled": true,
+      "warnAt": 1,
+      "failAt": 5
+    },
+    "revit-links-not-loaded": {
+      "enabled": true
+    },
+    "unplaced-rooms": {
+      "enabled": true
+    },
+    "rooms-not-enclosed": {
+      "enabled": true
+    },
+    "rooms-without-a-door": {
+      "enabled": true
+    },
+    "doors-narrower-than-900-mm": {
+      "enabled": true
+    },
+    "duplicate-door-and-window-marks": {
+      "enabled": true
+    },
+    "views-not-on-sheets": {
+      "enabled": true
+    },
+    "views-without-a-view-template": {
+      "enabled": true
+    },
+    "empty-sheets": {
+      "enabled": true
+    },
+    "sheets-with-missing-title-block-data": {
+      "enabled": true
+    },
+    "key-parameters-filled": {
+      "enabled": true
+    },
+    "project-information-missing": {
+      "enabled": true
+    }
+  }
+}

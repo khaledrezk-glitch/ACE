@@ -40,7 +40,7 @@ try {
 
 foreach ($f in 'install.ps1', 'install.cmd', 'doctor.ps1', 'doctor.cmd', 'report.cmd', 'uninstall.ps1', 'test-connection.ps1',
                'README.md', 'USER-GUIDE.md', 'AGENT-GUIDE.md', 'REQUIREMENTS.md', 'TEAM-DEPLOYMENT.md', 'FIRST-TEST.md', 'CHANGELOG.md',
-               'team.example.json', 'team.json') {
+               'team.example.json', 'team.json', 'checkset.example.json') {
     $p = Join-Path $Root $f
     if (Test-Path $p) { Copy-Item $p -Destination $stage }
 }

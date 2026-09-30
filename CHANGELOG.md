@@ -1,6 +1,15 @@
 # Changelog
 
 ## 1.7.0 (core v2)
+- **Model check after Autodesk's Model Checker** (BIM Interoperability Tools): 19 new checks in its sections: file and
+  project (file size, starting view), worksets (elements on Workset1), levels, grids and links (not pinned), warnings
+  (duplicate and overlapping elements), model content (linked CAD in 3D, raster images, groups used once, unused family
+  types, design options, generic models), views (unused view templates), annotation (detail lines, overridden
+  dimensions, line styles, text types) and naming ('Copy' views and types). Results are Pass / Review / Action needed.
+  **Office check set** (`checkset.example.json`): switch checks off, set review and action thresholds and score limits,
+  per office or project (`%APPDATA%\ACE-RevitMCP\checkset.json` or `"checkSet"` in config.json for a team share).
+- Dashboard: Model check summary (pass / review / action, by section), results grouped by section with their rule, a
+  Coordination card with the latest clash results, and clash detection shown as live in the tools status.
 - **Clash Browser and ACE Clash View** (ACE tab → Coordination → *Clash Browser*; after Navisworks Clash Detective and
   ACC Model Coordination): choose the model to compare with, run the test against that model only, browse the clashes
   grouped by issue (filter by status, search), Previous / Next, Approve, Mark active, Select in Revit. The ACE Clash View

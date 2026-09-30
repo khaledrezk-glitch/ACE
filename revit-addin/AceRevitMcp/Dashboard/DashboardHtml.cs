@@ -119,20 +119,48 @@ table.list td{{border-bottom:1px solid #E6E6E6;padding:7px 8px;vertical-align:to
             sb.Append($"<div class=\"muted\" style=\"margin-top:6px\">{x.History.Count} {(x.History.Count == 1 ? "snapshot" : "snapshots")} of this model{(x.FileBytes > 0 ? $" &nbsp;·&nbsp; file {N(x.FileBytes / 1048576.0, "N0")} MB" : "")}</div></div></td>");
             sb.Append("</tr></table>");
 
+            // ---- model check summary (Model Checker style: pass / review / action per section) ----
+            var sections = x.Checks.GroupBy(c => c.Area).Select(g => (Area: g.Key, Pass: g.Count(c => c.Status == "ok"), Warn: g.Count(c => c.Status == "warn"), Fail: g.Count(c => c.Status == "fail"))).ToList();
+            var tPass = sections.Sum(q => q.Pass); var tWarn = sections.Sum(q => q.Warn); var tFail = sections.Sum(q => q.Fail); var tAll = Math.Max(1, tPass + tWarn + tFail);
+            sb.Append("<h2>Model check</h2><table class=\"row\"><tr>");
+            sb.Append("<td class=\"cell\" style=\"width:30%\"><div class=\"card\"><h3>Results</h3>");
+            sb.Append($"<div class=\"kpi\"><b>{tPass}</b><span>Pass</span></div><div class=\"kpi\"><b>{tWarn}</b><span>Review</span></div><div class=\"kpi\"><b style=\"color:{(tFail > 0 ? red : black)}\">{tFail}</b><span>Action needed</span></div>");
+            sb.Append(Stack(tPass, tWarn, tFail, tAll, black, grey, red, 14));
+            sb.Append($"<div class=\"muted\" style=\"margin-top:8px\">{N(100.0 * tPass / tAll, "0")}% of {tPass + tWarn + tFail} checks pass &nbsp;·&nbsp; check set: {E(x.CheckSetName)}</div></div></td>");
+            sb.Append("<td class=\"cell\" style=\"width:70%\"><div class=\"card\"><h3>By section</h3><table class=\"list\"><tr><th style=\"width:28%\">Section</th><th class=\"num\">Pass</th><th class=\"num\">Review</th><th class=\"num\">Action</th><th style=\"width:40%\"></th></tr>");
+            foreach (var q in sections)
+                sb.Append($"<tr><td><b>{E(q.Area)}</b></td><td class=\"num\">{q.Pass}</td><td class=\"num\">{q.Warn}</td><td class=\"num\">{(q.Fail > 0 ? $"<b style=\"color:{red}\">{q.Fail}</b>" : "0")}</td><td>{Stack(q.Pass, q.Warn, q.Fail, Math.Max(1, q.Pass + q.Warn + q.Fail), black, grey, red, 8)}</td></tr>");
+            sb.Append("</table></div></td></tr></table>");
+
+            // ---- coordination (clash results) ----
+            if (x.Clashes != null)
+            {
+                var cl = x.Clashes;
+                sb.Append("<table class=\"row\" style=\"margin-top:18px\"><tr><td class=\"cell\"><div class=\"card\"><h3>Coordination</h3>");
+                sb.Append($"<div class=\"kpi\"><b style=\"color:{(cl.Issues > 0 ? red : black)}\">{cl.Issues}</b><span>Open clash issues</span></div><div class=\"kpi\"><b>{cl.Open}</b><span>Open clashes ({cl.New} new)</span></div><div class=\"kpi\"><b>{cl.Resolved}/{cl.Approved}</b><span>Resolved / approved</span></div>");
+                if (cl.ByResponsible.Count > 0)
+                    sb.Append("<div class=\"muted\">Issues by responsible discipline: " + string.Join(" &nbsp;·&nbsp; ", cl.ByResponsible.Take(6).Select(r => $"{E(r.Responsible)} <b>{r.Issues}</b>")) + "</div>");
+                sb.Append($"<div class=\"muted\" style=\"margin-top:4px\">Last clash run {(cl.LastRun.HasValue ? cl.LastRun.Value.ToString("d MMM yyyy, HH:mm") : "-")}. Review them in ACE &gt; Coordination &gt; Clash Browser; meeting report: Coordination Report.</div></div></td></tr></table>");
+            }
+
             // ---- tools status ----
             sb.Append("<h2>Status of ACE tools</h2><table class=\"list\"><tr><th style=\"width:24%\">Tool</th><th style=\"width:15%\">Status</th><th>Latest result</th></tr>");
             foreach (var (tool, live, status, result) in ToolStatus(x))
                 sb.Append($"<tr><td><b>{E(tool)}</b></td><td><span class=\"tag {(live ? "live" : "plan")}\">{E(status)}</span></td><td>{result}</td></tr>");
             sb.Append("</table>");
 
-            // ---- audit checks ----
-            sb.Append("<h2>Audit findings</h2><table class=\"list\"><tr><th style=\"width:12%\">Result</th><th style=\"width:22%\">Check</th><th>Finding</th><th class=\"num\" style=\"width:9%\">Score</th><th style=\"width:30%\">What to do</th></tr>");
-            foreach (var c in x.Checks.OrderByDescending(c => c.Penalty).ThenBy(c => c.Area))
+            // ---- check results by section ----
+            sb.Append("<h2>Check results</h2><table class=\"list\"><tr><th style=\"width:12%\">Result</th><th style=\"width:22%\">Check</th><th>Finding</th><th class=\"num\" style=\"width:8%\">Score</th><th style=\"width:30%\">What to do</th></tr>");
+            foreach (var g in x.Checks.GroupBy(c => c.Area).OrderByDescending(g => g.Sum(c => c.Penalty)))
             {
-                var label = c.Status == "fail" ? "Action needed" : c.Status == "warn" ? "Review" : "Pass";
-                sb.Append($"<tr><td><span class=\"tag {c.Status}\">{label}</span></td><td><b>{E(c.Name)}</b><div class=\"muted\">{E(c.Area)}</div></td>");
-                sb.Append($"<td>{E(c.Detail)}{(c.Ids.Count > 0 && c.Status != "ok" ? $"<div class=\"muted\">Element ids: {E(string.Join(", ", c.Ids.Take(5)))}{(c.Ids.Count > 5 ? ", ..." : "")}</div>" : "")}</td>");
-                sb.Append($"<td class=\"num\">{(c.Penalty > 0.05 ? "&minus;" + N(c.Penalty, "0.0") : "0")}</td><td class=\"muted\">{(c.Status == "ok" ? "" : E(c.Hint))}</td></tr>");
+                sb.Append($"<tr><td colspan=\"5\" style=\"background:{light};font-weight:bold\">{E(g.Key)}</td></tr>");
+                foreach (var c in g.OrderByDescending(c => c.Penalty).ThenBy(c => c.Name))
+                {
+                    var label = c.Status == "fail" ? "Action needed" : c.Status == "warn" ? "Review" : "Pass";
+                    sb.Append($"<tr><td><span class=\"tag {c.Status}\">{label}</span></td><td><b>{E(c.Name)}</b>{(c.Rule != null ? $"<div class=\"muted\">Rule: {E(c.Rule)}</div>" : "")}</td>");
+                    sb.Append($"<td>{E(c.Detail)}{(c.Ids.Count > 0 && c.Status != "ok" ? $"<div class=\"muted\">Element ids: {E(string.Join(", ", c.Ids.Take(5)))}{(c.Ids.Count > 5 ? ", ..." : "")}</div>" : "")}</td>");
+                    sb.Append($"<td class=\"num\">{(c.Penalty > 0.05 ? "&minus;" + N(c.Penalty, "0.0") : "0")}</td><td class=\"muted\">{(c.Status == "ok" ? "" : E(c.Hint))}</td></tr>");
+                }
             }
             sb.Append("</table>");
 
@@ -190,7 +218,7 @@ table.list td{{border-bottom:1px solid #E6E6E6;padding:7px 8px;vertical-align:to
             sb.Append("<h2>Coming next</h2><table class=\"row\"><tr>");
             foreach (var (title, phase, text) in new[]
             {
-                ("Clash detection", "Phase 4", "Clash tests between categories and linked models, with clash status tracked between runs. Results will appear here: open clashes by level, new and resolved since the last run."),
+                ("Full submission check", "Phase 5", "The client's submission requirements, naming and title block data checked before issue, with the exports and transmittal."),
                 ("Design and code compliance", "Phase 6", "Rule packs approved by ACE engineers: room sizes, door and corridor widths, stairs, travel distance. Pass and fail counts per rule will appear here."),
                 ("Warning solver", "Phase 2", "Safe automatic fixes for common warnings, always previewed. Warnings fixed per run will appear here."),
             })
@@ -198,9 +226,9 @@ table.list td{{border-bottom:1px solid #E6E6E6;padding:7px 8px;vertical-align:to
             sb.Append("</tr></table>");
 
             // ---- footer ----
-            sb.Append("<div class=\"foot\"><b>How the score is calculated.</b> Each check deducts points up to a limit: warnings up to 20; imported CAD 10; in-place families 8; ");
-            sb.Append("rooms not enclosed 8; views not on sheets 8 (above 30%); key parameters 8; unplaced rooms, rooms without doors, duplicate marks and unloaded links 6 each; ");
-            sb.Append("narrow doors and sheet title block data 5 each; views without templates and empty sheets 4 each; project information 3. 85 and above is Good, 65 to 84 Fair.<br>");
+            sb.Append("<div class=\"foot\"><b>How the score is calculated.</b> Each check deducts points up to its limit (shown as Score): for example warnings up to 20, imported CAD 10, in-place families, rooms not enclosed, ");
+            sb.Append("views not on sheets and key parameters 8 each. 85 and above is Good, 65 to 84 Fair. The checks follow the sections of Autodesk's Model Checker (file and project, worksets, levels and grids, warnings, ");
+            sb.Append($"model content, views, annotation, naming) plus ACE's rooms, parameters and submission checks. Pass rules come from the check set <b>{E(x.CheckSetName)}</b> ({E(x.CheckSetSource)}); an office check set can switch checks off or set review and action thresholds.<br>");
             sb.Append($"Generated by ACE Revit MCP {E(x.AddinVersion)} in {N(x.ElapsedMs / 1000.0, "0.0")} s &nbsp;·&nbsp; {E(x.Revit)} &nbsp;·&nbsp; {E(x.PathName)}</div>");
             sb.Append("</div></body></html>");
             return Ascii(sb.ToString());
@@ -220,8 +248,18 @@ table.list td{{border-bottom:1px solid #E6E6E6;padding:7px 8px;vertical-align:to
             yield return ("Views and sheets", true, "Live", $"{Cnt("Views not on sheets")} views not on sheets, {Cnt("Views without")} without a template, {Cnt("Empty sheets")} empty sheets");
             yield return ("Submission readiness", true, "Preview", $"{Cnt("Sheets with missing")} sheets with missing title block data, {Cnt("Project information")} project information fields empty. Full check: Phase 5");
             yield return ("Claude activity", true, "Live", $"{x.Activity.Previews} previews and {x.Activity.Changes} changes in the last 7 days");
-            yield return ("Clash detection", false, "Planned, Phase 4", "<span class=\"muted\">No clash results yet</span>");
+            yield return ("Clash detection", true, "Live", x.Clashes == null
+                ? "<span class=\"muted\">No clash results yet: ACE &gt; Coordination &gt; Clash Browser</span>"
+                : $"<b>{x.Clashes.Issues}</b> open issues ({x.Clashes.Open} clashes, {x.Clashes.New} new); {x.Clashes.Resolved} resolved, {x.Clashes.Approved} approved");
+            yield return ("Model check", true, "Live", $"{x.Checks.Count(c => c.Status == "ok")} pass, {x.Checks.Count(c => c.Status == "warn")} review, {x.Checks.Count(c => c.Status == "fail")} action needed (check set: {E(x.CheckSetName)})");
             yield return ("Design and code compliance", false, "Planned, Phase 6", "<span class=\"muted\">No rule packs yet</span>");
+        }
+
+        /// <summary>A stacked bar: pass (black), review (grey), action (red).</summary>
+        private static string Stack(int pass, int warn, int fail, int total, string black, string grey, string red, int height)
+        {
+            string Seg(int n, string colour) => n <= 0 ? "" : $"<td style=\"width:{N(100.0 * n / total, "0.#")}%;background:{colour};height:{height}px;padding:0\"></td>";
+            return $"<table style=\"width:100%;border-collapse:collapse;margin-top:6px\"><tr>{Seg(pass, black)}{Seg(warn, "#A0A0A0")}{Seg(fail, red)}</tr></table>";
         }
 
         private static string Gauge(int score, string black, string red)
