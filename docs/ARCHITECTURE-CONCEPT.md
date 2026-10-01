@@ -393,3 +393,48 @@ manual, with Claude's help.
 **Families that are right from the start.** The standard defines them, the creator makes them, the checker proves
 them, the notifications catch non-compliant ones at load time, and the test fit and LOIN checks rely on their data.
 
+## 13. Benchmark: "15 features for your company MCP"
+
+The reference is a LinkedIn post by Omar Raafat (AEC software engineer), Sep 2026. Its architecture is *AI agent →
+skills → tools → software*, held together by *hooks + learning + sync*. ACE is compared with each of the 15 features:
+
+| # | Feature | ACE today | Status |
+|---|---|---|---|
+| 1 | **Warnings handler:** Revit warnings during a run go back to the AI; on error, roll back | ModelGuard catches warnings and dialogs and returns `revitWarnings`; failures roll back everything | **Have** |
+| 2 | **Verify before commit:** the AI checks the result before committing; if the check fails, everything reverts | Dry run + preview pictures + approval. There's no automatic check of the result inside the transaction | **Partly**: see G1 |
+| 3 | **Dry run:** know what will be added, changed or deleted, without changing the project | `dry_run`, `wouldChange`, preview gate (an apply needs an identical preview) | **Have** |
+| 4 | **API lookup:** search the API of the installed version rather than old knowledge | `revit_api_lookup` reflects the installed Revit 2025 API | **Have** |
+| 5 | **Hooks:** document opened → check; before sync → audit; element changed → update | Automatic snapshots on open, save and sync. The observer and notifications (sections 1, 8) are concept | **Partly**: concept covers it |
+| 6 | **Skills tree:** knowledge in branches (Revit → Structure → Rebar; Modelling; QA/QC); load only what's needed, so less context and fewer tokens | Guides on demand (`revit_guide`), but flat; the connection instructions are long | **Partly**: see G2 |
+| 7 | **Skills system:** tools say what the AI *can* do; skills teach *how the company does it* (standards, workflows, rules, examples) | Guides, lessons, built-in scripts; requirements hub and Project Hub (concept) | **Partly**: see G2 |
+| 8 | **AI learning skill:** learn from corrections and successful workflows; knowledge becomes reusable | Lessons, learning report (first-time-right, recipe candidates), benchmark, promotion into built-in lessons | **Have** (G2 makes skills the target) |
+| 9 | **Save commands as tools:** a command that works and repeats becomes a fixed tool, one call | `save_script` / `run_saved_script`, team library, recipe candidates | **Have** |
+| 10 | **Tools and skills sync:** a central repository, engineer → repository → review → all devices | Team scripts and lessons folders, shared package. **No review step** before sharing | **Partly**: see G3 |
+| 11 | **Long-running jobs:** heavy operations in the background, a job id to follow progress | Calls wait up to 15 minutes; no background jobs or progress | **Gap**: see G4 |
+| 12 | **Visual check:** modify → capture → check → fix | `view_image`, preview pictures in plan and 3D, clash and coordination pictures | **Have** |
+| 13 | **Variables between runs:** keep values between calls instead of sending the context again | The brief is cached for 10 minutes; nothing else persists between runs | **Gap**: see G5 |
+| 14 | **QA rules:** company standards as rules the AI audits automatically | Model check with an office check set; workset rules; requirements hub (concept) | **Have**, growing |
+| 15 | **Changes tracking:** who changed what (person or AI), which tool or skill, and when | Journal (every Claude change), change tracker (by person), telemetry. They aren't joined yet | **Partly**: see G6 |
+
+Where ACE already goes further than the list: preview pictures before applying, Apply cards in the Companion, the
+clash engine with responsibility and cause, Navisworks-style review with linked elements coloured, working modes,
+the model brief across links, and the learning benchmark.
+
+### Gaps to close (each answered with the integration rule)
+
+| Gap | What | Engine / circle |
+|---|---|---|
+| **G1 Verify before commit** | A script or tool states what must be true afterwards (e.g. "every desk inside the room", "no new warnings", "count = 24"). The runner checks it inside the transaction and rolls back with the reason if it fails. Claude adds these checks to its own code | Platform (code runner). Joins the safety gate: preview → verify → approve |
+| **G2 Skills tree** | Turn guides, lessons and office standards into **skills**: a tree (Revit → Modelling / Coordination / QA / Structure / MEP; Office → standards / workflows / examples) with a short index at connection and branches loaded on demand. Lessons and saved scripts attach to their branch | Knowledge layer. Joins lessons, guides, requirements hub. Lighter instructions, fewer tokens |
+| **G3 Sync with review** | Shared scripts, skills, lessons and rules go **engineer → team queue → reviewer (BIM manager) → everyone**, with versions. The Project Hub shows the queue | Learning loop + Project Hub |
+| **G4 Long-running jobs** | Clash tests on big models, library-wide family checks, batch exports run as background jobs: a job id, progress in the Companion, a cancel button, the result in the Project Hub when done | Platform (bridge) + Companion. Needed for the family checker and requirements monitor |
+| **G5 Variables between runs** | A session store: named results ("the L3 rooms", "last clash issues") and values that later calls can use without resending them | Platform (code runner `ctx.Session`) + MCP server |
+| **G6 Who changed what, including Claude** | The change tracker marks elements changed by Claude with the tool, skill or script, the approval (panel or chat) and the person who approved, joined with the journal. "What changed this week" separates people from Claude | Change tracker + journal: a new circle, *full traceability* |
+
+These go into the build order (section 10) when development resumes:
+
+- G1 and G5 with the quick merges;
+- G2 and G3 with the rules engine and requirements;
+- G4 before the family checker and the requirements monitor;
+- G6 with the Project Hub.
+

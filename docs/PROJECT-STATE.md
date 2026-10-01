@@ -71,6 +71,9 @@ released as verified).
 18. The tool must be **smart and proactive, not rigid**. *Principle for everything (concept section 1): it notices
     and offers, understands intent, adapts to context, explains why, allows reasoned deviations; an observer layer
     with a proactivity dial per user; never changes the model without approval.*
+19. Compare with **"15 features for your company MCP"** (Omar Raafat's post). *Concept section 13: 7 features already
+    there, 6 partly, 2 missing. Six gaps to close: verify before commit, skills tree, sync with review,
+    long-running jobs, variables between runs, and who changed what including Claude.*
 
 ## 4. Decisions and constraints to keep
 
