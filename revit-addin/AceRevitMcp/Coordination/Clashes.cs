@@ -216,6 +216,9 @@ namespace AceRevitMcp.Coordination
 
         // ---- run -----------------------------------------------------------------------------------------------
 
+        /// <summary>Clash search grid cell: about 3 m, close to a typical duct run or beam span between joints.</summary>
+        private const double GridCellFeet = 10;
+
         public static List<Clash> Run(Document host, List<Source> sources, SolidCache geometry, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null, string primaryModel = null)
         {
             complete = true;
@@ -230,7 +233,6 @@ namespace AceRevitMcp.Coordination
                 if (aSources.Count == 0 || bSources.Count == 0) { notes.Add($"Nothing to compare with {withModel} in this test."); return new List<Clash>(); }
             }
             var aItems = aSources.SelectMany(s => Collect(s, test.A.Categories).Select(e => (s, e))).ToList();
-            var bCats = new ElementMulticategoryFilter(test.B.Categories.Select(c => new ElementId(c)).ToList());
             notes.Add($"A: {aItems.Count} elements in {string.Join(", ", aSources.Select(s => $"{s.Name} ({s.Discipline})"))}");
             notes.Add($"B: {string.Join(", ", test.B.Categories.Length)} categories in {string.Join(", ", bSources.Select(s => $"{s.Name} ({s.Discipline})"))}");
             if (aItems.Count > maxElements) { notes.Add($"Only the first {maxElements} A elements were tested (max_elements)."); aItems = aItems.Take(maxElements).ToList(); complete = false; }
@@ -242,24 +244,52 @@ namespace AceRevitMcp.Coordination
             var clear = UnitUtils.ConvertToInternalUnits(test.ClearanceMm, UnitTypeId.Millimeters);
             var clashes = new Dictionary<string, Clash>();
 
+            // The B elements of each model, collected and indexed ONCE for this test (boxes in host coordinates), instead
+            // of a new collector for every A solid. Element boxes are slightly larger than the solids: a superset.
+            var indexes = new Dictionary<Source, (BoxGrid Grid, List<Element> Items)>();
+            (BoxGrid Grid, List<Element> Items) IndexOf(Source sb)
+            {
+                if (indexes.TryGetValue(sb, out var ix)) return ix;
+                var grid = new BoxGrid(GridCellFeet);
+                var items = new List<Element>();
+                foreach (var e in Collect(sb, test.B.Categories))
+                {
+                    var bb = e.get_BoundingBox(null);
+                    if (bb == null) continue;
+                    var (bmin, bmax) = ViewTools.Box(bb, sb.ToHost);
+                    grid.Add(bmin.X, bmin.Y, bmin.Z, bmax.X, bmax.Y, bmax.Z);
+                    items.Add(e);
+                }
+                return indexes[sb] = (grid, items);
+            }
+            var solidBoxes = new Dictionary<Solid, (XYZ Min, XYZ Max)>();
+            (XYZ Min, XYZ Max) BoxOf(Solid s) => solidBoxes.TryGetValue(s, out var b) ? b : solidBoxes[s] = Box(s, Transform.Identity);
+            static bool Overlap((XYZ Min, XYZ Max) a, (XYZ Min, XYZ Max) b, double grow) =>
+                a.Min.X - grow <= b.Max.X && a.Max.X + grow >= b.Min.X && a.Min.Y - grow <= b.Max.Y && a.Max.Y + grow >= b.Min.Y && a.Min.Z - grow <= b.Max.Z && a.Max.Z + grow >= b.Min.Z;
+            var touch = Math.Max(clear, Lengths.Ft(1));
+
             foreach (var (sa, ea) in aItems)
             {
                 var solidsA = geometry.Of(ea);
                 if (solidsA.Count == 0) continue;
+                var hostBoxes = solidsA.Select(s => Box(s, sa.ToHost)).ToList();
                 foreach (var sb in bSources)
                 {
                     if (withModel != null && !comparingSelf && sa.Doc.Equals(sb.Doc)) continue;   // only across the two models
                     if (withModel == null && primaryModel != null && !string.Equals(sa.Name, primary, StringComparison.OrdinalIgnoreCase) && !string.Equals(sb.Name, primary, StringComparison.OrdinalIgnoreCase)) continue;   // a link as primary: only its clashes
-                    // A's geometry in B's coordinates: A -> host -> B.
+                    var (grid, items) = IndexOf(sb);
+                    if (grid.Count == 0) continue;
+                    // A's geometry in B's coordinates: A -> host -> B (only for solids that have candidates).
                     var toB = sb.ToHost.Inverse.Multiply(sa.ToHost);
-                    foreach (var solid in solidsA)
+                    for (var k = 0; k < solidsA.Count; k++)
                     {
+                        var (hmin, hmax) = hostBoxes[k];
+                        var hits = grid.Query(hmin.X - clear, hmin.Y - clear, hmin.Z - clear, hmax.X + clear, hmax.Y + clear, hmax.Z + clear);
+                        if (hits.Count == 0) continue;
                         Solid moved;
-                        try { moved = toB.IsIdentity ? solid : SolidUtils.CreateTransformed(solid, toB); } catch { continue; }
+                        try { moved = toB.IsIdentity ? solidsA[k] : SolidUtils.CreateTransformed(solidsA[k], toB); } catch { continue; }
                         var (min, max) = Box(moved, Transform.Identity);
-                        var grow = new XYZ(clear, clear, clear);
-                        var candidates = new FilteredElementCollector(sb.Doc).WhereElementIsNotElementType().WherePasses(bCats)
-                            .WherePasses(new BoundingBoxIntersectsFilter(new Outline(min - grow, max + grow))).ToElements();
+                        var candidates = hits.Select(h => items[h]);
                         foreach (var eb in candidates)
                         {
                             if (sb.Doc.Equals(sa.Doc) && eb.Id == ea.Id) continue;
@@ -270,6 +300,7 @@ namespace AceRevitMcp.Coordination
                             double depth = 0; XYZ centre = null; var kind = (string)null;
                             foreach (var solidB in geometry.Of(eb))
                             {
+                                if (!Overlap((min, max), BoxOf(solidB), touch)) continue;   // cannot intersect: skip the boolean
                                 try
                                 {
                                     var inter = BooleanOperationsUtils.ExecuteBooleanOperation(moved, solidB, BooleanOperationsType.Intersect);

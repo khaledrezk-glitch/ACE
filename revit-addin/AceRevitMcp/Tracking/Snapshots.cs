@@ -33,6 +33,8 @@ namespace AceRevitMcp.Tracking
         public DateTime Time { get; set; }
         public string User { get; set; }
         public string Label { get; set; }
+        /// <summary>The loaded version (version GUID and number of saves): an unchanged link reuses its snapshot.</summary>
+        public string Version { get; set; }
         public List<ElementRecord> Elements { get; set; } = new List<ElementRecord>();
     }
 
@@ -65,10 +67,13 @@ namespace AceRevitMcp.Tracking
             var snap = new Snapshot
             {
                 Model = doc.Title, Path = doc.PathName, Time = DateTime.Now, User = user, Label = label,
-                Discipline = Commands.BriefCommands.Discipline(doc),
+                Discipline = Commands.BriefCommands.Discipline(doc), Version = VersionOf(doc),
             };
             var levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).ToDictionary(l => l.Id.Value, l => l.Name);
+            var names = new Names(doc);
+            // Quick filter first: elements owned by a view (annotation, detail items) never reach the slower checks below.
             var elements = new FilteredElementCollector(doc).WhereElementIsNotElementType()
+                .WherePasses(new ElementOwnerViewFilter(ElementId.InvalidElementId))
                 .Where(e => e.Category != null && !e.ViewSpecific
                             && (e.Category.CategoryType == CategoryType.Model || e is Level || e is Grid)
                             && !(e is FamilyInstance fi && fi.SuperComponent != null));
@@ -79,11 +84,11 @@ namespace AceRevitMcp.Tracking
                     var r = new ElementRecord
                     {
                         U = e.UniqueId, Id = e.Id.Value, Cat = e.Category.Name,
-                        Type = TypeName(doc, e),
+                        Type = names.Type(e),
                         Lvl = e.LevelId != null && levels.TryGetValue(e.LevelId.Value, out var ln) ? ln : null,
                         Loc = Location(e),
                         P = Fingerprint(e),
-                        K = KeyValues(doc, e),
+                        K = KeyValues(names, e),
                     };
                     snap.Elements.Add(r);
                 }
@@ -141,7 +146,41 @@ namespace AceRevitMcp.Tracking
             return Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(sb.ToString()))).Substring(0, 12);
         }
 
-        private static Dictionary<string, string> KeyValues(Document doc, Element e)
+        /// <summary>Type, workset and phase names looked up once per capture, not once per element.</summary>
+        private sealed class Names
+        {
+            private readonly Document _doc;
+            private readonly Dictionary<long, string> _types = new Dictionary<long, string>();
+            private readonly Dictionary<int, string> _worksets = new Dictionary<int, string>();
+            private readonly Dictionary<long, string> _phases = new Dictionary<long, string>();
+            public Names(Document doc) { _doc = doc; }
+            public Document Doc => _doc;
+
+            public string Type(Element e)
+            {
+                var id = e.GetTypeId();
+                if (id == null || id == ElementId.InvalidElementId) return TypeName(_doc, e);
+                if (!_types.TryGetValue(id.Value, out var name)) _types[id.Value] = name = TypeName(_doc, e);
+                return name;
+            }
+
+            public string Workset(WorksetId id)
+            {
+                if (!_doc.IsWorkshared || id == null) return null;
+                if (!_worksets.TryGetValue(id.IntegerValue, out var name))
+                    _worksets[id.IntegerValue] = name = RevitJson.Safe(() => _doc.GetWorksetTable().GetWorkset(id)?.Name);
+                return name;
+            }
+
+            public string Phase(ElementId id)
+            {
+                if (id == null || id == ElementId.InvalidElementId) return null;
+                if (!_phases.TryGetValue(id.Value, out var name)) _phases[id.Value] = name = (_doc.GetElement(id) as Phase)?.Name;
+                return name;
+            }
+        }
+
+        private static Dictionary<string, string> KeyValues(Names names, Element e)
         {
             var k = new Dictionary<string, string>();
             void Add(string name, string value) { if (!string.IsNullOrWhiteSpace(value)) k[name] = value; }
@@ -149,9 +188,9 @@ namespace AceRevitMcp.Tracking
             Add("Comments", e.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)?.AsString());
             if (e is Autodesk.Revit.DB.Architecture.Room room) { Add("Number", room.Number); Add("Name", room.get_Parameter(BuiltInParameter.ROOM_NAME)?.AsString()); }
             if (e is Level || e is Grid) Add("Name", e.Name);
-            try { if (doc.IsWorkshared) Add("Workset", doc.GetWorksetTable().GetWorkset(e.WorksetId)?.Name); } catch { }
-            Add("Phase", (doc.GetElement(e.CreatedPhaseId) as Phase)?.Name);
-            if (e.DemolishedPhaseId != null && e.DemolishedPhaseId != ElementId.InvalidElementId) Add("Demolished", (doc.GetElement(e.DemolishedPhaseId) as Phase)?.Name);
+            try { Add("Workset", names.Workset(e.WorksetId)); } catch { }
+            Add("Phase", names.Phase(e.CreatedPhaseId));
+            Add("Demolished", names.Phase(e.DemolishedPhaseId));
             if (e.DesignOption != null) Add("Option", e.DesignOption.Name);
             return k.Count == 0 ? null : k;
         }
@@ -160,17 +199,58 @@ namespace AceRevitMcp.Tracking
 
         private static readonly JsonSerializerOptions Json = new JsonSerializerOptions { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };
 
+        /// <summary>
+        /// Saves a snapshot and returns its file. Serialising, compressing and writing happen on a background thread
+        /// (a snapshot holds only plain data), so Revit is free again as soon as the capture is done. The file appears
+        /// under its final name only when complete.
+        /// </summary>
         public static string Save(Document doc, Snapshot snap)
         {
-            var dir = System.IO.Path.Combine(Root, ModelKey(doc));
-            Directory.CreateDirectory(dir);
+            var dir = Folder(doc);
             var file = System.IO.Path.Combine(dir, $"{snap.Time:yyyyMMdd-HHmmss}.json.gz");
-            using (var fs = File.Create(file))
-            using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
-                JsonSerializer.Serialize(gz, snap, Json);
-            foreach (var extra in List(doc).Skip(KeepPerModel)) try { File.Delete(extra.File); } catch { }
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    Directory.CreateDirectory(dir);
+                    var temp = file + ".part";
+                    using (var fs = File.Create(temp))
+                    using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
+                        JsonSerializer.Serialize(gz, snap, Json);
+                    File.Move(temp, file, true);
+                    foreach (var extra in List(dir).Skip(KeepPerModel)) try { File.Delete(extra.File); } catch { }
+                }
+                catch (Exception ex) { Log.Warn($"Saving snapshot {file}: {ex.Message}"); }
+            });
             return file;
         }
+
+        /// <summary>
+        /// The latest snapshot of a linked model when the loaded link is still exactly that version (same version GUID and
+        /// number of saves); null when it may have changed or cannot be told.
+        /// </summary>
+        public static Snapshot UnchangedSince(Document link)
+        {
+            try
+            {
+                var version = VersionOf(link);
+                if (version == null) return null;
+                var latest = List(link).FirstOrDefault();
+                if (latest.File == null) return null;
+                var snap = Load(latest.File);
+                return snap?.Version == version ? snap : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>The loaded version of a model (its version GUID and number of saves); changes on every save and reload.</summary>
+        internal static string VersionOf(Document doc)
+        {
+            try { var v = Document.GetDocumentVersion(doc); return v == null ? null : $"{v.VersionGUID}:{v.NumberOfSaves}"; }
+            catch { return null; }
+        }
+
+        private static string Folder(Document doc) => System.IO.Path.Combine(Root, ModelKey(doc));
 
         public static Snapshot Load(string file)
         {
@@ -180,9 +260,10 @@ namespace AceRevitMcp.Tracking
         }
 
         /// <summary>Snapshots of this model, newest first.</summary>
-        public static List<(string File, DateTime Time)> List(Document doc)
+        public static List<(string File, DateTime Time)> List(Document doc) => List(Folder(doc));
+
+        private static List<(string File, DateTime Time)> List(string dir)
         {
-            var dir = System.IO.Path.Combine(Root, ModelKey(doc));
             if (!Directory.Exists(dir)) return new List<(string, DateTime)>();
             return Directory.GetFiles(dir, "*.json.gz")
                 .Select(f => (f, DateTime.TryParseExact(System.IO.Path.GetFileName(f).Substring(0, 15), "yyyyMMdd-HHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var t) ? t : File.GetLastWriteTime(f)))

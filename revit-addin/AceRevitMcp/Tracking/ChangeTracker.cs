@@ -38,11 +38,50 @@ namespace AceRevitMcp.Tracking
     {
         // ---- automatic snapshots --------------------------------------------------------------------
 
-        public static void Attach(Autodesk.Revit.ApplicationServices.ControlledApplication app)
+        // The snapshot is taken when Revit is next idle, not inside the open / save / sync event, so the user's save
+        // or sync finishes first and the capture never adds to it.
+        private static UIControlledApplication _ui;
+        private static bool _idlingAttached;
+        private static readonly Dictionary<Document, (TimeSpan Gap, string Reason)> Due = new Dictionary<Document, (TimeSpan, string)>();
+
+        public static void Attach(UIControlledApplication ui)
         {
-            app.DocumentOpened += (s, e) => Auto(e.Document, TimeSpan.FromHours(20), "opened");
-            app.DocumentSaved += (s, e) => Auto(e.Document, TimeSpan.FromHours(2), "saved");
-            app.DocumentSynchronizedWithCentral += (s, e) => Auto(e.Document, TimeSpan.FromHours(2), "synced");
+            _ui = ui;
+            ui.ControlledApplication.DocumentOpened += OnOpened;
+            ui.ControlledApplication.DocumentSaved += OnSaved;
+            ui.ControlledApplication.DocumentSynchronizedWithCentral += OnSynced;
+        }
+
+        public static void Detach()
+        {
+            if (_ui == null) return;
+            _ui.ControlledApplication.DocumentOpened -= OnOpened;
+            _ui.ControlledApplication.DocumentSaved -= OnSaved;
+            _ui.ControlledApplication.DocumentSynchronizedWithCentral -= OnSynced;
+            if (_idlingAttached) { _ui.Idling -= OnIdling; _idlingAttached = false; }
+        }
+
+        private static void OnOpened(object s, Autodesk.Revit.DB.Events.DocumentOpenedEventArgs e) => Later(e.Document, TimeSpan.FromHours(20), "opened");
+        private static void OnSaved(object s, Autodesk.Revit.DB.Events.DocumentSavedEventArgs e) => Later(e.Document, TimeSpan.FromHours(2), "saved");
+        private static void OnSynced(object s, Autodesk.Revit.DB.Events.DocumentSynchronizedWithCentralEventArgs e) => Later(e.Document, TimeSpan.FromHours(2), "synced");
+
+        private static void Later(Document doc, TimeSpan gap, string reason)
+        {
+            if (App.Config?.AutoSnapshots == false || doc == null || doc.IsFamilyDocument || doc.IsLinked) return;
+            Due[doc] = (gap, reason);
+            if (_idlingAttached || _ui == null) return;
+            try { _ui.Idling += OnIdling; _idlingAttached = true; }
+            catch (Exception ex) { Log.Warn($"Change tracker: {ex.Message}"); }
+        }
+
+        private static void OnIdling(object sender, Autodesk.Revit.UI.Events.IdlingEventArgs e)
+        {
+            if (sender is UIApplication uiapp) uiapp.Idling -= OnIdling; else _ui.Idling -= OnIdling;
+            _idlingAttached = false;
+            var due = Due.ToList();
+            Due.Clear();
+            foreach (var (doc, (gap, reason)) in due)
+                if (doc.IsValidObject) Auto(doc, gap, reason);
         }
 
         private static void Auto(Document doc, TimeSpan minGap, string reason)
@@ -110,11 +149,15 @@ namespace AceRevitMcp.Tracking
             var doc = Args.RequireDoc(app);
             var since = Args.Str(args, "since") ?? "last";
             var save = Args.Bool(args, "save_snapshot", true);
+            var only = Args.Strings(args, "models").ToList();
             var diffs = new List<ModelDiff>();
             foreach (var (d, rel) in Tracked(doc, Args.Bool(args, "include_links", true)))
             {
+                if (only.Count > 0 && rel != "this model" && !only.Any(m => d.Title.IndexOf(m, StringComparison.OrdinalIgnoreCase) >= 0)) continue;
                 var baseline = Snapshots.Baseline(d, since);
-                var current = Snapshots.Capture(d, app.Application.Username, "compare");
+                // A link whose file has not changed since its latest snapshot is exactly that snapshot: no new capture.
+                var unchanged = rel == "link" ? Snapshots.UnchangedSince(d) : null;
+                var current = unchanged ?? Snapshots.Capture(d, app.Application.Username, "compare");
                 var diff = new ModelDiff { Model = d.Title, Discipline = current.Discipline, Relation = rel, Now = current.Time, Elements = current.Elements.Count };
                 if (baseline != null)
                 {
@@ -123,7 +166,7 @@ namespace AceRevitMcp.Tracking
                     diff.Changes = Compare(old, current);
                     WhoChanged(d, diff.Changes);
                 }
-                if (save) Snapshots.Save(d, current);
+                if (save && unchanged == null) Snapshots.Save(d, current);
                 diffs.Add(diff);
             }
             var report = DashboardHtml.SaveAs(doc.Title, "Changes", DateTime.Now, ChangeHtml.Render(doc.Title, since, diffs));

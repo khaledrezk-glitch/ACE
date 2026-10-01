@@ -118,6 +118,32 @@ class P {
     var back = ((IEnumerable)merge.Invoke(null, new object[] { gone.Cast<object>().Aggregate(List(), (l, x) => { l.Add(x); return l; }), List(C("a1", "new", "x", "y", "Ducts", "Walls", "L3")), null, t1.AddDays(1) })).Cast<object>().ToList();
     Check((string)F(back.First(c => (string)F(c, "Key") == "a1"), "Status") == "approved", "an approved clash that comes back is approved again, not new");
 
+    // The clash search grid finds exactly the boxes a brute-force check finds (random boxes, small and very large).
+    var gridT = a.GetType("AceRevitMcp.Coordination.BoxGrid");
+    var grid = Activator.CreateInstance(gridT, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new object[] { 10.0, 64 }, null);
+    var add = gridT.GetMethod("Add", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    var query = gridT.GetMethod("Query", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    var rnd = new Random(7);
+    var boxes = new List<double[]>();
+    for (var i = 0; i < 3000; i++)
+    {
+        var size = i % 100 == 0 ? 400 : rnd.NextDouble() * 15;   // every 100th box is a slab-sized one
+        var x = rnd.NextDouble() * 1000 - 500; var y = rnd.NextDouble() * 1000 - 500; var z = rnd.NextDouble() * 200;
+        var bx = new[] { x, y, z, x + size, y + size * 0.7, z + Math.Min(size, 3) };
+        boxes.Add(bx);
+        add.Invoke(grid, bx.Cast<object>().ToArray());
+    }
+    var gridOk = true;
+    for (var q = 0; q < 300 && gridOk; q++)
+    {
+        var x = rnd.NextDouble() * 1000 - 500; var y = rnd.NextDouble() * 1000 - 500; var z = rnd.NextDouble() * 200; var s = q % 50 == 0 ? 900 : rnd.NextDouble() * 20;
+        var qb = new[] { x, y, z, x + s, y + s, z + s };
+        var got = ((List<int>)query.Invoke(grid, qb.Cast<object>().ToArray())).OrderBy(i => i).ToList();
+        var want = Enumerable.Range(0, boxes.Count).Where(i => boxes[i][0] <= qb[3] && boxes[i][3] >= qb[0] && boxes[i][1] <= qb[4] && boxes[i][4] >= qb[1] && boxes[i][2] <= qb[5] && boxes[i][5] >= qb[2]).ToList();
+        gridOk = got.SequenceEqual(want);
+    }
+    Check(gridOk, "clash search grid returns exactly the touching boxes (small, slab-sized and very large queries)");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

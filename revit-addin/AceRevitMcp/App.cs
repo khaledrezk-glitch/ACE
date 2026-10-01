@@ -27,10 +27,11 @@ namespace AceRevitMcp
                 dispatcher.Initialize();
                 Dispatcher = dispatcher;
                 application.ControlledApplication.DocumentChanged += ChangeTracker.OnDocumentChanged;
-                Tracking.ChangeTracking.Attach(application.ControlledApplication);
+                Tracking.ChangeTracking.Attach(application);
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
                 Server.Start();
                 CreateRibbon(application);
+                Scripting.CodeRunner.WarmUp();
                 try { Companion.CompanionPane.Register(application); }
                 catch (Exception ex) { Log.Error($"Could not register the ACE Companion panel: {ex}"); }
                 return Result.Succeeded;
@@ -45,6 +46,7 @@ namespace AceRevitMcp
         public Result OnShutdown(UIControlledApplication application)
         {
             application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged;
+            try { Tracking.ChangeTracking.Detach(); } catch { }
             try { Companion.CompanionPane.Unregister(application); } catch { }
             Server?.Dispose();
             return Result.Succeeded;

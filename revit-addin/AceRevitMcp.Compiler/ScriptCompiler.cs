@@ -15,6 +15,13 @@ namespace AceRevitMcp.Compiler
     /// </summary>
     public static class ScriptCompiler
     {
+        /// <summary>
+        /// Parsed reference assemblies, kept between compiles (keyed by path and file time). Reading several hundred
+        /// Revit and framework assemblies was most of the time of every compile.
+        /// </summary>
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, MetadataReference> References =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
+
         /// <returns>object[] { byte[] assemblyOrNull, string[] errors, string[] warnings }</returns>
         public static object[] Compile(string source, string[] referencePaths, string assemblyName)
         {
@@ -30,7 +37,11 @@ namespace AceRevitMcp.Compiler
             {
                 if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) continue;
                 if (!seen.Add(Path.GetFileName(path))) continue;
-                try { references.Add(MetadataReference.CreateFromFile(path)); }
+                try
+                {
+                    var key = path + "|" + File.GetLastWriteTimeUtc(path).Ticks;
+                    references.Add(References.GetOrAdd(key, _ => MetadataReference.CreateFromFile(path)));
+                }
                 catch { /* unreadable or not a managed assembly: skip */ }
             }
 

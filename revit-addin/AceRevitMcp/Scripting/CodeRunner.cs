@@ -338,19 +338,33 @@ public static class AceScript
             return Template.Replace("/*USINGS*/", usings.ToString()).Replace("/*BODY*/", body.ToString());
         }
 
+        /// <summary>Compiled scripts by source, newest last: the preview and the apply of one change compile once.</summary>
+        private static readonly List<(string Key, byte[] Bytes)> Compiled = new List<(string, byte[])>();
+        private const int CompiledKept = 16;
+
         private static (Assembly assembly, string[] errors) Compile(string source)
         {
-            MethodInfo compile;
-            lock (CompilerGate) compile = _compile ??= LoadCompiler();
-
-            var assemblyName = $"AceScript_{Interlocked.Increment(ref _counter)}";
-            var output = (object[])compile.Invoke(null, new object[] { source, ReferencePaths(), assemblyName })!;
-            var bytes = (byte[])output[0];
-            var errors = (string[])output[1];
-            if (bytes == null) return (null, errors);
+            var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)));
+            byte[] bytes;
+            lock (Compiled) bytes = Compiled.FirstOrDefault(c => c.Key == key).Bytes;
+            if (bytes == null)
+            {
+                MethodInfo compile;
+                lock (CompilerGate) compile = _compile ??= LoadCompiler();
+                var assemblyName = $"AceScript_{Interlocked.Increment(ref _counter)}";
+                var output = (object[])compile.Invoke(null, new object[] { source, ReferencePaths(), assemblyName })!;
+                bytes = (byte[])output[0];
+                if (bytes == null) return (null, (string[])output[1]);
+                lock (Compiled)
+                {
+                    Compiled.Add((key, bytes));
+                    if (Compiled.Count > CompiledKept) Compiled.RemoveAt(0);
+                }
+            }
+            var assemblyNameOf = $"AceScript_{Interlocked.Increment(ref _counter)}";
 
             // Collectible context so thousands of scripts don't leak memory; Revit/our types resolve from the default context.
-            var alc = _scriptContext = new AssemblyLoadContext(assemblyName, isCollectible: true);
+            var alc = _scriptContext = new AssemblyLoadContext(assemblyNameOf, isCollectible: true);
             using var ms = new MemoryStream(bytes);
             return (alc.LoadFromStream(ms), Array.Empty<string>());
         }
@@ -368,7 +382,36 @@ public static class AceScript
             return asm.GetType("AceRevitMcp.Compiler.ScriptCompiler")!.GetMethod("Compile")!;
         }
 
+        private static string[] _referencePaths;
+        private static int _referenceAssemblyCount;
+
+        /// <summary>
+        /// Compiles a trivial script on a background thread when Revit starts, so the first real script does not pay
+        /// for loading Roslyn and reading the reference assemblies.
+        /// </summary>
+        public static void WarmUp() => System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                MethodInfo compile;
+                lock (CompilerGate) compile = _compile ??= LoadCompiler();
+                compile.Invoke(null, new object[] { BuildSource("return null;"), ReferencePaths(), "AceScript_warmup" });
+            }
+            catch (Exception ex) { Log.Warn($"Script compiler warm-up: {ex.Message}"); }
+        });
+
+        /// <summary>The reference list, rebuilt only when assemblies have been loaded since the last time.</summary>
         private static string[] ReferencePaths()
+        {
+            var count = AppDomain.CurrentDomain.GetAssemblies().Length;
+            var cached = _referencePaths;
+            if (cached != null && count == _referenceAssemblyCount) return cached;
+            var paths = BuildReferencePaths();
+            _referenceAssemblyCount = count;
+            return _referencePaths = paths;
+        }
+
+        private static string[] BuildReferencePaths()
         {
             var paths = new List<string>();
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())

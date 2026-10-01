@@ -53,9 +53,11 @@ namespace AceRevitMcp.Util
         }
 
         /// <summary>A solid's bounding box in another coordinate system (all eight corners, so rotations are right).</summary>
-        public static (XYZ Min, XYZ Max) Box(Solid s, Transform t)
+        public static (XYZ Min, XYZ Max) Box(Solid s, Transform t) => Box(s.GetBoundingBox(), t);
+
+        /// <summary>A bounding box (with its own transform) in another coordinate system, from all eight corners.</summary>
+        public static (XYZ Min, XYZ Max) Box(BoundingBoxXYZ bb, Transform t)
         {
-            var bb = s.GetBoundingBox();
             var pts = new[] { bb.Min, bb.Max, new XYZ(bb.Min.X, bb.Min.Y, bb.Max.Z), new XYZ(bb.Min.X, bb.Max.Y, bb.Min.Z), new XYZ(bb.Max.X, bb.Min.Y, bb.Min.Z), new XYZ(bb.Max.X, bb.Max.Y, bb.Min.Z), new XYZ(bb.Max.X, bb.Min.Y, bb.Max.Z), new XYZ(bb.Min.X, bb.Max.Y, bb.Max.Z) }
                 .Select(p => t.OfPoint(bb.Transform.OfPoint(p))).ToList();
             return (new XYZ(pts.Min(p => p.X), pts.Min(p => p.Y), pts.Min(p => p.Z)), new XYZ(pts.Max(p => p.X), pts.Max(p => p.Y), pts.Max(p => p.Z)));

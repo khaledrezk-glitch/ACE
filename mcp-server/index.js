@@ -151,6 +151,7 @@ tool("model_changes", {
   inputSchema: {
     since: z.string().optional(),
     include_links: z.boolean().optional().describe("Default true"),
+    models: z.array(z.string()).optional().describe("Only these linked models (part of the name), e.g. [\"STR\"]; this model is always included"),
     show: z.boolean().optional(),
     save_snapshot: z.boolean().optional().describe("Default true: the current state becomes the new baseline"),
   },
