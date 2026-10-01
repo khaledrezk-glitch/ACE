@@ -99,7 +99,7 @@ namespace AceRevitMcp.Tracking
             return t != null ? t.Name : e.GetType().Name;
         }
 
-        private static string R(double feet) => Math.Round(feet * 304.8).ToString(CultureInfo.InvariantCulture);
+        private static string R(double feet) => Math.Round(Lengths.Mm(feet)).ToString(CultureInfo.InvariantCulture);
 
         internal static string Location(Element e)
         {
@@ -116,7 +116,7 @@ namespace AceRevitMcp.Tracking
             var bb = e.get_BoundingBox(null);
             if (bb == null) return null;
             // Box centre and size to the nearest 10 mm: stable, but catches real moves and reshapes.
-            string T(double f) => (Math.Round(f * 304.8 / 10) * 10).ToString(CultureInfo.InvariantCulture);
+            string T(double f) => (Math.Round(Lengths.Mm(f) / 10) * 10).ToString(CultureInfo.InvariantCulture);
             var c = (bb.Min + bb.Max) / 2; var s = bb.Max - bb.Min;
             return $"box {T(c.X)},{T(c.Y)},{T(c.Z)} size {T(s.X)},{T(s.Y)},{T(s.Z)}";
         }

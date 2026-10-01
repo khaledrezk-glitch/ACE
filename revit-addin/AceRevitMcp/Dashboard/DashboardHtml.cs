@@ -80,12 +80,23 @@ table.list td{{border-bottom:1px solid #E6E6E6;padding:7px 8px;vertical-align:to
         }
 
         /// <summary>Saves a report to Documents\ACE Insights\&lt;model&gt;\ and returns the path.</summary>
+        /// <summary>A name that is safe as a file or folder name.</summary>
+        internal static string SafeName(string s) => string.Concat((s ?? "Model").Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
+
+        /// <summary>The reports folder of a model: Documents\ACE Insights\&lt;model&gt;\ (created).</summary>
+        internal static string ReportDir(string model)
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ACE Insights", SafeName(model));
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+
+        /// <summary>The file name a report of this kind gets (without the extension).</summary>
+        internal static string ReportName(string model, string kind, DateTime time) => $"{SafeName(model)} - {kind} {time:yyyy-MM-dd HHmm}";
+
         internal static string SaveAs(string model, string kind, DateTime time, string html)
         {
-            var safe = string.Concat((model ?? "Model").Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ACE Insights", safe);
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, $"{safe} - {kind} {time:yyyy-MM-dd HHmm}.html");
+            var path = Path.Combine(ReportDir(model), ReportName(model, kind, time) + ".html");
             File.WriteAllText(path, html, new UTF8Encoding(false));
             return path;
         }
@@ -324,14 +335,5 @@ table.list td{{border-bottom:1px solid #E6E6E6;padding:7px 8px;vertical-align:to
         }
 
         /// <summary>Saves the report to Documents\ACE Insights\&lt;model&gt;\ and returns the path.</summary>
-        public static string Save(Insights x, string html)
-        {
-            var safe = string.Concat((x.Model ?? "Model").Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ACE Insights", safe);
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, $"{safe} - Insights {x.Time:yyyy-MM-dd HHmm}.html");
-            File.WriteAllText(path, html, new UTF8Encoding(false));
-            return path;
-        }
     }
 }

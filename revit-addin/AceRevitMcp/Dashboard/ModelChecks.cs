@@ -193,11 +193,11 @@ namespace AceRevitMcp.Dashboard
         {
             try
             {
-                // The latest clash results in this session, else the stored ones.
-                var all = StatusStore.For(doc.Title)?.Clashes ?? Coordination.Clashes.LoadAll(doc);
+                // The latest clash results in this session, else the stored ones (published, so issues are computed once).
+                var all = Coordination.Clashes.Current(doc);
                 if (all.Count == 0) return;
                 var open = all.Where(Coordination.ClashLogic.IsOpen).ToList();
-                var issues = Coordination.ClashLogic.Issues(all);
+                var issues = StatusStore.For(doc.Title)?.ClashIssues ?? Coordination.ClashLogic.Issues(all);
                 x.Clashes = new ClashSummary
                 {
                     Open = open.Count, Issues = issues.Count, New = open.Count(c => c.Status == "new"),

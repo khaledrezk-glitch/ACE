@@ -38,9 +38,6 @@ namespace AceRevitMcp.Tracking
     /// </summary>
     internal static class ChangeTracking
     {
-        internal static List<ModelDiff> LastDiffs;
-        internal static string LastPath;
-
         // ---- automatic snapshots --------------------------------------------------------------------
 
         public static void Attach(Autodesk.Revit.ApplicationServices.ControlledApplication app)
@@ -131,10 +128,10 @@ namespace AceRevitMcp.Tracking
                 if (save) Snapshots.Save(d, current);
                 diffs.Add(diff);
             }
-            LastDiffs = diffs;
-            StatusStore.PublishChanges(doc.Title, diffs);
-            LastPath = DashboardHtml.SaveAs(doc.Title, "Changes", DateTime.Now, ChangeHtml.Render(doc.Title, since, diffs));
-            if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Change tracker", "model_changes", State);
+            var report = DashboardHtml.SaveAs(doc.Title, "Changes", DateTime.Now, ChangeHtml.Render(doc.Title, since, diffs));
+            StatusStore.PublishChanges(doc.Title, diffs, report);
+            var model = doc.Title;
+            if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Change tracker", "model_changes", () => State(model));
 
             var models = new JsonArray();
             foreach (var d in diffs)
@@ -151,7 +148,7 @@ namespace AceRevitMcp.Tracking
                     ["note"] = d.Since == null ? "No earlier snapshot of this model yet: this one is the baseline; next time you will see the changes." : null,
                 });
             }
-            return new JsonObject { ["since"] = since, ["models"] = models, ["htmlReport"] = LastPath,
+            return new JsonObject { ["since"] = since, ["models"] = models, ["htmlReport"] = report,
                 ["note"] = "Element ids of linked models are ids inside the link (not selectable in this model)." };
         }
 
@@ -163,13 +160,14 @@ namespace AceRevitMcp.Tracking
             return o;
         }
 
-        internal static ReportWindow.State State()
+        internal static ReportWindow.State State(string model)
         {
-            if (LastDiffs == null) return null;
-            var host = LastDiffs.FirstOrDefault(d => d.Relation == "this model");
+            var status = StatusStore.For(model);
+            if (status?.Changes == null) return null;
+            var host = status.Changes.FirstOrDefault(d => d.Relation == "this model");
             var st = new ReportWindow.State
             {
-                Path = LastPath,
+                Path = status.ChangesReport,
                 Status = host?.Since == null ? "First snapshot saved: changes appear from the next check." : $"Changes since {host.Since:ddd d MMM HH:mm}. Saved to Documents\\ACE Insights.",
             };
             if (host != null)

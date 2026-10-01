@@ -25,12 +25,16 @@ namespace AceRevitMcp.Coordination
             var all = new List<Clash>();
             var perTest = new JsonArray();
             var notes = new List<string>();
+            // Once per run: the models taking part, and each element's geometry (shared by every test and both sides).
+            var sources = Clashes.Sources(app, host);
+            var geometry = new Clashes.SolidCache();
+            var loaded = new HashSet<string>(sources.Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
+            var withModel = Args.Str(args, "with_model");
+            var primaryModel = Args.Str(args, "primary_model");
             foreach (var t in tests)
             {
                 var testNotes = new List<string>();
-                var withModel = Args.Str(args, "with_model");
-                var primaryModel = Args.Str(args, "primary_model");
-                var found = Clashes.Run(app, host, t, level, max, testNotes, out var complete, withModel, primaryModel);
+                var found = Clashes.Run(host, sources, geometry, t, level, max, testNotes, out var complete, withModel, primaryModel);
                 // Only what this run looked at can become resolved: one level, one compared model, or nothing if it was cut short.
                 bool InLevel(Clash c) => level == null || string.Equals(c.Level, level, StringComparison.OrdinalIgnoreCase);
                 var primaryName = primaryModel ?? host.Title;
@@ -39,14 +43,13 @@ namespace AceRevitMcp.Coordination
                     ? (primaryModel == null || Is(c.SourceA, primaryName) || Is(c.SourceB, primaryName))
                     : ((Is(c.SourceA, withModel) || Is(c.SourceA, primaryName)) && (Is(c.SourceB, withModel) || Is(c.SourceB, primaryName)));
                 // A model that is not loaded now was not tested: its stored clashes stay as they are.
-                var loaded = new HashSet<string>(Clashes.Sources(app, host).Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
                 bool Loaded(Clash c) => loaded.Contains(c.SourceA ?? "") && loaded.Contains(c.SourceB ?? "");
                 Func<Clash, bool> scope = !complete ? (c => false) : (c => Loaded(c) && InLevel(c) && InModel(c));
                 if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
                 var stored = Clashes.Load(host, t.Name);
                 DateTime? previousRun = stored.Count > 0 ? stored.Max(c => c.LastSeen) : (DateTime?)null;
                 var merged = ClashLogic.Merge(stored, found, scope, DateTime.Now);
-                try { Clashes.Explain(app, host, merged.Where(c => c.Status == "new" && c.Cause == null).ToList(), previousRun, testNotes); }
+                try { Clashes.Explain(sources, merged.Where(c => c.Status == "new" && c.Cause == null).ToList(), previousRun, testNotes); }
                 catch (Exception ex) { Log.Warn($"Clash causes: {ex.Message}"); }
                 var testIssues = ClashLogic.Issues(merged);
                 Clashes.Save(host, t.Name, merged);
@@ -55,24 +58,20 @@ namespace AceRevitMcp.Coordination
                 perTest.Add(new JsonObject
                 {
                     ["test"] = t.Name, ["toleranceMm"] = t.ToleranceMm, ["clearanceMm"] = t.ClearanceMm,
-                    ["open"] = merged.Count(c => c.Status == "new" || c.Status == "active"),
+                    ["open"] = merged.Count(ClashLogic.IsOpen),
                     ["new"] = merged.Count(c => c.Status == "new"), ["active"] = merged.Count(c => c.Status == "active"),
                     ["resolved"] = merged.Count(c => c.Status == "resolved"), ["approved"] = merged.Count(c => c.Status == "approved"),
                     ["issues"] = testIssues.Count,
-                    ["reopened"] = merged.Count(c => Open(c) && c.Reopened > 0),
-                    ["byResponsible"] = Group(merged.Where(Open), c => c.Responsible),
-                    ["byLevel"] = Group(merged.Where(Open), c => c.Level),
-                    ["byPair"] = Group(merged.Where(Open), c => $"{c.CatA} x {c.CatB}"),
+                    ["reopened"] = merged.Count(c => ClashLogic.IsOpen(c) && c.Reopened > 0),
+                    ["byResponsible"] = Group(merged.Where(ClashLogic.IsOpen), c => c.Responsible),
+                    ["byLevel"] = Group(merged.Where(ClashLogic.IsOpen), c => c.Level),
+                    ["byPair"] = Group(merged.Where(ClashLogic.IsOpen), c => $"{c.CatA} x {c.CatB}"),
                     ["notes"] = new JsonArray(testNotes.Select(n => (JsonNode)n).ToArray()),
                 });
             }
             var issues = ClashLogic.Issues(all);
-            Clashes.Last = all;
-            StatusStore.PublishClashes(host.Title, all);
-            Clashes.LastIssues = issues;
-            Clashes.LastTest = string.Join(", ", tests.Select(t => t.Name));
-            Clashes.LastHost = host.Title;
-            Clashes.LastPath = DashboardHtml.SaveAs(host.Title, "Clashes", DateTime.Now, ClashHtml.Render(host.Title, all, notes, sw.ElapsedMilliseconds));
+            var report = DashboardHtml.SaveAs(host.Title, "Clashes", DateTime.Now, ClashHtml.Render(host.Title, all, issues, notes, sw.ElapsedMilliseconds));
+            StatusStore.PublishClashes(host.Title, all, report);
             if (Args.Bool(args, "show")) ClashBrowser.ShowFor(app);
             return new JsonObject
             {
@@ -85,20 +84,18 @@ namespace AceRevitMcp.Coordination
                     ["causedBy"] = i.Clashes.Select(c => c.CausedBy).FirstOrDefault(x => x != null),
                     ["cause"] = i.Clashes.Select(c => c.Cause).FirstOrDefault(x => x != null && !x.StartsWith("both elements are unchanged")),
                 }).ToArray()),
-                ["topOpen"] = new JsonArray(all.Where(Open).OrderByDescending(c => c.DepthMm).Take(30).Select(c => (JsonNode)new JsonObject
+                ["topOpen"] = new JsonArray(all.Where(ClashLogic.IsOpen).OrderByDescending(c => c.DepthMm).Take(30).Select(c => (JsonNode)new JsonObject
                 {
                     ["key"] = c.Key, ["status"] = c.Status, ["reopened"] = c.Reopened > 0 ? c.Reopened : null, ["kind"] = c.Kind, ["level"] = c.Level, ["depthMm"] = c.DepthMm,
                     ["a"] = $"{c.CatA}: {c.NameA} (id {c.IdA}, {c.SourceA})", ["b"] = $"{c.CatB}: {c.NameB} (id {c.IdB}, {c.SourceB})",
                     ["pointMm"] = $"{c.X}, {c.Y}, {c.Z}", ["responsible"] = c.Responsible, ["reason"] = c.Reason,
                     ["cause"] = c.Cause, ["causedBy"] = c.CausedBy,
                 }).ToArray()),
-                ["htmlReport"] = Clashes.LastPath,
+                ["htmlReport"] = report,
                 ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1),
                 ["note"] = "Ids are ids inside the model named in brackets; only ids of this model can be selected here. Status is kept between runs (new, active, resolved, approved; a resolved clash that comes back is new again and counted as reopened). Issues group the clashes of one element that has to move: coordinate issue by issue, not clash by clash.",
             };
         }
-
-        internal static bool Open(Clash c) => ClashLogic.IsOpen(c);
 
         private static JsonObject Group(IEnumerable<Clash> clashes, Func<Clash, string> key)
         {
@@ -139,16 +136,12 @@ namespace AceRevitMcp.Coordination
         public static JsonNode Results(UIApplication app, JsonObject args)
         {
             var host = Args.RequireDoc(app);
-            if (Clashes.Last == null || Clashes.LastHost != host.Title)
-            {
-                var stored = Clashes.LoadAll(host);
-                if (stored.Count > 0) { Clashes.Last = stored; Clashes.LastHost = host.Title; Clashes.LastTest = "stored results"; StatusStore.PublishClashes(host.Title, stored); }
-            }
-            var all = Clashes.Last != null && Clashes.LastHost == host.Title ? Clashes.Last : new List<Clash>();
-            var issues = ClashLogic.Issues(all);
+            var all = Clashes.Current(host);
+            var status = StatusStore.For(host.Title);
+            var issues = status?.ClashIssues ?? new List<ClashIssue>();
             return new JsonObject
             {
-                ["clashes"] = all.Count, ["open"] = all.Count(Open), ["issues"] = issues.Count,
+                ["clashes"] = all.Count, ["open"] = status?.OpenClashes ?? 0, ["issues"] = issues.Count,
                 ["issueList"] = new JsonArray(issues.Take(30).Select(i => (JsonNode)new JsonObject
                 {
                     ["issue"] = i.Title, ["responsible"] = i.Responsible, ["levels"] = i.Levels, ["clashes"] = i.Count,
@@ -165,19 +158,19 @@ namespace AceRevitMcp.Coordination
             var status = Args.Str(args, "status") ?? "approved";
             if (!new[] { "approved", "active", "new" }.Contains(status)) throw new CommandException("status must be approved, active or new.");
             var keys = new HashSet<string>(Args.Strings(args, "keys"));
+            var note = Args.Str(args, "note");
+            void Set(Clash c) { c.Status = status; c.Approved = status == "approved"; if (note != null) c.Note = note; }
+            // The stored file, and this session's copy of the same clashes; then publish once, after both are updated.
             var clashes = Clashes.Load(host, test);
             var changed = 0;
-            foreach (var c in clashes.Where(c => keys.Contains(c.Key)))
-            {
-                c.Status = status;
-                c.Approved = status == "approved";
-                if (Args.Str(args, "note") is string n) c.Note = n;
-                changed++;
-            }
+            foreach (var c in clashes.Where(c => keys.Contains(c.Key))) { Set(c); changed++; }
             Clashes.Save(host, test, clashes);
-            if (Clashes.Last != null && Clashes.LastHost == host.Title) StatusStore.PublishClashes(host.Title, Clashes.Last);
-            if (Clashes.Last != null)
-                foreach (var c in Clashes.Last.Where(c => keys.Contains(c.Key))) { c.Status = status; c.Approved = status == "approved"; if (Args.Str(args, "note") is string n2) c.Note = n2; }
+            var current = StatusStore.For(host.Title)?.Clashes;
+            if (current != null)
+            {
+                foreach (var c in current.Where(c => keys.Contains(c.Key))) Set(c);
+                StatusStore.PublishClashes(host.Title, current);
+            }
             return new JsonObject { ["updated"] = changed, ["status"] = status };
         }
 
@@ -213,15 +206,16 @@ namespace AceRevitMcp.Coordination
     {
         private static string E(string s) => DashboardHtml.E(s);
 
-        public static string Render(string model, List<Clash> clashes, List<string> notes, long ms)
+        /// <param name="issues">The open issues of these clashes (ClashLogic.Issues), computed once by the caller.</param>
+        public static string Render(string model, List<Clash> clashes, List<ClashIssue> issues, List<string> notes, long ms)
         {
-            var open = clashes.Where(ClashCommands.Open).ToList();
+            var open = clashes.Where(ClashLogic.IsOpen).ToList();
             var sb = DashboardHtml.Begin($"{model} | Clashes", "Clash detection",
                 $"{E(model)} &nbsp;·&nbsp; {DateTime.Now:d MMMM yyyy, HH:mm} &nbsp;·&nbsp; {string.Join(", ", clashes.Select(c => c.Test).Distinct())}",
                 "The model, its links and the other open discipline models");
             var red = DashboardHtml.Hex(Branding.Accent);
             sb.Append("<table class=\"row\"><tr>");
-            foreach (var (label, n, key) in new[] { ("Open issues", ClashLogic.Issues(open).Count, true), ("Open clashes", open.Count, false), ("New since last run", clashes.Count(c => c.Status == "new"), false), ("Resolved", clashes.Count(c => c.Status == "resolved"), false), ("Approved", clashes.Count(c => c.Status == "approved"), false) })
+            foreach (var (label, n, key) in new[] { ("Open issues", issues.Count, true), ("Open clashes", open.Count, false), ("New since last run", clashes.Count(c => c.Status == "new"), false), ("Resolved", clashes.Count(c => c.Status == "resolved"), false), ("Approved", clashes.Count(c => c.Status == "approved"), false) })
                 sb.Append($"<td class=\"cell\" style=\"width:20%\"><div class=\"card\"><h3>{E(label)}</h3><div class=\"big\"{(key && n > 0 ? $" style=\"color:{red}\"" : "")}>{n}</div></div></td>");
             sb.Append("</tr></table>");
 
@@ -239,7 +233,6 @@ namespace AceRevitMcp.Coordination
                 sb.Append($"<tr><td>{E(g.Key)}</td><td class=\"num\">{g.Count()}</td><td class=\"muted\">{E(g.GroupBy(c => $"{c.CatA} x {c.CatB}").OrderByDescending(x => x.Count()).First().Key)}</td></tr>");
             sb.Append("</table></div></td></tr></table>");
 
-            var issues = ClashLogic.Issues(clashes);
             sb.Append("<h2>Issues</h2><div class=\"muted\" style=\"margin-bottom:8px\">Each issue is one element that has to move and everything it hits. Coordinate issue by issue.</div>");
             sb.Append("<table class=\"list\"><tr><th>#</th><th>Issue</th><th class=\"num\">Clashes</th><th>Level</th><th>Responsible</th><th class=\"num\">Max depth</th><th>Location (mm)</th></tr>");
             var row = 0;

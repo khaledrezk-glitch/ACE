@@ -21,27 +21,25 @@ namespace AceRevitMcp.Dashboard
     /// <summary>Bridge command: builds the insights (read-only), saves the HTML report, optionally shows it in Revit.</summary>
     internal static class DashboardCommands
     {
-        internal static Insights Last { get; private set; }
-        internal static string LastPath { get; private set; }
-
         public static JsonNode Insights(UIApplication app, JsonObject args)
         {
             var doc = Args.RequireDoc(app);
             var x = ModelInsights.Collect(doc, app.Application.Username);
-            var path = DashboardHtml.Save(x, DashboardHtml.Render(x));
-            Last = x; LastPath = path;
-            StatusStore.PublishHealth(doc.Title, x);
-            if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Model insights", "get_model_insights", State);
+            var path = DashboardHtml.SaveAs(x.Model, "Insights", x.Time, DashboardHtml.Render(x));
+            StatusStore.PublishHealth(doc.Title, x, path);
+            var model = doc.Title;
+            if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Model insights", "get_model_insights", () => State(model));
             return ModelInsights.ToJson(x, path);
         }
 
-        private static ReportWindow.State State()
+        private static ReportWindow.State State(string model)
         {
-            var x = Last;
+            var status = StatusStore.For(model);
+            var x = status?.Health;
             if (x == null) return null;
             return new ReportWindow.State
             {
-                Path = LastPath,
+                Path = status.HealthReport,
                 Status = $"Score {x.Score}/100 ({x.Grade}), {x.Time:HH:mm}. Saved to Documents\\ACE Insights.",
                 Findings = x.Checks.Where(c => c.Status != "ok" && c.Ids.Count > 0).OrderByDescending(c => c.Penalty)
                     .Select(c => ($"{c.Name} ({c.Count})", c.Ids.ToArray())).ToList(),

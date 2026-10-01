@@ -36,9 +36,11 @@ namespace AceRevitMcp.Coordination
         public string Depth { get; set; }
         public string Responsible { get; set; }
         public string Cause { get; set; }
-        internal string Key, Test, SourceA, SourceB;
+        internal string Key, Test, SourceA, SourceB, SearchText;
         internal long[] HostIds = new long[0];
         internal double DepthMm;
+        internal int IssueIndex = int.MaxValue;   // order of the issue (largest first); MaxValue = not in an open issue
+        internal bool Open => Status == "new" || Status == "active" || Status == "reopened";
     }
 
     /// <summary>
@@ -58,6 +60,8 @@ namespace AceRevitMcp.Coordination
         private readonly TextBlock _status = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextWrapping = TextWrapping.Wrap };
         private readonly StackPanel _legendModels = new StackPanel { Orientation = Orientation.Horizontal };
         private List<ClashRow> _rows = new List<ClashRow>();
+        private ListCollectionView _view;
+        private readonly System.Windows.Threading.DispatcherTimer _typing = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         private string _host;
         private List<(string Name, string Label)> _models = new List<(string, string)>();
         private bool _busy, _loading;
@@ -68,7 +72,7 @@ namespace AceRevitMcp.Coordination
             var doc = app.ActiveUIDocument.Document;
             var models = Clashes.Sources(app, doc).Where(s => !s.IsHost)
                 .Select(s => (s.Name, $"{s.Name} ({s.Discipline}, {s.Relation})")).ToList();
-            if (_open != null && _open._host != doc.Title) ClashView.PrimaryModel = null;   // another model: start from it as the primary
+
             if (_open == null)
             {
                 _open = new ClashBrowser();
@@ -141,7 +145,9 @@ namespace AceRevitMcp.Coordination
             foreach (var f in new[] { "Open", "New", "Reopened", "Approved", "Resolved", "All" }) _filter.Items.Add(new ComboBoxItem { Content = f });
             _filter.SelectedIndex = 0;
             _filter.SelectionChanged += (s, e) => Apply();
-            _search.TextChanged += (s, e) => Apply();
+            // Typing filters after a short pause, not on every keystroke.
+            _typing.Tick += (s, e) => { _typing.Stop(); Apply(); };
+            _search.TextChanged += (s, e) => { _typing.Stop(); _typing.Start(); };
             filters.Children.Add(Label("Show:"));
             filters.Children.Add(_filter);
             filters.Children.Add(Label("Search:"));
@@ -163,6 +169,9 @@ namespace AceRevitMcp.Coordination
                 HeaderTemplate = GroupHeader(black),
             });
             _list.SelectionMode = SelectionMode.Single;
+            // Grouped lists only virtualise when asked to: thousands of clashes stay fast.
+            VirtualizingPanel.SetIsVirtualizing(_list, true);
+            VirtualizingPanel.SetIsVirtualizingWhenGrouping(_list, true);
             _list.SelectionChanged += async (s, e) => { if (!_loading && _list.SelectedItem is ClashRow r) await Focus(r); };
 
             // Bottom: actions.
@@ -173,7 +182,7 @@ namespace AceRevitMcp.Coordination
             actions.Children.Add(Btn("Approve", false, async (s, e) => await SetStatus("approved")));
             actions.Children.Add(Btn("Mark active", false, async (s, e) => await SetStatus("active")));
             actions.Children.Add(Btn("Select in Revit", false, async (s, e) => await SelectInRevit()));
-            actions.Children.Add(Btn("Reset view", false, async (s, e) => await Call("reset_clash_view", new JsonObject(), r => "Highlight and section box cleared.")));
+            actions.Children.Add(Btn("Reset view", false, async (s, e) => await Call("clash_view", new JsonObject(), r => "Highlight and section box cleared.")));
             actions.Children.Add(_status);
             bottom.Children.Add(actions);
 
@@ -206,7 +215,7 @@ namespace AceRevitMcp.Coordination
         private void FillModels()
         {
             _primary.SelectionChanged -= PrimaryChanged; _with.SelectionChanged -= WithChanged;
-            var keepPrimary = PrimaryModel() ?? ClashView.PrimaryModel;
+            var keepPrimary = PrimaryModel() ?? ClashView.Session(_host).Primary;
             _primary.Items.Clear();
             _primary.Items.Add(new ComboBoxItem { Content = $"This model ({_host})", Tag = null });
             foreach (var (name, label) in _models) _primary.Items.Add(new ComboBoxItem { Content = label + "  [BIM manager: link vs link]", Tag = name });
@@ -219,7 +228,7 @@ namespace AceRevitMcp.Coordination
         /// <summary>The secondary list: every model except the primary (this model too, when a link is the primary).</summary>
         private void FillWith()
         {
-            var keep = WithModel() ?? ClashView.WithModel;
+            var keep = WithModel() ?? ClashView.Session(_host).With;
             var primary = PrimaryModel();
             _with.Items.Clear();
             _with.Items.Add(new ComboBoxItem { Content = primary == null ? "All loaded links" : "All other models", Tag = null });
@@ -231,14 +240,14 @@ namespace AceRevitMcp.Coordination
         private void PrimaryChanged(object s, SelectionChangedEventArgs e)
         {
             _with.SelectionChanged -= WithChanged;
-            ClashView.PrimaryModel = PrimaryModel();
+            ClashView.Session(_host).Primary = PrimaryModel();
             FillWith();
-            ClashView.WithModel = WithModel();
+            ClashView.Session(_host).With = WithModel();
             _with.SelectionChanged += WithChanged;
             UpdateLegend(); Build(_clashes);
         }
 
-        private void WithChanged(object s, SelectionChangedEventArgs e) { ClashView.WithModel = WithModel(); UpdateLegend(); Build(_clashes); }
+        private void WithChanged(object s, SelectionChangedEventArgs e) { ClashView.Session(_host).With = WithModel(); UpdateLegend(); Build(_clashes); }
 
         /// <summary>One colour square per model shown (the primary, and the compared model or every other link); click to choose its colour.</summary>
         private void UpdateLegend()
@@ -259,7 +268,7 @@ namespace AceRevitMcp.Coordination
                 };
                 var p = new StackPanel { Orientation = Orientation.Horizontal };
                 p.Children.Add(new Rectangle { Width = 16, Height = 16, Fill = new SolidColorBrush(colour), Stroke = Brushes.Black, StrokeThickness = 0.5, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center });
-                p.Children.Add(new TextBlock { Text = $"{role}: {DashboardHelpers.Trim(name, 40)}", VerticalAlignment = VerticalAlignment.Center });
+                p.Children.Add(new TextBlock { Text = $"{role}: {Dashboard.DashboardHtml.Trim(name, 40)}", VerticalAlignment = VerticalAlignment.Center });
                 chip.Content = p;
                 var menu = new ContextMenu();
                 foreach (var (label, c) in ClashColours.Palette)
@@ -280,14 +289,15 @@ namespace AceRevitMcp.Coordination
         /// <summary>Redraws the ACE Clash View with the new colours (the focused clash, or both models).</summary>
         private async System.Threading.Tasks.Task Repaint()
         {
-            if (ClashView.FocusedKey != null) await Call("focus_clash", new JsonObject { ["key"] = ClashView.FocusedKey }, r => "Colours updated.");
+            var focused = ClashView.Session(_host).FocusedKey;
+            if (focused != null) await Call("focus_clash", new JsonObject { ["key"] = focused }, r => "Colours updated.");
             else await Call("clash_view", new JsonObject { ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() }, r => "Colours updated.");
         }
 
         /// <summary>Reads the clash results (the last run, else the stored ones) into rows.</summary>
         private void Reload()
         {
-            List<Clash> clashes = Clashes.Last != null && Clashes.LastHost == _host ? Clashes.Last : null;
+            var clashes = StatusStore.For(_host)?.Clashes;
             if (clashes == null)
             {
                 _rows = new List<ClashRow>();
@@ -303,8 +313,9 @@ namespace AceRevitMcp.Coordination
             try
             {
                 await App.Dispatcher.EnqueueAsync("clash_results", new JsonObject(), TimeSpan.FromSeconds(60));
-                if (Clashes.Last != null) Build(Clashes.Last);
-                else { _rows = new List<ClashRow>(); Apply(); _status.Text = "No clash results yet: choose a model and click Run clash test."; }
+                var loaded = StatusStore.For(_host)?.Clashes;
+                if (loaded != null && loaded.Count > 0) Build(loaded);
+                else { Build(new List<Clash>()); _status.Text = "No clash results yet: choose a model and click Run clash test."; }
             }
             catch (Exception ex) { _status.Text = "Could not load results: " + ex.Message; }
         }
@@ -313,26 +324,38 @@ namespace AceRevitMcp.Coordination
         {
             _clashes = clashes ?? new List<Clash>();
             var primary = PrimaryName();
-            var issues = ClashLogic.Issues(clashes);
-            var issueOf = new Dictionary<string, string>();
+            // The issues of the published results are already computed by the status store.
+            var status = StatusStore.For(_host);
+            var issues = status != null && ReferenceEquals(status.Clashes, _clashes) ? status.ClashIssues : ClashLogic.Issues(_clashes);
+            var issueOf = new Dictionary<string, (int Index, string Title)>();
             var n = 0;
-            foreach (var i in issues) { n++; foreach (var c in i.Clashes) issueOf[c.Key] = $"Issue {n}: {DashboardHelpers.Trim(i.Title, 110)}  |  {i.Responsible}"; }
-            _rows = clashes.Select(c =>
+            foreach (var i in issues) { n++; foreach (var c in i.Clashes) issueOf[c.Key] = (n, $"Issue {n}: {Dashboard.DashboardHtml.Trim(i.Title, 110)}  |  {i.Responsible}"); }
+            _rows = _clashes.Select(c =>
             {
                 var thisSide = c.SourceA == primary || c.SourceB != primary;   // show the primary model's element first
                 string Side(string cat, string name, long id, string src) => $"{cat}: {name} (id {id}{(src != _host ? ", " + src : "")})";
                 var a = Side(c.CatA, c.NameA, c.IdA, c.SourceA); var b = Side(c.CatB, c.NameB, c.IdB, c.SourceB);
-                return new ClashRow
+                var inIssue = issueOf.TryGetValue(c.Key, out var iss);
+                var row = new ClashRow
                 {
                     Key = c.Key, Test = c.Test, SourceA = c.SourceA, SourceB = c.SourceB,
-                    Issue = issueOf.TryGetValue(c.Key, out var iss) ? iss : (ClashLogic.IsOpen(c) ? "Other clashes" : $"{Cap(c.Status)} clashes"),
+                    IssueIndex = inIssue ? iss.Index : int.MaxValue,
+                    Issue = inIssue ? iss.Title : (ClashLogic.IsOpen(c) ? "Other clashes" : $"{Cap(c.Status)} clashes"),
                     Status = c.Reopened > 0 && c.Status == "new" ? "reopened" : c.Status,
                     Level = c.Level, ThisSide = thisSide ? a : b, OtherSide = thisSide ? b : a,
                     Depth = c.Kind == "clearance" ? $"gap {c.DepthMm:0}" : $"{c.DepthMm:0} mm", DepthMm = c.DepthMm,
                     Responsible = c.Responsible, Cause = c.CausedBy != null ? $"{c.CausedBy}: {c.Cause}" : c.Cause,
                     HostIds = new[] { c.SourceA == _host ? c.IdA : 0, c.SourceB == _host ? c.IdB : 0 }.Where(x => x > 0).ToArray(),
                 };
-            }).ToList();
+                row.SearchText = $"{row.Issue} {row.ThisSide} {row.OtherSide} {row.Level} {row.Responsible} {row.Cause}";
+                return row;
+            }).OrderBy(r => r.IssueIndex).ThenByDescending(r => r.DepthMm).ToList();
+            // One grouped view; filters only change its Filter (no rebuild per keystroke).
+            _view = new ListCollectionView(_rows);
+            _view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ClashRow.Issue)));
+            _loading = true;
+            _list.ItemsSource = _view;
+            _loading = false;
             Apply();
         }
 
@@ -347,19 +370,16 @@ namespace AceRevitMcp.Coordination
             bool Pair(ClashRow r) => with == null
                 ? (r.SourceA == primary || r.SourceB == primary)
                 : ((r.SourceA == primary && r.SourceB == with) || (r.SourceA == with && r.SourceB == primary) || (primary == with && r.SourceA == primary && r.SourceB == primary));
-            var rows = _rows.Where(r =>
-                (f == "All" || (f == "Open" && (r.Status == "new" || r.Status == "active" || r.Status == "reopened")) || string.Equals(r.Status, f, StringComparison.OrdinalIgnoreCase)) &&
-                Pair(r) &&
-                (q.Length == 0 || $"{r.Issue} {r.ThisSide} {r.OtherSide} {r.Level} {r.Responsible} {r.Cause}".IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0))
-                .OrderBy(r => r.Issue.StartsWith("Issue ") ? int.Parse(new string(r.Issue.Substring(6).TakeWhile(char.IsDigit).ToArray())) : int.MaxValue)
-                .ThenByDescending(r => r.DepthMm).ToList();
-            var view = new ListCollectionView(rows);
-            view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(ClashRow.Issue)));
+            bool Show(ClashRow r) =>
+                (f == "All" || (f == "Open" && r.Open) || string.Equals(r.Status, f, StringComparison.OrdinalIgnoreCase)) &&
+                Pair(r) && (q.Length == 0 || r.SearchText.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0);
+            if (_view == null) return;
             _loading = true;
-            _list.ItemsSource = view;
+            _view.Filter = o => Show((ClashRow)o);
             _loading = false;
-            var issues = rows.Select(r => r.Issue).Distinct().Count(i => i.StartsWith("Issue "));
-            _status.Text = $"{rows.Count} clashes in {issues} issues shown ({_rows.Count} in total).";
+            var shown = _rows.Where(Show).ToList();
+            var issues = shown.Where(r => r.IssueIndex != int.MaxValue).Select(r => r.IssueIndex).Distinct().Count();
+            _status.Text = $"{shown.Count} clashes in {issues} issues shown ({_rows.Count} in total).";
         }
 
         // ---- actions ------------------------------------------------------------------------------------------------
@@ -382,7 +402,8 @@ namespace AceRevitMcp.Coordination
         {
             await Call("run_clash_test", new JsonObject { ["test"] = "all", ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() },
                 r => "Clash test finished.", TimeSpan.FromMinutes(15));
-            if (Clashes.Last != null) Build(Clashes.Last);
+            var results = StatusStore.For(_host)?.Clashes;
+            if (results != null) Build(results);
         }
 
         private async System.Threading.Tasks.Task Focus(ClashRow r)
@@ -407,7 +428,9 @@ namespace AceRevitMcp.Coordination
                 res => $"Marked {status}.");
             r.Status = status;
             var index = _list.SelectedIndex;
-            Apply();
+            _loading = true;
+            _view?.Refresh();   // re-filter (an approved clash leaves the Open list) without rebuilding the rows
+            _loading = false;
             _list.SelectedIndex = Math.Min(index, _list.Items.Count - 1);
         }
 
@@ -418,11 +441,6 @@ namespace AceRevitMcp.Coordination
             await Call("select_elements", new JsonObject { ["ids"] = new JsonArray(r.HostIds.Select(i => (JsonNode)i).ToArray()) },
                 res => $"Selected {res?["selected"]} element(s) of this model.");
         }
-    }
-
-    internal static class DashboardHelpers
-    {
-        internal static string Trim(string s, int max) => Dashboard.DashboardHtml.Trim(s, max);
     }
 
     [Transaction(TransactionMode.Manual)]

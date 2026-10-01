@@ -5,24 +5,37 @@ using System.Linq;
 namespace AceRevitMcp.Util
 {
     /// <summary>
-    /// The latest result of each engine, per model: model check, clashes, changes. Engines publish here; the Companion,
-    /// the dashboard and Claude read from here, so every surface shows the same numbers (concept D8). It is the
-    /// in-session half of the Project Hub.
+    /// The latest result of each engine, per model: model check, clashes, changes, plus the clash-view session. Engines
+    /// publish here; the Companion, the dashboard, the Clash Browser and Claude read from here, so every surface shows
+    /// the same numbers for the same model (concept D8). It is the in-session half of the Project Hub.
     /// </summary>
     internal static class StatusStore
     {
+        /// <summary>The clash comparison a model is being reviewed with (shared by the Clash Browser and Claude).</summary>
+        internal sealed class ClashSession
+        {
+            /// <summary>The primary model's name: null = this model; a link for a BIM manager comparing two links.</summary>
+            public string Primary;
+            /// <summary>The model compared with: null = all loaded links.</summary>
+            public string With;
+            public string FocusedKey;
+        }
+
         internal sealed class ModelStatus
         {
             public Dashboard.Insights Health;
-            public List<Coordination.Clash> Clashes;
-            public DateTime? ClashesAt;
-            public List<Tracking.ModelDiff> Changes;
-            public DateTime? ChangesAt;
+            public string HealthReport;
 
-            public int OpenClashes => Clashes?.Count(Coordination.ClashLogic.IsOpen) ?? 0;
-            public int NewClashes => Clashes?.Count(c => c.Status == "new") ?? 0;
-            public int ClashIssues => Clashes == null ? 0 : Coordination.ClashLogic.Issues(Clashes).Count;
-            public int ChangeCount => Changes?.Sum(d => d.Changes.Count) ?? 0;
+            public List<Coordination.Clash> Clashes;
+            public List<Coordination.ClashIssue> ClashIssues = new List<Coordination.ClashIssue>();
+            public string ClashReport;
+            public int OpenClashes, NewClashes;
+
+            public List<Tracking.ModelDiff> Changes;
+            public string ChangesReport;
+            public int ChangeCount;
+
+            public readonly ClashSession Session = new ClashSession();
         }
 
         private static readonly Dictionary<string, ModelStatus> ByModel = new Dictionary<string, ModelStatus>(StringComparer.OrdinalIgnoreCase);
@@ -30,28 +43,36 @@ namespace AceRevitMcp.Util
         /// <summary>Raised when an engine publishes (on Revit's main thread).</summary>
         public static event Action Changed;
 
-        public static ModelStatus For(string model)
-        {
-            if (string.IsNullOrEmpty(model)) return null;
-            return ByModel.TryGetValue(model, out var s) ? s : null;
-        }
+        public static ModelStatus For(string model) =>
+            !string.IsNullOrEmpty(model) && ByModel.TryGetValue(model, out var s) ? s : null;
 
-        private static ModelStatus Entry(string model)
+        /// <summary>The entry for a model, created when missing (e.g. to hold its clash session).</summary>
+        public static ModelStatus Entry(string model)
         {
             if (!ByModel.TryGetValue(model, out var s)) ByModel[model] = s = new ModelStatus();
             return s;
         }
 
-        public static void PublishHealth(string model, Dashboard.Insights x) { Entry(model).Health = x; Raise(); }
-
-        public static void PublishClashes(string model, List<Coordination.Clash> clashes)
+        public static void PublishHealth(string model, Dashboard.Insights x, string report)
         {
-            var e = Entry(model); e.Clashes = clashes; e.ClashesAt = DateTime.Now; Raise();
+            var e = Entry(model); e.Health = x; e.HealthReport = report; Raise();
         }
 
-        public static void PublishChanges(string model, List<Tracking.ModelDiff> diffs)
+        /// <summary>Publishes clash results; the issues and counts are computed here once, not by every reader.</summary>
+        public static void PublishClashes(string model, List<Coordination.Clash> clashes, string report = null)
         {
-            var e = Entry(model); e.Changes = diffs; e.ChangesAt = DateTime.Now; Raise();
+            var e = Entry(model);
+            e.Clashes = clashes;
+            e.ClashIssues = Coordination.ClashLogic.Issues(clashes);
+            e.OpenClashes = clashes.Count(Coordination.ClashLogic.IsOpen);
+            e.NewClashes = clashes.Count(c => c.Status == "new");
+            if (report != null) e.ClashReport = report;
+            Raise();
+        }
+
+        public static void PublishChanges(string model, List<Tracking.ModelDiff> diffs, string report)
+        {
+            var e = Entry(model); e.Changes = diffs; e.ChangesReport = report; e.ChangeCount = diffs.Sum(d => d.Changes.Count); Raise();
         }
 
         private static void Raise() { try { Changed?.Invoke(); } catch { } }

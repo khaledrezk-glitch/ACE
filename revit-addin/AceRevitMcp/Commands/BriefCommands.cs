@@ -19,8 +19,7 @@ namespace AceRevitMcp.Commands
     /// </summary>
     internal static class BriefCommands
     {
-        private const double Ft = 304.8;
-        private static double Mm(double feet) => Math.Round(feet * Ft);
+        private static double Mm(double feet) => Math.Round(Lengths.Mm(feet));
 
         public static JsonNode ModelBrief(UIApplication app, JsonObject args)
         {
@@ -351,11 +350,11 @@ namespace AceRevitMcp.Commands
                 if (hl == null)
                 {
                     var near = hostLevels.OrderBy(h => Math.Abs(h.ProjectElevation - z)).FirstOrDefault();
-                    if (near != null && Math.Abs(near.ProjectElevation - z) * Ft <= tolMm) { levelMatched++; levelIssues.Add($"'{ol.Name}' is at the same height as host level '{near.Name}' but named differently"); }
+                    if (near != null && Lengths.Mm(Math.Abs(near.ProjectElevation - z)) <= tolMm) { levelMatched++; levelIssues.Add($"'{ol.Name}' is at the same height as host level '{near.Name}' but named differently"); }
                     else levelIssues.Add($"'{ol.Name}' ({Mm(z)} mm) has no matching level in this model");
                     continue;
                 }
-                var d = (z - hl.ProjectElevation) * Ft;
+                var d = Lengths.Mm(z - hl.ProjectElevation);
                 if (Math.Abs(d) > tolMm) levelIssues.Add($"'{ol.Name}' is {Math.Round(d)} mm {(d > 0 ? "higher" : "lower")} than in this model");
                 else levelMatched++;
             }
@@ -372,7 +371,7 @@ namespace AceRevitMcp.Commands
                     var a = og.Curve; var b = hg.Curve;
                     var p = toHost.OfPoint(a.Evaluate(0.5, true));
                     var unbounded = b.Clone(); unbounded.MakeUnbound();
-                    var dist = unbounded.Distance(new XYZ(p.X, p.Y, unbounded.GetEndPoint(0).Z)) * Ft;
+                    var dist = Lengths.Mm(unbounded.Distance(new XYZ(p.X, p.Y, unbounded.GetEndPoint(0).Z)));
                     var dirA = toHost.OfVector((a.GetEndPoint(1) - a.GetEndPoint(0)).Normalize());
                     var dirB = (b.GetEndPoint(1) - b.GetEndPoint(0)).Normalize();
                     var angle = Math.Acos(Math.Min(1, Math.Abs(dirA.DotProduct(dirB)))) * 180 / Math.PI;

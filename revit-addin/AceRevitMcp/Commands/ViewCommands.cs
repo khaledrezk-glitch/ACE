@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
 using AceRevitMcp.Bridge;
+using AceRevitMcp.Util;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 
@@ -88,23 +89,7 @@ namespace AceRevitMcp.Commands
             var size = Math.Clamp(Args.Int(args, "pixel_size", 1400), 256, 4000);
             var dir = Path.Combine(Path.GetTempPath(), "ACE-RevitMCP", "images");
             Directory.CreateDirectory(dir);
-            var prefix = Path.Combine(dir, $"view_{DateTime.Now:yyyyMMdd_HHmmss_fff}");
-
-            var options = new ImageExportOptions
-            {
-                ExportRange = ExportRange.SetOfViews,
-                FilePath = prefix,
-                FitDirection = FitDirectionType.Horizontal,
-                HLRandWFViewsFileType = ImageFileType.PNG,
-                ShadowViewsFileType = ImageFileType.PNG,
-                ImageResolution = ImageResolution.DPI_150,
-                ZoomType = ZoomFitType.FitToPage,
-                PixelSize = size,
-            };
-            options.SetViewsAndSheets(new[] { view.Id });
-            doc.ExportImage(options);
-
-            var file = Directory.GetFiles(dir, Path.GetFileName(prefix) + "*.png").OrderByDescending(File.GetLastWriteTime).FirstOrDefault()
+            var file = ViewTools.ExportPng(doc, view.Id, dir, $"view_{DateTime.Now:yyyyMMdd_HHmmss_fff}", size, fitHorizontal: true)
                        ?? throw new CommandException("Revit did not produce an image file.");
             var bytes = File.ReadAllBytes(file);
             return new JsonObject

@@ -205,7 +205,7 @@ namespace AceRevitMcp.Dashboard
             Parameter p = d.get_Parameter(BuiltInParameter.DOOR_WIDTH) ?? d.Symbol?.get_Parameter(BuiltInParameter.DOOR_WIDTH)
                           ?? d.LookupParameter("Width") ?? d.Symbol?.LookupParameter("Width");
             if (p == null || p.StorageType != StorageType.Double) return null;
-            var mm = p.AsDouble() * 304.8;
+            var mm = Lengths.Mm(p.AsDouble());
             return mm > 1 ? mm : (double?)null;
         }
 
@@ -312,7 +312,7 @@ namespace AceRevitMcp.Dashboard
         private static void PerLevel(Document doc, Insights x)
         {
             var levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation).ToList();
-            var byLevel = levels.ToDictionary(l => l.Id.Value, l => new LevelStats { Level = l.Name, Elevation = l.Elevation * 304.8 });
+            var byLevel = levels.ToDictionary(l => l.Id.Value, l => new LevelStats { Level = l.Name, Elevation = Lengths.Mm(l.Elevation) });
             void Tally(BuiltInCategory c, Action<LevelStats, Element> add)
             {
                 foreach (var e in new FilteredElementCollector(doc).OfCategory(c).WhereElementIsNotElementType())

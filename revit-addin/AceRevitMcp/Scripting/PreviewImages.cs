@@ -72,11 +72,8 @@ namespace AceRevitMcp.Scripting
 
             var level = ids.Where(e => e.LevelId != null && e.LevelId != ElementId.InvalidElementId)
                 .GroupBy(e => e.LevelId.Value).OrderByDescending(g => g.Count()).Select(g => doc.GetElement(new ElementId(g.Key)) as Level).FirstOrDefault();
-            var margin = UnitUtils.ConvertToInternalUnits(2500, UnitTypeId.Millimeters);
-            var accent = Branding.Accent;
-            var highlight = new OverrideGraphicSettings()
-                .SetProjectionLineColor(new Color(accent.R, accent.G, accent.B)).SetProjectionLineWeight(6)
-                .SetCutLineColor(new Color(accent.R, accent.G, accent.B)).SetCutLineWeight(6);
+            var margin = Lengths.Ft(2500);
+            var highlight = ViewTools.Highlight(doc, Branding.Accent, fill: false, lineWeight: 6);
             var highlightIds = ids.Select(e => e.Id).ToList();
 
             using (var t = new Transaction(doc, "ACE preview images"))
@@ -85,7 +82,7 @@ namespace AceRevitMcp.Scripting
                 var views = new List<(View view, string label)>();
                 if (level != null)
                 {
-                    var planType = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>().FirstOrDefault(v => v.ViewFamily == ViewFamily.FloorPlan);
+                    var planType = ViewTools.ViewType(doc, ViewFamily.FloorPlan);
                     if (planType != null)
                     {
                         var plan = ViewPlan.Create(doc, planType.Id, level.Id);
@@ -101,17 +98,17 @@ namespace AceRevitMcp.Scripting
                         views.Add((plan, "Plan"));
                     }
                 }
-                var type3D = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>().FirstOrDefault(v => v.ViewFamily == ViewFamily.ThreeDimensional);
+                var type3D = ViewTools.ViewType(doc, ViewFamily.ThreeDimensional);
                 if (type3D != null)
                 {
                     var iso = View3D.CreateIsometric(doc, type3D.Id);
                     iso.DetailLevel = ViewDetailLevel.Fine;
                     iso.DisplayStyle = DisplayStyle.ShadingWithEdges;
-                    var zTop = level != null ? Math.Max(box.Max.Z, level.ProjectElevation + UnitUtils.ConvertToInternalUnits(3000, UnitTypeId.Millimeters)) : box.Max.Z;
+                    var zTop = level != null ? Math.Max(box.Max.Z, level.ProjectElevation + Lengths.Ft(3000)) : box.Max.Z;
                     iso.SetSectionBox(new BoundingBoxXYZ
                     {
-                        Min = new XYZ(box.Min.X - margin, box.Min.Y - margin, box.Min.Z - UnitUtils.ConvertToInternalUnits(300, UnitTypeId.Millimeters)),
-                        Max = new XYZ(box.Max.X + margin, box.Max.Y + margin, Math.Min(zTop, box.Min.Z + UnitUtils.ConvertToInternalUnits(2400, UnitTypeId.Millimeters))),
+                        Min = new XYZ(box.Min.X - margin, box.Min.Y - margin, box.Min.Z - Lengths.Ft(300)),
+                        Max = new XYZ(box.Max.X + margin, box.Max.Y + margin, Math.Min(zTop, box.Min.Z + Lengths.Ft(2400))),
                     });
                     views.Add((iso, "3D"));
                 }
@@ -128,15 +125,7 @@ namespace AceRevitMcp.Scripting
                     {
                         try
                         {
-                            var opt = new ImageExportOptions
-                            {
-                                ExportRange = ExportRange.SetOfViews, FilePath = Path.Combine(dir, label),
-                                HLRandWFViewsFileType = ImageFileType.PNG, ShadowViewsFileType = ImageFileType.PNG,
-                                ImageResolution = ImageResolution.DPI_150, ZoomType = ZoomFitType.FitToPage, PixelSize = 1400,
-                            };
-                            opt.SetViewsAndSheets(new List<ElementId> { view.Id });
-                            doc.ExportImage(opt);
-                            var file = Directory.GetFiles(dir, label + "*.png").FirstOrDefault();
+                            var file = ViewTools.ExportPng(doc, view.Id, dir, label, 1400);
                             if (file == null) continue;
                             images.Add(new JsonObject
                             {

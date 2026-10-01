@@ -22,8 +22,6 @@ namespace AceRevitMcp.Coordination
     /// </summary>
     internal static class CoordinationReport
     {
-        internal static string LastPath;
-
         /// <summary>{ max_issues: 12, test: "STR vs MEP" (default: all stored tests), rerun: false, pictures: true }</summary>
         public static JsonNode Build(UIApplication app, JsonObject args)
         {
@@ -32,9 +30,7 @@ namespace AceRevitMcp.Coordination
             if (Args.Bool(args, "rerun")) ClashCommands.Run(app, new JsonObject { ["test"] = Args.Str(args, "test") ?? "all" });
 
             var test = Args.Str(args, "test");
-            var clashes = Clashes.Last != null && Clashes.LastHost == host.Title
-                ? Clashes.Last
-                : Clashes.Standard.SelectMany(t => Clashes.Load(host, t.Name)).ToList();
+            var clashes = Clashes.Current(host);
             if (test != null) clashes = clashes.Where(c => string.Equals(c.Test, test, StringComparison.OrdinalIgnoreCase)).ToList();
             if (clashes.Count == 0)
                 throw new CommandException("No clash results for this model yet. Run a clash test first (run_clash_test), or call again with rerun: true.");
@@ -56,16 +52,16 @@ namespace AceRevitMcp.Coordination
             }
 
             var html = Render(host.Title, clashes, issues, shown, pictures, notes, time);
-            LastPath = DashboardHtml.SaveAs(host.Title, "Coordination", time, html);
-            var csv = Path.ChangeExtension(LastPath, ".csv");
+            var report = DashboardHtml.SaveAs(host.Title, "Coordination", time, html);
+            var csv = Path.ChangeExtension(report, ".csv");
             File.WriteAllText(csv, Csv(issues), new UTF8Encoding(true));   // BOM: Excel opens UTF-8 correctly
 
             if (Args.Bool(args, "open", false))
-                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(LastPath) { UseShellExecute = true }); } catch { }
+                try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(report) { UseShellExecute = true }); } catch { }
 
             return new JsonObject
             {
-                ["htmlReport"] = LastPath,
+                ["htmlReport"] = report,
                 ["excelList"] = csv,
                 ["issues"] = issues.Count,
                 ["openClashes"] = clashes.Count(ClashLogic.IsOpen),
@@ -84,22 +80,17 @@ namespace AceRevitMcp.Coordination
 
         // ---- pictures ------------------------------------------------------------------------------------------
 
-        private static double Ft(double mm) => UnitUtils.ConvertToInternalUnits(mm, UnitTypeId.Millimeters);
+        private static double Ft(double mm) => Lengths.Ft(mm);
 
         private static Dictionary<ClashIssue, string> Pictures(Document doc, List<ClashIssue> issues, string folder, string relFolder, List<string> notes)
         {
             var result = new Dictionary<ClashIssue, string>();
-            var type3D = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>().FirstOrDefault(v => v.ViewFamily == ViewFamily.ThreeDimensional);
+            var type3D = ViewTools.ViewType(doc, ViewFamily.ThreeDimensional);
             if (type3D == null) { notes.Add("No 3D view type in this model: pictures skipped."); return result; }
             if (doc.IsReadOnly) { notes.Add("The model is read-only: pictures skipped."); return result; }
             Directory.CreateDirectory(folder);
 
-            var accent = Branding.Accent;
-            var red = new Color(accent.R, accent.G, accent.B);
-            var solid = new FilteredElementCollector(doc).OfClass(typeof(FillPatternElement)).Cast<FillPatternElement>()
-                .FirstOrDefault(f => f.GetFillPattern().IsSolidFill);
-            var highlight = new OverrideGraphicSettings().SetProjectionLineColor(red).SetProjectionLineWeight(5);
-            if (solid != null) highlight = highlight.SetSurfaceForegroundPatternId(solid.Id).SetSurfaceForegroundPatternColor(red);
+            var highlight = ViewTools.Highlight(doc, Branding.Accent, lineWeight: 5);
 
             // Everything happens in a group that is rolled back: the temporary views never reach the model.
             using (ChangeTracker.Temporary())
@@ -144,19 +135,7 @@ namespace AceRevitMcp.Coordination
                     try
                     {
                         var name = $"issue-{n:00}";
-                        var opt = new ImageExportOptions
-                        {
-                            ExportRange = ExportRange.SetOfViews, FilePath = Path.Combine(folder, name),
-                            HLRandWFViewsFileType = ImageFileType.PNG, ShadowViewsFileType = ImageFileType.PNG,
-                            ImageResolution = ImageResolution.DPI_150, ZoomType = ZoomFitType.FitToPage, PixelSize = 900,
-                        };
-                        opt.SetViewsAndSheets(new List<ElementId> { view.Id });
-                        doc.ExportImage(opt);
-                        var file = Directory.GetFiles(folder, name + "*.png").FirstOrDefault();
-                        if (file == null) continue;
-                        var final = Path.Combine(folder, name + ".png");
-                        if (!string.Equals(file, final, StringComparison.OrdinalIgnoreCase)) { if (File.Exists(final)) File.Delete(final); File.Move(file, final); }
-                        result[issue] = relFolder + "/" + name + ".png";
+                        if (ViewTools.ExportPng(doc, view.Id, folder, name, 900) != null) result[issue] = relFolder + "/" + name + ".png";
                     }
                     catch (Exception ex) { Log.Warn($"Coordination picture {n}: {ex.Message}"); }
                 }
@@ -260,7 +239,7 @@ namespace AceRevitMcp.Coordination
             {
                 var doc = commandData.Application.ActiveUIDocument?.Document;
                 if (doc == null) { TaskDialog.Show("ACE Coordination report", "Open a model first."); return Result.Cancelled; }
-                var hasResults = (Clashes.Last != null && Clashes.LastHost == doc.Title) || Clashes.Standard.Any(t => Clashes.Load(doc, t.Name).Count > 0);
+                var hasResults = Clashes.Current(doc).Count > 0;
                 CoordinationReport.Build(commandData.Application, new JsonObject { ["rerun"] = !hasResults, ["open"] = true });
                 return Result.Succeeded;
             }

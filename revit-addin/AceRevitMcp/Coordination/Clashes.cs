@@ -27,9 +27,27 @@ namespace AceRevitMcp.Coordination
     /// </summary>
     internal static class Clashes
     {
-        internal static List<Clash> Last;
-        internal static List<ClashIssue> LastIssues;
-        internal static string LastPath, LastTest, LastHost;
+        /// <summary>The current clash results of a model: this session's (StatusStore), else the stored ones (then published).</summary>
+        internal static List<Clash> Current(Document host)
+        {
+            var known = StatusStore.For(host.Title)?.Clashes;
+            if (known != null) return known;
+            var stored = LoadAll(host);
+            if (stored.Count > 0) StatusStore.PublishClashes(host.Title, stored);
+            return stored;
+        }
+
+        /// <summary>Geometry read once per clash run, shared by every test and both sides (key: document, element id).</summary>
+        internal sealed class SolidCache
+        {
+            private readonly Dictionary<(int, long), List<Solid>> _solids = new Dictionary<(int, long), List<Solid>>();
+            public List<Solid> Of(Element e)
+            {
+                var k = (e.Document.GetHashCode(), e.Id.Value);
+                if (!_solids.TryGetValue(k, out var list)) _solids[k] = list = Solids(e);
+                return list;
+            }
+        }
 
         // ---- sources ------------------------------------------------------------------------------------------
 
@@ -161,7 +179,9 @@ namespace AceRevitMcp.Coordination
 
         private static readonly Options GeoOptions = new Options { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = false, IncludeNonVisibleObjects = false };
 
-        private static List<Solid> Solids(Element e)
+        /// <summary>An element's solids (Fine detail, through nested instances), optionally moved into the host's coordinates.
+        /// Used by the clash test and the clash view, so both see exactly the same geometry.</summary>
+        internal static List<Solid> Solids(Element e, Transform toHost = null)
         {
             var list = new List<Solid>();
             void Walk(GeometryElement ge)
@@ -174,16 +194,11 @@ namespace AceRevitMcp.Coordination
                 }
             }
             try { Walk(e.get_Geometry(GeoOptions)); } catch { }
-            return list;
+            if (toHost == null || toHost.IsIdentity) return list;
+            return list.Select(s => { try { return SolidUtils.CreateTransformed(s, toHost); } catch { return null; } }).Where(s => s != null).ToList();
         }
 
-        private static (XYZ Min, XYZ Max) Box(Solid s, Transform t)
-        {
-            var bb = s.GetBoundingBox();
-            var pts = new[] { bb.Min, bb.Max, new XYZ(bb.Min.X, bb.Min.Y, bb.Max.Z), new XYZ(bb.Min.X, bb.Max.Y, bb.Min.Z), new XYZ(bb.Max.X, bb.Min.Y, bb.Min.Z), new XYZ(bb.Max.X, bb.Max.Y, bb.Min.Z), new XYZ(bb.Max.X, bb.Min.Y, bb.Max.Z), new XYZ(bb.Min.X, bb.Max.Y, bb.Max.Z) }
-                .Select(p => t.OfPoint(bb.Transform.OfPoint(p))).ToList();
-            return (new XYZ(pts.Min(p => p.X), pts.Min(p => p.Y), pts.Min(p => p.Z)), new XYZ(pts.Max(p => p.X), pts.Max(p => p.Y), pts.Max(p => p.Z)));
-        }
+        private static (XYZ Min, XYZ Max) Box(Solid s, Transform t) => ViewTools.Box(s, t);
 
         private static List<Element> Collect(Source s, BuiltInCategory[] cats)
         {
@@ -201,10 +216,9 @@ namespace AceRevitMcp.Coordination
 
         // ---- run -----------------------------------------------------------------------------------------------
 
-        public static List<Clash> Run(UIApplication app, Document host, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null, string primaryModel = null)
+        public static List<Clash> Run(Document host, List<Source> sources, SolidCache geometry, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null, string primaryModel = null)
         {
             complete = true;
-            var sources = Sources(app, host);
             var aSources = Pick(sources, test.A); var bSources = Pick(sources, test.B);
             // Compare two chosen models only (Clash Browser): the primary (this model, or a link for a BIM manager) and the secondary.
             var primary = string.IsNullOrEmpty(primaryModel) ? host.Title : primaryModel;
@@ -227,17 +241,10 @@ namespace AceRevitMcp.Coordination
             var tol = UnitUtils.ConvertToInternalUnits(test.ToleranceMm, UnitTypeId.Millimeters);
             var clear = UnitUtils.ConvertToInternalUnits(test.ClearanceMm, UnitTypeId.Millimeters);
             var clashes = new Dictionary<string, Clash>();
-            // Each B element's geometry is read once per run (a large slab is crossed by many ducts).
-            var solidCache = new Dictionary<(int, long), List<Solid>>();
-            List<Solid> SolidsOf(Element e)
-            {
-                var k = (e.Document.GetHashCode(), e.Id.Value);
-                if (!solidCache.TryGetValue(k, out var list)) solidCache[k] = list = Solids(e);
-                return list;
-            }
+
             foreach (var (sa, ea) in aItems)
             {
-                var solidsA = Solids(ea);
+                var solidsA = geometry.Of(ea);
                 if (solidsA.Count == 0) continue;
                 foreach (var sb in bSources)
                 {
@@ -261,7 +268,7 @@ namespace AceRevitMcp.Coordination
                             if (clashes.ContainsKey(key)) continue;
                             if (Related(ea, eb)) continue;
                             double depth = 0; XYZ centre = null; var kind = (string)null;
-                            foreach (var solidB in SolidsOf(eb))
+                            foreach (var solidB in geometry.Of(eb))
                             {
                                 try
                                 {
@@ -290,8 +297,8 @@ namespace AceRevitMcp.Coordination
                                 Key = key, Test = test.Name, Kind = kind,
                                 SourceA = sa.Name, SourceB = sb.Name, CatA = ea.Category?.Name, CatB = eb.Category?.Name,
                                 NameA = Name(ea), NameB = Name(eb), IdA = ea.Id.Value, IdB = eb.Id.Value, UA = ea.UniqueId, UB = eb.UniqueId,
-                                X = Math.Round(hostPoint.X * 304.8), Y = Math.Round(hostPoint.Y * 304.8), Z = Math.Round(hostPoint.Z * 304.8),
-                                DepthMm = Math.Round(depth * 304.8), Level = level, FirstSeen = DateTime.Now, LastSeen = DateTime.Now,
+                                X = Math.Round(Lengths.Mm(hostPoint.X)), Y = Math.Round(Lengths.Mm(hostPoint.Y)), Z = Math.Round(Lengths.Mm(hostPoint.Z)),
+                                DepthMm = Math.Round(Lengths.Mm(depth)), Level = level, FirstSeen = DateTime.Now, LastSeen = DateTime.Now,
                             };
                             Assign(c, host, sa.Discipline, sb.Discipline);
                             clashes[key] = c;
@@ -312,10 +319,10 @@ namespace AceRevitMcp.Coordination
         /// For new clashes: which side was added, moved or retyped since the latest snapshot taken at or before the
         /// previous clash run (or the latest one if there was no run), and in workshared models, by whom.
         /// </summary>
-        public static void Explain(UIApplication app, Document host, List<Clash> fresh, DateTime? previousRun, List<string> notes)
+        public static void Explain(List<Source> allSources, List<Clash> fresh, DateTime? previousRun, List<string> notes)
         {
             if (fresh.Count == 0) return;
-            var sources = Sources(app, host).GroupBy(s => s.Name).ToDictionary(g => g.Key, g => g.First());
+            var sources = allSources.GroupBy(s => s.Name).ToDictionary(g => g.Key, g => g.First());
             var baselines = new Dictionary<string, (Dictionary<string, Tracking.ElementRecord> Records, DateTime Time)?>();
             (Dictionary<string, Tracking.ElementRecord> Records, DateTime Time)? Baseline(Source s)
             {
