@@ -100,7 +100,7 @@ namespace AceRevitMcp.Bridge
                     return;
                 }
 
-                if (ctx.Request.HttpMethod != "POST" || path != "/command")
+                if (ctx.Request.HttpMethod != "POST" || (path != "/command" && path != "/cancel"))
                 {
                     await WriteAsync(ctx, 404, Error("Not found"));
                     return;
@@ -118,6 +118,12 @@ namespace AceRevitMcp.Bridge
                     return;
                 }
 
+                if (path == "/cancel")
+                {
+                    var stopped = _dispatcher.CancelAll();
+                    await WriteAsync(ctx, 200, new JsonObject { ["ok"] = true, ["cancelled"] = stopped });
+                    return;
+                }
                 if (ctx.Request.ContentLength64 > MaxBodyBytes)
                 {
                     await WriteAsync(ctx, 413, Error($"Request too large (over {MaxBodyBytes / 1024 / 1024} MB)."));

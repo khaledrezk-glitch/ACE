@@ -39,6 +39,15 @@ namespace AceRevitMcp.Scripting
 
         internal IReadOnlyList<string> Output => _output;
 
+        /// <summary>True when the user cancelled this run in Claude. Check it in long loops and stop early.</summary>
+        public bool Cancelled => Bridge.RequestDispatcher.RunningToken.IsCancellationRequested;
+
+        /// <summary>Stops the run (everything is rolled back) when the user cancelled it in Claude.</summary>
+        public void ThrowIfCancelled()
+        {
+            if (Cancelled) throw new OperationCanceledException("Cancelled by the user. Nothing was changed.");
+        }
+
         /// <summary>Print a line that is returned to Claude along with the result.</summary>
         public void Log(object message)
         {

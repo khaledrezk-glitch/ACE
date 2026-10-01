@@ -36,6 +36,22 @@ namespace AceRevitMcp.Bridge
 
         internal sealed record BusyInfo(string Command, DateTime Since);
 
+        private static CancellationTokenSource _running = new CancellationTokenSource();
+
+        /// <summary>Set when Claude cancels the running command: scripts check it with ctx.Cancelled, the clash run per element.</summary>
+        public static CancellationToken RunningToken => _running.Token;
+
+        /// <summary>Cancels the running command (where it checks) and drops every queued one (from any thread).</summary>
+        public string CancelAll()
+        {
+            var busy = Busy;
+            try { _running.Cancel(); } catch { }
+            foreach (var p in _queue)
+                if (Interlocked.Exchange(ref p.Abandoned, 1) == 0)
+                    p.Completion.TrySetException(new OperationCanceledException("Cancelled by the user."));
+            return busy?.Command;
+        }
+
         public RequestDispatcher(CommandRegistry registry)
         {
             _registry = registry;
@@ -99,6 +115,7 @@ namespace AceRevitMcp.Bridge
 
                 var started = DateTime.Now;
                 Busy = new BusyInfo(pending.Command, started);
+                Interlocked.Exchange(ref _running, new CancellationTokenSource());   // not disposed: other threads may still read it
                 pending.Started.TrySetResult(true);
                 try
                 {

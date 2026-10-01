@@ -85,6 +85,12 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
     });
   } catch (err) {
     const reason = err?.cause?.code || err?.name || err?.message;
+    const cancelledByClient = (signal ?? currentCall.getStore()?.signal)?.aborted;
+    if (cancelledByClient) {
+      // Tell Revit too: the running script or clash run stops where it checks, queued requests are dropped.
+      fetch(`${base}/cancel`, { method: "POST", headers: { "X-Ace-Token": cfg.token }, signal: AbortSignal.timeout(5000) }).catch(() => {});
+      throw new RevitError(`'${command}' was cancelled. Revit stops it where it can; anything not finished is rolled back.`);
+    }
     if (err?.name === "TimeoutError" || err?.name === "AbortError") {
       throw new RevitError(
         `'${command}' did not answer in time. Revit may still be working on it: do NOT send it again. ` +

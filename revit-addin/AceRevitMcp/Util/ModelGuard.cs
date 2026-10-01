@@ -12,7 +12,7 @@ namespace AceRevitMcp.Util
     /// one command this:
     ///  - deletes warnings (and records them) so transactions commit without the warning dialog,
     ///  - rolls back transactions that hit real errors (and records why),
-    ///  - auto-answers task dialogs / message boxes that would otherwise block Revit (and records them).
+    ///  - closes task dialogs with Cancel and acknowledges message boxes that would otherwise block Revit (and records them).
     /// Everything recorded is returned to Claude so it can react.
     /// </summary>
     internal sealed class ModelGuard : IDisposable
@@ -78,9 +78,13 @@ namespace AceRevitMcp.Util
             if (e is TaskDialogShowingEventArgs td) text = $"{td.DialogId}: {td.Message}";
             else if (e is MessageBoxShowingEventArgs mb) text = $"{mb.DialogId}: {mb.Message}";
 
-            // IDOK = 1. Answering keeps Revit responsive; the dialog text is reported back.
-            var answered = e.OverrideResult(1);
-            Dialogs.Add(answered ? $"auto-accepted: {text}" : $"could not dismiss: {text}");
+            // Nobody is at the keyboard, and the default button of a dialog can be destructive ("delete these elements?").
+            // A task dialog is closed with Cancel (IDCANCEL = 2), which never confirms anything: if the operation needed
+            // a yes, the run fails and rolls back, and Claude reports the question to the user. A plain message box
+            // only informs, so it gets OK (IDOK = 1).
+            var cancelled = e is TaskDialogShowingEventArgs && e.OverrideResult(2);
+            var answered = cancelled || e.OverrideResult(1);
+            Dialogs.Add(cancelled ? $"closed with Cancel (ask the user if it mattered): {text}" : answered ? $"acknowledged: {text}" : $"could not dismiss: {text}");
         }
     }
 }

@@ -270,6 +270,12 @@ namespace AceRevitMcp.Coordination
 
             foreach (var (sa, ea) in aItems)
             {
+                if (Bridge.RequestDispatcher.RunningToken.IsCancellationRequested)
+                {
+                    notes.Add("Cancelled by the user: the results are partial and nothing was marked resolved.");
+                    complete = false;
+                    break;
+                }
                 var solidsA = geometry.Of(ea);
                 if (solidsA.Count == 0) continue;
                 var hostBoxes = solidsA.Select(s => Box(s, sa.ToHost)).ToList();

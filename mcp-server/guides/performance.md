@@ -35,3 +35,5 @@ Check the overloads with `revit_api_lookup "ParameterFilterRuleFactory"`; string
 - Rooms: `doc.GetRoomAtPoint(xyz)` or `room.IsPointInRoom(xyz)`; for doors use `fi.FromRoom` / `fi.ToRoom`.
 - Returning huge results slows everything: return counts + samples, not 50k objects.
 - `scriptMs` in every result tells you how long it took. Over 20 s? Revisit the collector.
+- Long loops (thousands of elements): call `ctx.ThrowIfCancelled()` every few hundred items, so a cancel in Claude
+  stops the run promptly; everything is rolled back.

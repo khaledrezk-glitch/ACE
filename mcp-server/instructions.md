@@ -121,7 +121,9 @@ ctx.Level("Level 1"), ctx.Levels(), ctx.Selection(), ctx.El(id), ctx.Str/Num/Boo
 ctx.Mm/M/Cm/ToMm/ToM/SqmFromInternal/Deg, ctx.Transact("name", () => {...}) (mode "manual"), ctx.IsDryRun.
 Workshared model: edit ctx.Editable(list) (skips elements in use by others or changed in central and reports them),
 or check ctx.CanEdit(e, out var why); otherwise one element in use rolls back the whole run.
+Long loops: call ctx.ThrowIfCancelled() now and then, so a cancel in Claude stops the run (everything rolls back).
 Modes: "auto" (default: one transaction) and "manual" (your own transactions) are each merged into ONE
 undo step; "readonly" is always rolled back. compile_only: true checks that code compiles without
 running it. Compile errors give line numbers in your code; results include scriptMs (timing).
-Warnings are auto-dismissed and returned; hard Revit errors roll the whole run back.
+Warnings are auto-dismissed and returned; hard Revit errors roll the whole run back. A dialog Revit shows during a run is
+closed with Cancel (never confirmed) and returned in "dialogs": if it asked a question, ask the user.
