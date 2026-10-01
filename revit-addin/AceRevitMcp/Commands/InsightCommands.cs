@@ -226,8 +226,10 @@ namespace AceRevitMcp.Commands
             var cat = Args.ResolveCategory(doc, catName);
             var sampleSize = Math.Clamp(Args.Int(args, "sample", 300), 10, 5000);
 
-            var all = new FilteredElementCollector(doc).OfCategoryId(cat.Id).WhereElementIsNotElementType().ToElements();
-            var sample = all.Count <= sampleSize ? all.ToList() : all.Where((e, i) => i % Math.Max(1, all.Count / sampleSize) == 0).Take(sampleSize).ToList();
+            // Ids first (cheap), then load only the sampled elements.
+            var allIds = new FilteredElementCollector(doc).OfCategoryId(cat.Id).WhereElementIsNotElementType().ToElementIds().ToList();
+            var step = Math.Max(1, allIds.Count / sampleSize);
+            var sample = allIds.Where((id, i) => i % step == 0).Take(sampleSize).Select(doc.GetElement).Where(e => e != null).ToList();
 
             var stats = new Dictionary<string, ParamStat>();
             void Collect(Element e, bool isType)
@@ -272,7 +274,7 @@ namespace AceRevitMcp.Commands
             return new JsonObject
             {
                 ["category"] = cat.Name,
-                ["instances"] = all.Count,
+                ["instances"] = allIds.Count,
                 ["sampled"] = sample.Count,
                 ["typesSampled"] = Math.Min(typeIds.Count, 200),
                 ["instanceParameters"] = ToArray(false),
@@ -299,11 +301,19 @@ namespace AceRevitMcp.Commands
             if (!string.IsNullOrEmpty(catName)) collector = collector.OfCategoryId(Args.ResolveCategory(doc, catName).Id);
             var contains = Args.Str(args, "name_contains");
 
+            // The matching types first; then instances are counted only in the categories of the types shown.
+            var matching = collector.Cast<ElementType>()
+                .Where(t => string.IsNullOrEmpty(contains) || $"{t.FamilyName} {t.Name}".IndexOf(contains, StringComparison.OrdinalIgnoreCase) >= 0)
+                .Where(t => t.Category != null || !string.IsNullOrEmpty(catName))
+                .OrderBy(t => t.Category?.Name).ThenBy(t => t.FamilyName).ThenBy(t => t.Name).ToList();
+            var total = matching.Count;
+            var shown = matching.Take(limit).ToList();
+
             var used = new Dictionary<long, int>();
-            if (Args.Bool(args, "count_instances", true))
+            var shownCategories = shown.Where(t => t.Category != null).Select(t => t.Category.Id).Distinct().ToList();
+            if (Args.Bool(args, "count_instances", true) && shownCategories.Count > 0)
             {
-                var instances = new FilteredElementCollector(doc).WhereElementIsNotElementType();
-                if (!string.IsNullOrEmpty(catName)) instances = instances.OfCategoryId(Args.ResolveCategory(doc, catName).Id);
+                var instances = new FilteredElementCollector(doc).WhereElementIsNotElementType().WherePasses(new ElementMulticategoryFilter(shownCategories));
                 foreach (var e in instances)
                 {
                     var tid = e.GetTypeId().Value;
@@ -312,14 +322,8 @@ namespace AceRevitMcp.Commands
             }
 
             var arr = new JsonArray();
-            var total = 0;
-            foreach (var t in collector.Cast<ElementType>().OrderBy(t => t.Category?.Name).ThenBy(t => t.FamilyName).ThenBy(t => t.Name))
+            foreach (var t in shown)
             {
-                var label = $"{t.FamilyName} {t.Name}";
-                if (!string.IsNullOrEmpty(contains) && label.IndexOf(contains, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                if (t.Category == null && string.IsNullOrEmpty(catName)) continue;
-                total++;
-                if (arr.Count >= limit) continue;
                 var o = new JsonObject
                 {
                     ["id"] = t.Id.Value,

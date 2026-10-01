@@ -80,9 +80,10 @@ namespace AceRevitMcp.Dashboard
             };
             try { if (!string.IsNullOrEmpty(doc.PathName) && File.Exists(doc.PathName)) x.FileBytes = new FileInfo(doc.PathName).Length; } catch { }
 
-            var instances = new FilteredElementCollector(doc).WhereElementIsNotElementType()
-                .Where(e => e.Category != null && e.Category.CategoryType == CategoryType.Model && e.ViewSpecific == false).ToList();
-            x.Counts["Model elements"] = instances.Count;
+            // Counted by Revit's quick filters, without loading every element.
+            var modelCategories = doc.Settings.Categories.Cast<Category>().Where(c => c.CategoryType == CategoryType.Model).Select(c => c.Id).ToList();
+            x.Counts["Model elements"] = modelCategories.Count == 0 ? 0 : new FilteredElementCollector(doc).WhereElementIsNotElementType()
+                .WherePasses(new ElementMulticategoryFilter(modelCategories)).WherePasses(new ElementOwnerViewFilter(ElementId.InvalidElementId)).GetElementCount();
 
             int Count(BuiltInCategory c) => new FilteredElementCollector(doc).OfCategory(c).WhereElementIsNotElementType().GetElementCount();
             x.Counts["Walls"] = Count(BuiltInCategory.OST_Walls);
@@ -94,14 +95,16 @@ namespace AceRevitMcp.Dashboard
             x.Counts["Model groups"] = Count(BuiltInCategory.OST_IOSModelGroups);
             x.Counts["Revit links"] = new FilteredElementCollector(doc).OfClass(typeof(RevitLinkType)).GetElementCount();
 
-            Warnings(doc, x);
+            // Read once: the warnings check and the standard checks both use them.
+            var warnings = doc.GetWarnings().Select(w => (Message: w, Text: w.GetDescriptionText() ?? "")).ToList();
+            Warnings(warnings, x);
             ImportsAndFamilies(doc, x);
             RoomsAndDoors(doc, x);
             ViewsAndSheets(doc, x);
             ParameterCompleteness(doc, x);
             ProjectInformation(doc, x);
             PerLevel(doc, x);
-            StandardChecks(doc, x);
+            StandardChecks(doc, x, warnings);
             ClashStatus(doc, x);
             CheckSet.Apply(x);
 
@@ -129,15 +132,14 @@ namespace AceRevitMcp.Dashboard
         internal static string KeyOf(string name) =>
             new string(name.ToLowerInvariant().Select(ch => char.IsLetterOrDigit(ch) ? ch : '-').ToArray()).Trim('-').Replace("--", "-");
 
-        private static void Warnings(Document doc, Insights x)
+        private static void Warnings(List<(FailureMessage Message, string Text)> warnings, Insights x)
         {
-            var warnings = doc.GetWarnings();
             x.Counts["Warnings"] = warnings.Count;
-            foreach (var g in warnings.GroupBy(w => w.GetDescriptionText()).OrderByDescending(g => g.Count()).Take(12))
-                x.WarningTypes.Add((g.Key, g.Count()));
-            var ids = warnings.SelectMany(w => w.GetFailingElements());
+            var types = warnings.GroupBy(w => w.Text).OrderByDescending(g => g.Count()).ToList();
+            foreach (var g in types.Take(12)) x.WarningTypes.Add((g.Key, g.Count()));
+            var ids = warnings.SelectMany(w => w.Message.GetFailingElements());
             Add(x, "Warnings", "Revit warnings", warnings.Count, 0.05, 20,
-                $"{warnings.Count} warnings of {warnings.GroupBy(w => w.GetDescriptionText()).Count()} types",
+                $"{warnings.Count} warnings of {types.Count} types",
                 "Resolve the most frequent types first (Manage > Warnings). A warning solver is planned (Phase 2).", ids);
         }
 
@@ -147,9 +149,13 @@ namespace AceRevitMcp.Dashboard
             Add(x, "Model content", "Imported CAD (not linked)", imports.Count, 2.5, 10,
                 $"{imports.Count} CAD files imported into the model", "Link CAD instead of importing it, or delete imports that are no longer needed.", imports.Select(i => i.Id));
 
-            var inPlace = new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance)).Cast<FamilyInstance>()
-                .Where(f => f.Symbol?.Family?.IsInPlace == true).ToList();
-            var inPlaceFamilies = inPlace.Select(f => f.Symbol.Family.Id).Distinct().Count();
+            // In-place families first (few), then their instances by type id: no family lookup per instance.
+            var familyOfType = new Dictionary<long, long>();   // in-place type id -> family id
+            foreach (var f in new FilteredElementCollector(doc).OfClass(typeof(Family)).Cast<Family>().Where(f => f.IsInPlace))
+                foreach (var id in f.GetFamilySymbolIds()) familyOfType[id.Value] = f.Id.Value;
+            var inPlace = familyOfType.Count == 0 ? new List<FamilyInstance>() : new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance))
+                .Cast<FamilyInstance>().Where(f => familyOfType.ContainsKey(f.GetTypeId().Value)).ToList();
+            var inPlaceFamilies = inPlace.Select(f => familyOfType[f.GetTypeId().Value]).Distinct().Count();
             Add(x, "Model content", "In-place families", inPlaceFamilies, 1, 8,
                 $"{inPlaceFamilies} in-place families ({inPlace.Count} instances)", "Replace repeated in-place families with loadable families.", inPlace.Select(i => i.Id));
 

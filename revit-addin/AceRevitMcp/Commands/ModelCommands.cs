@@ -44,13 +44,13 @@ namespace AceRevitMcp.Commands
                 });
             }
 
-            // One pass over all instances to give Claude a map of what's in the model.
+            // A map of what's in the model: counted per category by Revit's category index, without loading elements.
             var counts = new Dictionary<string, int>();
-            foreach (var e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
+            foreach (Category cat in doc.Settings.Categories)
             {
-                var cat = e.Category;
-                if (cat == null || cat.CategoryType != CategoryType.Model && cat.CategoryType != CategoryType.Annotation) continue;
-                counts[cat.Name] = counts.TryGetValue(cat.Name, out var n) ? n + 1 : 1;
+                if (cat.CategoryType != CategoryType.Model && cat.CategoryType != CategoryType.Annotation) continue;
+                var n = RevitJson.Safe(() => new FilteredElementCollector(doc).OfCategoryId(cat.Id).WhereElementIsNotElementType().GetElementCount());
+                if (n > 0) counts[cat.Name] = n;
             }
             var categories = new JsonObject();
             foreach (var kv in counts.OrderByDescending(kv => kv.Value).Take(80))
@@ -132,7 +132,12 @@ namespace AceRevitMcp.Commands
 
             var level = Args.Str(args, "level");
             if (!string.IsNullOrEmpty(level))
-                elements = elements.Where(e => doc.GetElement(e.LevelId) is Level l && l.Name.Equals(level, StringComparison.OrdinalIgnoreCase));
+            {
+                // Resolved once, then Revit's own level filter (the same LevelId test as before, without a lookup per element).
+                var lv = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().FirstOrDefault(l => l.Name.Equals(level, StringComparison.OrdinalIgnoreCase));
+                if (lv == null) throw new CommandException($"No level named '{level}'.");
+                elements = collector.WherePasses(new ElementLevelFilter(lv.Id));
+            }
 
             var nameContains = Args.Str(args, "name_contains");
             if (!string.IsNullOrEmpty(nameContains))
@@ -235,13 +240,14 @@ namespace AceRevitMcp.Commands
                 StorageType.ElementId => p.AsElementId().Value.ToString(CultureInfo.InvariantCulture),
                 _ => p.AsValueString() ?? "",
             };
-            var display = p.AsValueString() ?? text;
+            // The display text (units, names) is only formatted when the plain value does not decide it.
+            string Display() => p.AsValueString() ?? text;
 
             switch (op)
             {
-                case "equals": return text.Equals(expected, StringComparison.OrdinalIgnoreCase) || display.Equals(expected, StringComparison.OrdinalIgnoreCase);
-                case "not_equals": return !text.Equals(expected, StringComparison.OrdinalIgnoreCase) && !display.Equals(expected, StringComparison.OrdinalIgnoreCase);
-                case "contains": return display.IndexOf(expected, StringComparison.OrdinalIgnoreCase) >= 0 || text.IndexOf(expected, StringComparison.OrdinalIgnoreCase) >= 0;
+                case "equals": return text.Equals(expected, StringComparison.OrdinalIgnoreCase) || Display().Equals(expected, StringComparison.OrdinalIgnoreCase);
+                case "not_equals": return !text.Equals(expected, StringComparison.OrdinalIgnoreCase) && !Display().Equals(expected, StringComparison.OrdinalIgnoreCase);
+                case "contains": return text.IndexOf(expected, StringComparison.OrdinalIgnoreCase) >= 0 || Display().IndexOf(expected, StringComparison.OrdinalIgnoreCase) >= 0;
                 case "empty": return string.IsNullOrEmpty(text);
                 case "not_empty": return !string.IsNullOrEmpty(text);
                 case "gt":

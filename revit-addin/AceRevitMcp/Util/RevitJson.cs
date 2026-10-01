@@ -93,10 +93,16 @@ namespace AceRevitMcp.Util
             if (string.IsNullOrWhiteSpace(name)) return null;
             var p = e.LookupParameter(name);
             if (p != null) return p;
-            if (Enum.TryParse<BuiltInParameter>(name, true, out var bip))
-                return e.get_Parameter(bip);
-            return null;
+            var bip = BuiltIn(name);
+            return bip.HasValue ? e.get_Parameter(bip.Value) : null;
         }
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, BuiltInParameter?> BuiltIns =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, BuiltInParameter?>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>A BuiltInParameter by name, parsed once per name (parsing the enum's thousands of names is slow in a loop).</summary>
+        public static BuiltInParameter? BuiltIn(string name) =>
+            BuiltIns.GetOrAdd(name, n => Enum.TryParse<BuiltInParameter>(n, true, out var bip) ? bip : (BuiltInParameter?)null);
 
         public static T Safe<T>(Func<T> f)
         {

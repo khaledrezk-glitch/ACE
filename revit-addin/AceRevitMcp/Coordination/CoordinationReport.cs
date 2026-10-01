@@ -92,6 +92,7 @@ namespace AceRevitMcp.Coordination
 
             var highlight = ViewTools.Highlight(doc, Branding.Accent, lineWeight: 5);
 
+            var stamp = DateTime.Now.ToString("HHmmssfff");
             // Everything happens in a group that is rolled back: the temporary views never reach the model.
             using (ChangeTracker.Temporary())
             using (var group = new TransactionGroup(doc, "ACE coordination pictures"))
@@ -113,6 +114,8 @@ namespace AceRevitMcp.Coordination
                             var cap = Ft(30000);
                             if (maxP.X - min.X > cap || maxP.Y - min.Y > cap) { var c0 = pts[0]; min = c0; maxP = c0; }
                             var v = View3D.CreateIsometric(doc, type3D.Id);
+                            // A unique name: the one picture export finds each view's file by its name.
+                            try { v.Name = $"ACE issue {views.Count + 1:000} {stamp}"; } catch { }
                             v.DetailLevel = ViewDetailLevel.Fine;
                             v.DisplayStyle = DisplayStyle.ShadingWithEdges;
                             v.SetSectionBox(new BoundingBoxXYZ { Min = new XYZ(min.X - mx, min.Y - mx, min.Z - mz), Max = new XYZ(maxP.X + mx, maxP.Y + mx, maxP.Z + mz) });
@@ -128,16 +131,20 @@ namespace AceRevitMcp.Coordination
                     t.Commit();
                 }
 
-                var n = 0;
-                foreach (var (issue, view) in views)
+                // All pictures in one export; the names are those of the views made above.
+                var named = views.Select((v, i) => (Issue: v.Issue, View: v.View, Name: $"issue-{i + 1:00}")).ToList();
+                try
                 {
-                    n++;
-                    try
-                    {
-                        var name = $"issue-{n:00}";
-                        if (ViewTools.ExportPng(doc, view.Id, folder, name, 900) != null) result[issue] = relFolder + "/" + name + ".png";
-                    }
-                    catch (Exception ex) { Log.Warn($"Coordination picture {n}: {ex.Message}"); }
+                    var files = ViewTools.ExportPngs(doc, named.Select(v => (v.View.Id, v.View.Name, v.Name)).ToList(), folder, 900);
+                    foreach (var v in named) if (files.ContainsKey(v.Name)) result[v.Issue] = relFolder + "/" + v.Name + ".png";
+                }
+                catch (Exception ex)
+                {
+                    // One bad view must not cost every picture: fall back to one export per view.
+                    Log.Warn($"Coordination pictures (one export): {ex.Message}; exporting one by one");
+                    foreach (var v in named)
+                        try { if (ViewTools.ExportPng(doc, v.View.Id, folder, v.Name, 900) != null) result[v.Issue] = relFolder + "/" + v.Name + ".png"; }
+                        catch (Exception one) { Log.Warn($"Coordination picture {v.Name}: {one.Message}"); }
                 }
                 group.RollBack();
             }

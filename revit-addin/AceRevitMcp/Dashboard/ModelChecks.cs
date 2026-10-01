@@ -19,7 +19,7 @@ namespace AceRevitMcp.Dashboard
     {
         private static readonly Regex CopyName = new Regex(@"(^|\s)Copy(\s+of\b|\s*\d+\s*$|\s*$)", RegexOptions.IgnoreCase);
 
-        private static void StandardChecks(Document doc, Insights x)
+        private static void StandardChecks(Document doc, Insights x, List<(FailureMessage Message, string Text)> warnings)
         {
             void Safe(string what, Action a) { try { a(); } catch (Exception ex) { Log.Warn($"Model check '{what}': {ex.Message}"); } }
 
@@ -74,9 +74,9 @@ namespace AceRevitMcp.Dashboard
             // ---- Warnings -----------------------------------------------------------------------------------------------
             Safe("critical warnings", () =>
             {
-                var critical = doc.GetWarnings().Where(w =>
+                var critical = warnings.Where(w =>
                 {
-                    var t = w.GetDescriptionText() ?? "";
+                    var t = w.Text;
                     return t.IndexOf("identical instances", StringComparison.OrdinalIgnoreCase) >= 0 ||
                            t.IndexOf("overlap", StringComparison.OrdinalIgnoreCase) >= 0 ||
                            t.IndexOf("Room separation", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -84,7 +84,7 @@ namespace AceRevitMcp.Dashboard
                 }).ToList();
                 Add(x, "Warnings", "Duplicate and overlapping elements", critical.Count, 0.1, 5,
                     $"{critical.Count} warnings about duplicate instances, overlapping walls or room separation lines",
-                    "Delete duplicates and overlaps first: they distort quantities, rooms and schedules.", critical.SelectMany(w => w.GetFailingElements()));
+                    "Delete duplicates and overlaps first: they distort quantities, rooms and schedules.", critical.SelectMany(w => w.Message.GetFailingElements()));
             });
 
             // ---- Model content ------------------------------------------------------------------------------------------
@@ -109,7 +109,7 @@ namespace AceRevitMcp.Dashboard
             });
             Safe("unused types", () =>
             {
-                var used = new HashSet<long>(new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance)).Cast<FamilyInstance>().Select(f => f.Symbol.Id.Value));
+                var used = new HashSet<long>(new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance)).Select(f => f.GetTypeId().Value));
                 var unused = new FilteredElementCollector(doc).OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
                     .Where(s => s.Category != null && s.Category.CategoryType == CategoryType.Model && !used.Contains(s.Id.Value)).ToList();
                 var families = unused.Select(s => s.Family.Id.Value).Distinct().Count();

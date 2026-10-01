@@ -64,6 +64,39 @@ namespace AceRevitMcp.Util
         }
 
         /// <summary>
+        /// Exports several views in ONE export (each export has a fixed start-up cost) to folder\name.png. Each view
+        /// must have a unique name: Revit puts the view name in the file name, which is how each file is found again.
+        /// Returns name -> file for the pictures Revit wrote.
+        /// </summary>
+        public static Dictionary<string, string> ExportPngs(Document doc, IList<(ElementId View, string ViewName, string Name)> views, string folder, int pixels)
+        {
+            var result = new Dictionary<string, string>();
+            if (views.Count == 0) return result;
+            Directory.CreateDirectory(folder);
+            var prefix = "ace-export-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+            var opt = new ImageExportOptions
+            {
+                ExportRange = ExportRange.SetOfViews, FilePath = Path.Combine(folder, prefix),
+                HLRandWFViewsFileType = ImageFileType.PNG, ShadowViewsFileType = ImageFileType.PNG,
+                ImageResolution = ImageResolution.DPI_150, ZoomType = ZoomFitType.FitToPage, PixelSize = pixels,
+            };
+            opt.SetViewsAndSheets(views.Select(v => v.View).ToList());
+            doc.ExportImage(opt);
+            var written = Directory.GetFiles(folder, prefix + "*.png");
+            foreach (var (_, viewName, name) in views)
+            {
+                var file = written.FirstOrDefault(f => Path.GetFileNameWithoutExtension(f).EndsWith(viewName, StringComparison.OrdinalIgnoreCase));
+                if (file == null) continue;
+                var final = Path.Combine(folder, name + ".png");
+                if (File.Exists(final)) File.Delete(final);
+                File.Move(file, final);
+                result[name] = final;
+            }
+            foreach (var left in Directory.GetFiles(folder, prefix + "*")) try { File.Delete(left); } catch { }
+            return result;
+        }
+
+        /// <summary>
         /// Exports one view to <paramref name="folder"/>\<paramref name="name"/>.png and returns the file (Revit adds its
         /// own suffix to the name; the file is renamed back). Null when Revit wrote nothing.
         /// </summary>

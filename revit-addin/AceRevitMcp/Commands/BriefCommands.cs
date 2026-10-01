@@ -212,8 +212,10 @@ namespace AceRevitMcp.Commands
         private static JsonObject Families(Document doc, int perCategory)
         {
             var o = new JsonObject();
-            var placed = new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance)).Cast<FamilyInstance>()
-                .Where(f => f.SuperComponent == null).GroupBy(f => f.Symbol.Id.Value).ToDictionary(g => g.Key, g => g.ToList());
+            // Only the categories the brief lists, grouped by type id (no type lookup per instance).
+            var placeable = new ElementMulticategoryFilter(PlaceableCategories.Select(c => new ElementId(c.Item2)).ToList());
+            var placed = new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance)).WherePasses(placeable).Cast<FamilyInstance>()
+                .Where(f => f.SuperComponent == null).GroupBy(f => f.GetTypeId().Value).ToDictionary(g => g.Key, g => g.ToList());
             foreach (var (label, cat) in PlaceableCategories)
             {
                 var symbols = new FilteredElementCollector(doc).OfCategory(cat).WhereElementIsElementType().OfType<FamilySymbol>().ToList();
