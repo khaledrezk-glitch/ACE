@@ -97,15 +97,15 @@ Each item is a recommendation. None is applied yet.
 
 | # | Overlap | Recommendation | Gain | Effort |
 |---|---|---|---|---|
-| D1 | Scripts `audit_model`, `rooms_without_doors`, `door_width_check`, `parameter_completeness` repeat the native model check | One **model check engine**. Retire `audit_model` and `rooms_without_doors`; the other two become check options (door width and parameter lists come from the requirements) | One truth, no drift | S |
+| D1 | Scripts `audit_model`, `rooms_without_doors`, `door_width_check`, `parameter_completeness` repeat the native model check | One **model check engine**. Retire `audit_model` and `rooms_without_doors`; the other two become check options (door width and parameter lists come from the requirements) | One truth, no drift | S · **done (1.7.0)** |
 | D2 | Seven settings files: `checkset.json`, `worksets.json`, `clash-rules.json`, `clash-colours.json`, `brand.json`, `team.json`, `config.json` | Split into **office settings** (brand, team, config, colours) and one **project requirements** file (check set, worksets, clash matrix, naming, LOIN). Old files keep working | Rules from the BEP in one place | M |
-| D3 | *Clash Results* window and *Clash Browser* | One **Clash Browser**. The Clash Results button opens it on the stored results | Less to learn | S |
+| D3 | *Clash Results* window and *Clash Browser* | One **Clash Browser**. The Clash Results button opens it on the stored results | Less to learn | S · **done (1.7.0)** |
 | D4 | Three ways to make an issue picture (preview pictures, coordination report, clash focus) | One **issue view engine**: section box around elements or points, highlight by role, export a picture. Also the base for **BCF** export (Navisworks, ACC) | Consistent pictures, BCF | M |
-| D5 | `get_model_overview`, `get_model_brief` and the dashboard counts | The **brief** is the model knowledge; the overview becomes its quick level | One call for Claude | S |
-| D6 | `clash_view`, `reset_clash_view`, `focus_clash` | One `clash_view` with overview / focus / reset | Simpler for Claude | S |
+| D5 | `get_model_overview`, `get_model_brief` and the dashboard counts | The **brief** is the model knowledge; the overview becomes its quick level | One call for Claude | S · **done (1.7.0)** |
+| D6 | `clash_view`, `reset_clash_view`, `focus_clash` | One `clash_view` with overview / focus / reset | Simpler for Claude | S · **done (1.7.0)** |
 | D7 | Workset rules run in a script (Claude only); the model check only knows "Workset1" | A native **rules engine** in the add-in. The model check reports "elements on the wrong workset per the BEP"; the workset tool fixes them | Monitored all the time, not only when asked | M |
-| D8 | The dashboard, Companion Home and Claude each read results their own way | A **status store**: each engine publishes its latest result (health, clashes, changes, requirements), and every surface reads it | Always the same numbers | S |
-| D9 | Ribbon: *Model Health* (Audit) and *Dashboard* (Insights) are the same tool | One button | Clearer ribbon | S |
+| D8 | The dashboard, Companion Home and Claude each read results their own way | A **status store**: each engine publishes its latest result (health, clashes, changes, requirements), and every surface reads it | Always the same numbers | S · **done (1.7.0)** |
+| D9 | Ribbon: *Model Health* (Audit) and *Dashboard* (Insights) are the same tool | One button | Clearer ribbon | S · **done (1.7.0)** |
 | D10 | *Parameter Check* (planned), "Key parameters filled" (model check), LOIN | One **information requirements** check driven by the LOIN | Checks what the project actually requires | M |
 | D11 | *Submission Check* (planned), the Submission mode, "Submission readiness" checks | Submission check = the requirements monitor at the issue stage | No separate tool to build | S |
 | D12 | *Design Check* / *Code Packs* (planned) and the rules engine | The same rules engine with different rule packs (design, code, client) | One engine, many packs | M |

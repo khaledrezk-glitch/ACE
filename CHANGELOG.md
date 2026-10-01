@@ -1,6 +1,14 @@
 # Changelog
 
 ## 1.7.0 (core v2)
+- **Merged duplicates** (concept D1, D3, D5, D6, D8, D9):
+  - The *Clash Results* window is merged into the **Clash Browser**; `run_clash_test` with `show` opens the browser.
+  - *Model Health* (Audit panel) is merged into **Insights → Dashboard**.
+  - `clash_view` is one tool for Claude: overview, focus on a clash (`key`), or `reset`. Previously there were three.
+  - `get_model_overview` is now `get_model_brief` with `quick: true`.
+  - The built-in scripts `audit_model` and `rooms_without_doors` are retired: the native model check covers them.
+  - A **status store**: the model check, clashes and changes publish their latest result, and the Companion and
+    dashboard read the same numbers.
 - **Code review fixes** (whole codebase):
   - **Other open models stay safe:** a dry run or read-only run now rolls back changes to every open model, not only
     the active one. An applied run keeps them together.

@@ -38,7 +38,6 @@ namespace AceRevitMcp.Ribbon
     }
 
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_undo : PlannedFeatureCommand { protected override string Key => "undo"; }
-    [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_health : PlannedFeatureCommand { protected override string Key => "health"; }
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_warnings : PlannedFeatureCommand { protected override string Key => "warnings"; }
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_params : PlannedFeatureCommand { protected override string Key => "params"; }
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_roomsdoors : PlannedFeatureCommand { protected override string Key => "roomsdoors"; }
@@ -52,7 +51,6 @@ namespace AceRevitMcp.Ribbon
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_batchexport : PlannedFeatureCommand { protected override string Key => "batchexport"; }
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_exportprofiles : PlannedFeatureCommand { protected override string Key => "exportprofiles"; }
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_clash : PlannedFeatureCommand { protected override string Key => "clash"; }
-    [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_clashresults : PlannedFeatureCommand { protected override string Key => "clashresults"; }
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_subcheck : PlannedFeatureCommand { protected override string Key => "subcheck"; }
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_subprep : PlannedFeatureCommand { protected override string Key => "subprep"; }
     [Transaction(TransactionMode.ReadOnly)] public sealed class Planned_transmittal : PlannedFeatureCommand { protected override string Key => "transmittal"; }

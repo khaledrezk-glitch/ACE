@@ -61,11 +61,11 @@ namespace AceRevitMcp.Ribbon
                 Panels = { ["Coordination"] = PanelLook.Focus, ["Insights"] = PanelLook.Focus, ["Inspect"] = PanelLook.Focus,
                            ["Audit"] = PanelLook.Dim, ["Data"] = PanelLook.Dim, ["Export"] = PanelLook.Dim,
                            ["Deliver"] = PanelLook.Hide, ["Compliance"] = PanelLook.Hide, ["Team Tools"] = PanelLook.Hide, ["Admin"] = PanelLook.Hide },
-                ClaudeTools = new[] { "coordination_sources", "run_clash_test", "clash_results", "focus_clash", "clash_view", "coordination_report", "model_changes", "get_model_brief" },
+                ClaudeTools = new[] { "coordination_sources", "run_clash_test", "clash_results", "clash_view", "coordination_report", "model_changes", "get_model_brief" },
                 Prompts = new[]
                 {
                     ("Check the links line up", "Using ace-revit: do the linked models line up with this one (levels, grids, coordinates)? Tell me anything that would make clash results unreliable." + ro),
-                    ("Clash against a link, walk me through", "Using ace-revit: run the clash tests between this model and the MEP link, then show me the top issues one by one in the clash view (focus_clash), with who should fix each." + ro),
+                    ("Clash against a link, walk me through", "Using ace-revit: run the clash tests between this model and the MEP link, then show me the top issues one by one in the clash view (clash_view with each key), with who should fix each." + ro),
                     ("What changed in the links", "Using ace-revit: what changed in the linked models since last week, and which new clashes did those changes cause?" + ro),
                     ("Prepare the coordination report", "Using ace-revit: prepare the coordination report for the meeting (coordination_report, open: true) and summarise the actions per discipline." + ro),
                 },

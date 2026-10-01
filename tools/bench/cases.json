@@ -129,30 +129,6 @@
       ]
     },
     {
-      "name": "Model audit runs",
-      "script": "audit_model",
-      "maxMs": 60000,
-      "expect": [
-        {
-          "path": "success",
-          "op": "==",
-          "value": true
-        }
-      ]
-    },
-    {
-      "name": "Rooms without doors runs",
-      "script": "rooms_without_doors",
-      "maxMs": 30000,
-      "expect": [
-        {
-          "path": "success",
-          "op": "==",
-          "value": true
-        }
-      ]
-    },
-    {
       "name": "Insights dashboard",
       "command": "get_model_insights",
       "args": {},
@@ -182,6 +158,10 @@
         },
         {
           "path": "checks[key=file-size].status",
+          "op": "exists"
+        },
+        {
+          "path": "checks[key=rooms-without-a-door].status",
           "op": "exists"
         }
       ]

@@ -60,7 +60,7 @@ the model, plan, dry-run, run, verify (it can even **look at views as images**),
 
 Open a model in Revit, then just ask Claude. Examples:
 
-- "Give me an overview of this model and tell me what looks wrong." (runs the `audit_model` script)
+- "Give me an overview of this model and tell me what looks wrong." (runs the model check)
 - "Renumber all rooms on Level 2 in reading order, starting at 201."
 - "Create a structural grid: 4 bays of 7.2 m in X, 3 bays of 6 m in Y, starting at the origin."
 - "Make a floor plan and a sheet for every level using our A1 title block, numbered A-101 onwards."
@@ -96,15 +96,16 @@ can already do today. **ACE tab → Roadmap** shows the whole plan. Details: [RO
 
 | Area | Tools |
 |---|---|
-| Understand | `revit_status`, `get_model_overview`, `model_dashboard`, `get_selection`, `find_elements`, `get_element_details`, `describe_category`, `list_types`, `list_views`, `view_image` |
+| Understand | `revit_status`, `get_model_brief`, `model_dashboard`, `get_selection`, `find_elements`, `get_element_details`, `describe_category`, `list_types`, `list_views`, `view_image` |
 | Knowledge | `revit_api_lookup` (the real Revit API on the PC), `revit_guide` (9 expert guides) |
 | Change (gated by preview + confirmation) | **`execute_revit_code`**, `set_parameters`, `run_saved_script`, `select_elements` |
 | Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |
 | Library | `list_saved_scripts`, `read_saved_script`, `save_script` (personal or team) |
 | Support | `check_setup`, `report_issue` |
 
-Built-in scripts: `audit_model`, `parameter_completeness`, `rooms_without_doors`, `door_width_check`,
-`renumber_rooms`, `tag_untagged`, `grid_system`, `sheets_for_levels`, `copy_parameter`, `test_fit_out` (office test fit).
+Built-in scripts: `parameter_completeness`, `door_width_check`,
+`renumber_rooms`, `tag_untagged`, `grid_system`, `sheets_for_levels`, `copy_parameter`, `test_fit_out` (office test fit),
+`derive_structure_from_arc` (structure from the ARC model), `assign_worksets` (worksets per the BEP).
 
 ### Compared with other Revit MCP servers
 
@@ -116,7 +117,7 @@ code execution and keeps a small set of reliable tools. It adopts their best ide
 - **Undo and checkpoints:** undo only when the latest change is really Claude's; backups of the .rvt file.
 - **Compile-only code checks:** `compile_only: true`.
 - **"Secure" code execution:** risky-code screening plus the enforced preview.
-- **Audits and warnings:** the `audit_model` script.
+- **Audits and warnings:** the model check (`model_dashboard`, ACE tab > Insights > Dashboard).
 
 ## Troubleshooting
 

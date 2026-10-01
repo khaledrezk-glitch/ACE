@@ -43,16 +43,6 @@ namespace AceRevitMcp.Ribbon
                 Prompt = "Undo your last change in Revit, and tell me exactly what was reverted." },
 
             // ---- Audit ----
-            new Feature { Key = "health", Panel = "Audit", Label = "Model\nHealth", Phase = 2, Glyph = Glyphs.Gauge, LiveCommand = "AceRevitMcp.Dashboard.DashboardCommand",
-                LiveSummary = "Health score out of 100 with every finding, trend, submission readiness and the status of every ACE tool (read-only).",
-                Summary = "A health score from 0 to 100 for the open model, with a report of every finding.",
-                WillDo = new[] {
-                    "Scores warnings, CAD imports, in-place families, unused items, views not on sheets, unplaced rooms and more.",
-                    "Checks naming (views, sheets, levels, families) and required parameters against the ACE standard.",
-                    "Keeps the score per model over time, so progress is visible.",
-                    "HTML, Excel and Markdown reports; click a finding to select and zoom to the elements." },
-                TodayWithClaude = "A first version is live: ACE tab > Insights > Dashboard shows a health score with every finding. Claude can also explain it and help fix the issues.",
-                Prompt = "Audit this Revit model: give me an overview, the main problems ranked by importance, and what to fix first." },
             new Feature { Key = "warnings", Panel = "Audit", Label = "Warning Solver", Large = false, Phase = 2, Glyph = Glyphs.Warning,
                 Summary = "Groups the model's warnings and fixes the ones that can be fixed safely.",
                 WillDo = new[] {
@@ -68,7 +58,7 @@ namespace AceRevitMcp.Ribbon
             new Feature { Key = "roomsdoors", Panel = "Audit", Label = "Rooms && Doors QA", Large = false, Phase = 2, Glyph = Glyphs.Plan,
                 Summary = "Quick QA of rooms and doors: rooms without doors, door widths, unplaced or unenclosed rooms.",
                 WillDo = new[] { "Rooms with no door, doors narrower than a set width, unplaced and unenclosed rooms.", "Results listed by level; click to select." },
-                TodayWithClaude = "Claude runs the built-in rooms_without_doors and door_width_check scripts.",
+                TodayWithClaude = "The model check (Insights > Dashboard) lists rooms without doors, narrow doors, unplaced and unenclosed rooms; Claude can drill down with the door_width_check script.",
                 Prompt = "Find rooms without doors and doors narrower than 900 mm, listed by level." },
 
             // ---- Inspect (RevitLookup-like) ----
@@ -113,15 +103,10 @@ namespace AceRevitMcp.Ribbon
                 LiveSummary = "Runs the standard clash tests (STR vs MEP, ARC vs STR, MEP vs ARC, MEP vs MEP) across this model, its links and the other open models, with the responsible discipline for each clash (read-only).",
                 Summary = "Clash tests inside Revit between categories or linked models.",
                 WillDo = new[] { "For example ducts against beams, or pipes against walls in the structural link.", "Tolerance and clearance rules (for example pipes within 50 mm of beams).", "A fast bounding-box pass, then exact solid intersection." } },
-            new Feature { Key = "clashresults", Panel = "Coordination", Label = "Clash\nResults", Phase = 4, Glyph = Glyphs.ClashList, LiveCommand = "AceRevitMcp.Coordination.ClashResultsCommand",
-                LiveSummary = "The last clash results: open, new, resolved and approved clashes by responsible discipline and level; select the elements in this model.",
-                Summary = "Review clashes by level or zone and track their status between runs.",
-                WillDo = new[] { "Status per clash: new, active, resolved, approved.", "A 3D section-box view per clash.", "HTML, Excel and BCF export for Navisworks and ACC users.", "Claude explains clashes and proposes fixes, applied only after preview and confirmation." } },
-
             new Feature { Key = "clashbrowser", Panel = "Coordination", Label = "Clash\nBrowser", Phase = 4, Glyph = Glyphs.Search, LiveCommand = "AceRevitMcp.Coordination.ClashBrowserCommand",
                 LiveSummary = "Navisworks-style clash browser: choose the model to compare with, run the test, browse the clashes by issue, and click one to see it alone in the ACE Clash View (the primary model green, the compared model red or each link its chosen colour, the intersection gold, everything else dimmed, zoomed to where they meet). Approve, reopen, select.",
                 Summary = "Browse and review clashes one by one in 3D.",
-                WillDo = new[] { "The primary model green, the compared model red; each link's colour can be chosen.", "Click a clash: only the two elements coloured, the rest dimmed, zoomed to the intersection.", "Approve or reopen clashes; statuses are kept between runs." } },
+                WillDo = new[] { "The primary model green, the compared model red; each link's colour can be chosen.", "Click a clash: only the two elements coloured, the rest dimmed, zoomed to the intersection.", "Approve or reopen clashes; statuses are kept between runs.", "BCF export for Navisworks and ACC users (planned).", "Claude explains clashes and proposes fixes, applied only after preview and confirmation." } },
             new Feature { Key = "coordreport", Panel = "Coordination", Label = "Coordination\nReport", Phase = 4, Glyph = Glyphs.Checklist, LiveCommand = "AceRevitMcp.Coordination.CoordinationReportCommand",
                 LiveSummary = "The coordination meeting report: each clash issue with a 3D picture, the responsible discipline, what caused it and where it is, plus an Excel (CSV) issue list with Action / Owner / Due columns. Runs the clash tests first if there are no results yet.",
                 Summary = "A meeting-ready report of the clash issues.",

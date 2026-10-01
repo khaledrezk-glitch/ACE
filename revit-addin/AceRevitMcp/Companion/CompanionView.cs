@@ -88,6 +88,7 @@ namespace AceRevitMcp.Companion
 
             ActivityHub.Changed += QueueRender;
             Ribbon.WorkModes.Changed += QueueRender;
+            StatusStore.Changed += QueueRender;
             _clock.Tick += (s, e) => QueueRender();
             _clock.Start();
             Render();
@@ -230,20 +231,18 @@ namespace AceRevitMcp.Companion
             var gb = (StackPanel)glance.Child;
             gb.Children.Add(Section("At a glance"));
             var tiles = new UniformGrid { Columns = 3 };
-            var health = Dashboard.DashboardCommands.Last;
-            if (health != null && health.Model == model)
+            // Every number here comes from the status store, which the engines publish to.
+            var status = StatusStore.For(model);
+            var health = status?.Health;
+            if (health != null)
                 tiles.Children.Add(Stat(health.Score.ToString(), $"Health · {health.Grade}", $"{health.Checks.Count(c => c.Status == "fail")} to act on · {health.Time:HH:mm}", health.Score < 65));
             else tiles.Children.Add(Stat("-", "Health", "Run the model check", false));
-            var clashes = Coordination.Clashes.Last != null && Coordination.Clashes.LastHost == model ? Coordination.Clashes.Last : null;
-            if (clashes != null)
-            {
-                var open = clashes.Where(Coordination.ClashLogic.IsOpen).ToList();
-                tiles.Children.Add(Stat(Coordination.ClashLogic.Issues(open).Count.ToString(), "Clash issues", $"{open.Count} clashes · {open.Count(c => c.Status == "new")} new", open.Count > 0));
-            }
+            if (status?.Clashes != null)
+                tiles.Children.Add(Stat(status.ClashIssues.ToString(), "Clash issues", $"{status.OpenClashes} clashes · {status.NewClashes} new", status.OpenClashes > 0));
             else tiles.Children.Add(Stat("-", "Clash issues", "Open the Clash Browser", false));
-            var diffs = Tracking.ChangeTracking.LastDiffs;
-            if (diffs != null && diffs.Count > 0 && diffs[0].Model == model)
-                tiles.Children.Add(Stat(diffs.Sum(d => d.Changes.Count).ToString(), "Changes", diffs[0].Since.HasValue ? $"since {diffs[0].Since:d MMM HH:mm}" : "first snapshot taken", false));
+            var diffs = status?.Changes;
+            if (diffs != null && diffs.Count > 0)
+                tiles.Children.Add(Stat(status.ChangeCount.ToString(), "Changes", diffs[0].Since.HasValue ? $"since {diffs[0].Since:d MMM HH:mm}" : "first snapshot taken", false));
             else tiles.Children.Add(Stat("-", "Changes", "See what changed", false));
             gb.Children.Add(tiles);
             panel.Children.Add(glance);

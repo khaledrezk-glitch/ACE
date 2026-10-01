@@ -96,8 +96,8 @@ exist: which side was added, moved or retyped since the last run, and by whom (w
 two apart when you report: "responsible" says who should give way, "caused by" says whose change made it. Status persists between runs (new / active /
 resolved / approved; a resolved clash that comes back is new again and "reopened", worth pointing out):
 report what is new and what was resolved since last time, grouped by responsible discipline and level. For a
-walk-through ("show me the clashes", "go through them with me") use focus_clash issue by issue (the user sees
-only the two elements, coloured by model, zoomed to the intersection) and clash_view to show both models in
+walk-through ("show me the clashes", "go through them with me") use clash_view with the clash key, issue by issue (the user sees
+only the two elements, coloured by model, zoomed to the intersection) and clash_view without a key to show both models in
 colour; the user can do the same in ACE > Coordination > Clash Browser. To compare with one model use
 run_clash_test with_model (the secondary; the primary is this model). A BIM manager can compare two links:
 primary_model = one link, with_model = the other (this model is then ghosted). Colours always follow the role:
@@ -145,7 +145,7 @@ KEEP LEARNING (this is part of every task, not an extra)
 
 REVIT API ESSENTIALS (Revit 2025, .NET 8)
 - Internal units: length = decimal FEET, angles = radians, area = sq ft. ctx.Mm(x) / ctx.M(x) convert
-  to feet; ctx.ToMm(ft) / ctx.ToM(ft) convert back. get_model_overview reports the display unit.
+  to feet; ctx.ToMm(ft) / ctx.ToM(ft) convert back. get_model_brief with quick: true reports the display unit.
 - ElementId wraps a long: new ElementId(123L), id.Value (IntegerValue is obsolete).
 - Collect: new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Walls).WhereElementIsNotElementType()
   or .OfClass(typeof(Wall)); visible in a view: new FilteredElementCollector(doc, viewId).

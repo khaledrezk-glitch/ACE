@@ -71,7 +71,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_results", "clash_view", "coordination_report", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "focus_clash", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_model_overview", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "pending_changes", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "reset_clash_view", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_results", "clash_view", "coordination_report", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "pending_changes", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -188,9 +188,10 @@ assert.equal(seen.at(-1).args.transaction_name, "Claude: test_fit_out (room numb
 
 const lib = json(await call("list_saved_scripts"));
 assert.ok(lib.find((s) => s.name === "renumber_rooms" && s.mode === "auto"));
-assert.ok(lib.find((s) => s.name === "audit_model" && s.mode === "readonly"));
+assert.ok(lib.find((s) => s.name === "parameter_completeness" && s.mode === "readonly"));
+assert.ok(!lib.find((s) => s.name === "audit_model"), "audit_model was merged into the native model check");
 
-const run = json(await call("run_saved_script", { name: "audit_model" })); // readonly script: no preview needed
+const run = json(await call("run_saved_script", { name: "parameter_completeness" })); // readonly script: no preview needed
 assert.equal(run.echoMode, "readonly");
 
 await call("save_script", { name: "my_task", description: "Test", code: "return ctx.Num(\"n\");", mode: "readonly", inputs_example: { n: 1 } });
@@ -234,7 +235,7 @@ assert.match(lr, /Repeated API mistakes/, "the failed compile in this test run s
 assert.match(lr, /Saved: /);
 const cr = (await call("coordination_report", { max_issues: 5 })).content[0].text;
 assert.match(cr, /Coordination\.csv/, "coordination report returns the CSV issue list");
-const fc = (await call("focus_clash", { key: "STR vs MEP|u1|u2" })).content[0].text;
+const fc = (await call("clash_view", { key: "STR vs MEP|u1|u2" })).content[0].text;
 assert.match(fc, /200 x 200 x 250/, "focus_clash passes the key and returns the intersection");
 const wsCheck = await call("assign_worksets", { check_only: true });
 const wsText = wsCheck.content.map((c) => c.text).join("\n");
@@ -252,6 +253,8 @@ for (const risky of ["new System.IO.FileInfo(p).Delete();", "using var w = new S
   const r = await call("execute_revit_code", { code: risky, dry_run: true });
   assert.ok(r.isError && /Blocked for safety/.test(r.content[0].text), `risky code is screened: ${risky}`);
 }
+const quick = await call("get_model_brief", { quick: true });
+assert.ok(!quick.isError, "the brief's quick mode (formerly get_model_overview) works");
 const pc = (await call("pending_changes")).content[0].text;
 assert.match(pc, /8 m2/, "the panel's waiting cards reach Claude");
 bridge.close();

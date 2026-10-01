@@ -5,7 +5,7 @@
 unplaced rooms untouched." If you can't state how you'd verify it, ask one question.
 
 ## 2. Discover before you design
-- `get_model_overview`: units, levels, phases, what categories exist.
+- `get_model_brief` with `quick: true`: units, levels, phases, what categories exist.
 - `describe_category` for every category you'll read or write: exact parameter names, storage type,
   instance vs TYPE, how filled they are. Never assume "Width" is an instance parameter; for many doors it's a type parameter.
 - `list_types` before placing or changing types: exact family and type names, and whether they're loaded.

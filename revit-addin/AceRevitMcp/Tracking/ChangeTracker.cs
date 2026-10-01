@@ -132,6 +132,7 @@ namespace AceRevitMcp.Tracking
                 diffs.Add(diff);
             }
             LastDiffs = diffs;
+            StatusStore.PublishChanges(doc.Title, diffs);
             LastPath = DashboardHtml.SaveAs(doc.Title, "Changes", DateTime.Now, ChangeHtml.Render(doc.Title, since, diffs));
             if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Change tracker", "model_changes", State);
 

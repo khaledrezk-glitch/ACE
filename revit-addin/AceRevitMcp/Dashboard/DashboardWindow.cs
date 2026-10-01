@@ -30,6 +30,7 @@ namespace AceRevitMcp.Dashboard
             var x = ModelInsights.Collect(doc, app.Application.Username);
             var path = DashboardHtml.Save(x, DashboardHtml.Render(x));
             Last = x; LastPath = path;
+            StatusStore.PublishHealth(doc.Title, x);
             if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Model insights", "get_model_insights", State);
             return ModelInsights.ToJson(x, path);
         }

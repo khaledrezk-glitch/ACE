@@ -193,7 +193,8 @@ namespace AceRevitMcp.Dashboard
         {
             try
             {
-                var all = Coordination.Clashes.LoadAll(doc);
+                // The latest clash results in this session, else the stored ones.
+                var all = StatusStore.For(doc.Title)?.Clashes ?? Coordination.Clashes.LoadAll(doc);
                 if (all.Count == 0) return;
                 var open = all.Where(Coordination.ClashLogic.IsOpen).ToList();
                 var issues = Coordination.ClashLogic.Issues(all);

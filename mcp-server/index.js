@@ -58,25 +58,20 @@ tool("revit_status", {
   annotations: readOnly,
 }, async () => text(await callRevit("ping", {}, 20)));
 
-tool("get_model_overview", {
-  title: "Model overview",
-  description: "Summary of the active model: title, path, display units, project info, active view, levels (with elevations), phases, element counts per category. For understanding the building before a task, prefer get_model_brief.",
-  inputSchema: {},
-  annotations: readOnly,
-}, async () => text(await callRevit("get_document_info", {}, 120)));
-
 // The brief is cached per model for a few minutes (it reads the whole model and its links).
 const briefCache = new Map();
 
 tool("get_model_brief", {
   title: "Model brief (read this before planning)",
-  description: "What you must know about the building before acting: the model and its discipline, levels with room types, room types with counts, areas, levels, numbers and whether they are furnished, the families available for each purpose (real footprint in mm, where the insertion point sits, facing), naming conventions, the linked and other open models (ARC/STR/MEP) and whether their levels and grids line up, and the LESSONS learned earlier about this model, project and ACE work. Call it at the start of any task that touches the model; it is cached for 10 minutes (refresh: true re-reads).",
+  description: "What you must know about the building before acting: the model and its discipline, levels with room types, room types with counts, areas, levels, numbers and whether they are furnished, the families available for each purpose (real footprint in mm, where the insertion point sits, facing), naming conventions, the linked and other open models (ARC/STR/MEP) and whether their levels and grids line up, and the LESSONS learned earlier about this model, project and ACE work. Call it at the start of any task that touches the model; it is cached for 10 minutes (refresh: true re-reads). quick: true returns only the basics, fast: title, path, display units, project information, active view, levels with elevations, phases and element counts per category.",
   inputSchema: {
+    quick: z.boolean().optional().describe("Only the basics (units, levels, phases, counts); fast"),
     refresh: z.boolean().optional(),
     include_families: z.boolean().optional().describe("Default true"),
   },
   annotations: readOnly,
-}, async ({ refresh, include_families }) => {
+}, async ({ quick, refresh, include_families }) => {
+  if (quick) return text(await callRevit("get_document_info", {}, 120));
   const status = await callRevit("ping", {}, 20).catch(() => null);
   const key = `${status?.activeDocument}|${include_families !== false}`;
   const hit = briefCache.get(key);
@@ -286,33 +281,26 @@ tool("working_mode", {
 }, async (a) => text(await callRevit("working_mode", a, 30)));
 
 tool("clash_view", {
-  title: "Show both models in colour",
-  description: "Open the ACE Clash View (a 3D view per user, the only thing ACE changes): the primary model (this model by default) in green, the secondary (with_model, a link) in red, or with no with_model each other link in its own colour; other links hidden, no section box. For a BIM manager, primary_model can be a link (link vs link; this model is then ghosted). Use it to show the user how two models sit together before or after a clash test.",
+  title: "Clash view",
+  description: "The ACE Clash View, a 3D view per user and the only thing ACE changes. With no key: both models in colour (the primary model, this model by default, green; the secondary, with_model, red; with no with_model each other link in its own colour); other links hidden. With key (from run_clash_test topIssues / topOpen or clash_results): that clash alone, like Navisworks: everything else dimmed, the two elements drawn in their model colours and cut to a box around the clash, the intersection in gold, a section box and zoom on where they meet (a large slab shows only the area around the pipe). Walk the user through issues one by one with it. reset: true clears the highlight and the section box. A BIM manager can set primary_model to a link (link vs link).",
   inputSchema: {
+    key: z.string().optional().describe("A clash key: focus on that clash"),
+    reset: z.boolean().optional().describe("Clear the highlight and section box"),
     with_model: z.string().optional().describe("Secondary model (a link; default: all other loaded links)"),
     primary_model: z.string().optional().describe("Primary model (default: this model; a link for link vs link)"),
     colours: z.record(z.string()).optional().describe("Colour per model name, e.g. {\"MEP.rvt\": \"blue\"} (green, red, blue, berry, navy, lime, grey, silver or #RRGGBB); remembered"),
+    margin_mm: z.number().int().optional().describe("With key: space around the intersection (default 800 mm)"),
   },
   annotations: benign,
-}, async (a) => text(await callRevit("clash_view", a, 120)));
-
-tool("focus_clash", {
-  title: "Show one clash",
-  description: "Show one clash in the ACE Clash View, like Navisworks: everything else dimmed, the two elements drawn in their model colours (primary green, secondary red, or each link its chosen colour) cut to a box around the clash, the intersection in gold, a section box and zoom on where they meet (a large slab shows only the area around the pipe). key comes from run_clash_test (topIssues / topOpen) or clash_results. Walk the user through issues one by one with this.",
-  inputSchema: { key: z.string(), margin_mm: z.number().int().optional().describe("Space around the intersection (default 800 mm)") },
-  annotations: benign,
-}, async (a) => text(await callRevit("focus_clash", a, 120)));
-
-tool("reset_clash_view", {
-  title: "Reset the clash view",
-  description: "Clear the clash highlight and section box in the ACE Clash View (models stay in their colours).",
-  inputSchema: {},
-  annotations: benign,
-}, async () => text(await callRevit("reset_clash_view", {}, 120)));
+}, async ({ key, reset, margin_mm, ...view }) => {
+  if (key) return text(await callRevit("focus_clash", { key, margin_mm }, 120));
+  if (reset) return text(await callRevit("reset_clash_view", {}, 120));
+  return text(await callRevit("clash_view", view, 120));
+});
 
 tool("clash_results", {
   title: "Stored clash results",
-  description: "The stored clash results of this model without re-running: counts and the top issues with their clash keys (for focus_clash).",
+  description: "The stored clash results of this model without re-running: counts and the top issues with their clash keys (for clash_view key).",
   inputSchema: {},
   annotations: readOnly,
 }, async () => text(await callRevit("clash_results", {}, 60)));
@@ -711,8 +699,8 @@ server.registerPrompt("model-qa", {
   argsSchema: { focus: z.string().optional().describe("Optional focus, e.g. 'doors and rooms'") },
 }, ({ focus }) => ({
   messages: [{ role: "user", content: { type: "text", text:
-    `Run a read-only QA audit of the open Revit model${focus ? ` focusing on ${focus}` : ""}. Use the audit_model, parameter_completeness, ` +
-    "rooms_without_doors and door_width_check scripts where relevant, then explain the top issues in simple words, ranked by importance, " +
+    `Run a read-only QA audit of the open Revit model${focus ? ` focusing on ${focus}` : ""}. Use model_dashboard (the model check), and ` +
+    "the parameter_completeness and door_width_check scripts for detail where relevant, then explain the top issues in simple words, ranked by importance, " +
     "with element ids and a suggested fix for each. Don't change anything." } }],
 }));
 

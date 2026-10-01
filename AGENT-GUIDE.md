@@ -25,7 +25,7 @@ parameters you use, title blocks, view templates), the better Claude's defaults 
 
 | Area | Tools |
 |---|---|
-| Understand | `revit_status`, `get_model_overview`, `model_dashboard` (health score, findings, HTML report), `get_selection`, `find_elements`, `get_element_details`, `describe_category` (real parameters, % filled), `list_types` (loaded families/types), `list_views`, `view_image` (sees views) |
+| Understand | `revit_status`, `get_model_brief` (`quick: true` for the basics), `model_dashboard` (health score, findings, HTML report), `get_selection`, `find_elements`, `get_element_details`, `describe_category` (real parameters, % filled), `list_types` (loaded families/types), `list_views`, `view_image` (sees views) |
 | Knowledge | `revit_api_lookup` (the real Revit API on this PC: signatures, overloads, enums), `revit_guide` (expert guides: planning, performance, transactions, geometry, families, views and sheets, parameters and units, MEP and structure, links and worksharing) |
 | Change (gated) | `execute_revit_code` (full Revit API in C#), `set_parameters`, `run_saved_script`, `select_elements` |
 | Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |
@@ -34,8 +34,9 @@ parameters you use, title blocks, view templates), the better Claude's defaults 
 | Prompts | *Do a Revit task*, *Model QA check*, *Report a problem* |
 | In Revit | The **ACE Companion panel** shows Claude's previews with Apply/Cancel, its activity, and clickable results. Claude's instructions already cover it. |
 
-Built-in scripts: `audit_model`, `parameter_completeness`, `rooms_without_doors`, `door_width_check`,
-`renumber_rooms`, `tag_untagged`, `grid_system`, `sheets_for_levels`, `copy_parameter`, `test_fit_out` (office test fit).
+Built-in scripts: `parameter_completeness`, `door_width_check`,
+`renumber_rooms`, `tag_untagged`, `grid_system`, `sheets_for_levels`, `copy_parameter`, `test_fit_out` (office test fit),
+`derive_structure_from_arc` (structure from the ARC model), `assign_worksets` (worksets per the BEP).
 
 ## C. For Claude Code users (maintainers)
 

@@ -26,11 +26,11 @@ will do (and what Claude can do today). The **Roadmap** button shows the whole p
 | Ribbon panel | Buttons | Phase |
 |---|---|---|
 | **Claude** | Companion panel · MCP Status (done) · Undo Claude Change | 1.3.0 / 1 |
-| **Audit** | Model Health (score + report) · Warning Solver · Parameter Check · Rooms & Doors QA | 2 |
+| **Audit** | Warning Solver · Parameter Check · Rooms & Doors QA | 2 |
 | **Inspect** | Snoop Selection · Snoop Document · Event Monitor | 3 |
 | **Data** | Export to Excel · Import from Excel · Parameter Manager · Smart Select | 3 |
 | **Export** | Batch Export (PDF / DWG / IFC / NWC) · Export Profiles | 3 |
-| **Coordination** | Run Clash Test · Clash Results | 4 |
+| **Coordination** | Run Clash Test · Clash Browser · Coordination Report (live) | 4 |
 | **Deliver** | Submission Check · Prepare Submission · Transmittal | 5 |
 | **Compliance** | Design Check · Code Packs | 6 |
 | **Team Tools** | One button per shared team script, with icon and input form, updated from the team folder | 3 |

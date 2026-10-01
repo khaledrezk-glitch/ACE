@@ -68,11 +68,12 @@ namespace AceRevitMcp.Coordination
             }
             var issues = ClashLogic.Issues(all);
             Clashes.Last = all;
+            StatusStore.PublishClashes(host.Title, all);
             Clashes.LastIssues = issues;
             Clashes.LastTest = string.Join(", ", tests.Select(t => t.Name));
             Clashes.LastHost = host.Title;
             Clashes.LastPath = DashboardHtml.SaveAs(host.Title, "Clashes", DateTime.Now, ClashHtml.Render(host.Title, all, notes, sw.ElapsedMilliseconds));
-            if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Clash results", "run_clash_test", State);
+            if (Args.Bool(args, "show")) ClashBrowser.ShowFor(app);
             return new JsonObject
             {
                 ["tests"] = perTest,
@@ -141,7 +142,7 @@ namespace AceRevitMcp.Coordination
             if (Clashes.Last == null || Clashes.LastHost != host.Title)
             {
                 var stored = Clashes.LoadAll(host);
-                if (stored.Count > 0) { Clashes.Last = stored; Clashes.LastHost = host.Title; Clashes.LastTest = "stored results"; }
+                if (stored.Count > 0) { Clashes.Last = stored; Clashes.LastHost = host.Title; Clashes.LastTest = "stored results"; StatusStore.PublishClashes(host.Title, stored); }
             }
             var all = Clashes.Last != null && Clashes.LastHost == host.Title ? Clashes.Last : new List<Clash>();
             var issues = ClashLogic.Issues(all);
@@ -174,6 +175,7 @@ namespace AceRevitMcp.Coordination
                 changed++;
             }
             Clashes.Save(host, test, clashes);
+            if (Clashes.Last != null && Clashes.LastHost == host.Title) StatusStore.PublishClashes(host.Title, Clashes.Last);
             if (Clashes.Last != null)
                 foreach (var c in Clashes.Last.Where(c => keys.Contains(c.Key))) { c.Status = status; c.Approved = status == "approved"; if (Args.Str(args, "note") is string n2) c.Note = n2; }
             return new JsonObject { ["updated"] = changed, ["status"] = status };
@@ -190,35 +192,6 @@ namespace AceRevitMcp.Coordination
             };
         }
 
-        /// <summary>Only elements of the active model can be selected in it.</summary>
-        private static long[] HostIds(IEnumerable<Clash> clashes) =>
-            clashes.SelectMany(c => new[] { c.SourceA == Clashes.LastHost ? c.IdA : 0, c.SourceB == Clashes.LastHost ? c.IdB : 0 }).Where(i => i > 0).Distinct().ToArray();
-
-        internal static ReportWindow.State State()
-        {
-            if (Clashes.Last == null) return null;
-            var open = Clashes.Last.Where(Open).ToList();
-            var st = new ReportWindow.State
-            {
-                Path = Clashes.LastPath,
-                Status = $"{open.Count} open clashes ({Clashes.LastTest}). Saved to Documents\\ACE Insights.",
-            };
-            // Only elements of the active model can be selected.
-            var issues = ClashLogic.Issues(Clashes.Last);
-            st.Status = $"{issues.Count} issues ({open.Count} open clashes, {Clashes.LastTest}). Saved to Documents\\ACE Insights.";
-            var caused = open.Where(c => c.CausedBy != null).GroupBy(c => c.CausedBy).OrderByDescending(g => g.Count());
-            foreach (var g in caused)
-                st.Findings.Add(($"New from changes by {g.Key}: {g.Count()} clashes", HostIds(g)));
-            foreach (var i in issues.Take(15))
-                st.Findings.Add(($"Issue: {DashboardHtml.Trim(i.Title, 70)} ({i.Responsible})", HostIds(i.Clashes)));
-            foreach (var g in open.GroupBy(c => c.Responsible).OrderByDescending(g => g.Count()))
-            {
-                st.Findings.Add(($"{g.Key}: {g.Count()} clashes", HostIds(g)));
-            }
-            foreach (var g in open.GroupBy(c => c.Level).OrderBy(g => g.Key))
-                st.Findings.Add(($"   Level {g.Key}: {g.Count()}", HostIds(g)));
-            return st;
-        }
     }
 
     [Transaction(TransactionMode.ReadOnly)]
@@ -233,26 +206,6 @@ namespace AceRevitMcp.Coordination
                 return Result.Succeeded;
             }
             catch (Exception ex) { Log.Error($"Clash test: {ex}"); message = ex.Message; return Result.Failed; }
-        }
-    }
-
-    [Transaction(TransactionMode.ReadOnly)]
-    public sealed class ClashResultsCommand : IExternalCommand
-    {
-        public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
-        {
-            var doc = commandData.Application.ActiveUIDocument?.Document;
-            if (doc == null) { TaskDialog.Show("ACE Clash results", "Open a model first."); return Result.Cancelled; }
-            if (Clashes.Last == null)
-            {
-                // Show the stored results of the last runs without re-running.
-                var stored = Clashes.Standard.SelectMany(t => Clashes.Load(doc, t.Name)).ToList();
-                if (stored.Count == 0) { TaskDialog.Show("ACE Clash results", "No clash results yet for this model. Click Run Clash Test first."); return Result.Cancelled; }
-                Clashes.Last = stored; Clashes.LastTest = "stored results"; Clashes.LastHost = doc.Title;
-                Clashes.LastPath = DashboardHtml.SaveAs(doc.Title, "Clashes", DateTime.Now, ClashHtml.Render(doc.Title, stored, new List<string> { "Stored results of the last runs (not re-run)." }, 0));
-            }
-            ReportWindow.ShowOrRefresh(commandData.Application.MainWindowHandle, "Clash results", "run_clash_test", ClashCommands.State);
-            return Result.Succeeded;
         }
     }
 
