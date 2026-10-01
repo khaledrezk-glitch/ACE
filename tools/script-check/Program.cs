@@ -25,9 +25,12 @@ foreach (var f in args.SelectMany(a => Directory.GetFiles(Path.GetFullPath(a), "
   var r = (object[])comp.Invoke(null, new object[]{src, refs.ToArray(), "AceScript_t"})!;
   var errs=(string[])r[1];
   var ok = r[0]!=null;
-  var pass = ok != expectFail;
+  // The semantic risk screen: built-in scripts must not need allow_risky; files marked EXPECT_RISK must be caught.
+  var risks = r.Length > 3 ? (string[])r[3] : Array.Empty<string>();
+  var expectRisk = code.Contains("EXPECT_RISK");
+  var pass = ok != expectFail && (expectFail || (risks.Length > 0) == expectRisk);
   if(!pass) fails++;
-  Console.WriteLine($"{(pass?"PASS":"FAIL")} {Path.GetFileName(f)} compiled={ok}");
+  Console.WriteLine($"{(pass?"PASS":"FAIL")} {Path.GetFileName(f)} compiled={ok}{(risks.Length > 0 ? " risks=" + string.Join("; ", risks) : "")}");
   foreach(var e in errs.Take(6)) Console.WriteLine("    "+e);
 }
 return fails;

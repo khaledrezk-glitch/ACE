@@ -26,8 +26,10 @@ Scripts in `mcp-server/scripts/*.cs` and any API usage in `guides/*.md` must com
 assemblies (NuGet `Nice3point.Revit.Api.RevitAPI` 2025.0.2), exactly as the add-in wraps them:
 ```bash
 dotnet publish revit-addin/AceRevitMcp.Compiler -c Release -o tools/script-check/compiler   # once
-dotnet run --project tools/script-check -- mcp-server/scripts                                # every script must PASS
+dotnet run --project tools/script-check -- mcp-server/scripts tools/risk-cases               # every script must PASS
 ```
+`tools/risk-cases` holds scripts the compiler's risk screen must catch (`EXPECT_RISK`); built-in scripts must need no
+`allow_risky`.
 With Revit open (on a Windows PC), also run the benchmark: `node tools/bench/run.mjs`.
 
 ## Company reference material

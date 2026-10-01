@@ -133,7 +133,7 @@ foreach (var e in elements)
     if (ws.Id == current) { correct++; continue; }
     if (wrong.Count < 60) wrong.Add($"{e.Category.Name} {e.Id.Value} ({typeName}): {doc.GetWorksetTable().GetWorkset(current)?.Name} -> {target}{(rule != null ? $" [rule {rule.Index}]" : " [default]")}");
     if (checkOnly) { moved.Add(e.Id.Value); continue; }
-    if (WorksharingUtils.GetCheckoutStatus(doc, e.Id) == CheckoutStatus.OwnedByOtherUser) { blocked.Add(e.Id.Value); continue; }
+    if (!ctx.CanEdit(e, out _)) { blocked.Add(e.Id.Value); continue; }   // in use by someone, or changed in central
     try { e.get_Parameter(worksetParam).Set(ws.Id.IntegerValue); moved.Add(e.Id.Value); }
     catch { blocked.Add(e.Id.Value); }
 }
@@ -151,9 +151,9 @@ return new
     worksetsCreated = created,
     borrowedByOthers = blocked.Take(100).ToList(),
     examples = wrong,
-    ids = checkOnly ? new List<long>() : moved,
+    ids = checkOnly ? new List<long>() : moved.Take(2000).ToList(),   // counts per workset above; ids capped for the reply
     wrongIds = checkOnly ? moved.Take(2000).ToList() : new List<long>(),
     note = (missing.Count > 0 ? "Some target worksets do not exist: create them (create_missing: true) or fix the names in the rules. " : "") +
-           (blocked.Count > 0 ? "Elements borrowed by other users were skipped: ask them to relinquish, then run again. " : "") +
+           (blocked.Count > 0 ? "Elements in use by others, or changed in central since your last Reload Latest, were skipped: reload latest or ask them to relinquish, then run again. " : "") +
            "The first matching rule wins; categories without a rule stay where they are unless default_workset is set.",
 };

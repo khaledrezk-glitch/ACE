@@ -125,6 +125,16 @@ public static class AceScript
                     ["hint"] = "Line numbers refer to your code. Fix the errors and call again.",
                 };
             }
+            // What the code really calls (resolved by the compiler): files, programs, network, reflection, saving or
+            // syncing models need the user's consent, like the MCP server's quick text screen.
+            if (compiled.risks.Length > 0 && !Commands.Args.Bool(args, "allow_risky"))
+                return new JsonObject
+                {
+                    ["success"] = false,
+                    ["stage"] = "risky",
+                    ["error"] = $"Blocked for safety: this code {string.Join(", ", compiled.risks)}. That goes beyond editing the model. " +
+                                "Explain to the user exactly what it would do and why; only if they agree, call again with allow_risky: true.",
+                };
             if (compileOnlyRequested)
                 return new JsonObject { ["success"] = true, ["stage"] = "compile", ["note"] = "Compiled successfully. Nothing was run." };
 
@@ -241,12 +251,25 @@ public static class AceScript
                 if (transactionStatus != null) response["transaction"] = transactionStatus;
                 if (mode != "readonly" && failure == null)
                     response[dryRun ? "wouldChange" : "changed"] = recording.Summary();
+                // Workshared preview: which previewed elements this user now holds (a preview may borrow them from
+                // central; borrowed, unchanged elements are released at the next sync or with Relinquish All Mine).
+                if (dryRun && failure == null && doc != null && doc.IsWorkshared && recording.ModifiedIds.Count > 0)
+                {
+                    var held = recording.ModifiedIds.Take(2000).Count(id => RevitJson.Safe(() =>
+                        WorksharingUtils.GetCheckoutStatus(doc, new ElementId(id)) == CheckoutStatus.OwnedByCurrentUser));
+                    if (held > 0) response["heldAfterPreview"] = $"{held} of the previewed elements are held by you now (some may have been before). Unchanged ones are released at your next sync, or with Collaborate > Relinquish All Mine.";
+                }
                 if (guard.Warnings.Count > 0) response["revitWarnings"] = Grouped(guard.Warnings);
                 if (guard.Errors.Count > 0) response["revitErrors"] = Grouped(guard.Errors);
                 if (guard.Dialogs.Count > 0) response["dialogs"] = ToArray(guard.Dialogs);
             }
 
             if (ctx.Output.Count > 0) response["output"] = ToArray(ctx.Output);
+            if (ctx.Skipped.Count > 0)
+            {
+                response["skippedUneditable"] = ToArray(ctx.Skipped.Take(50));
+                response["skippedCount"] = ctx.Skipped.Count;
+            }
 
             if (failure != null)
             {
@@ -339,14 +362,15 @@ public static class AceScript
         }
 
         /// <summary>Compiled scripts by source, newest last: the preview and the apply of one change compile once.</summary>
-        private static readonly List<(string Key, byte[] Bytes)> Compiled = new List<(string, byte[])>();
+        private static readonly List<(string Key, byte[] Bytes, string[] Risks)> Compiled = new List<(string, byte[], string[])>();
         private const int CompiledKept = 16;
 
-        private static (Assembly assembly, string[] errors) Compile(string source)
+        private static (Assembly assembly, string[] errors, string[] risks) Compile(string source)
         {
             var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)));
             byte[] bytes;
-            lock (Compiled) bytes = Compiled.FirstOrDefault(c => c.Key == key).Bytes;
+            string[] risks;
+            lock (Compiled) (_, bytes, risks) = Compiled.FirstOrDefault(c => c.Key == key);
             if (bytes == null)
             {
                 MethodInfo compile;
@@ -354,10 +378,11 @@ public static class AceScript
                 var assemblyName = $"AceScript_{Interlocked.Increment(ref _counter)}";
                 var output = (object[])compile.Invoke(null, new object[] { source, ReferencePaths(), assemblyName })!;
                 bytes = (byte[])output[0];
-                if (bytes == null) return (null, (string[])output[1]);
+                if (bytes == null) return (null, (string[])output[1], Array.Empty<string>());
+                risks = output.Length > 3 ? (string[])output[3] : Array.Empty<string>();
                 lock (Compiled)
                 {
-                    Compiled.Add((key, bytes));
+                    Compiled.Add((key, bytes, risks));
                     if (Compiled.Count > CompiledKept) Compiled.RemoveAt(0);
                 }
             }
@@ -366,7 +391,7 @@ public static class AceScript
             // Collectible context so thousands of scripts don't leak memory; Revit/our types resolve from the default context.
             var alc = _scriptContext = new AssemblyLoadContext(assemblyNameOf, isCollectible: true);
             using var ms = new MemoryStream(bytes);
-            return (alc.LoadFromStream(ms), Array.Empty<string>());
+            return (alc.LoadFromStream(ms), Array.Empty<string>(), risks ?? Array.Empty<string>());
         }
 
         private static MethodInfo LoadCompiler()

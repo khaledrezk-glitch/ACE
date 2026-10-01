@@ -119,6 +119,8 @@ doc/uidoc/app/args/ctx.
 ctx helpers: ctx.All<Wall>(), ctx.Instances(BuiltInCategory.OST_Doors), ctx.Types<WallType>(),
 ctx.Level("Level 1"), ctx.Levels(), ctx.Selection(), ctx.El(id), ctx.Str/Num/Bool/Ids("input"),
 ctx.Mm/M/Cm/ToMm/ToM/SqmFromInternal/Deg, ctx.Transact("name", () => {...}) (mode "manual"), ctx.IsDryRun.
+Workshared model: edit ctx.Editable(list) (skips elements in use by others or changed in central and reports them),
+or check ctx.CanEdit(e, out var why); otherwise one element in use rolls back the whole run.
 Modes: "auto" (default: one transaction) and "manual" (your own transactions) are each merged into ONE
 undo step; "readonly" is always rolled back. compile_only: true checks that code compiles without
 running it. Compile errors give line numbers in your code; results include scriptMs (timing).

@@ -22,7 +22,7 @@ namespace AceRevitMcp.Compiler
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, MetadataReference> References =
             new System.Collections.Concurrent.ConcurrentDictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
 
-        /// <returns>object[] { byte[] assemblyOrNull, string[] errors, string[] warnings }</returns>
+        /// <returns>object[] { byte[] assemblyOrNull, string[] errors, string[] warnings, string[] risks }</returns>
         public static object[] Compile(string source, string[] referencePaths, string assemblyName)
         {
             // An explicit encoding is required to emit (embedded) debug information.
@@ -81,7 +81,8 @@ namespace AceRevitMcp.Compiler
             var errors = result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Select(Format).ToArray();
             var warnings = result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Warning).Select(Format).Take(20).ToArray();
 
-            return new object[] { result.Success ? ms.ToArray() : null, errors, warnings };
+            var risks = result.Success ? RiskScreen.Find(compilation, tree) : Array.Empty<string>();
+            return new object[] { result.Success ? ms.ToArray() : null, errors, warnings, risks };
         }
     }
 }

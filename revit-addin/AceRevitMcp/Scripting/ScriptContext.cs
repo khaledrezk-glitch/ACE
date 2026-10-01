@@ -98,6 +98,43 @@ namespace AceRevitMcp.Scripting
         public List<Element> Selection() =>
             UiDoc == null ? new List<Element>() : UiDoc.Selection.GetElementIds().Select(Doc.GetElement).Where(e => e != null).ToList();
 
+        // ---- Worksharing ----------------------------------------------------------------------------
+
+        private readonly List<string> _skipped = new List<string>();
+        internal IReadOnlyList<string> Skipped => _skipped;
+
+        /// <summary>
+        /// Whether the element can be changed now. In a workshared model it cannot when someone else owns it, or when it
+        /// was changed in the central model since your last Reload Latest (Revit would refuse the whole transaction).
+        /// </summary>
+        public bool CanEdit(Element e, out string reason)
+        {
+            reason = null;
+            if (e == null) { reason = "not found"; return false; }
+            if (!Doc.IsWorkshared) return true;
+            var status = WorksharingUtils.GetCheckoutStatus(Doc, e.Id, out var owner);
+            if (status == CheckoutStatus.OwnedByOtherUser) { reason = $"in use by {owner}"; return false; }
+            var updates = WorksharingUtils.GetModelUpdatesStatus(Doc, e.Id);
+            if (updates == ModelUpdatesStatus.UpdatedInCentral || updates == ModelUpdatesStatus.DeletedInCentral)
+            { reason = "changed in the central model since your last Reload Latest"; return false; }
+            return true;
+        }
+
+        /// <summary>
+        /// The elements that can be changed now; the others are left out and reported to Claude ("skippedUneditable"),
+        /// so one element in use by a colleague does not roll back the whole job. Use it before editing a list.
+        /// </summary>
+        public List<T> Editable<T>(IEnumerable<T> elements) where T : Element
+        {
+            var ok = new List<T>();
+            foreach (var e in elements)
+            {
+                if (CanEdit(e, out var why)) ok.Add(e);
+                else if (_skipped.Count < 500) _skipped.Add($"{e?.Id.Value}: {e?.Name} ({why})");
+            }
+            return ok;
+        }
+
         /// <summary>
         /// Run a named transaction (for mode "manual"). Warnings are cleared automatically;
         /// returns the final status (Committed / RolledBack).

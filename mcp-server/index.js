@@ -447,7 +447,7 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
   mode = mode || "auto";
   const risky = screenCode(code, allow_risky);
   const modifies = mode !== "readonly" && !compile_only;
-  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, preview_image: !!(preview_image && dry_run) }, timeout_seconds ?? 300);
+  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, allow_risky: !!allow_risky, preview_image: !!(preview_image && dry_run) }, timeout_seconds ?? 300);
   const result = !modifies ? await send() : await gated(fingerprint("code", { code, mode, inputs: inputs || {} }),
     { apply: !dry_run, explanation, why: "Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal." },
     send, (r) => !!r?.success);
@@ -459,7 +459,8 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
   if (result?.alreadyApplied) {
     return text({ ...result, instruction: "Already applied by the user in Revit. Do not re-apply. Verify with a read-only query and report the outcome." });
   }
-  if (result?.stage === "rejected") {
+  // Refused by the add-in: cancelled in the panel, previewed in another model or view, or risky code without consent.
+  if (["rejected", "wrong_model", "risky"].includes(result?.stage)) {
     return { isError: true, content: [{ type: "text", text: result.error }] };
   }
 
