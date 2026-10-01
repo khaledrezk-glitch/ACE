@@ -61,14 +61,21 @@ const RISKY = [
   [/\b(HttpClient|WebClient|WebRequest|Socket|TcpClient|UdpClient|SmtpClient)\b/, "uses the network"],
   [/\bRegistry\b/, "changes Windows settings"],
   [/\bEnvironment\.Exit\b|\bApplication\.Exit\b/, "closes programs"],
-  [/\.(SaveAs|Save|SaveCloudModel|Close)\s*\(/, "saves or closes a model"],
+  [/\.(SaveAs|Save|SaveAndClose|SaveCloudModel|Close)\s*\(/, "saves or closes a model"],
+  [/\b(OpenAndActivateDocument|OpenDocumentFile|Unload|UnloadLocally)\s*\(/, "opens other models or unloads links"],
+  [/\bFile\.(Read\w*|Open\w*)\b|\bStreamReader\b/, "reads files on disk"],
+  [/\b(Activator|InvokeMember|AssemblyLoadContext|dynamic)\b|\bType\.GetType\b|\.GetMethod\s*\(/, "uses reflection to reach code beyond the Revit API"],
+  [/\busing\s+\w+\s*=\s*(global::)?System\.(IO|Net|Diagnostics|Reflection|Runtime)\b/, "hides a system class behind an alias"],
+  [/\\u[0-9a-fA-F]{4}/, "uses escaped characters, which can hide what the code calls"],
   [/\b(SynchronizeWithCentral|RelinquishOwnership|ReloadLatest)\b/, "syncs with the central model"],
   [/\bPostCommand\b/, "triggers Revit commands"],
   [/\bAssembly\.Load|\bDllImport\b|\bMarshal\./, "loads external code"],
 ];
 
 export function screenCode(code, allowRisky) {
-  const found = RISKY.filter(([re]) => re.test(code)).map(([, why]) => why);
+  // Comments and spaces around dots must not hide a call ("File /**/ . Delete").
+  const plain = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ").replace(/\s*\.\s*/g, ".");
+  const found = RISKY.filter(([re]) => re.test(plain)).map(([, why]) => why);
   if (found.length && !allowRisky) {
     throw new RevitError(
       `Blocked for safety: this code ${[...new Set(found)].join(", ")}. That goes beyond editing the model. ` +

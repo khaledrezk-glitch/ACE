@@ -331,6 +331,46 @@
           "value": 5
         }
       ]
+    },
+    {
+      "name": "Change tracker understands a weekday ('since monday')",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "model_changes",
+      "args": {
+        "since": "monday",
+        "save_snapshot": false,
+        "include_links": false
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "models",
+          "op": "length>=",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Read-only script: result first, nothing kept",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "args": {
+        "code": "return ctx.Levels().Count();",
+        "mode": "readonly"
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "result",
+          "op": ">=",
+          "value": 1
+        }
+      ]
     }
   ]
 }

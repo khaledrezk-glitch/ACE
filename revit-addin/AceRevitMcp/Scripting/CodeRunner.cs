@@ -70,7 +70,22 @@ public static class AceScript
         private static MethodInfo _compile;
         private static int _counter;
 
+        /// <summary>The script assembly's load context of the current run, unloaded when the run ends (runs are one at a time).</summary>
+        private static AssemblyLoadContext _scriptContext;
+
         public static JsonObject Run(UIApplication uiapp, JsonObject args)
+        {
+            try { return RunScript(uiapp, args); }
+            finally
+            {
+                // Without Unload a collectible context is never collected: every run would stay in memory.
+                var alc = _scriptContext;
+                _scriptContext = null;
+                try { alc?.Unload(); } catch (Exception ex) { Log.Warn($"Script unload: {ex.Message}"); }
+            }
+        }
+
+        private static JsonObject RunScript(UIApplication uiapp, JsonObject args)
         {
             if (args["code"] != null && args["code"] is not JsonValue)
                 throw new CommandException("'code' must be a string of C# (it arrived as a JSON object or array).");
@@ -94,6 +109,9 @@ public static class AceScript
                 return earlier.Rejected
                     ? new JsonObject { ["success"] = false, ["stage"] = "rejected", ["error"] = earlier.Note }
                     : new JsonObject { ["success"] = true, ["alreadyApplied"] = true, ["note"] = earlier.Note, ["outcome"] = earlier.Outcome };
+            var activeView = uiapp.ActiveUIDocument?.ActiveView?.Id.Value ?? 0;
+            if (tracked && !dryRun && Companion.ActivityHub.WrongPlace(hash, uiapp.ActiveUIDocument?.Document, activeView) is string wrong)
+                return new JsonObject { ["success"] = false, ["stage"] = "wrong_model", ["error"] = wrong };
 
             var source = BuildSource(code);
             var compiled = Compile(source);
@@ -118,6 +136,7 @@ public static class AceScript
             var entry = compiled.assembly.GetType("AceScript")!.GetMethod("Run")!;
             var response = new JsonObject { ["mode"] = mode, ["dryRun"] = dryRun };
             object result = null;
+            var rollbackFailed = new List<string>();
             Exception failure = null;
             string transactionStatus = null;
             var recording = ChangeTracker.Begin(name);
@@ -174,18 +193,22 @@ public static class AceScript
                     // Other models follow the active one: rolled back for previews and read-only runs, kept when applied.
                     foreach (var g in others)
                     {
-                        if (dryRun || mode == "readonly") g.RollBack();
-                        else g.Assimilate();
+                        if (!(dryRun || mode == "readonly")) g.Assimilate();
+                        else if (g.RollBack() != TransactionStatus.RolledBack) rollbackFailed.Add("another open model");
                     }
                     if (group != null && mode == "readonly")
                     {
-                        group.RollBack();
+                        if (group.RollBack() != TransactionStatus.RolledBack) rollbackFailed.Add(doc.Title);
                         if (recording.Committed > 0)
                             response["note"] = "Read-only run: the script made changes, and they were all rolled back. Use mode 'auto' or 'manual' (with a preview) to change the model.";
                     }
                     else if (group != null)
                     {
-                        if (dryRun) transactionStatus = group.RollBack().ToString();
+                        if (dryRun)
+                        {
+                            transactionStatus = group.RollBack().ToString();
+                            if (transactionStatus != TransactionStatus.RolledBack.ToString()) rollbackFailed.Add(doc.Title);
+                        }
                         else
                         {
                             transactionStatus = group.Assimilate().ToString();
@@ -196,9 +219,15 @@ public static class AceScript
                 catch (Exception ex)
                 {
                     failure = ex;
-                    try { if (tx != null && tx.HasStarted() && !tx.HasEnded()) tx.RollBack(); } catch { }
-                    try { if (group != null && group.HasStarted() && !group.HasEnded()) group.RollBack(); } catch { }
-                    foreach (var g in others) try { if (g.HasStarted() && !g.HasEnded()) g.RollBack(); } catch { }
+                    void RollBack(string what, Func<bool> open, Func<TransactionStatus> rollBack)
+                    {
+                        try { if (open() && rollBack() != TransactionStatus.RolledBack) rollbackFailed.Add(what); }
+                        catch (Exception rex) { rollbackFailed.Add($"{what}: {rex.Message}"); }
+                    }
+                    if (tx != null) RollBack("transaction", () => tx.HasStarted() && !tx.HasEnded(), tx.RollBack);
+                    if (group != null) RollBack(doc.Title, () => group.HasStarted() && !group.HasEnded(), group.RollBack);
+                    foreach (var g in others) RollBack("another open model", () => g.HasStarted() && !g.HasEnded(), g.RollBack);
+                    if (rollbackFailed.Count > 0) Log.Error($"Script rollback failed: {string.Join("; ", rollbackFailed)}");
                     transactionStatus = mode == "readonly" ? null : "RolledBack";
                 }
                 finally
@@ -212,8 +241,8 @@ public static class AceScript
                 if (transactionStatus != null) response["transaction"] = transactionStatus;
                 if (mode != "readonly" && failure == null)
                     response[dryRun ? "wouldChange" : "changed"] = recording.Summary();
-                if (guard.Warnings.Count > 0) response["revitWarnings"] = ToArray(guard.Warnings);
-                if (guard.Errors.Count > 0) response["revitErrors"] = ToArray(guard.Errors);
+                if (guard.Warnings.Count > 0) response["revitWarnings"] = Grouped(guard.Warnings);
+                if (guard.Errors.Count > 0) response["revitErrors"] = Grouped(guard.Errors);
                 if (guard.Dialogs.Count > 0) response["dialogs"] = ToArray(guard.Dialogs);
             }
 
@@ -226,21 +255,45 @@ public static class AceScript
                 response["error"] = $"{failure.GetType().Name}: {failure.Message}";
                 var line = ScriptLine(failure);
                 if (line != null) response["line"] = line;
-                response["note"] = mode == "readonly" ? "Nothing was changed." : "All changes from this run were rolled back. The model is exactly as before.";
+                if (rollbackFailed.Count > 0)
+                {
+                    response["rollbackFailed"] = new JsonArray(rollbackFailed.Select(x => (JsonNode)x).ToArray());
+                    response["note"] = "WARNING: the run failed AND Revit could not roll everything back, so the model may be partly changed. Tell the user, check with a read-only query, and offer Ctrl+Z.";
+                }
+                else response["note"] = mode == "readonly" ? "Nothing was changed." : "All changes from this run were rolled back. The model is exactly as before.";
+                return response;
+            }
+
+            if (rollbackFailed.Count > 0)
+            {
+                // The script worked, but its changes could not all be taken back: never present that as a clean preview.
+                response["success"] = false;
+                response["stage"] = "rollback";
+                response["rollbackFailed"] = ToArray(rollbackFailed);
+                response["error"] = "The script ran, but Revit could not roll all of its changes back, so the model may be partly changed. Tell the user, check with a read-only query, and offer Ctrl+Z.";
                 return response;
             }
 
             response["success"] = true;
-            if (tracked && dryRun) Companion.ActivityHub.AddPending("execute_code", args, response);
+            if (tracked && dryRun) Companion.ActivityHub.AddPending("execute_code", args, response, doc, activeView);
             else if (tracked && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
             if (mode == "readonly") { /* keep any note set above */ }
             else if (dryRun)
                 response["note"] = "Dry run: the script ran completely, then every change was rolled back. The model is unchanged.";
             else
                 response["note"] = $"Applied as ONE undo step named '{name}' (Ctrl+Z in Revit, or undo_last_claude_change).";
-            response["result"] = JsonConvert.ToNode(result);
-            return response;
+            // The result comes first, so a long list of warnings or output can never push it out of a shortened reply.
+            var ordered = new JsonObject { ["success"] = true, ["result"] = JsonConvert.ToNode(result) };
+            var rest = response.ToList();
+            response.Clear();
+            foreach (var kv in rest) if (!ordered.ContainsKey(kv.Key)) ordered[kv.Key] = kv.Value;
+            return ordered;
         }
+
+        /// <summary>Revit messages grouped by text with a count (a large edit can raise the same warning thousands of times).</summary>
+        private static JsonArray Grouped(IEnumerable<string> items) =>
+            new JsonArray(items.GroupBy(i => i).OrderByDescending(g => g.Count()).Take(30)
+                .Select(g => (JsonNode)(g.Count() > 1 ? $"{g.Key} (x{g.Count()})" : g.Key)).ToArray());
 
         private static object Invoke(MethodInfo entry, ScriptContext ctx)
         {
@@ -297,7 +350,7 @@ public static class AceScript
             if (bytes == null) return (null, errors);
 
             // Collectible context so thousands of scripts don't leak memory; Revit/our types resolve from the default context.
-            var alc = new AssemblyLoadContext(assemblyName, isCollectible: true);
+            var alc = _scriptContext = new AssemblyLoadContext(assemblyName, isCollectible: true);
             using var ms = new MemoryStream(bytes);
             return (alc.LoadFromStream(ms), Array.Empty<string>());
         }

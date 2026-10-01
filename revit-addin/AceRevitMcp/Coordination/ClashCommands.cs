@@ -80,7 +80,7 @@ namespace AceRevitMcp.Coordination
                 {
                     ["issue"] = i.Title, ["clashes"] = i.Count, ["responsible"] = i.Responsible, ["levels"] = i.Levels,
                     ["elementId"] = i.ElementId, ["model"] = i.Model, ["maxDepthMm"] = i.MaxDepthMm, ["pointMm"] = $"{i.X}, {i.Y}, {i.Z}",
-                    ["keys"] = new JsonArray(i.Clashes.Select(c => (JsonNode)c.Key).ToArray()),
+                    ["issueKey"] = i.Key, ["firstKeys"] = new JsonArray(i.Clashes.OrderByDescending(c => c.DepthMm).Take(3).Select(c => (JsonNode)c.Key).ToArray()),
                     ["causedBy"] = i.Clashes.Select(c => c.CausedBy).FirstOrDefault(x => x != null),
                     ["cause"] = i.Clashes.Select(c => c.Cause).FirstOrDefault(x => x != null && !x.StartsWith("both elements are unchanged")),
                 }).ToArray()),
@@ -145,33 +145,55 @@ namespace AceRevitMcp.Coordination
                 ["issueList"] = new JsonArray(issues.Take(30).Select(i => (JsonNode)new JsonObject
                 {
                     ["issue"] = i.Title, ["responsible"] = i.Responsible, ["levels"] = i.Levels, ["clashes"] = i.Count,
-                    ["keys"] = new JsonArray(i.Clashes.Select(c => (JsonNode)c.Key).ToArray()),
+                    ["issueKey"] = i.Key, ["firstKeys"] = new JsonArray(i.Clashes.OrderByDescending(c => c.DepthMm).Take(3).Select(c => (JsonNode)c.Key).ToArray()),
                 }).ToArray()),
             };
         }
 
-        /// <summary>{ test, keys: [...], status: approved | active | new, note }</summary>
+        /// <summary>
+        /// { keys: [...clash or issue keys], status: approved | active | new, note, test? }. The test of each clash is taken
+        /// from the results (test is only a filter); an issue key sets every clash of that issue.
+        /// </summary>
         public static JsonNode SetStatus(UIApplication app, JsonObject args)
         {
             var host = Args.RequireDoc(app);
-            var test = Args.Str(args, "test") ?? throw new CommandException("Give 'test'.");
+            var onlyTest = Args.Str(args, "test");
             var status = Args.Str(args, "status") ?? "approved";
             if (!new[] { "approved", "active", "new" }.Contains(status)) throw new CommandException("status must be approved, active or new.");
-            var keys = new HashSet<string>(Args.Strings(args, "keys"));
+            var asked = Args.Strings(args, "keys").ToList();
+            if (asked.Count == 0) throw new CommandException("Give 'keys': clash keys or issue keys (from run_clash_test or clash_results).");
             var note = Args.Str(args, "note");
             void Set(Clash c) { c.Status = status; c.Approved = status == "approved"; if (note != null) c.Note = note; }
-            // The stored file, and this session's copy of the same clashes; then publish once, after both are updated.
-            var clashes = Clashes.Load(host, test);
-            var changed = 0;
-            foreach (var c in clashes.Where(c => keys.Contains(c.Key))) { Set(c); changed++; }
-            Clashes.Save(host, test, clashes);
-            var current = StatusStore.For(host.Title)?.Clashes;
-            if (current != null)
+
+            var current = Clashes.Current(host);
+            var issues = StatusStore.For(host.Title)?.ClashIssues ?? ClashLogic.Issues(current);
+            var keys = new HashSet<string>();
+            var notFound = new List<string>();
+            foreach (var k in asked)
             {
-                foreach (var c in current.Where(c => keys.Contains(c.Key))) Set(c);
-                StatusStore.PublishClashes(host.Title, current);
+                var issue = issues.FirstOrDefault(i => i.Key == k);
+                if (issue != null) keys.UnionWith(issue.Clashes.Select(c => c.Key));
+                else if (current.Any(c => c.Key == k)) keys.Add(k);
+                else notFound.Add(k);
             }
-            return new JsonObject { ["updated"] = changed, ["status"] = status };
+            var tests = current.Where(c => keys.Contains(c.Key) && (onlyTest == null || string.Equals(c.Test, onlyTest, StringComparison.OrdinalIgnoreCase)))
+                               .Select(c => c.Test).Distinct().ToList();
+
+            // The stored file of each test, and this session's copy of the same clashes; then publish once.
+            var changed = 0;
+            foreach (var test in tests)
+            {
+                var stored = Clashes.Load(host, test);
+                foreach (var c in stored.Where(c => keys.Contains(c.Key))) { Set(c); changed++; }
+                Clashes.Save(host, test, stored);
+            }
+            foreach (var c in current.Where(c => keys.Contains(c.Key) && tests.Contains(c.Test))) Set(c);
+            StatusStore.PublishClashes(host.Title, current);
+            if (changed == 0)
+                throw new CommandException($"No clash matched {string.Join(", ", notFound.Take(5))}. Use the clash or issue keys from run_clash_test or clash_results.");
+            var result = new JsonObject { ["updated"] = changed, ["status"] = status, ["tests"] = new JsonArray(tests.Select(t => (JsonNode)t).ToArray()) };
+            if (notFound.Count > 0) result["notFound"] = new JsonArray(notFound.Select(k => (JsonNode)k).ToArray());
+            return result;
         }
 
         public static JsonNode Sources(UIApplication app, JsonObject args)

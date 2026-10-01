@@ -32,6 +32,20 @@ class P {
       "changed | Doors | Mark: 'D-01' -> 'D-02' (and possibly other values)" };
     foreach (var l in lines) Console.WriteLine(l);
     if (!lines.SequenceEqual(expected)) { Console.WriteLine("tracker test FAILED"); Environment.Exit(1); }
+    // "since" words: weekdays and day counts are understood, anything else is refused (null), never ignored.
+    var snap = a.GetType("AceRevitMcp.Tracking.Snapshots");
+    var sinceTime = snap.GetMethod("SinceTime", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+    var wed = new DateTime(2026, 9, 30, 15, 0, 0);   // a Wednesday
+    DateTime? Since(string w) => (DateTime?)sinceTime.Invoke(null, new object[] { w, wed });
+    void Expect(string w, DateTime? want) { var got = Since(w); Console.WriteLine($"since '{w}' -> {got:yyyy-MM-dd HH:mm}"); if (got != want) { Console.WriteLine("tracker test FAILED (since)"); Environment.Exit(1); } }
+    Expect("monday", new DateTime(2026, 9, 28));
+    Expect("last monday", new DateTime(2026, 9, 28));
+    Expect("wednesday", new DateTime(2026, 9, 30));
+    Expect("3 days", new DateTime(2026, 9, 27));
+    Expect("2 weeks ago", new DateTime(2026, 9, 16));
+    Expect("yesterday", new DateTime(2026, 9, 29));
+    Expect("2026-09-01", new DateTime(2026, 9, 1));
+    Expect("whenever", null);
     Console.WriteLine("tracker test passed");
   }
 }

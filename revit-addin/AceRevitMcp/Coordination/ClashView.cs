@@ -188,7 +188,11 @@ namespace AceRevitMcp.Coordination
         {
             var doc = Args.RequireDoc(app);
             var key = Args.Str(args, "key") ?? throw new CommandException("Give the clash 'key' (from run_clash_test or the Clash Browser).");
-            var clash = Clashes.Current(doc).FirstOrDefault(c => c.Key == key)
+            var current = Clashes.Current(doc);
+            // An issue key focuses on the deepest clash of that issue.
+            var issue = (StatusStore.For(doc.Title)?.ClashIssues ?? new List<ClashIssue>()).FirstOrDefault(i => i.Key == key);
+            var clash = issue?.Clashes.OrderByDescending(c => c.DepthMm).FirstOrDefault()
+                        ?? current.FirstOrDefault(c => c.Key == key)
                         ?? Clashes.LoadAll(doc).FirstOrDefault(c => c.Key == key)   // e.g. a custom test not in this session
                         ?? throw new CommandException("That clash is not in the stored results. Run the clash test again.");
             var sources = Clashes.Sources(app, doc);
@@ -242,13 +246,13 @@ namespace AceRevitMcp.Coordination
             if (hits.Count > 0) shapes.Add(ClashHighlight.FromSolids(hits, Dc(HitColour, 0), Lengths.Ft(6)));
             var server = ClashHighlight.Ensure();
             server.Show(v.Id, shapes);
-            session.FocusedKey = key;
+            session.FocusedKey = clash.Key;
 
             var zpad = Math.Max(Lengths.Ft(400), size * 0.6);
             Open(app, v, new XYZ(min.X - zpad, min.Y - zpad, min.Z - zpad), new XYZ(max.X + zpad, max.Y + zpad, max.Z + zpad));
             return new JsonObject
             {
-                ["view"] = v.Name, ["clash"] = key, ["level"] = clash.Level,
+                ["view"] = v.Name, ["clash"] = clash.Key, ["level"] = clash.Level,
                 ["a"] = $"{clash.CatA}: {clash.NameA} ({clash.SourceA}, {colours.NameA})",
                 ["b"] = $"{clash.CatB}: {clash.NameB} ({clash.SourceB}, {colours.NameB})",
                 ["intersection"] = "gold",

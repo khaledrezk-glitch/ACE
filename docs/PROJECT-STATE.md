@@ -103,6 +103,10 @@ released as verified).
 
 ## 6. Next steps (when the owner says go)
 
+The stress review (`docs/STRESS-REVIEW.md`) ranks what to do next for speed (clash search, snapshot freeze, compile
+cache), workshared safety and workflow gaps; its "Suggested order" fits into step 1 below.
+
+
 The order is from concept section 10:
 
 1. ~~**Tidy pass**~~ (done: `/code-review` fixes and `/simplify`), then **verify 1.7.0 live and fix** what

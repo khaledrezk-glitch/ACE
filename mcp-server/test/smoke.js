@@ -155,7 +155,7 @@ assert.match(client.getInstructions(), /ACE COMPANION PANEL/);
 const pic = await call("execute_revit_code", { code: "/*PICTURE*/ return 1;", dry_run: true, preview_image: true });
 assert.equal(pic.content.filter((c) => c.type === "image").length, 2);
 assert.doesNotMatch(pic.content[0].text, /iVBORw0KGgo/);
-assert.match(pic.content[0].text, /"echoPreview": true/);
+assert.match(pic.content[0].text, /"echoPreview":true/);
 
 // read-only runs need no preview
 assert.equal(json(await call("execute_revit_code", { code: "return 1;", mode: "readonly" })).echoMode, "readonly");
@@ -249,7 +249,9 @@ const wsApplied = (await call("assign_worksets", { explanation: "move to BEP wor
 assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
 const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
 assert.match(wm, /Coordination/, "working mode can be set");
-for (const risky of ["new System.IO.FileInfo(p).Delete();", "using var w = new System.IO.BinaryWriter(System.IO.File.OpenWrite(p));", "doc.Export(\"C:/x\", \"a\", new DWGExportOptions(), ids);"]) {
+for (const risky of ["using F = System.IO.File; F.Delete(p);", "File /**/ . Delete(p);", "uidoc.SaveAndClose();",
+  "Type.GetType(\"System.IO.\" + \"File\").GetMethod(\"Delete\");", "var s = File.ReadAllText(p);", "link.Unload(null);",
+  "new System.IO.FileInfo(p).Delete();", "using var w = new System.IO.BinaryWriter(System.IO.File.OpenWrite(p));", "doc.Export(\"C:/x\", \"a\", new DWGExportOptions(), ids);"]) {
   const r = await call("execute_revit_code", { code: risky, dry_run: true });
   assert.ok(r.isError && /Blocked for safety/.test(r.content[0].text), `risky code is screened: ${risky}`);
 }
@@ -261,6 +263,14 @@ bridge.close();
 const down = await call("revit_status");
 assert.equal(down.isError, true);
 assert.match(down.content[0].text, /not reachable/);
+
+// --- a reply that is too long stays valid JSON: the longest lists are shortened, every field is kept ---
+const { fit } = await import("../lib/core.js");
+const big = { success: true, result: { rows: Array.from({ length: 5000 }, (_, i) => ({ id: i, name: `Door ${i}` })) }, revitWarnings: ["w"] };
+const fitted = JSON.parse(fit(big, 20_000));
+assert.ok(fitted.result.rows.length < 5000 && fitted.result.rowsTruncated, "long lists are shortened with a note");
+assert.deepEqual(fitted.revitWarnings, ["w"], "short fields are kept");
+assert.equal(fit({ a: 1 }), '{"a":1}', "replies are compact JSON");
 
 await client.close();
 fs.rmSync(tmp, { recursive: true, force: true });

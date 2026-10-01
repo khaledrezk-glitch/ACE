@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, failure, localDate, readConfig, text } from "./lib/core.js";
+import { BUILTIN_SCRIPTS, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
 import { fingerprint, gated, journal, outcomeOf, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
@@ -26,17 +26,27 @@ const server = new McpServer(
   { instructions: INSTRUCTIONS, capabilities: { logging: {} } },
 );
 
-/** Registers a tool whose failures become readable tool errors, and logs every call locally. */
+/**
+ * Registers a tool whose failures become readable tool errors, and logs every call locally. A client cancel stops the
+ * wait for Revit; while a long call runs, a progress note every 15 s keeps a client that asked for progress waiting.
+ */
 function tool(name, config, handler) {
-  server.registerTool(name, config, async (args) => {
+  server.registerTool(name, config, async (args, extra) => {
     const started = Date.now();
+    const token = extra?._meta?.progressToken;
+    const beat = token === undefined ? null : setInterval(() => {
+      const seconds = Math.round((Date.now() - started) / 1000);
+      extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: seconds, message: `Revit is working (${seconds} s)` } }).catch(() => {});
+    }, 15_000);
     let result;
     let error;
     try {
-      result = await handler(args ?? {});
+      result = await currentCall.run({ signal: extra?.signal }, () => handler(args ?? {}));
     } catch (err) {
       error = err;
       result = failure(err);
+    } finally {
+      if (beat) clearInterval(beat);
     }
     logCall(summarize(name, args, result, Date.now() - started, error));
     return result;
@@ -132,7 +142,7 @@ tool("forget_lesson", {
   title: "Retire a lesson",
   description: "Retire a lesson that turned out wrong or outdated (by id from the brief or recall_lessons). Say why.",
   inputSchema: { id: z.string(), reason: z.string() },
-  annotations: benign,
+  annotations: { ...benign, idempotentHint: true },
 }, async ({ id, reason }) => text(retireLesson(id, reason)));
 
 tool("model_changes", {
@@ -170,7 +180,7 @@ tool("coordination_sources", {
 
 tool("run_clash_test", {
   title: "Clash detection",
-  description: "Find clashes across this model, its links and the other open models (read-only). Standard tests: \"STR vs MEP\", \"ARC vs STR\", \"MEP vs ARC\", \"MEP vs MEP\", or \"all\"; or a custom test with a_categories / b_categories (e.g. [\"OST_PipeCurves\"], [\"OST_StructuralFraming\"]) and optional a_disciplines / b_disciplines. Each clash has its depth, level, location and the RESPONSIBLE discipline (the element that is easier to move gives way: structure first, then walls and floors, ducts, pipes, cable trays, conduits). Clashes are grouped into issues (topIssues: one element that has to move and all it hits, with the keys of its clashes). Connected MEP parts and hosted elements are skipped. New clashes carry cause / causedBy: the side added, moved or retyped since the snapshot before the last run, and who did it (workshared models). Status is kept between runs: new, active, resolved, approved (reopened when a resolved clash comes back); a run on one level only resolves clashes on that level. Saves an HTML report; show: true opens the results in Revit.",
+  description: "Find clashes across this model, its links and the other open models (the model is not changed). Standard tests \"STR vs MEP\", \"ARC vs STR\", \"MEP vs ARC\", \"MEP vs MEP\", \"all\", or custom a_categories / b_categories (e.g. [\"OST_PipeCurves\"]). Returns clashes with depth, level, RESPONSIBLE discipline (who gives way) and cause (whose change made it), grouped into issues (topIssues with issueKey), and status kept between runs (new, active, resolved, approved). Saves an HTML report; show: true opens the Clash Browser. Details: revit_guide workflows.",
   inputSchema: {
     test: z.string().optional().describe("Standard test name, \"all\" (default), or a name for a custom test"),
     tolerance_mm: z.number().optional().describe("Ignore overlaps smaller than this (default per test, 10-25 mm)"),
@@ -183,14 +193,19 @@ tool("run_clash_test", {
     primary_model: z.string().optional().describe("Primary model (default: this model). A BIM manager can set a link here to check link against link"),
     show: z.boolean().optional(),
   },
-  annotations: readOnly,
+  annotations: benign,
 }, async (a) => text(await callRevit("run_clash_test", a, 1800)));
 
 tool("set_clash_status", {
   title: "Approve or reopen clashes",
-  description: "Mark clashes (by key, from run_clash_test) as approved (accepted, e.g. a pipe through a sleeve), active or new, with an optional note. Kept for the next runs.",
-  inputSchema: { test: z.string(), keys: z.array(z.string()), status: z.enum(["approved", "active", "new"]).optional(), note: z.string().optional() },
-  annotations: benign,
+  description: "Mark clashes as approved (accepted, e.g. a pipe through a sleeve), active or new, with an optional note; kept for the next runs. keys: clash keys or issue keys (issueKey sets every clash of that issue), from run_clash_test or clash_results.",
+  inputSchema: {
+    keys: z.array(z.string().max(300)).min(1).max(500),
+    status: z.enum(["approved", "active", "new"]).optional(),
+    note: z.string().max(500).optional(),
+    test: z.string().optional().describe("Only clashes of this test (normally not needed)"),
+  },
+  annotations: { ...benign, idempotentHint: true },
 }, async (a) => text(await callRevit("set_clash_status", a, 60)));
 
 tool("model_dashboard", {
@@ -277,14 +292,14 @@ tool("working_mode", {
   title: "Working mode",
   description: "Get or set the ACE working mode (Model audit, Coordination, Production, Submission, All tools). A mode shows the ribbon tools for that task, dims the less relevant ones and hides unrelated panels, and puts its prompts first in the Companion. Returns the mode, its focus / dimmed / hidden panels and the tools to lead with. Set it when the user says what they are about to do (\"I'm coordinating with MEP today\").",
   inputSchema: { mode: z.string().optional().describe("audit | coordination | production | submission | all (omit to just read the current mode)") },
-  annotations: benign,
+  annotations: { ...benign, idempotentHint: true },
 }, async (a) => text(await callRevit("working_mode", a, 30)));
 
 tool("clash_view", {
   title: "Clash view",
-  description: "The ACE Clash View, a 3D view per user and the only thing ACE changes. With no key: both models in colour (the primary model, this model by default, green; the secondary, with_model, red; with no with_model each other link in its own colour); other links hidden. With key (from run_clash_test topIssues / topOpen or clash_results): that clash alone, like Navisworks: everything else dimmed, the two elements drawn in their model colours and cut to a box around the clash, the intersection in gold, a section box and zoom on where they meet (a large slab shows only the area around the pipe). Walk the user through issues one by one with it. reset: true clears the highlight and the section box. A BIM manager can set primary_model to a link (link vs link).",
+  description: "The ACE Clash View (a 3D view per user; ACE changes nothing else). No key: the primary model (this one, or primary_model for link vs link) green, with_model red, other links in their own colours. key (a clash key or an issueKey): that clash alone like Navisworks, everything else dimmed, the two elements cut to a box around it, the intersection in gold, zoomed in. Use it to walk the user through issues one by one. reset: true clears the highlight and the section box.",
   inputSchema: {
-    key: z.string().optional().describe("A clash key: focus on that clash"),
+    key: z.string().optional().describe("A clash key or issueKey: focus on that clash"),
     reset: z.boolean().optional().describe("Clear the highlight and section box"),
     with_model: z.string().optional().describe("Secondary model (a link; default: all other loaded links)"),
     primary_model: z.string().optional().describe("Primary model (default: this model; a link for link vs link)"),
@@ -315,7 +330,7 @@ tool("coordination_report", {
     pictures: z.boolean().optional().describe("false = no pictures (faster)"),
     open: z.boolean().optional().describe("Open the report in the browser"),
   },
-  annotations: readOnly,
+  annotations: benign,
 }, async (a) => text(await callRevit("coordination_report", a, 900)));
 
 tool("pending_changes", {
@@ -359,7 +374,7 @@ const guideTopics = () => fs.readdirSync(GUIDES_DIR).filter((f) => f.endsWith(".
 
 tool("revit_guide", {
   title: "Expert guide",
-  description: "Expert, verified Revit 2025 API guidance for hard tasks. Topics: planning, performance, transactions, geometry, families-and-types, views-and-sheets, parameters-and-units, mep-and-structure, links-and-worksharing. Call without a topic to list them.",
+  description: `Expert guidance for hard tasks: verified Revit 2025 API patterns and how to run ACE's workflows. Topics: ${guideTopics().join(", ")}.`,
   inputSchema: { topic: z.string().optional() },
   annotations: readOnly,
 }, async ({ topic }) => {
@@ -395,6 +410,7 @@ tool("set_parameters", {
     () => callRevit("set_parameters", { changes, dry_run }, 300), succeeded);
   if (result?.alreadyApplied) return text(result);
   const ok = succeeded(result);
+  if (ok && !dry_run) briefCache.clear();
   journal({
     title: `${dry_run ? "Preview" : "Change"}: set parameters`,
     explanation,
@@ -410,7 +426,7 @@ tool("select_elements", {
   title: "Select & zoom",
   description: "Select elements in Revit's UI (and zoom to them) so the user can see what you mean. Empty list clears the selection.",
   inputSchema: { ids: z.array(z.number().int()), zoom: z.boolean().optional().describe("Default true") },
-  annotations: { ...readOnly, idempotentHint: true },
+  annotations: { ...benign, idempotentHint: true },
 }, async (a) => text(await callRevit("select_elements", a)));
 
 const codeSchema = {
@@ -419,7 +435,7 @@ const codeSchema = {
   dry_run: z.boolean().optional().describe("Run fully, then roll back every change. Required before applying edits."),
   inputs: z.record(z.any()).optional().describe("Values available as args / ctx.Str(...) / ctx.Num(...)"),
   transaction_name: z.string().optional().describe("Shown in Revit's Undo list, e.g. 'Claude: renumber rooms'"),
-  timeout_seconds: z.number().optional().describe("Default 300"),
+  timeout_seconds: z.number().int().min(10).max(3600).optional().describe("Default 300"),
   explanation: z.string().optional().describe("Plain-language description of what this run does (required when applying changes; recorded in the activity journal)"),
   allow_risky: z.boolean().optional().describe("Only after the user explicitly agreed: allow code touching files, programs, network, or saving/closing/syncing models"),
   compile_only: z.boolean().optional().describe("Only check that the code compiles; run nothing"),
@@ -446,6 +462,7 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
     return { isError: true, content: [{ type: "text", text: result.error }] };
   }
 
+  if (modifies && !dry_run && result?.success) briefCache.clear(); // the model changed: the next brief reads it again
   if (modifies) {
     journal({
       title: `${dry_run ? "Preview" : "Change"}: ${transaction_name || "Claude: script"}`,
@@ -481,7 +498,7 @@ tool("backup_model", {
   title: "Back up the model file",
   description: "Copy the model's .rvt file to %APPDATA%\\ACE-RevitMCP\\backups (timestamped). The open model is not changed. Offer before large changes. save_first: true saves the model first so unsaved work is included (only with the user's permission).",
   inputSchema: { save_first: z.boolean().optional() },
-  annotations: benign,
+  annotations: writes,
 }, async (a) => {
   const r = await callRevit("backup_model", a, 600);
   journal({ title: "Backup", outcome: `Backup created at ${r.backup}${r.savedBeforeBackup ? " (model saved first)" : ""}` });
@@ -492,9 +509,10 @@ tool("undo_last_claude_change", {
   title: "Undo Claude's last change",
   description: "Undo the most recent change Claude applied, as one step. Refuses if the user changed anything afterwards, so the user's own work is never undone.",
   inputSchema: {},
-  annotations: benign,
+  annotations: writes,
 }, async () => {
   const r = await callRevit("undo_last_claude_change", {}, 60);
+  briefCache.clear();
   journal({ title: "Undo", outcome: `Undid "${r.undoRequested}"` });
   return text(r);
 });
@@ -540,11 +558,13 @@ tool("assign_worksets", {
     rules_file: z.string().optional(),
     dry_run: z.boolean().optional(),
     explanation: z.string().optional(),
+    timeout_seconds: z.number().int().min(10).max(3600).optional().describe("Default 900 (large models)"),
   },
   annotations: writes,
 }, async (a) => {
   const src = a.rules ? { file: "given in the request", rules: a.rules } : worksetRules(a.rules_file);
-  const script = findScript("assign_worksets");
+  // Always the built-in script: a user or team script with the same name must not replace a native tool's logic.
+  const script = { file: path.join(BUILTIN_SCRIPTS, "assign_worksets.cs") };
   const inputs = {
     rules: src.rules, default_workset: a.default_workset ?? src.default_workset ?? "",
     only_workset1: !!a.only_workset1, create_missing: !!a.create_missing, check_only: !!a.check_only,
@@ -554,6 +574,7 @@ tool("assign_worksets", {
     code: fs.readFileSync(script.file, "utf8"), mode: a.check_only ? "readonly" : "auto", inputs,
     dry_run: a.check_only ? undefined : a.dry_run, explanation: a.explanation,
     transaction_name: `Claude: assign worksets per the BEP${a.only_workset1 ? " (Workset1 only)" : ""}`,
+    timeout_seconds: a.timeout_seconds ?? 900,
   });
   const note = { type: "text", text: `Workset rules: ${src.name || "rules"} (${src.file}), ${src.rules?.length ?? 0} rules.` };
   return { ...result, content: [...(result.content || []), note] };
@@ -567,7 +588,7 @@ tool("run_saved_script", {
     inputs: z.record(z.any()).optional(),
     dry_run: z.boolean().optional(),
     preview_image: z.boolean().optional().describe("With dry_run: also return plan + 3D pictures of the previewed change"),
-    timeout_seconds: z.number().optional(),
+    timeout_seconds: z.number().int().min(10).max(3600).optional(),
     explanation: z.string().optional().describe("Plain-language description (required when applying changes)"),
     allow_risky: z.boolean().optional(),
   },
@@ -597,7 +618,7 @@ tool("save_script", {
     overwrite: z.boolean().optional(),
     scope: z.enum(["user", "team"]).optional().describe("Default user"),
   },
-  annotations: { ...benign, idempotentHint: true },
+  annotations: { ...benign, destructiveHint: true },
 }, async (a) => {
   const file = saveScript(a);
   return text(`Saved '${a.name}' to ${file}. Run it later with run_saved_script.`);

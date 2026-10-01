@@ -189,28 +189,48 @@ namespace AceRevitMcp.Tracking
                 .OrderByDescending(x => x.Item2).ToList();
         }
 
-        /// <summary>The baseline for "since": "last" (newest), "today", "yesterday", "week", a date (yyyy-MM-dd) or a file name.</summary>
+        /// <summary>
+        /// The baseline for "since": "last" (newest), "today", "yesterday", "week", "month", a weekday ("monday": the
+        /// latest one), "3 days", a date (yyyy-MM-dd) or a snapshot file name. Anything else is an error, never a silent
+        /// fallback to the newest snapshot (which would report "no changes").
+        /// </summary>
         public static (string File, DateTime Time)? Baseline(Document doc, string since)
         {
             var all = List(doc);
             if (all.Count == 0) return null;
             since = (since ?? "last").Trim().ToLowerInvariant();
-            DateTime? before = since switch
-            {
-                "last" => null,
-                "today" => DateTime.Today,
-                "yesterday" => DateTime.Today.AddDays(-1),
-                "week" => DateTime.Today.AddDays(-7),
-                "month" => DateTime.Today.AddMonths(-1),
-                _ => DateTime.TryParse(since, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d : (DateTime?)null,
-            };
             if (since == "last") return all[0];
             var byName = all.FirstOrDefault(a => System.IO.Path.GetFileName(a.File).StartsWith(since, StringComparison.OrdinalIgnoreCase));
             if (byName.File != null) return byName;
-            if (before == null) return all[0];
+            var before = SinceTime(since) ?? throw new Bridge.CommandException(
+                $"'since' was not understood: '{since}'. Use last, today, yesterday, week, month, a weekday (monday), '3 days' or a date (yyyy-MM-dd).");
             // The latest snapshot taken at or before that moment, else the oldest one we have.
-            var at = all.FirstOrDefault(a => a.Time <= before.Value);
+            var at = all.FirstOrDefault(a => a.Time <= before);
             return at.File != null ? at : all.Last();
+        }
+
+        /// <summary>The moment a "since" word stands for, or null when it is not understood.</summary>
+        internal static DateTime? SinceTime(string since, DateTime? now = null)
+        {
+            var today = (now ?? DateTime.Now).Date;
+            switch (since)
+            {
+                case "today": return today;
+                case "yesterday": return today.AddDays(-1);
+                case "week": case "last week": return today.AddDays(-7);
+                case "month": case "last month": return today.AddMonths(-1);
+            }
+            var words = since.Replace("last ", "").Replace(" ago", "").Trim();
+            if (Enum.TryParse<DayOfWeek>(words, true, out var day) && !int.TryParse(words, out _))
+                return today.AddDays(-(((int)today.DayOfWeek - (int)day + 7) % 7));
+            var parts = words.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2 && int.TryParse(parts[0], out var n) && n >= 0)
+            {
+                if (parts[1].StartsWith("day")) return today.AddDays(-n);
+                if (parts[1].StartsWith("week")) return today.AddDays(-7 * n);
+                if (parts[1].StartsWith("hour")) return (now ?? DateTime.Now).AddHours(-n);
+            }
+            return DateTime.TryParse(since, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d : (DateTime?)null;
         }
     }
 }

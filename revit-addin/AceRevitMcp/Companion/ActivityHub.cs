@@ -30,6 +30,10 @@ namespace AceRevitMcp.Companion
         public PendingState State = PendingState.Waiting;
         public DateTime? DecidedAt;
         public string Outcome;
+        /// <summary>Where it was previewed: the model, and (for code) the active view, so it is never applied elsewhere.</summary>
+        public string Document;
+        public string DocumentTitle;
+        public long ViewId;
         /// <summary>Preview pictures of the change (plan, 3D), when Claude asked for them.</summary>
         public System.Collections.Generic.List<byte[]> Images = new System.Collections.Generic.List<byte[]>();
     }
@@ -190,7 +194,26 @@ namespace AceRevitMcp.Companion
 
         // ---- Approvals -------------------------------------------------------------------------------
 
-        public static void AddPending(string kind, JsonObject args, JsonObject result)
+        /// <summary>A model's identity for "same model" checks: its file path, or its title before the first save.</summary>
+        public static string DocKey(Autodesk.Revit.DB.Document doc) =>
+            doc == null ? "" : string.IsNullOrEmpty(doc.PathName) ? doc.Title : doc.PathName;
+
+        /// <summary>
+        /// Why this change must not be applied here, or null: it was previewed in another model, or (code, which may
+        /// work on the active view) in another view. The preview showed that model and view, so it applies only there.
+        /// </summary>
+        public static string WrongPlace(string hash, Autodesk.Revit.DB.Document doc, long viewId)
+        {
+            var p = Pending.FirstOrDefault(x => x.Hash == hash && x.Document != null);
+            if (p == null) return null;
+            if (!string.Equals(p.Document, DocKey(doc), StringComparison.OrdinalIgnoreCase))
+                return $"This change was previewed in the model '{p.DocumentTitle}', but the active model is now '{doc?.Title}'. Nothing was changed. Preview it again in the model it is meant for.";
+            if (p.ViewId != 0 && viewId != p.ViewId)
+                return "This change was previewed with a different active view, and the code may work on the active view. Nothing was changed. Preview it again in the view it is meant for.";
+            return null;
+        }
+
+        public static void AddPending(string kind, JsonObject args, JsonObject result, Autodesk.Revit.DB.Document doc = null, long viewId = 0)
         {
             var clean = (JsonObject)args.DeepClone();
             clean.Remove("dry_run");
@@ -225,6 +248,9 @@ namespace AceRevitMcp.Companion
                 Title = kind == "set_parameters" ? "Set parameter values" : Name(clean),
                 Summary = summary,
                 PreviewedAt = DateTime.Now,
+                Document = doc == null ? null : DocKey(doc),
+                DocumentTitle = doc?.Title,
+                ViewId = viewId,
             });
             if (Pending.Count > 20) Pending.RemoveAt(Pending.Count - 1);
             Raise();

@@ -29,6 +29,7 @@ namespace AceRevitMcp.Commands
                 if (earlier.Rejected) throw new CommandException(earlier.Note);
                 return new JsonObject { ["alreadyApplied"] = true, ["applied"] = 0, ["failed"] = 0, ["note"] = earlier.Note };
             }
+            if (!dryRun && Companion.ActivityHub.WrongPlace(hash, doc, 0) is string wrong) throw new CommandException(wrong);
 
             var results = new JsonArray();
             var applied = 0;
@@ -97,7 +98,7 @@ namespace AceRevitMcp.Commands
                 };
                 if (!dryRun && applied > 0 && status == nameof(TransactionStatus.Committed)) response["note"] = "Applied as ONE undo step named 'Claude: set parameters'.";
                 if (response["success"]?.GetValue<bool>() == false) response["note"] = "Revit rolled the change back when committing it (see revitErrors). Nothing was changed.";
-                if (dryRun && applied > 0 && applied == results.Count) Companion.ActivityHub.AddPending("set_parameters", args, response);
+                if (dryRun && applied > 0 && applied == results.Count) Companion.ActivityHub.AddPending("set_parameters", args, response, doc);
                 else if (!dryRun && !fromPanel && status == nameof(TransactionStatus.Committed)) Companion.ActivityHub.MarkAppliedByClaude(hash);
                 if (guard.Warnings.Count > 0) response["revitWarnings"] = new JsonArray(guard.Warnings.Select(w => (JsonNode)w).ToArray());
                 if (guard.Errors.Count > 0) response["revitErrors"] = new JsonArray(guard.Errors.Select(w => (JsonNode)w).ToArray());

@@ -9,6 +9,20 @@
   - The built-in scripts `audit_model` and `rooms_without_doors` are retired: the native model check covers them.
   - A **status store**: the model check, clashes and changes publish their latest result, and the Companion and
     dashboard read the same numbers.
+- **Stress review** (`docs/STRESS-REVIEW.md`: complex tasks, speed, best practice, tokens). Fixed in this round:
+  - A preview applies only in the model (and, for code, the view) it was previewed in; a failed rollback is reported,
+    never hidden; script assemblies are unloaded after each run.
+  - Revit busy: a request must start within 60 s and the error names what Revit is doing; a long call that is still
+    running says "do not send it again" instead of "Revit is not reachable". Claude's cancel stops the wait, and long
+    calls send progress.
+  - `model_changes` understands weekdays and "3 days"; unknown words are an error instead of "no changes".
+  - `set_clash_status` works from clash or issue keys alone; `clash_view` focuses an issue; issue lists are shorter.
+  - Safety screen catches aliases, comments inside calls, reflection, `SaveAndClose`, unloading links and reading
+    files; tool labels corrected; the bridge accepts this PC only, with a constant-time token check and a size limit;
+    `assign_worksets` always runs the built-in script (15-minute default for large models).
+  - Tokens: compact JSON replies (about 25% smaller), long replies shortened list by list and kept valid (60k
+    characters at most), script result first and repeated warnings grouped; workflow detail moved from the
+    connection instructions to `revit_guide workflows` (about 1,100 fewer tokens in every conversation).
 - **Tidy pass** (`/simplify`, whole codebase; behaviour unchanged):
   - The status store now holds each model's results and clash-view session; the leftover "last result" statics in
     clashes, dashboard, change tracker, coordination report and clash view are gone (they could mix up two models).

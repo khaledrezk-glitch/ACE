@@ -20,12 +20,21 @@ namespace AceRevitMcp.Bridge
             public string Command;
             public JsonObject Args;
             public TaskCompletionSource<JsonNode> Completion;
+            public TaskCompletionSource<bool> Started;
             public int Abandoned; // set when the caller timed out; never start it afterwards
         }
 
         private readonly ConcurrentQueue<Pending> _queue = new ConcurrentQueue<Pending>();
         private readonly CommandRegistry _registry;
         private ExternalEvent _event;
+
+        /// <summary>How long a request may wait for Revit to pick it up; the run itself has the caller's full timeout.</summary>
+        private static readonly TimeSpan PickupTimeout = TimeSpan.FromSeconds(60);
+
+        /// <summary>The command Revit is running now and since when (null when idle), for /health and busy messages.</summary>
+        public static BusyInfo Busy { get; private set; }   // one reference, so the HTTP threads always read a whole value
+
+        internal sealed record BusyInfo(string Command, DateTime Since);
 
         public RequestDispatcher(CommandRegistry registry)
         {
@@ -42,6 +51,7 @@ namespace AceRevitMcp.Bridge
                 Command = command,
                 Args = args ?? new JsonObject(),
                 Completion = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously),
+                Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
             };
             _queue.Enqueue(pending);
 
@@ -49,21 +59,31 @@ namespace AceRevitMcp.Bridge
             if (request != ExternalEventRequest.Accepted && request != ExternalEventRequest.Pending)
                 Log.Warn($"ExternalEvent.Raise returned {request}");
 
-            Task finished;
-            using (var timer = new CancellationTokenSource())
+            // Two waits: for Revit to pick the request up (short: a dialog or a running command blocks it), then for the run.
+            var started = DateTime.Now;
+            var pickup = timeout < PickupTimeout ? timeout : PickupTimeout;
+            if (!await Within(pending.Started.Task, pickup).ConfigureAwait(false)
+                && Interlocked.Exchange(ref pending.Abandoned, 1) == 0)
             {
-                finished = await Task.WhenAny(pending.Completion.Task, Task.Delay(timeout, timer.Token)).ConfigureAwait(false);
-                timer.Cancel();   // a finished call releases its timer at once instead of after the full timeout
+                var busy = Busy;
+                throw new TimeoutException(busy != null
+                    ? $"Revit is still running '{busy.Command}' (since {busy.Since:HH:mm:ss}), so '{command}' could not start. It was cancelled and will NOT run later. Wait for the running command to finish, then try again."
+                    : $"Revit did not start '{command}' within {pickup.TotalSeconds:0}s. Revit is busy: a dialog is open, a command is active (press Esc), or a model is loading. The request was cancelled and will NOT run later.");
             }
-            if (finished != pending.Completion.Task)
-            {
-                if (Interlocked.Exchange(ref pending.Abandoned, 1) == 0)
-                    throw new TimeoutException(
-                        $"Revit did not run '{command}' within {timeout.TotalSeconds:0}s. Revit is probably busy: " +
-                        "a dialog is open, a command is active (press Esc), or it is still loading a model. " +
-                        "The request was cancelled and will NOT run later.");
-            }
+            if (!await Within(pending.Completion.Task, timeout - (DateTime.Now - started)).ConfigureAwait(false))
+                throw new TimeoutException(
+                    $"'{command}' is still running in Revit after {timeout.TotalSeconds:0}s. It will finish there; do NOT send it again. " +
+                    "Check the result later (revit_status shows when Revit is free).");
             return await pending.Completion.Task.ConfigureAwait(false);
+        }
+
+        private static async Task<bool> Within(Task task, TimeSpan time)
+        {
+            if (time <= TimeSpan.Zero) return task.IsCompleted;
+            using var timer = new CancellationTokenSource();
+            var finished = await Task.WhenAny(task, Task.Delay(time, timer.Token)).ConfigureAwait(false);
+            timer.Cancel();   // a finished call releases its timer at once instead of after the full timeout
+            return finished == task;
         }
 
         public void Execute(UIApplication app)
@@ -78,6 +98,8 @@ namespace AceRevitMcp.Bridge
                 }
 
                 var started = DateTime.Now;
+                Busy = new BusyInfo(pending.Command, started);
+                pending.Started.TrySetResult(true);
                 try
                 {
                     var result = _registry.Execute(pending.Command, app, pending.Args);
@@ -92,6 +114,7 @@ namespace AceRevitMcp.Bridge
                     Companion.ActivityHub.RecordCommand(pending.Command, pending.Args, null, ex, (long)(DateTime.Now - started).TotalMilliseconds);
                     pending.Completion.TrySetException(ex);
                 }
+                finally { Busy = null; }
             }
         }
 

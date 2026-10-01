@@ -16,6 +16,13 @@ namespace AceRevitMcp.Bridge
     /// </summary>
     internal sealed class BridgeServer : IDisposable
     {
+        private const long MaxBodyBytes = 8 * 1024 * 1024;
+
+        /// <summary>Constant-time comparison, so the token cannot be guessed from response times.</summary>
+        private bool TokenMatches(string given) =>
+            given != null && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(given), Encoding.UTF8.GetBytes(_config.Token ?? ""));
+
         private readonly AceConfig _config;
         private readonly RequestDispatcher _dispatcher;
         private readonly string _revitVersion;
@@ -88,6 +95,7 @@ namespace AceRevitMcp.Bridge
                         ["ok"] = true,
                         ["service"] = "ace-revit-mcp",
                         ["revitVersion"] = _revitVersion,
+                        ["busy"] = RequestDispatcher.Busy is { } b ? $"{b.Command} since {b.Since:HH:mm:ss}" : null,
                     });
                     return;
                 }
@@ -98,12 +106,23 @@ namespace AceRevitMcp.Bridge
                     return;
                 }
 
-                if (!string.Equals(ctx.Request.Headers["X-Ace-Token"], _config.Token, StringComparison.Ordinal))
+                // Only this PC may send commands (the listener is bound to localhost, but http.sys routes by Host header).
+                if (!ctx.Request.IsLocal)
+                {
+                    await WriteAsync(ctx, 403, Error("Commands are accepted from this computer only."));
+                    return;
+                }
+                if (!TokenMatches(ctx.Request.Headers["X-Ace-Token"]))
                 {
                     await WriteAsync(ctx, 401, Error($"Invalid or missing token. The MCP server must read {AceConfig.FilePath}."));
                     return;
                 }
 
+                if (ctx.Request.ContentLength64 > MaxBodyBytes)
+                {
+                    await WriteAsync(ctx, 413, Error($"Request too large (over {MaxBodyBytes / 1024 / 1024} MB)."));
+                    return;
+                }
                 string body;
                 using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
                     body = await reader.ReadToEndAsync().ConfigureAwait(false);
