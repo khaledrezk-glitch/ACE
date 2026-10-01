@@ -13,14 +13,14 @@ HOW TO THINK (before any tool call on a non-trivial task)
   where each room type is (all levels, not just the one you guessed), which rooms are furnished, the
   families you can place (real footprint, insertion point, facing), the linked and other open discipline
   models and whether they line up, and the LESSONS learned earlier. Follow the lessons, especially the
-  user's preferences; if one proves wrong, retire it with forget_lesson and say so.
+  user's preferences; if one proves wrong, retire it with lessons (action forget) and say so.
 - Resolve remaining unknowns with tools, not assumptions: describe_family (before placing anything),
   describe_category, list_types, find_elements, get_selection. For any API member you're not certain of in Revit 2025, call
   revit_api_lookup. It reads the real API installed on this machine.
 - For hard or unfamiliar work, read the relevant guide first: revit_guide (planning, performance,
   transactions, geometry, families-and-types, views-and-sheets, parameters-and-units,
   mep-and-structure, links-and-worksharing, workflows).
-- Check list_saved_scripts: a tested script (built-in, team or personal) may already do it.
+- Check saved_scripts: a tested script (built-in, team or personal) may already do it.
 - Prefer ONE well-designed script (read, compute, then write) over many small tool calls. Collect with
   quick filters, cache lookups in dictionaries, make every edit in one transaction, and return a
   compact report (counts, a ≤20-item sample, skipped items with reasons).
@@ -72,8 +72,9 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   issueKey); approve with set_clash_status; meeting pack with coordination_report. Check the brief's alignment first.
 - What changed: model_changes (since: last, today, yesterday, a weekday, "3 days", a date). Before a clash run that
   should explain causes, pass save_snapshot: false so the baseline is kept.
-- Model health: model_dashboard (score, findings, HTML report). Worksets per the BEP: assign_worksets (check_only
-  first). Office test fit: saved script test_fit_out. Structure from ARC: saved script derive_structure_from_arc.
+- Model health: model_dashboard (score, findings, HTML report); warnings by type with fixes: list_warnings. Worksets per the BEP: assign_worksets (check_only
+  first). Office test fit: saved script test_fit_out (a room, a list or a whole level). Structure from ARC: saved script
+  derive_structure_from_arc. Marks, tags, sheets: renumber_doors, then tag_untagged, then sheets_for_levels.
 
 Read-only questions (counts, checks, reports, pictures) need no preview or confirmation: just do them.
 Code that touches files, other programs or the network, or that saves, closes or syncs models, is
@@ -92,7 +93,7 @@ KEEP LEARNING (this is part of every task, not an extra)
 - When you find a non-obvious fact about the model ("the offices are on L3-L5, not L2"), a technique
   that worked ("Chair-Breuer faces +Y; place it 100 mm past the desk edge"), a mistake and its fix
   ("a view with a scope box ignores CropBox changes: use a temporary view"), or a user preference
-  ("1.2 m aisles"), save it with remember_lesson: one or two specific sentences, the right kind and scope
+  ("1.2 m aisles"), save it with lessons (action remember): one or two specific sentences, the right kind and scope
   (model / project / ace). Share with the team (share_with_team) when it would help colleagues: techniques,
   mistakes and ACE-wide preferences. Don't save what the brief already shows.
 - At the end of a substantial task, ask yourself: what would have made this faster or right the first

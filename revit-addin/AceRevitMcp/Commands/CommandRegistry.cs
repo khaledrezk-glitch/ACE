@@ -45,6 +45,7 @@ namespace AceRevitMcp.Commands
                 ["open_clash_browser"] = (app, args) => { Coordination.ClashBrowser.ShowFor(app); return new System.Text.Json.Nodes.JsonObject { ["opened"] = true }; },
                 ["focus_clash"] = Coordination.ClashView.Focus,
                 ["reset_clash_view"] = Coordination.ClashView.Reset,
+                ["list_warnings"] = Dashboard.WarningCommands.List,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

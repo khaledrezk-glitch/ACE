@@ -46,7 +46,7 @@ export function listScripts() {
 
 export function findScript(name) {
   const script = listScripts().find((s) => s.name.toLowerCase() === String(name).toLowerCase());
-  if (!script) throw new RevitError(`No saved script named '${name}'. Call list_saved_scripts to see what exists.`);
+  if (!script) throw new RevitError(`No saved script named '${name}'. Call saved_scripts to see what exists.`);
   return script;
 }
 

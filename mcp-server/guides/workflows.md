@@ -1,4 +1,4 @@
-# Workflows: coordination, changes, model health, worksets, test fits
+# Workflows: coordination, changes, model health, worksets, test fits, production
 
 How to run ACE's built-in workflows well. The tools named here are MCP tools; the scripts are saved scripts (run_saved_script).
 
@@ -27,4 +27,22 @@ for "put things on the right worksets", "workset check", "set up worksets" use a
 ## Space planning (office test fit)
 
 for an office test fit ("how many people fit", "put desks in room X", "fit out the office") use the saved script test_fit_out (inputs: room_number, m2_per_person, desk_type, min_aisle_mm, door_clearance_mm, wall_clearance_mm). It places 4-desk pods on a regular grid clear of walls, doors, columns and fixtures, reports the seats, m2 per person and the room's maximum, and a re-run replaces the previous test fit in that room. Preview it with preview_image: true. If the target does not fit, say so plainly with the maximum, rather than squeezing aisles below the minimum.
+
+Several rooms at once: room_numbers, or level (optionally department) fits every matching room in one run, with one
+picture and one Apply card; give each option an option_label ("Option A - 10 m2") in run_saved_script so the cards
+differ.
+
+## Warnings
+
+list_warnings groups the model's warnings by type with counts, element ids and the known fix. Show the elements
+(select_elements), then fix one type at a time with a preview: identical instances with the saved script
+delete_duplicate_instances; others with a short script that uses the ids. Report what was left and why.
+
+## Production (marks, tags, sheets)
+
+Order matters: renumber, then tag, then sheets. renumber_doors (scheme room: 301A, 301B; or level: D-L3-001) skips doors
+in use by colleagues. tag_untagged with all_floor_plans: true (or views: [...]) tags every plan in one run.
+sheets_for_levels then reuses each level's existing plan that is not on a sheet (so the new tags appear on the sheets),
+skips levels that already have one and, by default, levels that are not building storeys. For a long job offer
+backup_model first, and remember that each run is its own undo step.
 

@@ -100,7 +100,7 @@ can already do today. **ACE tab → Roadmap** shows the whole plan. Details: [RO
 | Knowledge | `revit_api_lookup` (the real Revit API on the PC), `revit_guide` (9 expert guides) |
 | Change (gated by preview + confirmation) | **`execute_revit_code`**, `set_parameters`, `run_saved_script`, `select_elements` |
 | Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |
-| Library | `list_saved_scripts`, `read_saved_script`, `save_script` (personal or team) |
+| Library | `saved_scripts` (list, or one script's source), `save_script` (personal or team) |
 | Support | `check_setup`, `report_issue` |
 
 Built-in scripts: `parameter_completeness`, `door_width_check`,

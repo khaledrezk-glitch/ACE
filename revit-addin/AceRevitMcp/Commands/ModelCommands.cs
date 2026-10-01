@@ -109,6 +109,7 @@ namespace AceRevitMcp.Commands
         {
             var doc = Args.RequireDoc(app);
             var limit = Math.Clamp(Args.Int(args, "limit", 200), 1, 5000);
+            var offset = Math.Max(0, Args.Int(args, "offset", 0));
 
             FilteredElementCollector collector;
             var viewName = Args.Str(args, "in_view");
@@ -160,7 +161,7 @@ namespace AceRevitMcp.Commands
             foreach (var e in elements)
             {
                 total++;
-                if (result.Count >= limit) continue;
+                if (total <= offset || result.Count >= limit) continue;
                 var s = RevitJson.Summary(e);
                 if (include.Count > 0)
                 {
@@ -179,6 +180,7 @@ namespace AceRevitMcp.Commands
             {
                 ["total"] = total,
                 ["returned"] = result.Count,
+                ["next"] = offset + result.Count < total ? offset + result.Count : null,   // pass as offset for the next page
                 ["truncated"] = total > result.Count,
                 ["elements"] = result,
             };

@@ -9,6 +9,21 @@
   - The built-in scripts `audit_model` and `rooms_without_doors` are retired: the native model check covers them.
   - A **status store**: the model check, clashes and changes publish their latest result, and the Companion and
     dashboard read the same numbers.
+- **Stress review, round 2:**
+  - Speed: clash search through a 3D box grid (one pass per model, booleans only where boxes touch); automatic
+    snapshots after the save at idle time, written in the background; compiled scripts and reference assemblies
+    cached, compiler warmed up at start; unchanged links reuse their snapshot; quicker model check, type lists,
+    overview, brief, element search; all coordination pictures in one export.
+  - Safety: the compiler checks what a script really calls (files, programs, network, reflection, saving / syncing),
+    enforced in the add-in (`tools/risk-cases`); task dialogs are closed with Cancel, never confirmed;
+    `ctx.CanEdit` / `ctx.Editable` skip elements in use by colleagues; Claude's cancel reaches Revit (`/cancel`,
+    `ctx.ThrowIfCancelled()`); team lessons are capped and labelled as notes.
+  - Workflows: `list_warnings` and the `delete_duplicate_instances` script; `renumber_doors`; `tag_untagged` in named
+    views or every floor plan; `sheets_for_levels` reuses existing plans and skips levels with sheets; test fit for a
+    list of rooms or a whole level; `option_label` on Apply cards; paging (`offset` / `next`) on find_elements and
+    list_types.
+  - Tools merged from 42 to 36: `lessons` (remember / recall / forget), `snapshots` (take / list), `saved_scripts`
+    (list or read), `run_clash_test` `stored` / `sources`, `report_issue` kind `learning`.
 - **Stress review** (`docs/STRESS-REVIEW.md`: complex tasks, speed, best practice, tokens). Fixed in this round:
   - A preview applies only in the model (and, for code, the view) it was previewed in; a failed rollback is reported,
     never hidden; script assemblies are unloaded after each run.

@@ -44,7 +44,7 @@ namespace AceRevitMcp.Ribbon
                 Panels = { ["Insights"] = PanelLook.Focus, ["Audit"] = PanelLook.Focus, ["Inspect"] = PanelLook.Focus, ["Compliance"] = PanelLook.Focus,
                            ["Data"] = PanelLook.Dim, ["Export"] = PanelLook.Dim, ["Coordination"] = PanelLook.Dim, ["Deliver"] = PanelLook.Dim,
                            ["Team Tools"] = PanelLook.Hide, ["Admin"] = PanelLook.Hide },
-                ClaudeTools = new[] { "model_dashboard", "find_elements", "get_element_details", "describe_category", "set_parameters" },
+                ClaudeTools = new[] { "model_dashboard", "list_warnings", "find_elements", "get_element_details", "describe_category", "set_parameters" },
                 Prompts = new[]
                 {
                     ("Run the model check", "Using ace-revit: run the model check (model_dashboard, show: true) and explain the five findings that matter most, with what to do about each." + ro),
@@ -61,7 +61,7 @@ namespace AceRevitMcp.Ribbon
                 Panels = { ["Coordination"] = PanelLook.Focus, ["Insights"] = PanelLook.Focus, ["Inspect"] = PanelLook.Focus,
                            ["Audit"] = PanelLook.Dim, ["Data"] = PanelLook.Dim, ["Export"] = PanelLook.Dim,
                            ["Deliver"] = PanelLook.Hide, ["Compliance"] = PanelLook.Hide, ["Team Tools"] = PanelLook.Hide, ["Admin"] = PanelLook.Hide },
-                ClaudeTools = new[] { "coordination_sources", "run_clash_test", "clash_results", "clash_view", "coordination_report", "model_changes", "get_model_brief" },
+                ClaudeTools = new[] { "run_clash_test", "clash_view", "coordination_report", "model_changes", "get_model_brief" },
                 Prompts = new[]
                 {
                     ("Check the links line up", "Using ace-revit: do the linked models line up with this one (levels, grids, coordinates)? Tell me anything that would make clash results unreliable." + ro),

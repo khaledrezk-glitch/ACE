@@ -72,7 +72,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_results", "clash_view", "coordination_report", "coordination_sources", "describe_category", "describe_family", "execute_revit_code", "find_elements", "forget_lesson", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "learning_report", "list_saved_scripts", "list_snapshots", "list_types", "list_views", "model_changes", "model_dashboard", "open_view", "pending_changes", "read_saved_script", "recall_lessons", "remember_lesson", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "select_elements", "set_clash_status", "set_parameters", "snapshot_model", "undo_last_claude_change", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "pending_changes", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -93,19 +93,19 @@ assert.equal(json(await call("revit_status")).activeDocument, "Test.rvt");
 let brief = json(await call("get_model_brief"));
 assert.equal(brief.model.title, "Test");
 assert.ok(brief.lessons.every((l) => l.source === "built-in"), "only built-in lessons at first");
-const saved = json(await call("remember_lesson", { lesson: "The offices are rooms 301, 401 and 501 on L3 to L5.", model: "Test", share_with_team: true }));
+const saved = json(await call("lessons", { action: "remember",  lesson: "The offices are rooms 301, 401 and 501 on L3 to L5.", model: "Test", share_with_team: true }));
 assert.equal(saved.sharedWithTeam, true);
-assert.match(json(await call("remember_lesson", { lesson: "The offices are rooms 301, 401 and 501 on L3 to L5.", model: "Test" })).note, /Already known/);
-json(await call("remember_lesson", { lesson: "Chair-Breuer faces +Y when unrotated.", kind: "howto", scope: "ace" }));
-json(await call("remember_lesson", { lesson: "Use 1.2 m aisles for Tower offices.", kind: "preference", scope: "project", project: "Tower" }));
-json(await call("remember_lesson", { lesson: "Something about another model entirely.", model: "Other" }));
+assert.match(json(await call("lessons", { action: "remember",  lesson: "The offices are rooms 301, 401 and 501 on L3 to L5.", model: "Test" })).note, /Already known/);
+json(await call("lessons", { action: "remember",  lesson: "Chair-Breuer faces +Y when unrotated.", kind: "howto", scope: "ace" }));
+json(await call("lessons", { action: "remember",  lesson: "Use 1.2 m aisles for Tower offices.", kind: "preference", scope: "project", project: "Tower" }));
+json(await call("lessons", { action: "remember",  lesson: "Something about another model entirely.", model: "Other" }));
 brief = json(await call("get_model_brief", { refresh: true }));
 const myLessons = brief.lessons.filter((l) => l.source !== "built-in");
 assert.equal(myLessons.length, 3, "model + project + ace lessons, not the other model's");
 assert.ok(brief.lessons.some((l) => l.source === "built-in" && /Chair-Breuer/.test(l.lesson)), "built-in ACE lessons are served too");
-assert.equal((await call("remember_lesson", { lesson: "x" })).isError, true);
-assert.ok(json(await call("recall_lessons", { query: "chair" })).length >= 2);
-json(await call("forget_lesson", { id: saved.id, reason: "test" }));
+assert.equal((await call("lessons", { action: "remember",  lesson: "x" })).isError, true);
+assert.ok(json(await call("lessons", { action: "recall",  query: "chair" })).length >= 2);
+json(await call("lessons", { action: "forget",  id: saved.id, reason: "test" }));
 assert.equal(json(await call("get_model_brief", { refresh: true })).lessons.filter((l) => l.source !== "built-in").length, 2);
 assert.match(json(await call("describe_family", { name: "Chair" }))[0].footprintMm, /560/);
 const clash = json(await call("run_clash_test", { test: "STR vs MEP" }));
@@ -113,7 +113,7 @@ assert.equal(clash.tests[0].byResponsible["MEP (HVAC)"], 3);
 const ch = json(await call("model_changes", { since: "week" }));
 assert.equal(ch.since, "week");
 assert.equal(ch.models[1].relation, "link");
-assert.equal(json(await call("snapshot_model", { label: "Stage 3" })).command, "snapshot_model");
+assert.equal(json(await call("snapshots", { action: "take", label: "Stage 3" })).command, "snapshot_model");
 const dash = json(await call("model_dashboard", { show: true }));
 assert.equal(dash.score, 81);
 assert.equal(dash.shown, true);
@@ -168,6 +168,12 @@ const saving = await call("execute_revit_code", { code: "doc.Save();", mode: "re
 assert.match(saving.content[0].text, /saves or closes/);
 assert.equal((await call("execute_revit_code", { code: "doc.Save();", mode: "readonly", allow_risky: true })).isError, undefined);
 
+// --- merged tools route to the right bridge commands ---
+assert.equal(json(await call("run_clash_test", { stored: true })).command, "clash_results", "stored results without a run");
+assert.equal(json(await call("run_clash_test", { sources: true })).command, "coordination_sources", "the models that take part");
+assert.equal(json(await call("snapshots", {})).command, "list_snapshots", "snapshots lists by default");
+assert.equal(json(await call("list_warnings", { contains: "identical" })).args.contains, "identical");
+
 // --- the add-in's semantic screen: a refusal is a tool error; consent is passed through ---
 const sem = await call("execute_revit_code", { code: "var x = 1; // SEMANTIC_RISK", mode: "readonly" });
 assert.ok(sem.isError && /Blocked for safety/.test(sem.content[0].text), "a risk found by the compiler is a tool error");
@@ -193,8 +199,10 @@ assert.equal(bad.isError, true);
 
 await call("run_saved_script", { name: "test_fit_out", inputs: { room_number: "301", m2_per_person: 8 }, dry_run: true });
 assert.equal(seen.at(-1).args.transaction_name, "Claude: test_fit_out (room number 301, m2 per person 8)");
+await call("run_saved_script", { name: "test_fit_out", inputs: { level: "L3", m2_per_person: 10, min_aisle_mm: 1500, desk_type: "60x30" }, dry_run: true, option_label: "Option B" });
+assert.match(seen.at(-1).args.transaction_name, /^Claude: Option B - test_fit_out \(.*desk type 60x30\)$/, "the option label leads the card title and every input is named");
 
-const lib = json(await call("list_saved_scripts"));
+const lib = json(await call("saved_scripts"));
 assert.ok(lib.find((s) => s.name === "renumber_rooms" && s.mode === "auto"));
 assert.ok(lib.find((s) => s.name === "parameter_completeness" && s.mode === "readonly"));
 assert.ok(!lib.find((s) => s.name === "audit_model"), "audit_model was merged into the native model check");
@@ -204,13 +212,13 @@ assert.equal(run.echoMode, "readonly");
 
 await call("save_script", { name: "my_task", description: "Test", code: "return ctx.Num(\"n\");", mode: "readonly", inputs_example: { n: 1 } });
 await call("save_script", { name: "team_task", description: "Shared", code: "return 1;", mode: "readonly", scope: "team" });
-assert.equal(json(await call("list_saved_scripts")).find((s) => s.name === "team_task").source, "team");
-assert.ok(json(await call("list_saved_scripts")).find((s) => s.name === "door_width_check"));
-for (const s of json(await call("list_saved_scripts")).filter((s) => s.source === "built-in")) {
+assert.equal(json(await call("saved_scripts")).find((s) => s.name === "team_task").source, "team");
+assert.ok(json(await call("saved_scripts")).find((s) => s.name === "door_width_check"));
+for (const s of json(await call("saved_scripts")).filter((s) => s.source === "built-in")) {
   assert.ok(s.description && ["auto", "manual", "readonly"].includes(s.mode), `built-in script ${s.name} needs @description and a valid @mode`);
 }
-assert.match((await call("read_saved_script", { name: "door_width_check" })).content[0].text, /"Width"/, "door width falls back to the family Width parameter");
-const mine = json(await call("list_saved_scripts")).find((s) => s.name === "my_task");
+assert.match((await call("saved_scripts", { name: "door_width_check" })).content[0].text, /"Width"/, "door width falls back to the family Width parameter");
+const mine = json(await call("saved_scripts")).find((s) => s.name === "my_task");
 assert.equal(mine.source, "user");
 const mineRun = json(await call("run_saved_script", { name: "my_task", inputs: { n: 7 } }));
 assert.equal(mineRun.echoMode, "readonly");
@@ -237,7 +245,7 @@ assert.ok(fs.readFileSync(path.join(tmp, "logs", "mcp-calls.jsonl"), "utf8").inc
 
 // Revit down -> friendly error, not a crash
 await call("execute_revit_code", { code: "boom", dry_run: true });   // a compile failure for the report
-const lr = (await call("learning_report", { days: 7 })).content[0].text;
+const lr = (await call("report_issue", { kind: "learning", days: 7 })).content[0].text;
 assert.match(lr, /First-time right/);
 assert.match(lr, /Repeated API mistakes/, "the failed compile in this test run shows up");
 assert.match(lr, /Saved: /);

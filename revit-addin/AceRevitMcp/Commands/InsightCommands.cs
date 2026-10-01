@@ -296,6 +296,7 @@ namespace AceRevitMcp.Commands
         {
             var doc = Args.RequireDoc(app);
             var limit = Math.Clamp(Args.Int(args, "limit", 300), 1, 3000);
+            var offset = Math.Max(0, Args.Int(args, "offset", 0));
             var collector = new FilteredElementCollector(doc).WhereElementIsElementType();
             var catName = Args.Str(args, "category");
             if (!string.IsNullOrEmpty(catName)) collector = collector.OfCategoryId(Args.ResolveCategory(doc, catName).Id);
@@ -307,7 +308,7 @@ namespace AceRevitMcp.Commands
                 .Where(t => t.Category != null || !string.IsNullOrEmpty(catName))
                 .OrderBy(t => t.Category?.Name).ThenBy(t => t.FamilyName).ThenBy(t => t.Name).ToList();
             var total = matching.Count;
-            var shown = matching.Take(limit).ToList();
+            var shown = matching.Skip(offset).Take(limit).ToList();
 
             var used = new Dictionary<long, int>();
             var shownCategories = shown.Where(t => t.Category != null).Select(t => t.Category.Id).Distinct().ToList();
@@ -341,7 +342,7 @@ namespace AceRevitMcp.Commands
                 }
                 arr.Add(o);
             }
-            return new JsonObject { ["total"] = total, ["returned"] = arr.Count, ["types"] = arr };
+            return new JsonObject { ["total"] = total, ["returned"] = arr.Count, ["next"] = offset + arr.Count < total ? offset + arr.Count : null, ["types"] = arr };
         }
     }
 }

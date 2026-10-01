@@ -60,8 +60,8 @@ them. Keep the "Showcase" list in that document up to date (what is ready to sho
 
 ## The learning loop (keep it running with every change)
 ACE is meant to get better continuously. Every release should pass through this loop:
-1. **Collect:** team members run `learning_report` (ask Claude, `share_with_team: true`) and share `issue-*.md` reports.
-   Claude saves lessons as it works (`remember_lesson`, team-shared ones land in the team `lessons` folder).
+1. **Collect:** team members run the learning report (`report_issue` kind `learning`, `share_with_team: true`) and share `issue-*.md` reports.
+   Claude saves lessons as it works (`lessons` action `remember`, team-shared ones land in the team `lessons` folder).
 2. **Review:** read the learning reports (first-time-right trend, repeated compile errors, recipe candidates, failing
    scripts, slow calls) and the team lessons.
 3. **Improve:** fix guides/instructions for repeated API mistakes, add ScriptContext helpers, turn recipe candidates into

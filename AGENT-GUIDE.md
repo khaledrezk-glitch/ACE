@@ -29,7 +29,7 @@ parameters you use, title blocks, view templates), the better Claude's defaults 
 | Knowledge | `revit_api_lookup` (the real Revit API on this PC: signatures, overloads, enums), `revit_guide` (expert guides: planning, performance, transactions, geometry, families, views and sheets, parameters and units, MEP and structure, links and worksharing) |
 | Change (gated) | `execute_revit_code` (full Revit API in C#), `set_parameters`, `run_saved_script`, `select_elements` |
 | Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |
-| Library | `list_saved_scripts`, `read_saved_script`, `save_script` (personal or team) |
+| Library | `saved_scripts` (list, or one script's source), `save_script` (personal or team) |
 | Support | `check_setup`, `report_issue` |
 | Prompts | *Do a Revit task*, *Model QA check*, *Report a problem* |
 | In Revit | The **ACE Companion panel** shows Claude's previews with Apply/Cancel, its activity, and clickable results. Claude's instructions already cover it. |

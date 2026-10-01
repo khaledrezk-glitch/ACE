@@ -39,7 +39,7 @@ Revit.
 | Working modes (Model audit, Coordination, Production, Submission, All tools) | Offline |
 | Official brand values (UAE Flag Red, Charcoal, greys, Poppins / BW Gradual) | Offline in the add-in; the brand guidelines file is kept out of git while the repository is public |
 
-**Numbers:** 45 MCP tools, 12 built-in scripts, about 60 commits on `claude/brave-carson-vcjduc`. Version 1.7.0 (not yet
+**Numbers:** 36 MCP tools (merged from 45), 12 built-in scripts, about 60 commits on `claude/brave-carson-vcjduc`. Version 1.7.0 (not yet
 released as verified).
 
 ## 3. The owner's ideas, collected (in the order they came)

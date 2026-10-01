@@ -161,7 +161,7 @@ namespace AceRevitMcp.Coordination
             var status = Args.Str(args, "status") ?? "approved";
             if (!new[] { "approved", "active", "new" }.Contains(status)) throw new CommandException("status must be approved, active or new.");
             var asked = Args.Strings(args, "keys").ToList();
-            if (asked.Count == 0) throw new CommandException("Give 'keys': clash keys or issue keys (from run_clash_test or clash_results).");
+            if (asked.Count == 0) throw new CommandException("Give 'keys': clash keys or issue keys (from run_clash_test).");
             var note = Args.Str(args, "note");
             void Set(Clash c) { c.Status = status; c.Approved = status == "approved"; if (note != null) c.Note = note; }
 
@@ -190,7 +190,7 @@ namespace AceRevitMcp.Coordination
             foreach (var c in current.Where(c => keys.Contains(c.Key) && tests.Contains(c.Test))) Set(c);
             StatusStore.PublishClashes(host.Title, current);
             if (changed == 0)
-                throw new CommandException($"No clash matched {string.Join(", ", notFound.Take(5))}. Use the clash or issue keys from run_clash_test or clash_results.");
+                throw new CommandException($"No clash matched {string.Join(", ", notFound.Take(5))}. Use the clash or issue keys from run_clash_test.");
             var result = new JsonObject { ["updated"] = changed, ["status"] = status, ["tests"] = new JsonArray(tests.Select(t => (JsonNode)t).ToArray()) };
             if (notFound.Count > 0) result["notFound"] = new JsonArray(notFound.Select(k => (JsonNode)k).ToArray());
             return result;

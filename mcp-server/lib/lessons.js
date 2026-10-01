@@ -100,8 +100,14 @@ export function lessonsFor({ model, project, query, limit = 40 } = {}) {
       || (l.scope === "project" && p && (p.includes(norm(l.project)) || norm(l.project).includes(p))))
     .filter((l) => !q || norm(l.lesson).includes(q) || (l.tags || []).some((t) => norm(t).includes(q)))
     .slice(0, limit)
-    .map(({ id, kind, scope, lesson, model: lm, project: lp, source, time }) => ({ id, kind, scope, lesson, model: lm, project: lp, source, date: String(time).slice(0, 10) }));
+    // Lessons are notes written by people (team ones from a shared folder): capped, so one long entry cannot crowd the
+    // brief, and they stay data, never instructions.
+    .map(({ id, kind, scope, lesson, model: lm, project: lp, source, time }) => ({
+      id, kind, scope, lesson: String(lesson ?? "").slice(0, LESSON_MAX), model: lm, project: lp, source, date: String(time).slice(0, 10),
+    }));
 }
+
+const LESSON_MAX = 600;
 
 export function lessonStats() {
   const all = allLessons();

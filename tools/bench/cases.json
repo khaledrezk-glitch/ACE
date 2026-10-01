@@ -371,6 +371,122 @@
           "value": 1
         }
       ]
+    },
+    {
+      "name": "Warnings grouped by type with ids",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "list_warnings",
+      "args": {
+        "types": 10
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "total",
+          "op": ">=",
+          "value": 0
+        },
+        {
+          "path": "warnings",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Tag untagged doors in every floor plan (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "tag_untagged",
+      "dryRun": true,
+      "inputs": {
+        "category": "Doors",
+        "all_floor_plans": true
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "result.views",
+          "op": ">=",
+          "value": 2
+        },
+        {
+          "path": "result.perView",
+          "op": "length>=",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "name": "Renumber doors by room (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "renumber_doors",
+      "dryRun": true,
+      "inputs": {
+        "scheme": "room"
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "result.doors",
+          "op": ">=",
+          "value": 10
+        },
+        {
+          "path": "result.samples",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Sheets for storeys reuse existing plans and skip levels with sheets (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "sheets_for_levels",
+      "dryRun": true,
+      "inputs": {},
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "result.skipped",
+          "op": "exists"
+        },
+        {
+          "path": "result.created",
+          "op": ">=",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "Test fit a whole level in one run (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "test_fit_out",
+      "dryRun": true,
+      "inputs": {
+        "level": "L3",
+        "department": "Office",
+        "m2_per_person": 10
+      },
+      "maxMs": 300000,
+      "expect": [
+        {
+          "path": "result.perRoom",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Duplicate instances fix finds its groups (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "delete_duplicate_instances",
+      "dryRun": true,
+      "inputs": {},
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "result.duplicateGroups",
+          "op": ">=",
+          "value": 0
+        }
+      ]
     }
   ]
 }
