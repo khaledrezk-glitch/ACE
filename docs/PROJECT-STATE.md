@@ -74,6 +74,10 @@ released as verified).
 19. Compare with **"15 features for your company MCP"** (Omar Raafat's post). *Concept section 13: 7 features already
     there, 6 partly, 2 missing. Six gaps to close: verify before commit, skills tree, sync with review,
     long-running jobs, variables between runs, and who changed what including Claude.*
+20. **Refactoring:** Claude Code's `/simplify` (reuse, duplication, efficiency; applies the clean-ups) and `/code-review`
+    (bugs; report only, or `--fix`). *Added to the learning loop as a "Tidy" step before every release (`CLAUDE.md`).
+    The first whole-codebase pass (report only) can run when development resumes: 1.7.0 grew fast, so it will find
+    the most.*
 
 ## 4. Decisions and constraints to keep
 
@@ -101,7 +105,8 @@ released as verified).
 
 The order is from concept section 10:
 
-1. **Verify 1.7.0 live and fix** what that shows. Then remind the owner about the first presentation (the coordination
+1. **Tidy pass** (`/code-review` report, then `/simplify`) over the 1.7.0 code, then **verify 1.7.0 live and fix** what
+   that shows. Then remind the owner about the first presentation (the coordination
    circle).
 2. **Quick merges and the status store** (D3, D5, D6, D8, D9).
 3. **Rules engine and the project requirements file** (D2, D7).
