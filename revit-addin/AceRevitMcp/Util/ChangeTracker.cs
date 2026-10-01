@@ -24,9 +24,19 @@ namespace AceRevitMcp.Util
         public static string LastClaudeChangeName { get; private set; }
         public static string LastClaudeChangeDocument { get; private set; }
 
+        private static int _temporary;
+
+        /// <summary>
+        /// ACE's own temporary work that is rolled back afterwards (e.g. picture views): its commits must not count
+        /// as "the user changed the model", because the undo stack is left exactly as it was.
+        /// </summary>
+        public static IDisposable Temporary() { _temporary++; return new Scope(); }
+        private sealed class Scope : IDisposable { private bool _done; public void Dispose() { if (!_done) { _done = true; _temporary--; } } }
+
         public static void OnDocumentChanged(object sender, DocumentChangedEventArgs e)
         {
             var op = e.Operation;
+            if (_temporary > 0 && _current == null) return;
             if (_current != null)
             {
                 if (op == UndoOperation.TransactionCommitted)

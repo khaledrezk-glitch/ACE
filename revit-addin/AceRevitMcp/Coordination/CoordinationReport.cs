@@ -102,6 +102,7 @@ namespace AceRevitMcp.Coordination
             if (solid != null) highlight = highlight.SetSurfaceForegroundPatternId(solid.Id).SetSurfaceForegroundPatternColor(red);
 
             // Everything happens in a group that is rolled back: the temporary views never reach the model.
+            using (ChangeTracker.Temporary())
             using (var group = new TransactionGroup(doc, "ACE coordination pictures"))
             {
                 group.Start();

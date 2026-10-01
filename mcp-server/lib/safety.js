@@ -31,6 +31,8 @@ export function requirePreview(key) {
 const RISKY = [
   [/\bProcess\b/, "starts other programs"],
   [/\b(File|Directory)\.(Delete|Move|Replace|Copy|Create\w*|WriteAll\w*|AppendAll\w*)\b|\bStreamWriter\b|\bFileStream\b/, "creates, changes or deletes files on disk"],
+  [/\bFile\.(Open\w*|SetAttributes|Encrypt|Decrypt)\b|\b(FileInfo|DirectoryInfo|BinaryWriter|TextWriter|ZipFile|ZipArchive)\b/, "creates, changes or deletes files on disk"],
+  [/\.(Export|ExportImage)\s*\(/, "exports files from the model"],
   [/\b(HttpClient|WebClient|WebRequest|Socket|TcpClient|UdpClient|SmtpClient)\b/, "uses the network"],
   [/\bRegistry\b/, "changes Windows settings"],
   [/\bEnvironment\.Exit\b|\bApplication\.Exit\b/, "closes programs"],

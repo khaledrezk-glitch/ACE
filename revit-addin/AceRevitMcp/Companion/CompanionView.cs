@@ -442,8 +442,8 @@ namespace AceRevitMcp.Companion
                 if (p.Kind == "set_parameters")
                 {
                     var failed = (int?)r?["failed"]?.GetValue<int>() ?? 0;
-                    ok = failed == 0;
-                    outcome = $"{r?["applied"]} value(s) changed" + (failed > 0 ? $", {failed} failed" : "");
+                    ok = failed == 0 && r?["success"]?.GetValue<bool>() != false;
+                    outcome = ok || failed > 0 ? $"{r?["applied"]} value(s) changed" + (failed > 0 ? $", {failed} failed" : "") : (r?["note"]?.ToString() ?? "Revit refused the change");
                 }
                 else
                 {

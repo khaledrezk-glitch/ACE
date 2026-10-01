@@ -101,6 +101,13 @@ public static class AceScript
                         ["note"] = $"The user already applied this exact change themselves with the Apply button in the ACE Companion panel in Revit at {decision.DecidedAt:HH:mm}. Do NOT apply it again. Verify the result with a read-only query and report it.",
                         ["outcome"] = decision.Outcome,
                     };
+                if (decision?.State == Companion.PendingState.AppliedByClaude)
+                    return new JsonObject
+                    {
+                        ["success"] = true,
+                        ["alreadyApplied"] = true,
+                        ["note"] = $"This exact change was already applied at {decision.DecidedAt:HH:mm} (one undo step). It is not applied twice. Verify the result with a read-only query; to repeat it on purpose, preview it again first.",
+                    };
                 if (decision?.State == Companion.PendingState.Rejected)
                     return new JsonObject
                     {
@@ -145,6 +152,9 @@ public static class AceScript
                 // merged into ONE undo step (real run) or rolled back completely (dry run / failure).
                 TransactionGroup group = null;
                 Transaction tx = null;
+                // Other open models (not links) are wrapped too: a script may edit them with its own transactions,
+                // and a dry run or read-only run must leave EVERY model untouched.
+                var others = new List<TransactionGroup>();
                 try
                 {
                     // readonly runs are also wrapped, and ALWAYS rolled back: even if the code opens its own
@@ -153,6 +163,13 @@ public static class AceScript
                     {
                         group = new TransactionGroup(doc, name);
                         group.Start();
+                    }
+                    foreach (Document other in uiapp.Application.Documents)
+                    {
+                        if (doc != null && other.Equals(doc)) continue;
+                        if (other.IsLinked || other.IsReadOnly) continue;
+                        try { var g = new TransactionGroup(other, name); g.Start(); others.Add(g); }
+                        catch { /* not modifiable right now: its changes cannot be made either */ }
                     }
                     if (mode == "auto") { tx = new Transaction(doc, name); tx.Start(); }
 
@@ -176,6 +193,12 @@ public static class AceScript
                         catch (Exception ex) { response["previewImageError"] = ex.Message; }
                         finally { recording.Paused = false; }
                     }
+                    // Other models follow the active one: rolled back for previews and read-only runs, kept when applied.
+                    foreach (var g in others)
+                    {
+                        if (dryRun || mode == "readonly") g.RollBack();
+                        else g.Assimilate();
+                    }
                     if (group != null && mode == "readonly")
                     {
                         group.RollBack();
@@ -197,12 +220,14 @@ public static class AceScript
                     failure = ex;
                     try { if (tx != null && tx.HasStarted() && !tx.HasEnded()) tx.RollBack(); } catch { }
                     try { if (group != null && group.HasStarted() && !group.HasEnded()) group.RollBack(); } catch { }
+                    foreach (var g in others) try { if (g.HasStarted() && !g.HasEnded()) g.RollBack(); } catch { }
                     transactionStatus = mode == "readonly" ? null : "RolledBack";
                 }
                 finally
                 {
                     tx?.Dispose();
                     group?.Dispose();
+                    foreach (var g in others) g.Dispose();
                     ChangeTracker.End(recording, keptChanges);
                 }
 

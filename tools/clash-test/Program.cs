@@ -111,6 +111,13 @@ class P {
     Check((string)F(m2.First(c => (string)F(c, "Key") == "q1"), "CausedBy") == "Ahmed", "cause kept while the clash stays");
     Check(F(m2.First(c => (string)F(c, "Key") == "q2"), "Cause") == null, "reopened clash gets a fresh cause");
 
+    // Approval survives a clash disappearing (e.g. link unloaded and the run not scoped) and coming back.
+    var ap = C("a1", "approved", "x", "y", "Ducts", "Walls", "L3");
+    var gone = ((IEnumerable)merge.Invoke(null, new object[] { List(ap), List(), null, t1 })).Cast<object>().ToList();
+    Check((string)F(gone[0], "Status") == "resolved" && (bool)F(gone[0], "Approved"), "an approved clash that disappears is resolved but remembers its approval");
+    var back = ((IEnumerable)merge.Invoke(null, new object[] { gone.Cast<object>().Aggregate(List(), (l, x) => { l.Add(x); return l; }), List(C("a1", "new", "x", "y", "Ducts", "Walls", "L3")), null, t1.AddDays(1) })).Cast<object>().ToList();
+    Check((string)F(back.First(c => (string)F(c, "Key") == "a1"), "Status") == "approved", "an approved clash that comes back is approved again, not new");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

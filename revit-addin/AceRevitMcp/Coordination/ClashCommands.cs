@@ -38,7 +38,10 @@ namespace AceRevitMcp.Coordination
                 bool InModel(Clash c) => withModel == null
                     ? (primaryModel == null || Is(c.SourceA, primaryName) || Is(c.SourceB, primaryName))
                     : ((Is(c.SourceA, withModel) || Is(c.SourceA, primaryName)) && (Is(c.SourceB, withModel) || Is(c.SourceB, primaryName)));
-                Func<Clash, bool> scope = !complete ? (c => false) : (level != null || withModel != null || primaryModel != null) ? (c => InLevel(c) && InModel(c)) : null;
+                // A model that is not loaded now was not tested: its stored clashes stay as they are.
+                var loaded = new HashSet<string>(Clashes.Sources(app, host).Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
+                bool Loaded(Clash c) => loaded.Contains(c.SourceA ?? "") && loaded.Contains(c.SourceB ?? "");
+                Func<Clash, bool> scope = !complete ? (c => false) : (c => Loaded(c) && InLevel(c) && InModel(c));
                 if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
                 var stored = Clashes.Load(host, t.Name);
                 DateTime? previousRun = stored.Count > 0 ? stored.Max(c => c.LastSeen) : (DateTime?)null;
@@ -166,12 +169,13 @@ namespace AceRevitMcp.Coordination
             foreach (var c in clashes.Where(c => keys.Contains(c.Key)))
             {
                 c.Status = status;
+                c.Approved = status == "approved";
                 if (Args.Str(args, "note") is string n) c.Note = n;
                 changed++;
             }
             Clashes.Save(host, test, clashes);
             if (Clashes.Last != null)
-                foreach (var c in Clashes.Last.Where(c => keys.Contains(c.Key))) { c.Status = status; if (Args.Str(args, "note") is string n2) c.Note = n2; }
+                foreach (var c in Clashes.Last.Where(c => keys.Contains(c.Key))) { c.Status = status; c.Approved = status == "approved"; if (Args.Str(args, "note") is string n2) c.Note = n2; }
             return new JsonObject { ["updated"] = changed, ["status"] = status };
         }
 

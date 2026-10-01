@@ -227,6 +227,14 @@ namespace AceRevitMcp.Coordination
             var tol = UnitUtils.ConvertToInternalUnits(test.ToleranceMm, UnitTypeId.Millimeters);
             var clear = UnitUtils.ConvertToInternalUnits(test.ClearanceMm, UnitTypeId.Millimeters);
             var clashes = new Dictionary<string, Clash>();
+            // Each B element's geometry is read once per run (a large slab is crossed by many ducts).
+            var solidCache = new Dictionary<(int, long), List<Solid>>();
+            List<Solid> SolidsOf(Element e)
+            {
+                var k = (e.Document.GetHashCode(), e.Id.Value);
+                if (!solidCache.TryGetValue(k, out var list)) solidCache[k] = list = Solids(e);
+                return list;
+            }
             foreach (var (sa, ea) in aItems)
             {
                 var solidsA = Solids(ea);
@@ -253,7 +261,7 @@ namespace AceRevitMcp.Coordination
                             if (clashes.ContainsKey(key)) continue;
                             if (Related(ea, eb)) continue;
                             double depth = 0; XYZ centre = null; var kind = (string)null;
-                            foreach (var solidB in Solids(eb))
+                            foreach (var solidB in SolidsOf(eb))
                             {
                                 try
                                 {

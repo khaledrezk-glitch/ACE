@@ -16,6 +16,7 @@ namespace AceRevitMcp.Coordination
         public string Mover;             // "A" or "B": the side that gives way; null = coordinate (equal priority)
         public string Group;             // the issue this clash belongs to (see ClashLogic.Issues)
         public int Reopened;             // times it came back after being resolved
+        public bool Approved;            // approved once: stays approved if it disappears and comes back
         public string Cause, CausedBy;   // for new clashes: what changed since the last snapshot, and by whom
         public DateTime FirstSeen, LastSeen;
     }
@@ -111,7 +112,8 @@ namespace AceRevitMcp.Coordination
                     c.FirstSeen = p.FirstSeen;
                     c.Note = p.Note;
                     c.Reopened = p.Reopened;
-                    if (p.Status == "approved") c.Status = "approved";
+                    c.Approved = p.Approved || p.Status == "approved";
+                    if (c.Approved && (p.Status == "approved" || p.Status == "resolved")) c.Status = "approved";
                     else if (p.Status == "resolved") { c.Status = "new"; c.Reopened++; }
                     else c.Status = "active";
                     if (c.Status != "new") { c.Cause = p.Cause; c.CausedBy = p.CausedBy; }   // a reopened clash gets a fresh cause
@@ -127,6 +129,7 @@ namespace AceRevitMcp.Coordination
                     if (time - p.LastSeen < TimeSpan.FromDays(30)) result.Add(p);      // keep a while to show progress
                     continue;
                 }
+                if (p.Status == "approved") p.Approved = true;
                 p.Status = "resolved";
                 p.LastSeen = time;
                 result.Add(p);

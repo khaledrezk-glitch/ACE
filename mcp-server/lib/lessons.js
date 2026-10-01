@@ -63,7 +63,7 @@ export function recordLesson({ lesson, kind = "fact", scope = "model", model, pr
   if (!SCOPES.includes(scope)) throw new Error(`scope must be one of ${SCOPES.join(", ")}`);
   if (scope === "model" && !model) throw new Error("A model lesson needs 'model' (the model title from get_model_brief).");
   if (scope === "project" && !project) throw new Error("A project lesson needs 'project' (the project name or number).");
-  const duplicate = allLessons().find((l) => norm(l.lesson) === norm(lesson) && l.scope === scope && norm(l.model) === norm(model));
+  const duplicate = allLessons().find((l) => norm(l.lesson) === norm(lesson) && l.scope === scope && norm(l.model) === norm(model) && norm(l.project) === norm(project));
   if (duplicate) return { ...duplicate, note: "Already known; nothing added." };
   const entry = {
     id: `L${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,

@@ -235,7 +235,7 @@ namespace AceRevitMcp.Companion
         {
             var p = Pending.FirstOrDefault(x => x.Hash == hash && x.State != PendingState.Waiting && x.DecidedAt.HasValue &&
                                                 DateTime.Now - x.DecidedAt.Value < PendingLifetime &&
-                                                (x.State == PendingState.AppliedByPanel || x.State == PendingState.Rejected));
+                                                (x.State == PendingState.AppliedByPanel || x.State == PendingState.AppliedByClaude || x.State == PendingState.Rejected));
             return p;
         }
 

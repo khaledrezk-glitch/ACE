@@ -1,6 +1,22 @@
 # Changelog
 
 ## 1.7.0 (core v2)
+- **Code review fixes** (whole codebase):
+  - **Other open models stay safe:** a dry run or read-only run now rolls back changes to every open model, not only
+    the active one. An applied run keeps them together.
+  - **No double apply:** an apply uses up its preview before it is sent, so a timeout followed by a retry cannot apply
+    the same change twice. The add-in also refuses a second apply of a change Claude already applied, until it is
+    previewed again.
+  - **`set_parameters`** commits inside a transaction group, so Revit's checks run during the preview too. If Revit
+    rolls the change back, it reports that nothing was changed, instead of "applied".
+  - **Clash status:** a clash run only resolves clashes between models that were loaded. An approved clash stays
+    approved if it disappears and comes back.
+  - **Risky-code screen** also catches `File.Open*`, `FileInfo`/`DirectoryInfo`, writers, zip files and model exports.
+  - **Undo:** ACE's own rolled-back work (coordination pictures) no longer stops `undo_last_claude_change`.
+  - **Clash speed:** each element's geometry is read once per clash run.
+  - **Lessons:** a project lesson can be saved for two projects with the same wording.
+  - **Workset rules:** a file saved with a byte-order mark is read correctly, and an invalid file gives a clear message.
+  - **Activity log:** the date must be YYYY-MM-DD, so the path cannot leave the journal folder.
 - **Companion redesigned**: a header with a connection light, the model name and the work mode (switchable); a tab bar
   with counts; a new **Home** page (what needs you, the model at a glance: health score, clash issues, changes; quick
   actions that run straight away: model check, Clash Browser, clash view, what changed, coordination report, snapshot;

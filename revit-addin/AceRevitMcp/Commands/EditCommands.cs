@@ -30,6 +30,8 @@ namespace AceRevitMcp.Commands
                 var decision = Companion.ActivityHub.DecisionFor(hash);
                 if (decision?.State == Companion.PendingState.AppliedByPanel)
                     return new JsonObject { ["alreadyApplied"] = true, ["applied"] = 0, ["failed"] = 0, ["note"] = $"The user already applied these values with the Apply button in the ACE Companion panel at {decision.DecidedAt:HH:mm}. Do NOT apply again; verify and report." };
+                if (decision?.State == Companion.PendingState.AppliedByClaude)
+                    return new JsonObject { ["alreadyApplied"] = true, ["applied"] = 0, ["failed"] = 0, ["note"] = $"These values were already applied at {decision.DecidedAt:HH:mm}. They are not applied twice; verify and report. To repeat on purpose, preview again first." };
                 if (decision?.State == Companion.PendingState.Rejected)
                     throw new CommandException($"The user cancelled these parameter changes in the ACE Companion panel at {decision.DecidedAt:HH:mm}. Do not apply them; ask what they would like instead.");
             }
@@ -40,8 +42,12 @@ namespace AceRevitMcp.Commands
             var recording = ChangeTracker.Begin("Claude: set parameters");
             using (var guard = new ModelGuard(app))
             {
+                // Commit inside a group (so Revit's own checks run, exactly as in a real change), then roll the group
+                // back for a preview or keep it as one undo step.
+                using (var group = new TransactionGroup(doc, "Claude: set parameters"))
                 using (var t = new Transaction(doc, "Claude: set parameters"))
                 {
+                    group.Start();
                     t.Start();
                     foreach (var c in changes.OfType<JsonObject>())
                     {
@@ -68,21 +74,37 @@ namespace AceRevitMcp.Commands
                         }
                         results.Add(r);
                     }
-                    try { status = (dryRun ? t.RollBack() : t.Commit()).ToString(); }
-                    finally { ChangeTracker.End(recording, !dryRun && status == nameof(TransactionStatus.Committed)); }
+                    var kept = false;
+                    try
+                    {
+                        var committed = t.Commit();
+                        if (committed != TransactionStatus.Committed) { group.RollBack(); status = committed.ToString(); applied = 0; }
+                        else if (dryRun) status = group.RollBack().ToString();
+                        else { status = group.Assimilate().ToString(); kept = status == nameof(TransactionStatus.Committed); }
+                    }
+                    finally
+                    {
+                        if (group.HasStarted() && !group.HasEnded()) group.RollBack();
+                        ChangeTracker.End(recording, kept);
+                    }
+                    if (applied == 0 && status != nameof(TransactionStatus.Committed) && status != nameof(TransactionStatus.RolledBack))
+                        foreach (var r in results.OfType<JsonObject>().Where(r => r["ok"]?.GetValue<bool>() == true))
+                        { r["ok"] = false; r["error"] = "Revit refused the change when committing (see revitErrors); nothing was changed."; }
                 }
 
                 var response = new JsonObject
                 {
+                    ["success"] = status == nameof(TransactionStatus.Committed) || (dryRun && status == nameof(TransactionStatus.RolledBack)),
                     ["applied"] = applied,
                     ["failed"] = results.Count - applied,
                     ["transaction"] = status,
                     ["dryRun"] = dryRun,
                     ["results"] = results,
                 };
-                if (!dryRun && applied > 0) response["note"] = "Applied as ONE undo step named 'Claude: set parameters'.";
+                if (!dryRun && applied > 0 && status == nameof(TransactionStatus.Committed)) response["note"] = "Applied as ONE undo step named 'Claude: set parameters'.";
+                if (response["success"]?.GetValue<bool>() == false) response["note"] = "Revit rolled the change back when committing it (see revitErrors). Nothing was changed.";
                 if (dryRun && applied > 0 && applied == results.Count) Companion.ActivityHub.AddPending("set_parameters", args, response);
-                else if (!dryRun && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
+                else if (!dryRun && !fromPanel && status == nameof(TransactionStatus.Committed)) Companion.ActivityHub.MarkAppliedByClaude(hash);
                 if (guard.Warnings.Count > 0) response["revitWarnings"] = new JsonArray(guard.Warnings.Select(w => (JsonNode)w).ToArray());
                 if (guard.Errors.Count > 0) response["revitErrors"] = new JsonArray(guard.Errors.Select(w => (JsonNode)w).ToArray());
                 return response;

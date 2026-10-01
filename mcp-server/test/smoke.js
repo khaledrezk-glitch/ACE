@@ -248,6 +248,10 @@ const wsApplied = (await call("assign_worksets", { explanation: "move to BEP wor
 assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
 const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
 assert.match(wm, /Coordination/, "working mode can be set");
+for (const risky of ["new System.IO.FileInfo(p).Delete();", "using var w = new System.IO.BinaryWriter(System.IO.File.OpenWrite(p));", "doc.Export(\"C:/x\", \"a\", new DWGExportOptions(), ids);"]) {
+  const r = await call("execute_revit_code", { code: risky, dry_run: true });
+  assert.ok(r.isError && /Blocked for safety/.test(r.content[0].text), `risky code is screened: ${risky}`);
+}
 const pc = (await call("pending_changes")).content[0].text;
 assert.match(pc, /8 m2/, "the panel's waiting cards reach Claude");
 bridge.close();

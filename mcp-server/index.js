@@ -406,12 +406,13 @@ tool("set_parameters", {
     requirePreview(key);
     if (!explanation) throw new RevitError("Give 'explanation': a plain sentence describing this change for the activity journal.");
   }
-  const result = await callRevit("set_parameters", { changes, dry_run }, 300);
+  const send = () => callRevit("set_parameters", { changes, dry_run }, 300);
+  const result = !dry_run ? await applyOnce(key, send) : await send();
   if (result?.alreadyApplied) {
     previews.delete(key);
     return text(result);
   }
-  const ok = result.failed === 0;
+  const ok = result.failed === 0 && result.success !== false;
   if (ok && dry_run) previews.set(key, Date.now());
   if (!dry_run) previews.delete(key);
   journal({
@@ -445,6 +446,19 @@ const codeSchema = {
   preview_image: z.boolean().optional().describe("With dry_run: also return pictures (plan + 3D) of the area that would change, with the changed elements highlighted. Show them to the user before asking for confirmation. Use it for anything visual: placing, moving or creating elements."),
 };
 
+// An apply uses up its preview BEFORE it is sent: if the call times out while Revit still finishes the change, a retry
+// cannot apply it a second time; it needs a fresh preview, which shows the model as it now is.
+async function applyOnce(key, call) {
+  previews.delete(key);
+  try { return await call(); }
+  catch (err) {
+    if (err instanceof RevitError) {
+      err.message += " The change may still have been applied in Revit: check with a read-only query before trying again (a new preview is needed).";
+    }
+    throw err;
+  }
+}
+
 async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image }) {
   mode = mode || "auto";
   const risky = screenCode(code, allow_risky);
@@ -455,7 +469,8 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
     if (!explanation) throw new RevitError("Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal.");
   }
 
-  const result = await callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, preview_image: !!(preview_image && dry_run) }, timeout_seconds ?? 300);
+  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, preview_image: !!(preview_image && dry_run) }, timeout_seconds ?? 300);
+  const result = modifies && !dry_run ? await applyOnce(key, send) : await send();
   // Preview pictures travel as image blocks, not as base64 inside the JSON text.
   const pictures = Array.isArray(result?.previewImages) ? result.previewImages : [];
   if (result && pictures.length) result.previewImages = pictures.map((p) => `${p.view} image attached`);
@@ -547,7 +562,9 @@ tool("read_saved_script", {
 function worksetRules(rulesFile) {
   const candidates = [rulesFile, readConfig()?.worksetRules, path.join(DATA_DIR, "worksets.json"), path.join(ROOT, "bep", "worksets.example.json")].filter(Boolean);
   for (const f of candidates) {
-    if (fs.existsSync(f)) return { file: f, ...JSON.parse(fs.readFileSync(f, "utf8")) };
+    if (!fs.existsSync(f)) continue;
+    try { return { file: f, ...JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, "")) }; }
+    catch (err) { throw new RevitError(`The workset rules file ${f} is not valid JSON: ${err.message}`); }
   }
   throw new RevitError("No workset rules found. Save the BEP rules as %APPDATA%\\ACE-RevitMCP\\worksets.json (see bep/worksets.example.json).");
 }
@@ -634,7 +651,7 @@ tool("save_script", {
 tool("get_activity_log", {
   title: "Activity journal",
   description: "What Claude previewed and changed in Revit on a day (plain-language entries with results). Use when the user asks what was done.",
-  inputSchema: { date: z.string().optional().describe("YYYY-MM-DD, default today") },
+  inputSchema: { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default today") },
   annotations: readOnly,
 }, async ({ date }) => {
   const day = date || new Date().toISOString().slice(0, 10);
