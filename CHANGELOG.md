@@ -9,6 +9,11 @@
   - The built-in scripts `audit_model` and `rooms_without_doors` are retired: the native model check covers them.
   - A **status store**: the model check, clashes and changes publish their latest result, and the Companion and
     dashboard read the same numbers.
+- **Presentation standard** (ACE > Deliver > Presentation Standard, and Claude's `presentation_standard`): printed text
+  height by view scale (default 3 mm for 1:50 and larger, 2.5 mm for 1:100 and smaller) and one type per kind (text,
+  each dimension style, optionally tags per category) and size across the views on sheets. A window to choose the type
+  and size for each, check, preview and apply (one undo step, Apply cards in the Companion). The rules live in the office
+  check set (`presentation`), and the model check reports text off the standard and mixed annotation types.
 - **Stress review, round 2:**
   - Speed: clash search through a 3D box grid (one pass per model, booleans only where boxes touch); automatic
     snapshots after the save at idle time, written in the background; compiled scripts and reference assemblies

@@ -487,6 +487,31 @@
           "value": 0
         }
       ]
+    },
+    {
+      "name": "Presentation standard check (text height by scale, types per kind)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "presentation_standard",
+      "args": {
+        "check_only": true
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "views",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "checked",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "typesUsed",
+          "op": "exists"
+        }
+      ]
     }
   ]
 }

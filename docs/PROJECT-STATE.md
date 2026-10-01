@@ -78,6 +78,9 @@ released as verified).
     (bugs; report only, or `--fix`). *Added to the learning loop as a "Tidy" step before every release (`CLAUDE.md`).
     The first whole-codebase pass (report only) can run when development resumes: 1.7.0 grew fast, so it will find
     the most.*
+21. **Presentation standards:** annotation types unified across views and text height by scale (2.5 mm at 1:100,
+    3 mm at 1:50 and larger), with a panel to choose the type and size for each. *Built (offline): Deliver >
+    Presentation Standard, `presentation_standard`, model check; concept section 14.*
 
 ## 4. Decisions and constraints to keep
 

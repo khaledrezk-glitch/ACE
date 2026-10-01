@@ -46,3 +46,13 @@ sheets_for_levels then reuses each level's existing plan that is not on a sheet 
 skips levels that already have one and, by default, levels that are not building storeys. For a long job offer
 backup_model first, and remember that each run is its own undo step.
 
+## Presentation standard
+
+presentation_standard applies the office drawing standard: the printed text height for each view scale (default 3 mm
+for 1:50 and larger, 2.5 mm for 1:100 and smaller) and one type per kind (text, each dimension style, optionally tags
+per category) and size, in the views on sheets. Start with check_only: true and report the wrong heights and the
+types it would use or make; then preview and apply after confirmation. A project's own sizes (its BEP) go in
+text_sizes. The rules are in the office check set; the user picks types and sizes in ACE > Deliver > Presentation
+Standard, so point them there when they want to change the standard itself. Tag text height is set in the tag
+family, so for tags it unifies the type, not the size.
+

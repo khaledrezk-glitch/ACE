@@ -82,9 +82,15 @@ namespace AceRevitMcp.Companion
         public static string Fingerprint(string kind, JsonObject args)
         {
             string part(string key) => args[key]?.ToJsonString() ?? "null";
-            var material = kind == "set_parameters"
-                ? $"{kind}\n{part("changes")}"
-                : $"{kind}\n{part("code")}\n{(args["mode"]?.ToString() ?? "auto")}\n{part("inputs")}";
+            string material;
+            if (kind == "set_parameters") material = $"{kind}\n{part("changes")}";
+            else if (kind == "execute_code") material = $"{kind}\n{part("code")}\n{(args["mode"]?.ToString() ?? "auto")}\n{part("inputs")}";
+            else
+            {
+                // Native commands: every argument except how it is run (preview or not, from the panel, pictures).
+                var keys = args.Select(kv => kv.Key).Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name")).OrderBy(k => k, StringComparer.Ordinal);
+                material = kind + "\n" + string.Join("\n", keys.Select(k => $"{k}={part(k)}"));
+            }
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
         }
 

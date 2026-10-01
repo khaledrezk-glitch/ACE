@@ -75,6 +75,8 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
 - Model health: model_dashboard (score, findings, HTML report); warnings by type with fixes: list_warnings. Worksets per the BEP: assign_worksets (check_only
   first). Office test fit: saved script test_fit_out (a room, a list or a whole level). Structure from ARC: saved script
   derive_structure_from_arc. Marks, tags, sheets: renumber_doors, then tag_untagged, then sheets_for_levels.
+- Drawing standard (text height by scale, one annotation type per kind and size): presentation_standard (check_only
+  first). The user can set the types and sizes in ACE > Deliver > Presentation Standard.
 
 Read-only questions (counts, checks, reports, pictures) need no preview or confirmation: just do them.
 Code that touches files, other programs or the network, or that saves, closes or syncs models, is

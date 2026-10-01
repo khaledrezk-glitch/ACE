@@ -75,9 +75,9 @@ namespace AceRevitMcp.Ribbon
                 Key = "production", Label = "Production", Glyph = Glyphs.Sheets,
                 Summary = "Mass production: data, sheets, views and exports lead; review tools are dimmed.",
                 Panels = { ["Data"] = PanelLook.Focus, ["Export"] = PanelLook.Focus, ["Inspect"] = PanelLook.Focus,
-                           ["Insights"] = PanelLook.Dim, ["Audit"] = PanelLook.Dim, ["Deliver"] = PanelLook.Dim,
+                           ["Insights"] = PanelLook.Dim, ["Audit"] = PanelLook.Dim, ["Deliver"] = PanelLook.Focus,
                            ["Coordination"] = PanelLook.Hide, ["Compliance"] = PanelLook.Hide, ["Team Tools"] = PanelLook.Hide, ["Admin"] = PanelLook.Hide },
-                ClaudeTools = new[] { "set_parameters", "execute_revit_code", "run_saved_script", "assign_worksets", "list_views", "find_elements", "select_elements" },
+                ClaudeTools = new[] { "set_parameters", "execute_revit_code", "run_saved_script", "assign_worksets", "presentation_standard", "list_views", "find_elements", "select_elements" },
                 Prompts = new[]
                 {
                     ("Create sheets for all plans", "Using ace-revit: create a sheet for every floor plan that is not on a sheet yet, using our title block and numbering." + gated),
@@ -94,7 +94,7 @@ namespace AceRevitMcp.Ribbon
                 Panels = { ["Deliver"] = PanelLook.Focus, ["Audit"] = PanelLook.Focus, ["Compliance"] = PanelLook.Focus, ["Export"] = PanelLook.Focus, ["Insights"] = PanelLook.Focus,
                            ["Data"] = PanelLook.Dim, ["Coordination"] = PanelLook.Dim, ["Inspect"] = PanelLook.Dim,
                            ["Team Tools"] = PanelLook.Hide, ["Admin"] = PanelLook.Hide },
-                ClaudeTools = new[] { "model_dashboard", "list_views", "find_elements", "set_parameters", "coordination_report" },
+                ClaudeTools = new[] { "model_dashboard", "presentation_standard", "list_views", "find_elements", "set_parameters", "coordination_report" },
                 Prompts = new[]
                 {
                     ("Is this model ready to issue?", "Using ace-revit: is this model ready to issue? Check title block data, project information, empty sheets, views not on sheets, warnings and open clashes, and give me a go / no-go list." + ro),

@@ -179,6 +179,20 @@ namespace AceRevitMcp.Dashboard
                 tt.Rule = "review above 30";
             });
 
+            // ---- Presentation standard: text height by view scale, one type per size and style --------------------------
+            Safe("presentation standard", () =>
+            {
+                var std = PresentationStandard.Load();
+                var audit = AnnotationAudit.Run(doc, std);
+                var off = Add(x, "Annotation", "Text off the presentation standard", audit.OffStandard.Count, 0.02, 4,
+                    $"{audit.OffStandard.Count} of {audit.Checked} text notes and dimensions in {audit.Views} views have the wrong text height for their scale ({std.Describe()})",
+                    "Apply the presentation standard (ask Claude: presentation_standard, previewed first).", audit.OffStandard);
+                off.Rule = std.Describe();
+                Add(x, "Annotation", "Mixed annotation types", audit.ExtraTypes, 0.2, 2,
+                    $"{audit.ExtraTypes} more text or dimension types are used than one per size and style (across {audit.Views} views)",
+                    "Unify them: the presentation standard gives each size and style one type.");
+            });
+
             // ---- Naming -----------------------------------------------------------------------------------------------------
             Safe("type names", () =>
             {
@@ -218,14 +232,24 @@ namespace AceRevitMcp.Dashboard
     /// </summary>
     internal static class CheckSet
     {
+        /// <summary>The office check set: config.json "checkSet" (e.g. on the team share), else %APPDATA%\ACE-RevitMCP\checkset.json.</summary>
+        internal static string FilePath()
+        {
+            try
+            {
+                var cfg = File.Exists(AceConfig.FilePath) ? JsonNode.Parse(File.ReadAllText(AceConfig.FilePath)) as JsonObject : null;
+                var configured = cfg?["checkSet"]?.ToString();
+                return !string.IsNullOrWhiteSpace(configured) && File.Exists(configured) ? configured : Path.Combine(AceConfig.Directory, "checkset.json");
+            }
+            catch { return Path.Combine(AceConfig.Directory, "checkset.json"); }
+        }
+
         internal static void Apply(Insights x)
         {
             string file = null;
             try
             {
-                var cfg = File.Exists(AceConfig.FilePath) ? JsonNode.Parse(File.ReadAllText(AceConfig.FilePath)) as JsonObject : null;
-                var configured = cfg?["checkSet"]?.ToString();
-                file = !string.IsNullOrWhiteSpace(configured) && File.Exists(configured) ? configured : Path.Combine(AceConfig.Directory, "checkset.json");
+                file = FilePath();
                 if (!File.Exists(file)) return;
                 var json = JsonNode.Parse(File.ReadAllText(file)) as JsonObject;
                 if (json == null) return;

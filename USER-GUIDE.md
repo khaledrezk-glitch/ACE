@@ -89,6 +89,19 @@ file (by category, wall function, structural, MEP system, family or type name, l
 shows what would move, and applies only after you confirm (one undo step). Your BIM manager keeps the rules in
 `worksets.json` (example in the package: `mcp-server\bep\worksets.example.json`).
 
+### Presentation standard (drawings)
+
+**ACE > Deliver > Presentation Standard** keeps every drawing in one style:
+
+- **Text height by scale:** for example 3 mm for 1:50 and larger scales, 2.5 mm for 1:100 and smaller. The height is
+  the printed height on the sheet.
+- **One type per kind and size:** pick the type for text and for each dimension style (linear, angular, radial, spot)
+  at each size, or leave it on *Automatic* (ACE uses the type already used most at that size, or makes one).
+- **Tags (optional):** one tag type per category, for example every door tag the same.
+- **Check model** lists what is off; **Preview** shows what would change; **Apply** makes the change as one undo step.
+  Save stores the standard in the office check set, so the dashboard checks it and Claude applies the same rules
+  ("apply our presentation standard to the sheets").
+
 ### Clash Browser (coordination)
 
 **ACE tab → Coordination → Clash Browser**: choose the **primary** model (this model; a BIM manager can pick a link)

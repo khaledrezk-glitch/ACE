@@ -570,6 +570,36 @@ tool("assign_worksets", {
   return { ...result, content: [...(result.content || []), note] };
 });
 
+tool("presentation_standard", {
+  title: "Presentation standard (text sizes and annotation types)",
+  description: "The office presentation standard for drawings: printed text height by view scale (default 3 mm at 1:50 and larger, 2.5 mm at 1:100 and smaller) and one type per kind (text, each dimension style; tags per category when unify_tags) and size, across all views on sheets. check_only: true reports what is off (nothing changes). Otherwise the usual dry_run preview, confirmation, then the identical call applies it as one undo step; missing types are made from the most used type. The rules live in the office check set; the user edits them in ACE > Deliver > Presentation Standard (a panel to pick the type and size for each). text_sizes overrides the heights for a project (e.g. its BEP).",
+  inputSchema: {
+    check_only: z.boolean().optional(),
+    views: z.array(z.string()).max(500).optional().describe("Only these views (names); default: views on sheets (or all views, as the standard says)"),
+    text_sizes: z.array(z.object({ upToScale: z.number().int().min(1).optional(), textMm: z.number().min(0.5).max(20) })).max(10).optional()
+      .describe("e.g. [{\"upToScale\": 50, \"textMm\": 3}, {\"textMm\": 2.5}]"),
+    unify_tags: z.boolean().optional().describe("Also give every tag of a category one tag type"),
+    dry_run: z.boolean().optional(),
+    explanation: z.string().optional(),
+  },
+  annotations: writes,
+}, async ({ check_only, dry_run, explanation, ...a }) => {
+  if (check_only) return text(await callRevit("presentation_standard", { ...a, check_only: true }, 600));
+  const result = await gated(fingerprint("presentation", a),
+    { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
+    () => callRevit("presentation_standard", { ...a, dry_run: !!dry_run }, 900), (r) => r?.success === true);
+  if (result?.alreadyApplied) return text(result);
+  if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
+  if (!dry_run && result?.success) briefCache.clear();
+  journal({
+    title: `${dry_run ? "Preview" : "Change"}: presentation standard`,
+    explanation,
+    outcome: outcomeOf(result, dry_run),
+    details: { types: result?.changedType ?? result?.wouldChange, made: result?.typesMade ?? result?.typesToMake },
+  });
+  return text(result);
+});
+
 tool("run_saved_script", {
   title: "Run a saved script",
   description: "Run a saved script by name with inputs. Same behaviour and safety as execute_revit_code (edits need a dry_run preview and confirmation first).",

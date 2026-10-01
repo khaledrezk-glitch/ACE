@@ -86,6 +86,7 @@ notifications (section 8). Each suggestion has a one-click action.
 | Clash view (DirectContext3D) | a clash, colours | focused 3D view | Clash Browser, Claude |
 | Coordination report | issues | HTML with pictures, CSV | meetings |
 | Worksets per BEP (script) | workset rules | moves, wrong-workset report | model check (Workset1 only today) |
+| Presentation standard (window, Claude) | office check set, section `presentation` | text height by scale, one type per kind and size, tag types unified | model check (Annotation), status store, approvals |
 | Test fit, structure from ARC | brief, rules in the script | model changes (previewed) | preview pictures, approvals |
 | Work modes | mode definitions | ribbon focus / dim / hide, prompts, Claude tools | Companion, Claude |
 | Approvals + preview pictures | dry runs | Apply cards | every modifying tool |
@@ -108,6 +109,7 @@ Each item is a recommendation. None is applied yet.
 | D9 | Ribbon: *Model Health* (Audit) and *Dashboard* (Insights) are the same tool | One button | Clearer ribbon | S · **done (1.7.0)** |
 | D10 | *Parameter Check* (planned), "Key parameters filled" (model check), LOIN | One **information requirements** check driven by the LOIN | Checks what the project actually requires | M |
 | D11 | *Submission Check* (planned), the Submission mode, "Submission readiness" checks | Submission check = the requirements monitor at the issue stage | No separate tool to build | S |
+| D13 | Presentation rules could have become an eighth settings file | Kept in the office check set (`presentation`): one reader (`PresentationStandard`) feeds the model check and the fix, so they never disagree | No new file; check and fix agree | S · **done (1.7.0)** |
 | D12 | *Design Check* / *Code Packs* (planned) and the rules engine | The same rules engine with different rule packs (design, code, client) | One engine, many packs | M |
 
 ## 5. The bigger circle: the BIM requirements hub
@@ -338,7 +340,31 @@ hidden capability and the thinking behind it) and the demo that proves it.
 | **The model knows its own health** | Model Checker-style checks with an office check set, a score and a trend, plus coordination status on one page | Dashboard before and after a clean-up | Built, not yet verified live |
 | **Learning loop** | ACE gets better from its own mistakes: lessons, first-time-right trend, benchmark before every release | Learning report over a month | Running |
 | **The requirements hub** (planned) | The BEP, LOD and LOIN become rules that every tool follows; contradictions are found between documents, settings and the model, and raised like Revit warnings | A BEP revision that contradicts the LOIN, then a door without Fire Rating raising a warning | Concept |
+| **One look on every sheet** | Text height follows the view scale and every kind of annotation has one type, chosen in a panel and applied in one undo step; the model check keeps it that way | A drawing set with mixed text, then Check, Preview, Apply in the Presentation Standard window | Built, not yet verified live |
 | **Project Hub** (planned) | Everything the project knows, analysed and decided, in one place, with every point linked to its sources, so the circles can be seen | The map view: clause → rule → failing elements → decision | Concept |
+
+## 14. Presentation standard (built in 1.7.0, studied with the integration rule)
+
+The owner's idea: one look on every drawing. Annotation types unified across views, and text height by scale
+(2.5 mm at 1:100, 3 mm at 1:50 and larger), with a panel to choose the type and size for each.
+
+### Integration rule answers
+
+1. **Engine:** the model check engine reports it (Annotation: "Text off the presentation standard", "Mixed annotation
+   types"); the fix is one native engine (`PresentationFix`) used by both the window and Claude, so there is no second
+   implementation in a script.
+2. **Rules:** the office check set, section `presentation` (sizes by scale, font, scope, the type chosen per kind and
+   size, tag types per category). No new file. A project can override the sizes from its BEP (`text_sizes`); in the
+   requirements hub this becomes a project rule that wins over the office one.
+3. **Publishes:** through the model check, so the dashboard, the Companion and Claude see the same numbers.
+4. **Connects to:** the Deliver panel and the Production / Submission modes; the submission check (D11) gets it for free;
+   the approvals (Apply card) and one undo step like every change. Circle: *drawing quality* (standard, check, fix,
+   submission).
+5. **Replaces:** the "Text types" count check stays as a hint; the new checks are the real rule.
+6. **Project Hub:** the standard is an office rule point; each run's result a finding linked to its views.
+7. **Notifications:** later, through the one notification system (a sheet placed with off-standard text).
+8. **Smart, not rigid:** it picks the type people already use at the right size before making a new one, keeps a
+   chosen type even if its height differs (and says so), skips elements colleagues are editing, and previews first.
 
 ## 12. Family creator and checker (idea, studied with the integration rule)
 

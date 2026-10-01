@@ -43,6 +43,22 @@ class P {
     Check(Pen(warnings) == 5, "maxImpact caps the score impact (matched by name)");
     Check(St(lines) == "ok" && Pen(lines) == 0, "below warnAt -> pass, no score impact");
     Check(St(untouched) == "warn" && Pen(untouched) == 1.5, "checks not in the set keep the defaults");
+    // Presentation standard: text height by view scale, saved into the same check set and read back.
+    var stdT = a.GetType("AceRevitMcp.Dashboard.PresentationStandard");
+    var std = stdT.GetMethod("Load").Invoke(null, new object[] { null });
+    double? Mm(object st, int scale) => (double?)stdT.GetMethod("TextMm").Invoke(st, new object[] { scale });
+    Check(Mm(std, 20) == 3.0 && Mm(std, 50) == 3.0 && Mm(std, 75) == 2.5 && Mm(std, 100) == 2.5 && Mm(std, 500) == 2.5, "default: 3 mm at 1:50 and larger, 2.5 mm at 1:100 and smaller");
+    stdT.GetMethod("SetType").Invoke(std, new object[] { "3", "text", "ACE Text 3mm" });
+    stdT.GetField("Font").SetValue(std, "Arial");
+    stdT.GetMethod("Save").Invoke(std, null);
+    var back = stdT.GetMethod("Load").Invoke(null, new object[] { null });
+    Check((string)stdT.GetMethod("TypeFor").Invoke(back, new object[] { "3", "text" }) == "ACE Text 3mm" && (string)stdT.GetField("Font").GetValue(back) == "Arial", "the chosen type and font are saved in the check set and read back");
+    var x2 = Activator.CreateInstance(insT); var list2 = (IList)insT.GetField("Checks").GetValue(x2);
+    a.GetType("AceRevitMcp.Dashboard.CheckSet").GetMethod("Apply", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public).Invoke(null, new[] { x2 });
+    Check((string)insT.GetField("CheckSetName").GetValue(x2) == "Test office", "saving the presentation standard keeps the rest of the check set");
+    var rows = new System.Text.Json.Nodes.JsonArray(new System.Text.Json.Nodes.JsonObject { ["upToScale"] = 20, ["textMm"] = 3.5 }, new System.Text.Json.Nodes.JsonObject { ["upToScale"] = 100, ["textMm"] = 2.5 }, new System.Text.Json.Nodes.JsonObject { ["textMm"] = 2 });
+    var custom = stdT.GetMethod("Load").Invoke(null, new object[] { rows });
+    Check(Mm(custom, 10) == 3.5 && Mm(custom, 50) == 2.5 && Mm(custom, 200) == 2.0, "a project's own sizes override the office ones");
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("check set test passed");

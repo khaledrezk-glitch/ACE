@@ -112,5 +112,22 @@
     "project-information-missing": {
       "enabled": true
     }
+  },
+  "presentation": {
+    "name": "ACE drawing standard",
+    "about": "Printed text height by view scale (upToScale 50 = 1:50 and larger scales; a row without upToScale covers the rest), optional font, and the type chosen per size and kind. Read by the model check and applied by ACE > Deliver > Presentation Standard or Claude's presentation_standard. Easiest to edit in that window.",
+    "textSizes": [
+      {
+        "upToScale": 50,
+        "textMm": 3.0
+      },
+      {
+        "textMm": 2.5
+      }
+    ],
+    "font": null,
+    "viewsOnSheetsOnly": true,
+    "unifyTagTypes": false,
+    "types": {}
   }
 }
