@@ -11,10 +11,8 @@ using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using AceRevitMcp.Util;
-using Autodesk.Revit.UI;
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
-using Grid = System.Windows.Controls.Grid;
 using Rectangle = System.Windows.Shapes.Rectangle;
 using TextBox = System.Windows.Controls.TextBox;
 
@@ -735,7 +733,7 @@ namespace AceRevitMcp.Companion
 
         private sealed class Palette
         {
-            public Brush Background, Card, Border, Text, Muted, Accent, OnAccent, Link, Error, Rule;
+            public Brush Background, Card, Border, Text, Muted, Accent, OnAccent, Link, Rule;
 
             public static Palette Current()
             {
@@ -744,9 +742,9 @@ namespace AceRevitMcp.Companion
                 // Brand: black / white / greys, with the accent colour (ACE Red) for thin rules and the main action only.
                 return Branding.IsDarkTheme
                     ? new Palette { Background = b("#212121"), Card = b("#414042"), Border = b("#A0A0A0"), Text = b("#E6E7E8"), Muted = b("#C4C4C4"),
-                                    Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = b("#E6E7E8"), Error = b("#E6E7E8"), Rule = c(Branding.Accent) }
+                                    Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = b("#E6E7E8"), Rule = c(Branding.Accent) }
                     : new Palette { Background = c(Branding.GreyLight), Card = Brushes.White, Border = b("#A0A0A0"), Text = c(Branding.Primary), Muted = c(Branding.GreyDark),
-                                    Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = c(Branding.Primary), Error = c(Branding.Primary), Rule = c(Branding.Accent) };
+                                    Accent = c(Branding.Accent), OnAccent = Brushes.White, Link = c(Branding.Primary), Rule = c(Branding.Accent) };
             }
         }
     }

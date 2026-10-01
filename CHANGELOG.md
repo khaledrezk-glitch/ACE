@@ -9,6 +9,18 @@
   - The built-in scripts `audit_model` and `rooms_without_doors` are retired: the native model check covers them.
   - A **status store**: the model check, clashes and changes publish their latest result, and the Companion and
     dashboard read the same numbers.
+- **Tidy pass** (`/simplify`, whole codebase; behaviour unchanged):
+  - The status store now holds each model's results and clash-view session; the leftover "last result" statics in
+    clashes, dashboard, change tracker, coordination report and clash view are gone (they could mix up two models).
+  - Clash runs build the model list and a geometry cache once for all tests; issues and counts are computed once.
+  - Shared helpers: `ViewTools` (view types, highlight, solid fill, boxes, PNG export) replaces three copies of the
+    picture export; `Lengths` replaces the scattered 304.8 conversions.
+  - One check for "already applied or cancelled in the panel" (`ActivityHub.Decided`) and one preview gate in the
+    MCP server (`gated`) for code runs and parameter changes.
+  - Clash Browser search is debounced and virtualised; switching work mode only redraws icons that change; snapshots
+    compress faster; finished bridge calls release their timers.
+  - Journal, activity log and learning report files use the local date (not UTC). A damaged line in the benchmark
+    history no longer hides the whole trend. Dead code and unused usings removed.
 - **Code review fixes** (whole codebase):
   - **Other open models stay safe:** a dry run or read-only run now rolls back changes to every open model, not only
     the active one. An applied run keeps them together.

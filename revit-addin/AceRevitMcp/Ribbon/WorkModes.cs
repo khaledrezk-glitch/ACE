@@ -110,6 +110,7 @@ namespace AceRevitMcp.Ribbon
             public RibbonButton Item;
             public Func<int, bool, ImageSource> Icon;
             public string Tip;
+            public bool? Dimmed;   // the icon state last drawn, so a mode switch only redraws buttons that change
         }
 
         private static readonly Dictionary<string, RibbonPanel> Panels = new Dictionary<string, RibbonPanel>();
@@ -180,10 +181,11 @@ namespace AceRevitMcp.Ribbon
                 var dim = look == PanelLook.Dim;
                 try
                 {
-                    if (b.Icon != null)
+                    if (b.Icon != null && b.Dimmed != dim)
                     {
-                        if (b.Item is PushButton pb) { pb.LargeImage = b.Icon(32, dim); pb.Image = b.Icon(16, dim); }
-                        else { b.Item.LargeImage = b.Icon(32, dim); b.Item.Image = b.Icon(16, dim); }
+                        b.Item.LargeImage = b.Icon(32, dim);
+                        b.Item.Image = b.Icon(16, dim);
+                        b.Dimmed = dim;
                     }
                     b.Item.ToolTip = dim ? $"(Less used in {mode.Label} mode) {b.Tip}" : b.Tip;
                 }

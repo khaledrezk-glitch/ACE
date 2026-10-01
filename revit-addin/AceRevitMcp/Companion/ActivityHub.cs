@@ -231,6 +231,31 @@ namespace AceRevitMcp.Companion
         }
 
         /// <summary>Decision the user made in the panel for this exact change, if any (consumed once).</summary>
+        /// <summary>The user's earlier decision about one exact change, as the reply to give instead of applying it.</summary>
+        internal sealed class Earlier
+        {
+            public bool Rejected;
+            public string Note;
+            public string Outcome;
+        }
+
+        /// <summary>
+        /// Whether this exact change was already applied (in the panel or by Claude) or cancelled in the panel; null when
+        /// it may be applied. Every applying command asks this first, so no change is applied twice.
+        /// </summary>
+        public static Earlier Decided(string hash, string what)
+        {
+            var d = DecisionFor(hash);
+            if (d == null) return null;
+            var at = $"{d.DecidedAt:HH:mm}";
+            return d.State switch
+            {
+                PendingState.AppliedByPanel => new Earlier { Outcome = d.Outcome, Note = $"The user already applied {what} with the Apply button in the ACE Companion panel in Revit at {at}. Do NOT apply it again. Verify the result with a read-only query and report it." },
+                PendingState.AppliedByClaude => new Earlier { Note = $"This exact change ({what}) was already applied at {at} (one undo step). It is not applied twice. Verify the result with a read-only query; to repeat it on purpose, preview it again first." },
+                _ => new Earlier { Rejected = true, Note = $"The user cancelled {what} in the ACE Companion panel in Revit at {at}. Do not apply it. Ask what they would like instead." },
+            };
+        }
+
         public static PendingChange DecisionFor(string hash)
         {
             var p = Pending.FirstOrDefault(x => x.Hash == hash && x.State != PendingState.Waiting && x.DecidedAt.HasValue &&

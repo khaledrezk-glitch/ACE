@@ -85,6 +85,12 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120) {
   return payload.result;
 }
 
+/** Today's date (or the given time's) in local time, YYYY-MM-DD: journal and report files follow the user's day, not UTC. */
+export function localDate(d = new Date()) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 export function text(value) {
   let s = typeof value === "string" ? value : JSON.stringify(value, null, 1);
   if (s.length > MAX_TEXT) {

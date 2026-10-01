@@ -2,14 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Text;
 using System.Text.Json.Nodes;
 using AceRevitMcp.Commands;
 using AceRevitMcp.Dashboard;
 using AceRevitMcp.Util;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
-using Autodesk.Revit.DB.Events;
 using Autodesk.Revit.UI;
 
 namespace AceRevitMcp.Tracking

@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { LOG_DIR, REPORTS_DIR, VERSION, teamReportsDir } from "./core.js";
+import { LOG_DIR, REPORTS_DIR, VERSION, localDate, teamReportsDir } from "./core.js";
 import { readCalls } from "./telemetry.js";
 import { allLessons, lessonStats } from "./lessons.js";
 
@@ -111,7 +111,9 @@ function recommendations(a) {
 
 function trend() {
   try {
-    return fs.readFileSync(HISTORY(), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).slice(-12);
+    // One damaged line (e.g. an interrupted write) must not hide the whole history.
+    return fs.readFileSync(HISTORY(), "utf8").split("\n").filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).slice(-12);
   } catch { return []; }
 }
 
@@ -119,7 +121,7 @@ export function learningReport({ days = 30, share_with_team = false } = {}) {
   const a = analyse(days);
   const hist = trend();
   const md = [];
-  md.push(`# ACE learning report`, ``, `${new Date().toISOString().slice(0, 10)} · last ${days} days · ACE Revit MCP ${a.version}`, ``);
+  md.push(`# ACE learning report`, ``, `${localDate()} · last ${days} days · ACE Revit MCP ${a.version}`, ``);
   md.push(`## How well it is working`, ``,
     `| Measure | Value |`, `|---|---|`,
     `| Tool calls | ${a.calls} |`,
@@ -150,14 +152,14 @@ export function learningReport({ days = 30, share_with_team = false } = {}) {
   const text = md.join("\n");
 
   fs.mkdirSync(REPORTS_DIR, { recursive: true });
-  const file = path.join(REPORTS_DIR, `learning-${new Date().toISOString().slice(0, 10)}.md`);
+  const file = path.join(REPORTS_DIR, `learning-${localDate()}.md`);
   fs.writeFileSync(file, text);
   let shared = null;
   const team = share_with_team ? teamReportsDir() : null;
   if (team) {
     try {
       fs.mkdirSync(team, { recursive: true });
-      shared = path.join(team, `learning-${(process.env.USERNAME || process.env.USER || "user").replace(/\W/g, "")}-${new Date().toISOString().slice(0, 10)}.md`);
+      shared = path.join(team, `learning-${(process.env.USERNAME || process.env.USER || "user").replace(/\W/g, "")}-${localDate()}.md`);
       fs.copyFileSync(file, shared);
     } catch (e) { shared = `could not copy: ${e.message}`; }
   }

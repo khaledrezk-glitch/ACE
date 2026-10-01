@@ -100,20 +100,6 @@ export async function runChecks({ deep = true } = {}) {
   return checks;
 }
 
-export function claudeDesktopConfigs() {
-  if (!isWindows) return [];
-  const files = [path.join(APPDATA, "Claude", "claude_desktop_config.json")];
-  const packages = path.join(process.env.LOCALAPPDATA || "", "Packages");
-  try {
-    for (const d of fs.readdirSync(packages).filter((d) => d.startsWith("Claude_"))) {
-      files.push(path.join(packages, d, "LocalCache", "Roaming", "Claude", "claude_desktop_config.json"));
-    }
-  } catch {
-    /* not an MSIX install */
-  }
-  return files.filter((f) => fs.existsSync(f));
-}
-
 // ---------------------------------------------------------------------------------------------
 // Usage analysis -> recommendations
 // ---------------------------------------------------------------------------------------------

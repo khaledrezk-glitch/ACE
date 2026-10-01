@@ -78,8 +78,8 @@ public static class AceScript
             if (string.IsNullOrWhiteSpace(code)) throw new CommandException("'code' is required.");
 
             var mode = (Commands.Args.Str(args, "mode") ?? "auto").ToLowerInvariant();
-            var dryRun = args["dry_run"] is JsonValue dv && dv.TryGetValue<bool>(out var dr) && dr;
-            var previewImage = args["preview_image"] is JsonValue pv && pv.TryGetValue<bool>(out var pi) && pi;
+            var dryRun = Commands.Args.Bool(args, "dry_run");
+            var previewImage = Commands.Args.Bool(args, "preview_image");
             var name = Commands.Args.Str(args, "transaction_name") ?? "Claude: script";
             if (mode is not ("auto" or "manual" or "readonly"))
                 throw new CommandException("mode must be 'auto', 'manual' or 'readonly'.");
@@ -90,32 +90,10 @@ public static class AceScript
             var compileOnlyRequested = Commands.Args.Bool(args, "compile_only");
             var tracked = mode != "readonly" && !compileOnlyRequested;
             var hash = tracked ? Companion.ActivityHub.Fingerprint("execute_code", args) : null;
-            if (tracked && !dryRun && !fromPanel)
-            {
-                var decision = Companion.ActivityHub.DecisionFor(hash);
-                if (decision?.State == Companion.PendingState.AppliedByPanel)
-                    return new JsonObject
-                    {
-                        ["success"] = true,
-                        ["alreadyApplied"] = true,
-                        ["note"] = $"The user already applied this exact change themselves with the Apply button in the ACE Companion panel in Revit at {decision.DecidedAt:HH:mm}. Do NOT apply it again. Verify the result with a read-only query and report it.",
-                        ["outcome"] = decision.Outcome,
-                    };
-                if (decision?.State == Companion.PendingState.AppliedByClaude)
-                    return new JsonObject
-                    {
-                        ["success"] = true,
-                        ["alreadyApplied"] = true,
-                        ["note"] = $"This exact change was already applied at {decision.DecidedAt:HH:mm} (one undo step). It is not applied twice. Verify the result with a read-only query; to repeat it on purpose, preview it again first.",
-                    };
-                if (decision?.State == Companion.PendingState.Rejected)
-                    return new JsonObject
-                    {
-                        ["success"] = false,
-                        ["stage"] = "rejected",
-                        ["error"] = $"The user cancelled this change in the ACE Companion panel in Revit at {decision.DecidedAt:HH:mm}. Do not apply it. Ask what they would like instead.",
-                    };
-            }
+            if (tracked && !dryRun && !fromPanel && Companion.ActivityHub.Decided(hash, "this change") is { } earlier)
+                return earlier.Rejected
+                    ? new JsonObject { ["success"] = false, ["stage"] = "rejected", ["error"] = earlier.Note }
+                    : new JsonObject { ["success"] = true, ["alreadyApplied"] = true, ["note"] = earlier.Note, ["outcome"] = earlier.Outcome };
 
             var source = BuildSource(code);
             var compiled = Compile(source);
@@ -129,7 +107,7 @@ public static class AceScript
                     ["hint"] = "Line numbers refer to your code. Fix the errors and call again.",
                 };
             }
-            if (args["compile_only"] is JsonValue cv && cv.TryGetValue<bool>(out var compileOnly) && compileOnly)
+            if (compileOnlyRequested)
                 return new JsonObject { ["success"] = true, ["stage"] = "compile", ["note"] = "Compiled successfully. Nothing was run." };
 
             var ctx = new ScriptContext(uiapp, args["inputs"] as JsonObject, dryRun);
@@ -255,11 +233,10 @@ public static class AceScript
             response["success"] = true;
             if (tracked && dryRun) Companion.ActivityHub.AddPending("execute_code", args, response);
             else if (tracked && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
-            if (mode == "readonly")
-            { /* keep any note set above */ }
+            if (mode == "readonly") { /* keep any note set above */ }
             else if (dryRun)
                 response["note"] = "Dry run: the script ran completely, then every change was rolled back. The model is unchanged.";
-            else if (mode != "readonly")
+            else
                 response["note"] = $"Applied as ONE undo step named '{name}' (Ctrl+Z in Revit, or undo_last_claude_change).";
             response["result"] = JsonConvert.ToNode(result);
             return response;

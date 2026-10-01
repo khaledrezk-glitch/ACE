@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json.Nodes;
@@ -25,15 +24,10 @@ namespace AceRevitMcp.Commands
             var dryRun = Args.Bool(args, "dry_run");
             var fromPanel = Args.Bool(args, "_fromPanel");
             var hash = Companion.ActivityHub.Fingerprint("set_parameters", args);
-            if (!dryRun && !fromPanel)
+            if (!dryRun && !fromPanel && Companion.ActivityHub.Decided(hash, "these parameter values") is { } earlier)
             {
-                var decision = Companion.ActivityHub.DecisionFor(hash);
-                if (decision?.State == Companion.PendingState.AppliedByPanel)
-                    return new JsonObject { ["alreadyApplied"] = true, ["applied"] = 0, ["failed"] = 0, ["note"] = $"The user already applied these values with the Apply button in the ACE Companion panel at {decision.DecidedAt:HH:mm}. Do NOT apply again; verify and report." };
-                if (decision?.State == Companion.PendingState.AppliedByClaude)
-                    return new JsonObject { ["alreadyApplied"] = true, ["applied"] = 0, ["failed"] = 0, ["note"] = $"These values were already applied at {decision.DecidedAt:HH:mm}. They are not applied twice; verify and report. To repeat on purpose, preview again first." };
-                if (decision?.State == Companion.PendingState.Rejected)
-                    throw new CommandException($"The user cancelled these parameter changes in the ACE Companion panel at {decision.DecidedAt:HH:mm}. Do not apply them; ask what they would like instead.");
+                if (earlier.Rejected) throw new CommandException(earlier.Note);
+                return new JsonObject { ["alreadyApplied"] = true, ["applied"] = 0, ["failed"] = 0, ["note"] = earlier.Note };
             }
 
             var results = new JsonArray();

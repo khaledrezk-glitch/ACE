@@ -49,7 +49,12 @@ namespace AceRevitMcp.Bridge
             if (request != ExternalEventRequest.Accepted && request != ExternalEventRequest.Pending)
                 Log.Warn($"ExternalEvent.Raise returned {request}");
 
-            var finished = await Task.WhenAny(pending.Completion.Task, Task.Delay(timeout)).ConfigureAwait(false);
+            Task finished;
+            using (var timer = new CancellationTokenSource())
+            {
+                finished = await Task.WhenAny(pending.Completion.Task, Task.Delay(timeout, timer.Token)).ConfigureAwait(false);
+                timer.Cancel();   // a finished call releases its timer at once instead of after the full timeout
+            }
             if (finished != pending.Completion.Task)
             {
                 if (Interlocked.Exchange(ref pending.Abandoned, 1) == 0)

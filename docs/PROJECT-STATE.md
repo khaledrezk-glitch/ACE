@@ -105,7 +105,7 @@ released as verified).
 
 The order is from concept section 10:
 
-1. **Tidy pass** (`/code-review` report, then `/simplify`) over the 1.7.0 code, then **verify 1.7.0 live and fix** what
+1. ~~**Tidy pass**~~ (done: `/code-review` fixes and `/simplify`), then **verify 1.7.0 live and fix** what
    that shows. Then remind the owner about the first presentation (the coordination
    circle).
 2. **Quick merges and the status store** (D3, D5, D6, D8, D9).

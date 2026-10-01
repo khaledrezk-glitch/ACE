@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { JOURNAL_DIR, RevitError } from "./core.js";
+import { JOURNAL_DIR, RevitError, localDate } from "./core.js";
 
 export const PREVIEW_VALID_MS = 60 * 60 * 1000;
 
@@ -17,6 +17,31 @@ function stable(value) {
 }
 
 export const fingerprint = (kind, payload) => createHash("sha256").update(kind + "\0" + stable(payload)).digest("hex");
+
+/**
+ * The preview-before-apply gate around one bridge call. A preview (apply false) that `ok` accepts is remembered; an
+ * apply needs the identical, recent preview and an explanation for the journal. An apply uses up its preview BEFORE it
+ * is sent: if the call times out while Revit still finishes the change, a retry cannot apply it a second time; it needs
+ * a fresh preview, which shows the model as it now is.
+ */
+export async function gated(key, { apply, explanation, why }, send, ok) {
+  if (!apply) {
+    const result = await send();
+    if (ok(result)) previews.set(key, Date.now());
+    return result;
+  }
+  requirePreview(key);
+  if (!explanation) throw new RevitError(why);
+  previews.delete(key);
+  try {
+    return await send();
+  } catch (err) {
+    if (err instanceof RevitError) {
+      err.message += " The change may still have been applied in Revit: check with a read-only query before trying again (a new preview is needed).";
+    }
+    throw err;
+  }
+}
 
 export function requirePreview(key) {
   const at = previews.get(key);
@@ -57,7 +82,7 @@ export function journal(entry) {
   try {
     fs.mkdirSync(JOURNAL_DIR, { recursive: true });
     const now = new Date();
-    const file = path.join(JOURNAL_DIR, `${now.toISOString().slice(0, 10)}.md`);
+    const file = path.join(JOURNAL_DIR, `${localDate(now)}.md`);
     const lines = [
       `## ${now.toLocaleTimeString()} - ${entry.title}`,
       entry.explanation ? `**What:** ${entry.explanation}` : null,

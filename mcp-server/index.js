@@ -11,8 +11,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, failure, readConfig, text } from "./lib/core.js";
-import { fingerprint, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
+import { DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, failure, localDate, readConfig, text } from "./lib/core.js";
+import { fingerprint, gated, journal, outcomeOf, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
 import { buildReport, runChecks } from "./lib/diagnostics.js";
@@ -389,20 +389,12 @@ tool("set_parameters", {
   },
   annotations: writes,
 }, async ({ changes, dry_run, explanation }) => {
-  const key = fingerprint("params", changes);
-  if (!dry_run) {
-    requirePreview(key);
-    if (!explanation) throw new RevitError("Give 'explanation': a plain sentence describing this change for the activity journal.");
-  }
-  const send = () => callRevit("set_parameters", { changes, dry_run }, 300);
-  const result = !dry_run ? await applyOnce(key, send) : await send();
-  if (result?.alreadyApplied) {
-    previews.delete(key);
-    return text(result);
-  }
-  const ok = result.failed === 0 && result.success !== false;
-  if (ok && dry_run) previews.set(key, Date.now());
-  if (!dry_run) previews.delete(key);
+  const succeeded = (r) => r?.failed === 0 && r?.success !== false;
+  const result = await gated(fingerprint("params", changes),
+    { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
+    () => callRevit("set_parameters", { changes, dry_run }, 300), succeeded);
+  if (result?.alreadyApplied) return text(result);
+  const ok = succeeded(result);
   journal({
     title: `${dry_run ? "Preview" : "Change"}: set parameters`,
     explanation,
@@ -434,48 +426,27 @@ const codeSchema = {
   preview_image: z.boolean().optional().describe("With dry_run: also return pictures (plan + 3D) of the area that would change, with the changed elements highlighted. Show them to the user before asking for confirmation. Use it for anything visual: placing, moving or creating elements."),
 };
 
-// An apply uses up its preview BEFORE it is sent: if the call times out while Revit still finishes the change, a retry
-// cannot apply it a second time; it needs a fresh preview, which shows the model as it now is.
-async function applyOnce(key, call) {
-  previews.delete(key);
-  try { return await call(); }
-  catch (err) {
-    if (err instanceof RevitError) {
-      err.message += " The change may still have been applied in Revit: check with a read-only query before trying again (a new preview is needed).";
-    }
-    throw err;
-  }
-}
-
 async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image }) {
   mode = mode || "auto";
   const risky = screenCode(code, allow_risky);
   const modifies = mode !== "readonly" && !compile_only;
-  const key = fingerprint("code", { code, mode, inputs: inputs || {} });
-  if (modifies && !dry_run) {
-    requirePreview(key);
-    if (!explanation) throw new RevitError("Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal.");
-  }
-
   const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, preview_image: !!(preview_image && dry_run) }, timeout_seconds ?? 300);
-  const result = modifies && !dry_run ? await applyOnce(key, send) : await send();
+  const result = !modifies ? await send() : await gated(fingerprint("code", { code, mode, inputs: inputs || {} }),
+    { apply: !dry_run, explanation, why: "Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal." },
+    send, (r) => !!r?.success);
   // Preview pictures travel as image blocks, not as base64 inside the JSON text.
   const pictures = Array.isArray(result?.previewImages) ? result.previewImages : [];
   if (result && pictures.length) result.previewImages = pictures.map((p) => `${p.view} image attached`);
 
   // The user may have decided in the ACE Companion panel inside Revit (Apply / Cancel) - the add-in reports it.
   if (result?.alreadyApplied) {
-    previews.delete(key);
     return text({ ...result, instruction: "Already applied by the user in Revit. Do not re-apply. Verify with a read-only query and report the outcome." });
   }
   if (result?.stage === "rejected") {
-    previews.delete(key);
     return { isError: true, content: [{ type: "text", text: result.error }] };
   }
 
   if (modifies) {
-    if (result?.success && dry_run) previews.set(key, Date.now());
-    if (result?.success && !dry_run) previews.delete(key); // a repeat needs a fresh preview
     journal({
       title: `${dry_run ? "Preview" : "Change"}: ${transaction_name || "Claude: script"}`,
       explanation,
@@ -642,7 +613,7 @@ tool("get_activity_log", {
   inputSchema: { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default today") },
   annotations: readOnly,
 }, async ({ date }) => {
-  const day = date || new Date().toISOString().slice(0, 10);
+  const day = date || localDate();
   const file = path.join(JOURNAL_DIR, `${day}.md`);
   if (!fs.existsSync(file)) return text(`No activity recorded for ${day}. Journal folder: ${JOURNAL_DIR}`);
   const content = fs.readFileSync(file, "utf8").replace(/<details>[\s\S]*?<\/details>/g, "(code omitted)");
@@ -688,7 +659,7 @@ server.registerPrompt("revit-task", {
 }, ({ task }) => ({
   messages: [{ role: "user", content: { type: "text", text:
     `In the open Revit model, please do this: ${task}\n\n` +
-    "Work like a senior BIM manager: first read the revit_guide 'planning', inspect the model (overview, describe_category, list_types), " +
+    "Work like a senior BIM manager: first read the revit_guide 'planning', inspect the model (get_model_brief, describe_category, list_types), " +
     "then explain your plan in plain words, preview it (dry run) and show me exactly what would change, and wait for my OK before applying. " +
     "Afterwards verify independently and tell me how to undo it." } }],
 }));

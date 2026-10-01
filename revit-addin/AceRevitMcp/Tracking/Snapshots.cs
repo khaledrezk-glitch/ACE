@@ -166,7 +166,7 @@ namespace AceRevitMcp.Tracking
             Directory.CreateDirectory(dir);
             var file = System.IO.Path.Combine(dir, $"{snap.Time:yyyyMMdd-HHmmss}.json.gz");
             using (var fs = File.Create(file))
-            using (var gz = new GZipStream(fs, CompressionLevel.Optimal))
+            using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
                 JsonSerializer.Serialize(gz, snap, Json);
             foreach (var extra in List(doc).Skip(KeepPerModel)) try { File.Delete(extra.File); } catch { }
             return file;
