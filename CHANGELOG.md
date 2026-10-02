@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.0 (core v2)
+## 1.8.0 (2 Oct 2026)
 - **Merged duplicates** (concept D1, D3, D5, D6, D8, D9):
   - The *Clash Results* window is merged into the **Clash Browser**; `run_clash_test` with `show` opens the browser.
   - *Model Health* (Audit panel) is merged into **Insights → Dashboard**.
@@ -83,6 +83,7 @@
   (`%APPDATA%\ACE-RevitMCP` or `"worksetRules"` in config.json for the team share); example `bep/worksets.example.json`.
   Check only (read-only report), Workset1 only, create missing worksets; borrowed elements are skipped; the usual
   preview, Apply card and one undo step. Prompts in the Production and Model audit modes.
+## 1.7.0 (core v2, installed on the work PC 30 Sep 2026)
 - **Working modes** (ACE tab → *Work mode*, first on the tab): Model audit, Coordination, Production (mass
   production: data, sheets, exports), Submission, All tools. A mode shows the panels for the task in full, dims the less
   relevant ones (faded icons, still usable) and hides unrelated panels; the Companion shows the mode's prompts first;
