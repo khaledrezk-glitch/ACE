@@ -34,6 +34,14 @@ namespace AceRevitMcp.Companion
         public string Document;
         public string DocumentTitle;
         public long ViewId;
+        /// <summary>For people: what Claude says the change does and why; the steps of a multi-step job and which one this is.</summary>
+        public string Explanation;
+        public List<string> Steps = new List<string>();
+        public int Step;
+        /// <summary>What changes, per kind and category, with names; and what deserves a second look (deletions, shared data).</summary>
+        public JsonObject Details;
+        public List<string> Attention = new List<string>();
+        public List<long> ElementIds = new List<long>();
         /// <summary>Preview pictures of the change (plan, 3D), when Claude asked for them.</summary>
         public System.Collections.Generic.List<byte[]> Images = new System.Collections.Generic.List<byte[]>();
     }
@@ -88,7 +96,7 @@ namespace AceRevitMcp.Companion
             else
             {
                 // Native commands: every argument except how it is run (preview or not, from the panel, pictures).
-                var keys = args.Select(kv => kv.Key).Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name")).OrderBy(k => k, StringComparer.Ordinal);
+                var keys = args.Select(kv => kv.Key).Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name" or "explanation" or "plan" or "step")).OrderBy(k => k, StringComparer.Ordinal);
                 material = kind + "\n" + string.Join("\n", keys.Select(k => $"{k}={part(k)}"));
             }
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
@@ -245,13 +253,24 @@ namespace AceRevitMcp.Companion
             if (result?["previewImages"] is JsonArray pics)
                 foreach (var pic in pics)
                     try { if (pic?["base64"]?.ToString() is string b64) images.Add(Convert.FromBase64String(b64)); } catch { }
+            var change = result?["wouldChange"] as JsonObject;
+            var explanation = clean["explanation"]?.ToString();
             Pending.Insert(0, new PendingChange
             {
+                Explanation = string.IsNullOrWhiteSpace(explanation) ? null : explanation,
+                Steps = (clean["plan"] as JsonArray)?.Select(x => x?.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)).Take(15).ToList() ?? new List<string>(),
+                Step = clean["step"] is JsonValue sv && int.TryParse(sv.ToString(), out var st) ? st : 0,
+                Details = change?["details"]?.DeepClone() as JsonObject,
+                Attention = (change?["attention"] as JsonArray)?.Select(x => x?.ToString()).Where(x => x != null).ToList() ?? new List<string>(),
+                ElementIds = (change?["modifiedIds"] as JsonArray)?.Select(x => long.TryParse(x?.ToString(), out var id) ? id : 0).Where(id => id > 0).ToList() ?? new List<long>(),
                 Images = images,
                 Hash = hash,
                 Kind = kind,
                 Args = clean,
-                Title = kind == "set_parameters" ? "Set parameter values" : Name(clean),
+                Title = kind == "set_parameters" ? "Set parameter values"
+                    : clean["transaction_name"] != null ? Name(clean)
+                    : !string.IsNullOrWhiteSpace(explanation) ? (explanation.Length > 70 ? explanation.Substring(0, 67) + "..." : explanation)
+                    : "Change previewed by Claude (no title given)",
                 Summary = summary,
                 PreviewedAt = DateTime.Now,
                 Document = doc == null ? null : DocKey(doc),

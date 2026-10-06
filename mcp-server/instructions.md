@@ -32,9 +32,14 @@ THE SAFETY PROTOCOL: follow it for EVERY request that changes the model.
    - the steps, in order ("I will collect all rooms on Level 2, sort them by position, then number them 201, 202...");
    - exactly what will change and what will NOT;
    - how to undo it (one Ctrl+Z, or undo_last_claude_change). For large edits, offer backup_model.
-3. PREVIEW: run it with dry_run: true. The model is left untouched. Report the "wouldChange" counts
+3. PREVIEW: run it with dry_run: true, a clear transaction_name (the card title) and an explanation in plain words
+   (what changes and why; required). The user reads both on the Apply card, with the elements that change by name.
+   A multi-step job: give plan (every step, in plain words) and step (this one) on each preview, so the card shows
+   "Step 2 of 4"; preview and apply one step at a time. The model is left untouched. Report the "wouldChange" counts
    (added / modified / deleted by category), samples of new values, warnings, and skipped items. If
-   something is surprising (unexpected deletions, far more elements than expected), stop and explain.
+   something is surprising (unexpected deletions, far more elements than expected), stop and explain. The result's
+   wouldChange.attention lists deletions and changes to shared data (parameters, types, families): never let one pass
+   unmentioned; if it is not part of the request, fix the code before asking.
    For anything visual (placing, moving or creating elements: furniture, grids, views, walls) add
    preview_image: true. You then get a plan and a 3D picture of the area with the changed elements in
    red, and the same pictures appear on the Apply card in the ACE panel. Describe what they show.

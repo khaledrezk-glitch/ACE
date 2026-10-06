@@ -336,8 +336,31 @@ namespace AceRevitMcp.Companion
                 var card = Card();
                 var body = (StackPanel)card.Child;
                 var left = PendingState.Waiting == p.State ? ActivityHub.PendingLifetime - (DateTime.Now - p.PreviewedAt) : TimeSpan.Zero;
-                body.Children.Add(new TextBlock { Text = $"OPTION {n} · PREVIEWED {Ago(p.PreviewedAt).ToUpperInvariant()} · EXPIRES IN {Math.Max(0, (int)left.TotalMinutes)} MIN", FontSize = 10, Foreground = _c.Muted });
+                var stepText = p.Steps.Count > 0 && p.Step > 0 ? $" · STEP {p.Step} OF {p.Steps.Count}" : "";
+                body.Children.Add(new TextBlock { Text = $"OPTION {n}{stepText} · PREVIEWED {Ago(p.PreviewedAt).ToUpperInvariant()} · EXPIRES IN {Math.Max(0, (int)left.TotalMinutes)} MIN", FontSize = 10, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap });
                 body.Children.Add(new TextBlock { Text = p.Title, FontWeight = FontWeights.SemiBold, FontSize = 13, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text, Margin = new Thickness(0, 2, 0, 4) });
+                // What Claude says it does and why, in plain words.
+                body.Children.Add(new TextBlock
+                {
+                    Text = p.Explanation ?? "Claude gave no explanation for this change. Ask in the chat what it does before applying.",
+                    TextWrapping = TextWrapping.Wrap, Foreground = p.Explanation == null ? _c.Rule : _c.Text, Margin = new Thickness(0, 0, 0, 6),
+                });
+                // A multi-step job: every step, with this one marked.
+                if (p.Steps.Count > 0)
+                {
+                    var steps = new StackPanel { Margin = new Thickness(0, 0, 0, 6) };
+                    for (var i = 0; i < p.Steps.Count; i++)
+                    {
+                        var no = i + 1;
+                        var state = p.Step == 0 ? "" : no < p.Step ? "  (done)" : no == p.Step ? "  (this step)" : "  (later)";
+                        steps.Children.Add(new TextBlock
+                        {
+                            Text = $"{no}. {p.Steps[i]}{state}", TextWrapping = TextWrapping.Wrap, FontSize = 11,
+                            Foreground = no == p.Step ? _c.Text : _c.Muted, FontWeight = no == p.Step ? FontWeights.SemiBold : FontWeights.Normal,
+                        });
+                    }
+                    body.Children.Add(steps);
+                }
                 var m = System.Text.RegularExpressions.Regex.Match(p.Summary ?? "", @"add (\d+), modify (\d+), delete (\d+)");
                 if (m.Success)
                 {
@@ -349,6 +372,28 @@ namespace AceRevitMcp.Companion
                     if (rest.Length > 0) body.Children.Add(new TextBlock { Text = rest, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
                 }
                 else body.Children.Add(new TextBlock { Text = p.Summary, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text });
+                // Deletions and changes to shared data (parameters, types, families): shown plainly, before the buttons.
+                if (p.Attention.Count > 0)
+                {
+                    var box = new StackPanel();
+                    box.Children.Add(new TextBlock { Text = "Look at this before applying", FontWeight = FontWeights.SemiBold, Foreground = _c.Rule, FontSize = 11 });
+                    foreach (var a in p.Attention) box.Children.Add(new TextBlock { Text = a, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text, FontSize = 11 });
+                    body.Children.Add(new Border { BorderBrush = _c.Rule, BorderThickness = new Thickness(1), Padding = new Thickness(6, 4, 6, 4), Margin = new Thickness(0, 6, 0, 0), Child = box });
+                }
+                // What exactly changes, per category, with names.
+                if (p.Details != null && p.Details.Count > 0)
+                {
+                    var list = new StackPanel();
+                    foreach (var (kind, cats) in p.Details)
+                    {
+                        if (cats is not JsonObject byCategory) continue;
+                        list.Children.Add(new TextBlock { Text = kind switch { "added" => "Added", "modified" => "Changed", "deleted" => "Deleted", _ => kind }, FontWeight = FontWeights.SemiBold, FontSize = 11, Foreground = _c.Text, Margin = new Thickness(0, 4, 0, 0) });
+                        foreach (var (cat, text) in byCategory)
+                            list.Children.Add(new TextBlock { Text = $"{cat}: {text}", TextWrapping = TextWrapping.Wrap, FontSize = 11, Foreground = _c.Muted });
+                    }
+                    list.Children.Add(new TextBlock { Text = "Changed counts include elements Revit updates by itself (views, tags, joins).", TextWrapping = TextWrapping.Wrap, FontSize = 10, Foreground = _c.Muted, Margin = new Thickness(0, 4, 0, 0) });
+                    body.Children.Add(new Expander { Header = "What exactly changes", Content = list, Margin = new Thickness(0, 6, 0, 0), Foreground = _c.Text, IsExpanded = p.Attention.Count > 0 });
+                }
                 foreach (var bytes in p.Images.Take(2))
                 {
                     var bmp = Bitmap(bytes);
@@ -378,6 +423,17 @@ namespace AceRevitMcp.Companion
                 var title = p.Title;
                 change.Click += (s, e) => Copy($"Using ace-revit: about the previewed change \"{title}\": please change it so that ", "Copied. Paste into Claude and finish the sentence with what to change.");
                 buttons.Children.Add(apply); buttons.Children.Add(cancel); buttons.Children.Add(change);
+                if (p.ElementIds.Count > 0)
+                {
+                    var show = ActionButton("Show in model", false);
+                    var ids = p.ElementIds;
+                    show.Click += async (s, e) =>
+                    {
+                        try { await App.Dispatcher.EnqueueAsync("select_elements", new JsonObject { ["ids"] = new JsonArray(ids.Take(500).Select(i => (JsonNode)i).ToArray()), ["zoom"] = true }, TimeSpan.FromSeconds(30)); }
+                        catch (Exception ex) { Toast($"Could not select: {ex.Message}"); }
+                    };
+                    buttons.Children.Add(show);
+                }
                 body.Children.Add(buttons);
                 panel.Children.Add(card);
             }

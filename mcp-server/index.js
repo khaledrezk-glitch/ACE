@@ -394,14 +394,16 @@ tool("set_parameters", {
       target: z.enum(["instance", "type"]).optional().describe('"type" edits the element\'s type (affects all instances)'),
     })).min(1),
     dry_run: z.boolean().optional(),
-    explanation: z.string().optional().describe("Plain-language description (required when applying)"),
+    explanation: z.string().max(600).optional().describe("Plain words: what changes and why (required; shown on the Apply card)"),
+    plan: z.array(z.string().max(120)).max(15).optional(), step: z.number().int().min(1).optional(),
   },
   annotations: writes,
-}, async ({ changes, dry_run, explanation }) => {
+}, async ({ changes, dry_run, explanation, plan, step }) => {
+  requireExplanation(dry_run, explanation);
   const succeeded = (r) => r?.failed === 0 && r?.success !== false;
   const result = await gated(fingerprint("params", changes),
     { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    () => callRevit("set_parameters", { changes, dry_run }, 300), succeeded);
+    () => callRevit("set_parameters", { changes, dry_run, explanation, plan, step }, 300), succeeded);
   if (result?.alreadyApplied) return text(result);
   const ok = succeeded(result);
   if (!dry_run && result?.applied > 0) briefCache.clear();   // also when some values failed: the model changed
@@ -430,17 +432,28 @@ const codeSchema = {
   inputs: z.record(z.any()).optional().describe("Values available as args / ctx.Str(...) / ctx.Num(...)"),
   transaction_name: z.string().optional().describe("Shown in Revit's Undo list, e.g. 'Claude: renumber rooms'"),
   timeout_seconds: z.number().int().min(10).max(3600).optional().describe("Default 300"),
-  explanation: z.string().optional().describe("Plain-language description of what this run does (required when applying changes; recorded in the activity journal)"),
+  explanation: z.string().max(600).optional().describe("Plain words for the user: what this change does and why (required for previews and applies that change the model; shown on the Apply card and in the journal)"),
+  plan: z.array(z.string().max(120)).max(15).optional().describe("A multi-step job: every step in order, in plain words; shown on the Apply card"),
+  step: z.number().int().min(1).optional().describe("Which step of plan this run is (1-based)"),
   allow_risky: z.boolean().optional().describe("Only after the user explicitly agreed: allow code touching files, programs, network, or saving/closing/syncing models"),
   compile_only: z.boolean().optional().describe("Only check that the code compiles; run nothing"),
   preview_image: z.boolean().optional().describe("With dry_run: also return pictures (plan + 3D) of the area that would change, with the changed elements highlighted. Show them to the user before asking for confirmation. Use it for anything visual: placing, moving or creating elements."),
 };
 
-async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image }) {
+/** A preview that changes the model must say what it does: the user reads it on the Apply card before approving. */
+function requireExplanation(dry_run, explanation) {
+  if (dry_run && !explanation?.trim())
+    throw new RevitError("Give 'explanation' with the preview too: one or two plain sentences for the user saying what this change does and why. " +
+      "It is shown on the Apply card in the ACE panel. For a multi-step job also give 'plan' (all steps) and 'step' (this one).");
+}
+
+async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image, plan, step }) {
   mode = mode || "auto";
   const risky = screenCode(code, allow_risky);
   const modifies = mode !== "readonly" && !compile_only;
-  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, allow_risky: !!allow_risky, preview_image: !!(preview_image && dry_run) }, timeout_seconds ?? 300);
+  if (modifies) requireExplanation(dry_run, explanation);
+  // explanation, plan and step are for people (the Apply card); they are not part of the change's identity.
+  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, allow_risky: !!allow_risky, preview_image: !!(preview_image && dry_run), explanation, plan, step }, timeout_seconds ?? 300);
   const result = !modifies ? await send() : await gated(fingerprint("code", { code, mode, inputs: inputs || {} }),
     { apply: !dry_run, explanation, why: "Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal." },
     send, (r) => !!r?.success);
@@ -547,11 +560,12 @@ tool("assign_worksets", {
     rules: z.array(z.record(z.any())).optional().describe("Rules to use instead of the rules file"),
     rules_file: z.string().optional(),
     dry_run: z.boolean().optional(),
-    explanation: z.string().optional(),
+    explanation: z.string().max(600).optional(),
+    plan: z.array(z.string().max(120)).max(15).optional(), step: z.number().int().min(1).optional(),
     timeout_seconds: z.number().int().min(10).max(3600).optional().describe("Default 900 (large models)"),
   },
   annotations: writes,
-}, async ({ check_only, dry_run, explanation, timeout_seconds, rules_file, ...a }) => {
+}, async ({ check_only, dry_run, explanation, timeout_seconds, rules_file, plan, step, ...a }) => {
   // The rules travel with the request (from the BEP file unless given), so the preview and the apply use the same rules.
   const src = a.rules ? { file: "given in the request", rules: a.rules } : worksetRules(rules_file);
   const req = {
@@ -561,9 +575,10 @@ tool("assign_worksets", {
   };
   const seconds = timeout_seconds ?? 900;
   if (check_only) return text(await callRevit("assign_worksets", { ...req, check_only: true }, seconds));
+  requireExplanation(dry_run, explanation);
   const result = await gated(fingerprint("worksets", req),
     { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    () => callRevit("assign_worksets", { ...req, dry_run: !!dry_run }, seconds), (r) => r?.success === true);
+    () => callRevit("assign_worksets", { ...req, dry_run: !!dry_run, explanation, plan, step }, seconds), (r) => r?.success === true);
   if (result?.alreadyApplied) return text(result);
   if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
   if (!dry_run && result?.success) briefCache.clear();
@@ -581,14 +596,16 @@ tool("presentation_standard", {
       .describe("e.g. [{\"upToScale\": 50, \"textMm\": 3}, {\"textMm\": 2.5}]"),
     unify_tags: z.boolean().optional().describe("Also give every tag of a category one tag type"),
     dry_run: z.boolean().optional(),
-    explanation: z.string().optional(),
+    explanation: z.string().max(600).optional(),
+    plan: z.array(z.string().max(120)).max(15).optional(), step: z.number().int().min(1).optional(),
   },
   annotations: writes,
-}, async ({ check_only, dry_run, explanation, ...a }) => {
+}, async ({ check_only, dry_run, explanation, plan, step, ...a }) => {
   if (check_only) return text(await callRevit("presentation_standard", { ...a, check_only: true }, 600));
+  requireExplanation(dry_run, explanation);
   const result = await gated(fingerprint("presentation", a),
     { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    () => callRevit("presentation_standard", { ...a, dry_run: !!dry_run }, 900), (r) => r?.success === true);
+    () => callRevit("presentation_standard", { ...a, dry_run: !!dry_run, explanation, plan, step }, 900), (r) => r?.success === true);
   if (result?.alreadyApplied) return text(result);
   if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
   if (!dry_run && result?.success) briefCache.clear();
@@ -613,14 +630,15 @@ tool("run_saved_script", {
     explanation: z.string().optional().describe("Plain-language description (required when applying changes)"),
     allow_risky: z.boolean().optional(),
     option_label: z.string().max(40).optional().describe("For several previews to choose from: e.g. \"Option A - 10 m2\"; it leads the Apply card title"),
+    plan: codeSchema.plan, step: codeSchema.step,
   },
   annotations: writes,
-}, async ({ name, inputs, dry_run, preview_image, timeout_seconds, explanation, allow_risky, option_label }) => {
+}, async ({ name, inputs, dry_run, preview_image, timeout_seconds, explanation, allow_risky, option_label, plan, step }) => {
   const script = findScript(name);
   return runCode({
     code: fs.readFileSync(script.file, "utf8"),
     mode: script.mode || "auto",
-    dry_run, preview_image, inputs, timeout_seconds, explanation, allow_risky,
+    dry_run, preview_image, inputs, timeout_seconds, explanation, allow_risky, plan, step,
     // The name is the card title in the ACE panel: the option label first, then every input, so options differ.
     transaction_name: `Claude: ${option_label ? `${option_label} - ` : ""}${script.name}${inputs && Object.keys(inputs).length
       ? ` (${Object.entries(inputs).map(([k, v]) => `${k.replace(/_/g, " ")} ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ")})`

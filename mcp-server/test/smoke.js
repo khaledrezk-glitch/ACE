@@ -131,7 +131,11 @@ const edit = { code: "foreach (var w in ctx.All<Wall>()) w.LookupParameter(\"Com
 const blocked = await call("execute_revit_code", { ...edit, explanation: "test" });
 assert.equal(blocked.isError, true);
 assert.match(blocked.content[0].text, /not been previewed/);
-const preview = await call("execute_revit_code", { ...edit, dry_run: true });
+assert.match((await call("execute_revit_code", { ...edit, dry_run: true })).content[0].text, /Give 'explanation' with the preview/, "a preview that changes the model must explain itself");
+await call("execute_revit_code", { ...edit, dry_run: true, explanation: "Step text", plan: ["Renumber doors", "Tag doors"], step: 1 });
+const sent = seen.filter((x) => x.command === "execute_code").at(-1).args;
+assert.ok(sent.explanation === "Step text" && sent.plan.length === 2 && sent.step === 1, "explanation, plan and step reach the Apply card");
+const preview = await call("execute_revit_code", { ...edit, dry_run: true, explanation: "preview for the test" });
 assert.equal(json(preview).transaction, "RolledBack");
 assert.match(preview.content[1].text, /PREVIEW ONLY/);
 const noExplanation = await call("execute_revit_code", edit);
@@ -144,20 +148,20 @@ const again = await call("execute_revit_code", { ...edit, explanation: "again" }
 assert.match(again.content[0].text, /not been previewed/, "a repeat needs a fresh preview");
 // --- Companion panel decisions come back from the add-in ---
 const panelApplied = { code: "/*PANEL_APPLIED*/ return 1;", inputs: {} };
-await call("execute_revit_code", { ...panelApplied, dry_run: true });
+await call("execute_revit_code", { ...panelApplied, dry_run: true, explanation: "preview for the test" });
 const pa = json(await call("execute_revit_code", { ...panelApplied, explanation: "x" }));
 assert.equal(pa.alreadyApplied, true);
 assert.match(pa.instruction, /Do not re-apply/);
 assert.match((await call("execute_revit_code", { ...panelApplied, explanation: "x" })).content[0].text, /not been previewed/, "after a panel apply a repeat needs a fresh preview");
 const panelRejected = { code: "/*PANEL_REJECTED*/ return 1;", inputs: {} };
-await call("execute_revit_code", { ...panelRejected, dry_run: true });
+await call("execute_revit_code", { ...panelRejected, dry_run: true, explanation: "preview for the test" });
 const pr2 = await call("execute_revit_code", { ...panelRejected, explanation: "x" });
 assert.equal(pr2.isError, true);
 assert.match(pr2.content[0].text, /cancelled/);
 assert.match(client.getInstructions(), /ACE COMPANION PANEL/);
 
 // --- preview pictures come back as image blocks, not base64 in the text ---
-const pic = await call("execute_revit_code", { code: "/*PICTURE*/ return 1;", dry_run: true, preview_image: true });
+const pic = await call("execute_revit_code", { code: "/*PICTURE*/ return 1;", dry_run: true, explanation: "preview for the test", preview_image: true });
 assert.equal(pic.content.filter((c) => c.type === "image").length, 2);
 assert.doesNotMatch(pic.content[0].text, /iVBORw0KGgo/);
 assert.match(pic.content[0].text, /"echoPreview":true/);
@@ -181,7 +185,7 @@ assert.equal(json(await call("list_warnings", { contains: "identical" })).args.c
 // --- presentation standard: check is free, a change needs the identical preview ---
 assert.equal(json(await call("presentation_standard", { check_only: true })).checkOnly, true);
 assert.match((await call("presentation_standard", { explanation: "x" })).content[0].text, /not been previewed/);
-assert.equal(json(await call("presentation_standard", { dry_run: true, text_sizes: [{ upToScale: 50, textMm: 3 }, { textMm: 2.5 }] })).dryRun, true);
+assert.equal(json(await call("presentation_standard", { dry_run: true, explanation: "preview for the test", text_sizes: [{ upToScale: 50, textMm: 3 }, { textMm: 2.5 }] })).dryRun, true);
 assert.match((await call("presentation_standard", { explanation: "Text sizes", text_sizes: [{ upToScale: 50, textMm: 2 }, { textMm: 2.5 }] })).content[0].text, /not been previewed/, "other sizes need their own preview");
 const pres = json(await call("presentation_standard", { explanation: "Text sizes per scale", text_sizes: [{ upToScale: 50, textMm: 3 }, { textMm: 2.5 }] }));
 assert.equal(pres.dryRun, false);
@@ -197,7 +201,7 @@ assert.equal(seen.filter((s) => s.command === "execute_code").at(-1).args.allow_
 // --- set_parameters has the same gate ---
 const changes = [{ id: 1, parameter: "Comments", value: "x" }];
 assert.match((await call("set_parameters", { changes, explanation: "t" })).content[0].text, /not been previewed/);
-await call("set_parameters", { changes, dry_run: true });
+await call("set_parameters", { changes, dry_run: true, explanation: "preview for the test" });
 assert.equal(json(await call("set_parameters", { changes, explanation: "Set comment" })).applied, 1);
 
 assert.equal(json(await call("backup_model", {})).backup, "C:/backups/model.rvt");
@@ -210,9 +214,9 @@ assert.match(log, /Undid/);
 const bad = await call("execute_revit_code", { code: "boom" });
 assert.equal(bad.isError, true);
 
-await call("run_saved_script", { name: "test_fit_out", inputs: { room_number: "301", m2_per_person: 8 }, dry_run: true });
+await call("run_saved_script", { name: "test_fit_out", inputs: { room_number: "301", m2_per_person: 8 }, dry_run: true, explanation: "preview for the test" });
 assert.equal(seen.at(-1).args.transaction_name, "Claude: test_fit_out (room number 301, m2 per person 8)");
-await call("run_saved_script", { name: "test_fit_out", inputs: { level: "L3", m2_per_person: 10, min_aisle_mm: 1500, desk_type: "60x30" }, dry_run: true, option_label: "Option B" });
+await call("run_saved_script", { name: "test_fit_out", inputs: { level: "L3", m2_per_person: 10, min_aisle_mm: 1500, desk_type: "60x30" }, dry_run: true, explanation: "preview for the test", option_label: "Option B" });
 assert.match(seen.at(-1).args.transaction_name, /^Claude: Option B - test_fit_out \(.*desk type 60x30\)$/, "the option label leads the card title and every input is named");
 
 const lib = json(await call("saved_scripts"));
@@ -257,7 +261,7 @@ assert.match(rep, /Copied to the team folder/);
 assert.ok(fs.readFileSync(path.join(tmp, "logs", "mcp-calls.jsonl"), "utf8").includes('"tool":"execute_revit_code"'));
 
 // Revit down -> friendly error, not a crash
-await call("execute_revit_code", { code: "boom", dry_run: true });   // a compile failure for the report
+await call("execute_revit_code", { code: "boom", dry_run: true, explanation: "preview for the test" });   // a compile failure for the report
 const lr = (await call("report_issue", { kind: "learning", days: 7 })).content[0].text;
 assert.match(lr, /First-time right/);
 assert.match(lr, /Repeated API mistakes/, "the failed compile in this test run shows up");
@@ -273,7 +277,7 @@ assert.match(wsText, /Shared Levels and Grids/, "BEP rules are passed to the add
 assert.match(wsText, /ACE BEP worksets/, "the rules file is named");
 const wsBlocked = await call("assign_worksets", { explanation: "move to BEP worksets" });
 assert.ok(wsBlocked.isError || /not been previewed/.test(wsBlocked.content[0].text), "applying needs a preview first");
-await call("assign_worksets", { dry_run: true });
+await call("assign_worksets", { dry_run: true, explanation: "preview for the test" });
 const wsApplied = (await call("assign_worksets", { explanation: "move to BEP worksets" })).content[0].text;
 assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
 const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
@@ -283,7 +287,7 @@ for (const harmless of ["ctx.Log(\"area m\\u00b2\");", "ctx.Log(\"dynamic\");"])
 for (const risky of ["var u = \"http://x\"; File.Delete(p);", "var a = \"/*\"; File.Delete(p); var b = \"*/\";", "using F = System.IO.File; F.Delete(p);", "File /**/ . Delete(p);", "uidoc.SaveAndClose();",
   "Type.GetType(\"System.IO.\" + \"File\").GetMethod(\"Delete\");", "var s = File.ReadAllText(p);", "link.Unload(null);",
   "new System.IO.FileInfo(p).Delete();", "using var w = new System.IO.BinaryWriter(System.IO.File.OpenWrite(p));", "doc.Export(\"C:/x\", \"a\", new DWGExportOptions(), ids);"]) {
-  const r = await call("execute_revit_code", { code: risky, dry_run: true });
+  const r = await call("execute_revit_code", { code: risky, dry_run: true, explanation: "preview for the test" });
   assert.ok(r.isError && /Blocked for safety/.test(r.content[0].text), `risky code is screened: ${risky}`);
 }
 const quick = await call("get_model_brief", { quick: true });

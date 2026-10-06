@@ -73,6 +73,7 @@ namespace AceRevitMcp.Commands
                     try
                     {
                         var committed = t.Commit();
+                        recording.CaptureNames(doc);
                         if (committed != TransactionStatus.Committed) { group.RollBack(); status = committed.ToString(); applied = 0; }
                         else if (dryRun) status = group.RollBack().ToString();
                         else { status = group.Assimilate().ToString(); kept = status == nameof(TransactionStatus.Committed); }

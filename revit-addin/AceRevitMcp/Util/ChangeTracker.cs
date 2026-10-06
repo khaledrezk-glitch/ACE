@@ -80,6 +80,8 @@ namespace AceRevitMcp.Util
             private readonly HashSet<long> _modified = new HashSet<long>();
             private readonly HashSet<long> _deleted = new HashSet<long>();
             private readonly Dictionary<long, string> _categories = new Dictionary<long, string>();
+            private readonly Dictionary<long, string> _names = new Dictionary<long, string>();
+            private readonly HashSet<long> _sensitive = new HashSet<long>();   // not building elements: parameters, types, views...
 
             public Recording(string name)
             {
@@ -115,6 +117,92 @@ namespace AceRevitMcp.Util
                 }
             }
 
+            /// <summary>
+            /// Names what changes, for people: call before a preview is rolled back (added elements still exist) and again
+            /// after it (deleted elements exist again). After a real apply, deleted elements can no longer be named.
+            /// </summary>
+            public void CaptureNames(Document doc)
+            {
+                if (doc == null) return;
+                foreach (var id in _added.Concat(_modified).Concat(_deleted).Where(i => !_names.ContainsKey(i)).Take(5000))
+                {
+                    try
+                    {
+                        var el = doc.GetElement(new ElementId(id));
+                        if (el == null) continue;
+                        _categories[id] = Label(el);
+                        _names[id] = NameOf(doc, el);
+                        // Data many elements depend on (not something Revit updates on its own, like views or tags).
+                        if (el is ElementType || el is ParameterElement || el is Family) _sensitive.Add(id);
+                    }
+                    catch { }
+                }
+            }
+
+            private static string Label(Element el) =>
+                el.Category?.Name ?? el switch
+                {
+                    SharedParameterElement _ => "Shared parameters",
+                    ParameterElement _ => "Project parameters",
+                    ElementType _ => "Types",
+                    Family _ => "Families",
+                    View _ => "Views",
+                    _ => el.GetType().Name,
+                };
+
+            private static string NameOf(Document doc, Element el)
+            {
+                string n = null;
+                try
+                {
+                    if (el is Autodesk.Revit.DB.Architecture.Room r) n = $"{r.Number} {r.Name}".Trim();
+                    else if (el is FamilyInstance fi) n = $"{fi.Symbol.FamilyName} : {fi.Symbol.Name}";
+                    else if (el is ParameterElement pe) n = pe.GetDefinition()?.Name ?? pe.Name;
+                    else n = el.Name;
+                    if (string.IsNullOrWhiteSpace(n)) n = doc.GetElement(el.GetTypeId())?.Name;
+                }
+                catch { }
+                return string.IsNullOrWhiteSpace(n) ? $"id {el.Id.Value}" : n;
+            }
+
+            /// <summary>Per change kind and category: the count and up to 6 names with how often each occurs.</summary>
+            private JsonObject Details()
+            {
+                JsonObject Part(IEnumerable<long> ids)
+                {
+                    var part = new JsonObject();
+                    foreach (var g in ids.GroupBy(i => _categories.TryGetValue(i, out var c) ? c : "Other").OrderByDescending(g => g.Count()).Take(12))
+                    {
+                        var names = g.Where(i => _names.ContainsKey(i)).GroupBy(i => _names[i]).OrderByDescending(n => n.Count()).Take(6)
+                                     .Select(n => n.Count() > 1 ? $"{n.Key} (x{n.Count()})" : n.Key).ToList();
+                        part[g.Key] = $"{g.Count()}" + (names.Count > 0 ? ": " + string.Join(", ", names) + (g.Select(i => _names.TryGetValue(i, out var nm) ? nm : null).Distinct().Count() > 6 ? ", ..." : "") : "");
+                    }
+                    return part;
+                }
+                var d = new JsonObject();
+                if (_added.Count > 0) d["added"] = Part(_added);
+                if (_modified.Count > 0) d["modified"] = Part(_modified);
+                if (_deleted.Count > 0) d["deleted"] = Part(_deleted);
+                return d;
+            }
+
+            /// <summary>What a person should look at twice before applying: deletions, and changes to data that is not a building element.</summary>
+            private JsonArray Attention()
+            {
+                var a = new JsonArray();
+                foreach (var g in _deleted.GroupBy(i => _categories.TryGetValue(i, out var c) ? c : "elements").OrderByDescending(g => g.Count()).Take(6))
+                {
+                    var names = g.Select(i => _names.TryGetValue(i, out var n) ? n : null).Where(n => n != null).Distinct().Take(5).ToList();
+                    a.Add($"Deletes {g.Count()} {g.Key}{(names.Count > 0 ? ": " + string.Join(", ", names) : "")}");
+                }
+                foreach (var g in _modified.Where(_sensitive.Contains).GroupBy(i => _categories.TryGetValue(i, out var c) ? c : "data").Take(4))
+                {
+                    var names = g.Select(i => _names.TryGetValue(i, out var n) ? n : null).Where(n => n != null).Distinct().Take(4).ToList();
+                    a.Add($"Changes {g.Count()} {g.Key}{(names.Count > 0 ? ": " + string.Join(", ", names) : "")} (affects every element that uses them)");
+                }
+                return a;
+            }
+
             private void Remember(Document doc, ElementId id)
             {
                 if (_categories.ContainsKey(id.Value)) return;
@@ -146,7 +234,12 @@ namespace AceRevitMcp.Util
                 };
                 if (_added.Count > 0) summary["addedByCategory"] = ByCategory(_added);
                 if (_modified.Count > 0) summary["modifiedByCategory"] = ByCategory(_modified);
+                var details = Details();
+                if (details.Count > 0) summary["details"] = details;
+                var attention = Attention();
+                if (attention.Count > 0) summary["attention"] = attention;
                 if (_deleted.Count > 0) summary["deletedIds"] = new JsonArray(_deleted.Take(200).Select(i => (JsonNode)i).ToArray());
+                if (_modified.Count > 0) summary["modifiedIds"] = new JsonArray(_modified.Take(500).Select(i => (JsonNode)i).ToArray());
                 if (_added.Count > 0 && _added.Count <= 200) summary["addedIds"] = new JsonArray(_added.Select(i => (JsonNode)i).ToArray());
                 summary["note"] = "Counts include elements Revit updates automatically (e.g. views, tags, joined walls).";
                 return summary;

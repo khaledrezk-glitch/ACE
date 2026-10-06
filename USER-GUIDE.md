@@ -54,7 +54,7 @@ Click **ACE tab → Companion** to show or hide it (it docks on the right). It w
 
 | Tab | What it's for |
 |---|---|
-| **Approvals** | When Claude previews a change, a card appears, e.g. *"Would modify 142 (Doors 142)"*. Click **Apply** to make the change (one undo step), or **Cancel**. You can also just answer Claude in the chat. After Apply, tell Claude "done" and it verifies the result. |
+| **Approvals** | When Claude previews a change, a card appears with: the title and **what Claude says it does and why**; for a long job, **the steps and which one this is** ("Step 2 of 4"); the counts; a red **"Look at this before applying"** box for anything deleted and for changes to parameters, types or families; **What exactly changes** (each category with element names); pictures when Claude made them; and **Show in model** to select the changed elements. Click **Apply** to make the change (one undo step), or **Cancel**. You can also just answer Claude in the chat. After Apply, tell Claude "done" and it verifies the result. |
 | **Activity** | A live list of what Claude is doing in your model. |
 | **Results** | Elements from Claude's latest answer. **Click one to select and zoom to it**, or *Select all*. |
 | **Context & prompts** | Your current model, view and selection. *Copy this context for Claude*, plus one-click prompts such as "Explain my selection" and "Model QA check": click, then paste into Claude (Ctrl+V). |

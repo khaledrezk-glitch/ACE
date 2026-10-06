@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.2 (6 Oct 2026)
+- **Apply cards you can understand** (the owner: "I don't understand what to approve, especially for a long multi-step
+  process"): every card shows Claude's plain explanation of what the change does and why (Claude must now give one
+  with every preview), the steps of a multi-step job with this one marked ("Step 2 of 4"), a red "Look at this before
+  applying" box for deletions and for changes to parameters, types or families (with names, e.g. "Deletes 2 Shared
+  parameters: Fire Rating, Acoustic Class"), "What exactly changes" per category with element names, and "Show in
+  model" to select the changed elements. A card without a title takes it from the explanation, never "script".
+  Claude is told to stop and explain any deletion or shared-data change that the request did not ask for.
+
 ## 1.8.1 (6 Oct 2026)
 - **Worksets per the BEP, native** (concept D7): the rules engine moved from a script into the add-in. The model check
   now reports elements on the wrong workset whenever there is a rules file; `assign_worksets` uses the same engine,

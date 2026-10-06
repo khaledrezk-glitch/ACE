@@ -216,11 +216,14 @@ public static class AceScript
                     {
                         if (dryRun)
                         {
+                            recording.CaptureNames(doc);   // added elements still exist
                             transactionStatus = group.RollBack().ToString();
+                            recording.CaptureNames(doc);   // deleted elements exist again
                             if (transactionStatus != TransactionStatus.RolledBack.ToString()) rollbackFailed.Add(doc.Title);
                         }
                         else
                         {
+                            recording.CaptureNames(doc);
                             transactionStatus = group.Assimilate().ToString();
                             keptChanges = transactionStatus == TransactionStatus.Committed.ToString();
                         }
