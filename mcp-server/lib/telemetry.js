@@ -15,6 +15,10 @@ export function summarize(tool, args, result, ms, error) {
   if (error) entry.error = String(error.message || error).slice(0, 500);
   const firstText = result?.content?.find((c) => c.type === "text")?.text;
   if (!entry.ok && !entry.error && firstText) entry.error = firstText.slice(0, 500);
+  // Size of what Claude had to read (about 4 characters a token), for the development radar's token estimate.
+  entry.chars = (result?.content || []).reduce((n, c) => n + (c.type === "text" ? c.text.length : c.type === "image" ? 6000 : 0), 0);
+  if (args?.dry_run !== undefined) entry.dryRun = !!args.dry_run;
+  if (args?.check_only) entry.checkOnly = true;
 
   if (tool === "execute_revit_code" || tool === "run_saved_script") {
     entry.mode = args?.mode;

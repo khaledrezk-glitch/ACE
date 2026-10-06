@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { LOG_DIR, REPORTS_DIR, VERSION, localDate, teamReportsDir } from "./core.js";
 import { readCalls } from "./telemetry.js";
+import { radarMarkdown } from "./radar.js";
 import { allLessons, lessonStats } from "./lessons.js";
 
 const HISTORY = () => path.join(LOG_DIR, "learning-history.jsonl");
@@ -136,6 +137,7 @@ export function learningReport({ days = 30, share_with_team = false } = {}) {
     md.push(``);
   }
   md.push(`## Recommendations`, ``, ...recommendations(a).map((x) => `- ${x}`), ``);
+  md.push(...radarMarkdown(days));
   if (a.compile.length) {
     md.push(`## Repeated API mistakes (compile errors)`, ``);
     for (const [code, e] of a.compile.slice(0, 8)) md.push(`- **${code}** x${e.count}: ${COMPILE_HINTS[code] || ""}${e.samples.map((s) => `\n  - \`${s.replace(/`/g, "'")}\``).join("")}`);

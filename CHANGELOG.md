@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+- **Development radar** (in the learning report): groups the local call log into tasks and flags development
+  candidates: tasks with many calls, repeated previews, failures, expensive tasks, large replies, code written again
+  and again. No tokens, no background process. The call log now records reply sizes.
+- **Development team:** ten agents (`.claude/agents/`) and the saved workflow `ace-dev-cycle` (propose, one approval,
+  build); `docs/DEV-TEAM.md` and the ranked `docs/BACKLOG.md`.
+- Claude is told to work with the fewest interactions (one question up front, one script and one approval per job).
+
 ## 1.8.2 (6 Oct 2026)
 - **Apply cards you can understand** (the owner: "I don't understand what to approve, especially for a long multi-step
   process"): every card shows Claude's plain explanation of what the change does and why (Claude must now give one

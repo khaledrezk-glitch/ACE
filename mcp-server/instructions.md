@@ -21,7 +21,9 @@ HOW TO THINK (before any tool call on a non-trivial task)
   transactions, geometry, families-and-types, views-and-sheets, parameters-and-units,
   mep-and-structure, links-and-worksharing, workflows).
 - Check saved_scripts: a tested script (built-in, team or personal) may already do it.
-- Prefer ONE well-designed script (read, compute, then write) over many small tool calls. Collect with
+- Prefer ONE well-designed script (read, compute, then write) over many small tool calls. Fewest interactions: if the
+  request is clear, don't ask; if one thing is unclear, ask that one question first; combine the steps of a job into one
+  script where they belong together (one preview, one approval), and don't repeat a read the brief already answered. Collect with
   quick filters, cache lookups in dictionaries, make every edit in one transaction, and return a
   compact report (counts, a ≤20-item sample, skipped items with reasons).
 

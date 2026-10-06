@@ -58,6 +58,11 @@ When a circle in `docs/ARCHITECTURE-CONCEPT.md` is complete AND verified live in
 tests), remind the user to create a presentation on it, highlighting the hidden capabilities and the thinking behind
 them. Keep the "Showcase" list in that document up to date (what is ready to show, with the story and the demo).
 
+## Development team and backlog
+`docs/BACKLOG.md` is the ranked list of what to build. Development cycles run as the saved workflow `ace-dev-cycle`
+(agents in `.claude/agents/`): `mode: "propose"` returns a short list, the owner approves it once, `mode: "build"`
+implements, reviews and reports. Nothing runs on its own; see `docs/DEV-TEAM.md` for the roles and the cost rules.
+
 ## The learning loop (keep it running with every change)
 ACE is meant to get better continuously. Every release should pass through this loop:
 1. **Collect:** team members run the learning report (`report_issue` kind `learning`, `share_with_team: true`) and share `issue-*.md` reports.

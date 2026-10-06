@@ -266,6 +266,16 @@ const lr = (await call("report_issue", { kind: "learning", days: 7 })).content[0
 assert.match(lr, /First-time right/);
 assert.match(lr, /Repeated API mistakes/, "the failed compile in this test run shows up");
 assert.match(lr, /Saved: /);
+assert.match(lr, /Development radar/, "the learning report includes the development radar");
+const { tasks: radarTasks } = await import("../lib/radar.js");
+const tk = radarTasks([
+  { t: "2026-10-06T08:00:00Z", tool: "get_model_brief", ok: true, chars: 4000 },
+  { t: "2026-10-06T08:01:00Z", tool: "execute_revit_code", ok: true, dryRun: true, chars: 800 },
+  { t: "2026-10-06T08:02:00Z", tool: "execute_revit_code", ok: true, dryRun: false, chars: 400 },
+  { t: "2026-10-06T09:30:00Z", tool: "model_dashboard", ok: false, chars: 100 },
+]);
+assert.equal(tk.length, 2, "a long pause starts a new task");
+assert.ok(tk[0].calls === 3 && tk[0].previews === 1 && tk[0].applies === 1 && tk[1].failed === 1, "tasks count calls, previews, applies and failures");
 const cr = (await call("coordination_report", { max_issues: 5 })).content[0].text;
 assert.match(cr, /Coordination\.csv/, "coordination report returns the CSV issue list");
 const fc = (await call("clash_view", { key: "STR vs MEP|u1|u2" })).content[0].text;
