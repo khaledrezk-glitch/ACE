@@ -118,12 +118,6 @@ namespace AceRevitMcp.Bridge
                     return;
                 }
 
-                if (path == "/cancel")
-                {
-                    var stopped = _dispatcher.CancelAll();
-                    await WriteAsync(ctx, 200, new JsonObject { ["ok"] = true, ["cancelled"] = stopped });
-                    return;
-                }
                 if (ctx.Request.ContentLength64 > MaxBodyBytes)
                 {
                     await WriteAsync(ctx, 413, Error($"Request too large (over {MaxBodyBytes / 1024 / 1024} MB)."));
@@ -133,6 +127,14 @@ namespace AceRevitMcp.Bridge
                 using (var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8))
                     body = await reader.ReadToEndAsync().ConfigureAwait(false);
 
+                if (path == "/cancel")
+                {
+                    // { "id": "<request id>" }: only that request is cancelled.
+                    var id = (JsonNode.Parse(body) as JsonObject)?["id"]?.ToString();
+                    var stopped = _dispatcher.Cancel(id);
+                    await WriteAsync(ctx, 200, new JsonObject { ["ok"] = true, ["cancelled"] = stopped });
+                    return;
+                }
                 if (JsonNode.Parse(body) is not JsonObject request || !(request["command"] is JsonValue cv && cv.TryGetValue<string>(out var command)))
                 {
                     await WriteAsync(ctx, 400, Error("Body must be JSON: {\"command\": \"...\", \"args\": {...}}"));
@@ -145,7 +147,7 @@ namespace AceRevitMcp.Bridge
 
                 try
                 {
-                    var result = await _dispatcher.EnqueueAsync(command, request["args"] as JsonObject, timeout).ConfigureAwait(false);
+                    var result = await _dispatcher.EnqueueAsync(command, request["args"] as JsonObject, timeout, request["requestId"]?.ToString()).ConfigureAwait(false);
                     await WriteAsync(ctx, 200, new JsonObject { ["ok"] = true, ["result"] = result });
                 }
                 catch (Exception ex)

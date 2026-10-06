@@ -19,13 +19,13 @@ namespace AceRevitMcp.Dashboard
         {
             ("identical instances in the same place", "Delete the extra copies: saved script delete_duplicate_instances (preview first)."),
             ("Room separation line", "One of each overlapping pair of room separation lines (or the line over a wall) can be deleted."),
+            ("Area is not in a properly enclosed region", "Close the area boundary, or delete the area."),
             ("is not in a properly enclosed region", "Close the room's boundary (walls or room separation lines), or delete the room if it is not needed."),
             ("Multiple Rooms are in the same enclosed region", "Delete the duplicate room, or split the region with a room separation line."),
             ("Highlighted walls overlap", "Shorten or remove one of the overlapping walls."),
             ("are joined but do not intersect", "Unjoin them: JoinGeometryUtils.UnjoinGeometry(doc, a, b) in one script (preview first)."),
             ("Elements have duplicate", "Give each element its own value (doors: saved script renumber_doors)."),
             ("is slightly off axis", "Rotate or redraw the element to the axis; usually from imported geometry."),
-            ("Area is not in a properly enclosed region", "Close the area boundary, or delete the area."),
         };
 
         public static JsonNode List(UIApplication app, JsonObject args)

@@ -40,6 +40,14 @@ namespace AceRevitMcp.Dashboard
         /// </summary>
         public Dictionary<string, Dictionary<string, string>> Types = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>A short fingerprint of everything the standard decides (sizes, font, scope, chosen types).</summary>
+        public string Identity()
+        {
+            var text = string.Join(";", Sizes.OrderBy(s => s.UpToScale).Select(s => $"{s.UpToScale}:{Band(s.TextMm)}")) + $"|{Font}|{ViewsOnSheetsOnly}|{UnifyTagTypes}|" +
+                       string.Join(";", Types.SelectMany(b => b.Value.Select(k => $"{b.Key}/{k.Key}={k.Value}")).OrderBy(x => x, StringComparer.Ordinal));
+            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).Substring(0, 16);
+        }
+
         public static string Band(double mm) => mm.ToString("0.##", CultureInfo.InvariantCulture);
 
         public string TypeFor(string band, string kind) =>
@@ -79,7 +87,8 @@ namespace AceRevitMcp.Dashboard
                     if (p["types"] is JsonObject types)
                         foreach (var (band, kinds) in types)
                             if (kinds is JsonObject k)
-                                foreach (var (kind, name) in k) std.SetType(band, kind, name?.ToString());
+                                foreach (var (kind, name) in k)
+                                    std.SetType(double.TryParse(band, NumberStyles.Float, CultureInfo.InvariantCulture, out var bmm) ? Band(bmm) : band, kind, name?.ToString());   // "3.0" and "3" are one band
                 }
             }
             catch (Exception ex) { Log.Warn($"Presentation standard: {ex.Message}"); }

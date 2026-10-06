@@ -181,7 +181,7 @@ namespace AceRevitMcp.Commands
                 ["total"] = total,
                 ["returned"] = result.Count,
                 ["next"] = offset + result.Count < total ? offset + result.Count : null,   // pass as offset for the next page
-                ["truncated"] = total > result.Count,
+                ["truncated"] = offset + result.Count < total,
                 ["elements"] = result,
             };
         }

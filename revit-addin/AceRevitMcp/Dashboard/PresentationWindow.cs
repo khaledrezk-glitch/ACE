@@ -166,25 +166,36 @@ namespace AceRevitMcp.Dashboard
             _sizeRows.Children.Add(row);
         }
 
-        /// <summary>The sizes as typed (invalid rows are left out); null when none is valid.</summary>
-        private List<PresentationStandard.Size> ReadSizes()
+        /// <summary>The sizes as typed; null (with the reason in <paramref name="problem"/>) when a row is not valid.</summary>
+        private List<PresentationStandard.Size> ReadSizes(out string problem)
         {
+            problem = null;
             var rows = new JsonArray();
             foreach (var (scale, mm) in _sizes)
             {
-                if (!double.TryParse(mm.Text.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out var m)) continue;
+                if (string.IsNullOrWhiteSpace(mm.Text) && string.IsNullOrWhiteSpace(scale.Text)) continue;
+                if (!double.TryParse(mm.Text.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out var m) || m <= 0)
+                { problem = $"'{mm.Text}' is not a text height in mm."; return null; }
                 var o = new JsonObject { ["textMm"] = m };
-                if (int.TryParse(scale.Text.Trim(), out var sc)) o["upToScale"] = sc;
+                var sc = scale.Text.Trim();
+                if (sc.StartsWith("1:")) sc = sc.Substring(2).Trim();   // "1:50" means 50
+                if (sc.Length > 0)
+                {
+                    if (!int.TryParse(sc, out var n) || n <= 0) { problem = $"'{scale.Text}' is not a scale (write 50 for 1:50, or leave it empty for all smaller scales)."; return null; }
+                    o["upToScale"] = n;
+                }
                 rows.Add(o);
             }
-            return PresentationStandard.Parse(rows);
+            var parsed = PresentationStandard.Parse(rows);
+            if (parsed == null) problem = "Give at least one text height (mm).";
+            return parsed;
         }
 
         private void BuildTypeGrid()
         {
             var keep = _choices.ToDictionary(c => c.Key, c => (string)(c.Value.SelectedItem as ComboBoxItem)?.Tag);
             _typeGrid.Children.Clear(); _typeGrid.RowDefinitions.Clear(); _typeGrid.ColumnDefinitions.Clear(); _choices.Clear();
-            var bands = (ReadSizes() ?? _std.Sizes).Select(s => PresentationStandard.Band(s.TextMm)).Distinct().ToList();
+            var bands = (ReadSizes(out _) ?? _std.Sizes).Select(s => PresentationStandard.Band(s.TextMm)).Distinct().ToList();
             _typeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(190) });
             foreach (var _ in bands) _typeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             _typeGrid.RowDefinitions.Add(new RowDefinition());
@@ -217,20 +228,17 @@ namespace AceRevitMcp.Dashboard
         /// <summary>The window's settings into the standard; false (with a message) when the sizes are not valid.</summary>
         private bool Collect()
         {
-            var sizes = ReadSizes();
-            if (sizes == null) { Show("Give at least one text height (mm)."); return false; }
+            var sizes = ReadSizes(out var problem);
+            if (sizes == null) { Show(problem); return false; }
             _std.Sizes = sizes;
             _std.Font = string.IsNullOrWhiteSpace(_font.Text) ? null : _font.Text.Trim();
             _std.ViewsOnSheetsOnly = _onSheets.IsChecked == true;
             _std.UnifyTagTypes = _unifyTags.IsChecked == true;
-            _std.Types.Clear();
+            // Merged into the loaded choices: kinds or tag categories this model does not have keep the office's choice.
             foreach (var ((band, kind), combo) in _choices) _std.SetType(band, kind, (string)(combo.SelectedItem as ComboBoxItem)?.Tag);
             foreach (var (category, combo) in _tagChoices) _std.SetType("tags", category, (string)(combo.SelectedItem as ComboBoxItem)?.Tag);
             return true;
         }
-
-        private string Fingerprint() => $"{string.Join(";", _std.Sizes.Select(s => $"{s.UpToScale}:{s.TextMm}"))}|{_std.Font}|{_std.ViewsOnSheetsOnly}|{_std.UnifyTagTypes}|" +
-                                        string.Join(";", _std.Types.SelectMany(b => b.Value.Select(k => $"{b.Key}/{k.Key}={k.Value}")).OrderBy(x => x));
 
         private void Save()
         {
@@ -239,20 +247,18 @@ namespace AceRevitMcp.Dashboard
             catch (Exception ex) { Show($"Could not save: {ex.Message}"); }
         }
 
-        /// <summary>Saves the settings (the engine reads the saved standard, like Claude does), then checks, previews or applies.</summary>
+        /// <summary>Checks, previews or applies what is on screen. Nothing is saved here: only Save changes the office standard.</summary>
         private void Run(bool check, bool apply = false)
         {
             if (!Collect()) return;
-            try { _std.Save(); }
-            catch (Exception ex) { Show($"Could not save the standard: {ex.Message}"); return; }
-            var fingerprint = Fingerprint();
+            var fingerprint = _std.Identity();
             if (apply && fingerprint != _previewed) { _apply.IsEnabled = false; Show("The settings changed since the preview. Preview again first."); return; }
             var args = new JsonObject();
             if (check) args["check_only"] = true;
             else { args["dry_run"] = !apply; args["_fromPanel"] = true; }
             try
             {
-                var r = (JsonObject)PresentationCommands.Run(_app, args);
+                var r = PresentationCommands.RunWith(_app, args, _std);
                 Show(Describe(r, check ? "Check (nothing changed)" : apply ? "Applied" : "Preview (nothing changed)"));
                 var ok = r["success"]?.GetValue<bool>() != false;
                 _previewed = !check && !apply && ok ? fingerprint : null;

@@ -67,7 +67,8 @@ namespace AceRevitMcp.Tracking
             var snap = new Snapshot
             {
                 Model = doc.Title, Path = doc.PathName, Time = DateTime.Now, User = user, Label = label,
-                Discipline = Commands.BriefCommands.Discipline(doc), Version = VersionOf(doc),
+                Discipline = Commands.BriefCommands.Discipline(doc),
+                Version = doc.IsModified ? null : VersionOf(doc),   // only a saved state can stand for that version later
             };
             var levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).ToDictionary(l => l.Id.Value, l => l.Name);
             var names = new Names(doc);
@@ -213,7 +214,7 @@ namespace AceRevitMcp.Tracking
                 try
                 {
                     Directory.CreateDirectory(dir);
-                    var temp = file + ".part";
+                    var temp = file + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".part";
                     using (var fs = File.Create(temp))
                     using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
                         JsonSerializer.Serialize(gz, snap, Json);

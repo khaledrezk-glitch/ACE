@@ -47,6 +47,7 @@ namespace AceRevitMcp.Commands
                 ["reset_clash_view"] = Coordination.ClashView.Reset,
                 ["list_warnings"] = Dashboard.WarningCommands.List,
                 ["presentation_standard"] = Dashboard.PresentationCommands.Run,
+                ["assign_worksets"] = Rules.WorksetCommands.Run,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

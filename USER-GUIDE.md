@@ -87,7 +87,8 @@ prompts first and Claude leads with the mode's tools. You can also tell Claude: 
 Ask Claude: *"Check the worksets against our BEP"* or *"Put the elements on the right worksets"*. It uses the BEP rules
 file (by category, wall function, structural, MEP system, family or type name, level, zone or room department),
 shows what would move, and applies only after you confirm (one undo step). Your BIM manager keeps the rules in
-`worksets.json` (example in the package: `mcp-server\bep\worksets.example.json`).
+`worksets.json` (example in the package: `mcp-server\bep\worksets.example.json`). With that file in place, the
+dashboard also reports elements on the wrong workset every time you check the model.
 
 ### Presentation standard (drawings)
 

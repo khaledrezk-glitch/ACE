@@ -407,8 +407,7 @@ public static class AceScript
             return asm.GetType("AceRevitMcp.Compiler.ScriptCompiler")!.GetMethod("Compile")!;
         }
 
-        private static string[] _referencePaths;
-        private static int _referenceAssemblyCount;
+        private static Tuple<int, string[]> _references;   // one reference: the count and the list always belong together
 
         /// <summary>
         /// Compiles a trivial script on a background thread when Revit starts, so the first real script does not pay
@@ -428,12 +427,12 @@ public static class AceScript
         /// <summary>The reference list, rebuilt only when assemblies have been loaded since the last time.</summary>
         private static string[] ReferencePaths()
         {
-            var count = AppDomain.CurrentDomain.GetAssemblies().Length;
-            var cached = _referencePaths;
-            if (cached != null && count == _referenceAssemblyCount) return cached;
+            // Counted without script assemblies (collectible, unloaded later), so a script coming and going never hides a newly loaded assembly.
+            var count = AppDomain.CurrentDomain.GetAssemblies().Count(a => !a.IsDynamic && !a.IsCollectible);
+            if (_references is { } cached && cached.Item1 == count) return cached.Item2;
             var paths = BuildReferencePaths();
-            _referenceAssemblyCount = count;
-            return _referencePaths = paths;
+            _references = Tuple.Create(count, paths);
+            return paths;
         }
 
         private static string[] BuildReferencePaths()

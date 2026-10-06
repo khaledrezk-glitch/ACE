@@ -20,15 +20,29 @@ namespace AceRevitMcp.Dashboard
         }
 
         /// <summary>The views the standard applies to: graphical, not templates; only those on sheets when the standard says so.</summary>
-        internal static Dictionary<long, View> Views(Document doc, PresentationStandard std)
+        /// <param name="names">Only these views (by name, on sheets or not); null = the standard's scope.</param>
+        internal static Dictionary<long, View> Views(Document doc, PresentationStandard std, ICollection<string> names = null)
         {
-            var onSheets = std.ViewsOnSheetsOnly
-                ? new HashSet<long>(new FilteredElementCollector(doc).OfClass(typeof(Viewport)).Cast<Viewport>().Select(v => v.ViewId.Value))
-                : null;
-            return new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>()
-                .Where(v => !v.IsTemplate && !(v is ViewSheet) && !(v is ViewSchedule) && RevitJson.Safe(() => v.Scale) > 0)
-                .Where(v => onSheets == null || onSheets.Contains(v.Id.Value))
-                .ToDictionary(v => v.Id.Value);
+            var graphical = new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>()
+                .Where(v => !v.IsTemplate && !(v is ViewSheet) && !(v is ViewSchedule) && RevitJson.Safe(() => v.Scale) > 0);
+            if (names != null && names.Count > 0)
+            {
+                var wanted = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+                return graphical.Where(v => wanted.Contains(v.Name)).ToDictionary(v => v.Id.Value);
+            }
+            HashSet<long> onSheets = null;
+            if (std.ViewsOnSheetsOnly)
+            {
+                onSheets = new HashSet<long>();
+                foreach (var vp in new FilteredElementCollector(doc).OfClass(typeof(Viewport)).Cast<Viewport>())
+                {
+                    onSheets.Add(vp.ViewId.Value);
+                    // A dependent view's annotation belongs to its primary view: include that view too.
+                    if (doc.GetElement(vp.ViewId) is View placed && placed.GetPrimaryViewId() is { } primary && primary != ElementId.InvalidElementId)
+                        onSheets.Add(primary.Value);
+                }
+            }
+            return graphical.Where(v => onSheets == null || onSheets.Contains(v.Id.Value)).ToDictionary(v => v.Id.Value);
         }
 
         internal static double SizeMm(Element type) =>
@@ -62,8 +76,7 @@ namespace AceRevitMcp.Dashboard
             }
 
             foreach (var t in new FilteredElementCollector(doc).OfClass(typeof(TextNote)).Cast<TextNote>()) Check(t, "text");
-            foreach (var d in new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>()
-                         .Concat(new FilteredElementCollector(doc).OfClass(typeof(SpotDimension)).Cast<Dimension>()))
+            foreach (var d in new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>())   // includes spot dimensions
                 Check(d, "dim:" + RevitJson.Safe(() => d.DimensionType?.StyleType.ToString()));
             r.ExtraTypes = used.Values.Sum(s => Math.Max(0, s.Count - 1));
             return r;

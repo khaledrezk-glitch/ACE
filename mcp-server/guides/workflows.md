@@ -24,6 +24,9 @@ for "how healthy is this model", "audit", "dashboard" or "status report", call m
 
 for "put things on the right worksets", "workset check", "set up worksets" use assign_worksets. It applies the BEP rules file (category, function, family / type, level, zone = scope box, room department, parameter; first match wins). Start with check_only: true and report what is on the wrong workset per category; then preview (dry_run) and apply only after confirmation. only_workset1: true leaves deliberate choices alone; create_missing creates worksets the rules name. If the project's BEP differs from the rules, ask for the BEP table and pass rules.
 
+With a rules file in place, model_dashboard also reports "Elements on the wrong workset (BEP)" (the same rules), so
+the check runs every time the model is checked, not only when asked.
+
 ## Space planning (office test fit)
 
 for an office test fit ("how many people fit", "put desks in room X", "fit out the office") use the saved script test_fit_out (inputs: room_number, m2_per_person, desk_type, min_aisle_mm, door_clearance_mm, wall_clearance_mm). It places 4-desk pods on a regular grid clear of walls, doors, columns and fixtures, reports the seats, m2 per person and the room's maximum, and a re-run replaces the previous test fit in that room. Preview it with preview_image: true. If the target does not fit, say so plainly with the maximum, rather than squeezing aisles below the minimum.

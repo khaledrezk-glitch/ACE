@@ -32,6 +32,8 @@ const bridge = http.createServer((req, res) => {
         if (args.code.includes("SEMANTIC_RISK") && !args.allow_risky) return reply({ ok: true, result: { success: false, stage: "risky", error: "Blocked for safety: this code reads or changes files on disk." } });
         if (args.code.includes("boom")) return reply({ ok: true, result: { success: false, stage: "compile", errors: ["line 1: CS0103"] } });
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
+      case "assign_worksets":
+        return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, transaction: args.check_only ? undefined : args.dry_run ? "RolledBack" : "Committed", rules: `${args.rules_name} (${args.rules_source}), ${args.rules?.length} rules`, firstRule: args.rules?.[0]?.workset } });
       case "presentation_standard":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
       case "set_parameters":
@@ -266,9 +268,9 @@ const fc = (await call("clash_view", { key: "STR vs MEP|u1|u2" })).content[0].te
 assert.match(fc, /200 x 200 x 250/, "focus_clash passes the key and returns the intersection");
 const wsCheck = await call("assign_worksets", { check_only: true });
 const wsText = wsCheck.content.map((c) => c.text).join("\n");
-assert.match(wsText, /"echoMode": ?"readonly"/, "workset check is read-only");
-assert.match(wsText, /Shared Levels and Grids/, "BEP rules are passed to the script");
-assert.match(wsText, /Workset rules: ACE BEP worksets/, "the rules file is named");
+assert.match(wsText, /"checkOnly":true/, "workset check is read-only");
+assert.match(wsText, /Shared Levels and Grids/, "BEP rules are passed to the add-in");
+assert.match(wsText, /ACE BEP worksets/, "the rules file is named");
 const wsBlocked = await call("assign_worksets", { explanation: "move to BEP worksets" });
 assert.ok(wsBlocked.isError || /not been previewed/.test(wsBlocked.content[0].text), "applying needs a preview first");
 await call("assign_worksets", { dry_run: true });
@@ -276,7 +278,9 @@ const wsApplied = (await call("assign_worksets", { explanation: "move to BEP wor
 assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
 const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
 assert.match(wm, /Coordination/, "working mode can be set");
-for (const risky of ["using F = System.IO.File; F.Delete(p);", "File /**/ . Delete(p);", "uidoc.SaveAndClose();",
+for (const harmless of ["ctx.Log(\"area m\\u00b2\");", "ctx.Log(\"dynamic\");"])
+  assert.ok(!/Blocked for safety/.test((await call("execute_revit_code", { code: harmless, mode: "readonly" })).content[0].text), `harmless code is not flagged: ${harmless}`);
+for (const risky of ["var u = \"http://x\"; File.Delete(p);", "var a = \"/*\"; File.Delete(p); var b = \"*/\";", "using F = System.IO.File; F.Delete(p);", "File /**/ . Delete(p);", "uidoc.SaveAndClose();",
   "Type.GetType(\"System.IO.\" + \"File\").GetMethod(\"Delete\");", "var s = File.ReadAllText(p);", "link.Unload(null);",
   "new System.IO.FileInfo(p).Delete();", "using var w = new System.IO.BinaryWriter(System.IO.File.OpenWrite(p));", "doc.Export(\"C:/x\", \"a\", new DWGExportOptions(), ids);"]) {
   const r = await call("execute_revit_code", { code: risky, dry_run: true });

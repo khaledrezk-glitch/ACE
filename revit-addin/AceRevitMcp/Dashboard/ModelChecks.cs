@@ -58,6 +58,18 @@ namespace AceRevitMcp.Dashboard
                     }
                     x.Counts["Worksets"] = user.Count;
                 });
+            // Worksets per the BEP rules (when the office has a rules file): the same engine assign_worksets uses.
+            if (doc.IsWorkshared && Rules.WorksetRules.LoadOffice() is { } wsRules)
+                Safe("worksets per the BEP", () =>
+                {
+                    var plan = wsRules.Apply(doc, new Rules.WorksetRules.Options { PlanOnly = true });
+                    var wrongCount = plan["wrongWorkset"]?.GetValue<int>() ?? 0;
+                    var ids = (plan["wrongIds"] as JsonArray)?.Select(n => new ElementId(n.GetValue<long>())) ?? Enumerable.Empty<ElementId>();
+                    var missing = (plan["worksetsMissing"] as JsonArray)?.Count ?? 0;
+                    Add(x, "Worksets", "Elements on the wrong workset (BEP)", wrongCount, 0.01, 5,
+                        $"{wrongCount} elements are not on the workset the BEP rules give them ({wsRules.Name}, {wsRules.Items.Count} rules){(missing > 0 ? $"; {missing} workset(s) the rules name do not exist" : "")}",
+                        "Ask Claude to put them on the right worksets (assign_worksets, previewed first).", ids);
+                });
 
             // ---- Levels, grids and links -----------------------------------------------------------------------------
             Safe("pinned", () =>
@@ -239,7 +251,7 @@ namespace AceRevitMcp.Dashboard
             {
                 var cfg = File.Exists(AceConfig.FilePath) ? JsonNode.Parse(File.ReadAllText(AceConfig.FilePath)) as JsonObject : null;
                 var configured = cfg?["checkSet"]?.ToString();
-                return !string.IsNullOrWhiteSpace(configured) && File.Exists(configured) ? configured : Path.Combine(AceConfig.Directory, "checkset.json");
+                return !string.IsNullOrWhiteSpace(configured) ? configured : Path.Combine(AceConfig.Directory, "checkset.json");
             }
             catch { return Path.Combine(AceConfig.Directory, "checkset.json"); }
         }

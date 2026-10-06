@@ -82,8 +82,10 @@ namespace AceRevitMcp.Util
             // A task dialog is closed with Cancel (IDCANCEL = 2), which never confirms anything: if the operation needed
             // a yes, the run fails and rolls back, and Claude reports the question to the user. A plain message box
             // only informs, so it gets OK (IDOK = 1).
-            var cancelled = e is TaskDialogShowingEventArgs && e.OverrideResult(2);
-            var answered = cancelled || e.OverrideResult(1);
+            // A task dialog is never answered with OK, even when Cancel is not possible: then it is reported, not confirmed.
+            var isTask = e is TaskDialogShowingEventArgs;
+            var cancelled = isTask && e.OverrideResult(2);
+            var answered = cancelled || (!isTask && e.OverrideResult(1));
             Dialogs.Add(cancelled ? $"closed with Cancel (ask the user if it mattered): {text}" : answered ? $"acknowledged: {text}" : $"could not dismiss: {text}");
         }
     }

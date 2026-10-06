@@ -74,13 +74,15 @@ foreach (var level in ctx.Levels())
 
     var outline = sheet.Outline;
     var centre = new XYZ((outline.Min.U + outline.Max.U) / 2, (outline.Min.V + outline.Max.V) / 2, 0);
-    if (Viewport.CanAddViewToSheet(doc, sheet.Id, plan.Id))
+    var placed = Viewport.CanAddViewToSheet(doc, sheet.Id, plan.Id);
+    if (placed)
     {
         Viewport.Create(doc, sheet.Id, plan.Id, centre);
         placedViews.Add(plan.Id.Value);
     }
 
-    results.Add(new { level = level.Name, view = plan.Name, reusedExistingView = reused, viewId = plan.Id.Value, sheet = $"{sheet.SheetNumber} - {sheet.Name}", sheetId = sheet.Id.Value });
+    results.Add(new { level = level.Name, view = plan.Name, reusedExistingView = reused, viewId = plan.Id.Value, sheet = $"{sheet.SheetNumber} - {sheet.Name}", sheetId = sheet.Id.Value,
+                      viewPlaced = placed, problem = placed ? null : "the view could not be placed on the sheet (already on another sheet?): the sheet is empty" });
 }
 
 return new { created = results.Count, sheets = results, skipped };

@@ -38,7 +38,8 @@ if (scheme == "room")
         var i = 0;
         foreach (var d in Reading(group))
         {
-            var letter = i < 26 ? ((char)('A' + i)).ToString() : $"A{(char)('A' + i - 26)}";
+            string Letters(int n) { var s = ""; n++; while (n > 0) { n--; s = (char)('A' + n % 26) + s; n /= 26; } return s; }   // A..Z, AA, AB...
+            var letter = Letters(i);
             changes.Add((d, group.Count() == 1 ? group.Key : group.Key + letter));
             i++;
         }
@@ -54,6 +55,11 @@ else
     }
 }
 
+// Marks of doors that are not renumbered (other levels, in use by colleagues): a new mark must not repeat one of them.
+var renumbered = new HashSet<long>(changes.Select(c => c.Door.Id.Value));
+var taken = new HashSet<string>(ctx.Instances(BuiltInCategory.OST_Doors).Where(d => !renumbered.Contains(d.Id.Value))
+    .Select(d => d.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)?.AsString()).Where(m => !string.IsNullOrEmpty(m)), StringComparer.OrdinalIgnoreCase);
+var clashes = new List<string>();
 var changed = 0;
 var samples = new List<string>();
 foreach (var (door, mark) in changes)
@@ -61,9 +67,10 @@ foreach (var (door, mark) in changes)
     ctx.ThrowIfCancelled();
     var p = door.get_Parameter(BuiltInParameter.ALL_MODEL_MARK);
     if (p == null || p.IsReadOnly || p.AsString() == mark) continue;
+    if (taken.Contains(mark)) { if (clashes.Count < 30) clashes.Add($"{door.Id.Value}: '{mark}' is already used by a door that is not renumbered"); continue; }
     if (samples.Count < 20) samples.Add($"{door.Id.Value}: '{p.AsString()}' -> '{mark}'");
     p.Set(mark);
     changed++;
 }
 
-return new { scheme, doors = doors.Count, changed, unchanged = changes.Count - changed, withoutRoom = noRoom.Count, noRoom = noRoom.Take(30), samples };
+return new { scheme, doors = doors.Count, changed, markInUse = clashes, unchanged = changes.Count - changed, withoutRoom = noRoom.Count, noRoom = noRoom.Take(30), samples };

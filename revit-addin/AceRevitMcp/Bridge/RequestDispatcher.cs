@@ -21,8 +21,13 @@ namespace AceRevitMcp.Bridge
             public JsonObject Args;
             public TaskCompletionSource<JsonNode> Completion;
             public TaskCompletionSource<bool> Started;
-            public int Abandoned; // set when the caller timed out; never start it afterwards
+            public int Abandoned; // set when the caller timed out or cancelled; never start it afterwards
+            public string Id;     // the caller's request id, so a cancel reaches exactly this request
+            public readonly CancellationTokenSource Cancel = new CancellationTokenSource();
         }
+
+        private readonly ConcurrentDictionary<string, Pending> _byId = new ConcurrentDictionary<string, Pending>();
+        private static Pending _current;
 
         private readonly ConcurrentQueue<Pending> _queue = new ConcurrentQueue<Pending>();
         private readonly CommandRegistry _registry;
@@ -36,20 +41,26 @@ namespace AceRevitMcp.Bridge
 
         internal sealed record BusyInfo(string Command, DateTime Since);
 
-        private static CancellationTokenSource _running = new CancellationTokenSource();
+        /// <summary>
+        /// The cancel token of the request Revit is running now (scripts check it with ctx.Cancelled, the clash run per
+        /// element). Outside a bridge request (a ribbon button) it is never cancelled.
+        /// </summary>
+        public static CancellationToken RunningToken => _current?.Cancel.Token ?? CancellationToken.None;
 
-        /// <summary>Set when Claude cancels the running command: scripts check it with ctx.Cancelled, the clash run per element.</summary>
-        public static CancellationToken RunningToken => _running.Token;
-
-        /// <summary>Cancels the running command (where it checks) and drops every queued one (from any thread).</summary>
-        public string CancelAll()
+        /// <summary>
+        /// Cancels one request (from any thread): not started yet = dropped; running = its token is cancelled (it stops
+        /// where it checks; work already done is rolled back). Other requests, queued or later, are not touched.
+        /// </summary>
+        public string Cancel(string id)
         {
-            var busy = Busy;
-            try { _running.Cancel(); } catch { }
-            foreach (var p in _queue)
-                if (Interlocked.Exchange(ref p.Abandoned, 1) == 0)
-                    p.Completion.TrySetException(new OperationCanceledException("Cancelled by the user."));
-            return busy?.Command;
+            if (string.IsNullOrEmpty(id) || !_byId.TryGetValue(id, out var p)) return null;
+            try { p.Cancel.Cancel(); } catch { }
+            if (Interlocked.Exchange(ref p.Abandoned, 1) == 0)
+            {
+                p.Completion.TrySetException(new OperationCanceledException("Cancelled by the user before Revit started it. Nothing was changed."));
+                p.Started.TrySetResult(false);
+            }
+            return p.Command;
         }
 
         public RequestDispatcher(CommandRegistry registry)
@@ -60,16 +71,24 @@ namespace AceRevitMcp.Bridge
         /// <summary>Must be called from a valid Revit API context (e.g. OnStartup).</summary>
         public void Initialize() => _event = ExternalEvent.Create(this);
 
-        public async Task<JsonNode> EnqueueAsync(string command, JsonObject args, TimeSpan timeout)
+        public async Task<JsonNode> EnqueueAsync(string command, JsonObject args, TimeSpan timeout, string id = null)
         {
             var pending = new Pending
             {
+                Id = id,
                 Command = command,
                 Args = args ?? new JsonObject(),
                 Completion = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously),
                 Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
             };
+            if (!string.IsNullOrEmpty(id)) _byId[id] = pending;
             _queue.Enqueue(pending);
+            try { return await Wait(pending, command, timeout).ConfigureAwait(false); }
+            finally { if (!string.IsNullOrEmpty(id)) _byId.TryRemove(id, out _); }
+        }
+
+        private async Task<JsonNode> Wait(Pending pending, string command, TimeSpan timeout)
+        {
 
             var request = _event.Raise();
             if (request != ExternalEventRequest.Accepted && request != ExternalEventRequest.Pending)
@@ -115,7 +134,7 @@ namespace AceRevitMcp.Bridge
 
                 var started = DateTime.Now;
                 Busy = new BusyInfo(pending.Command, started);
-                Interlocked.Exchange(ref _running, new CancellationTokenSource());   // not disposed: other threads may still read it
+                _current = pending;
                 pending.Started.TrySetResult(true);
                 try
                 {
@@ -131,7 +150,7 @@ namespace AceRevitMcp.Bridge
                     Companion.ActivityHub.RecordCommand(pending.Command, pending.Args, null, ex, (long)(DateTime.Now - started).TotalMilliseconds);
                     pending.Completion.TrySetException(ex);
                 }
-                finally { Busy = null; }
+                finally { Busy = null; _current = null; }
             }
         }
 

@@ -34,8 +34,12 @@ var total = 0;
 foreach (var view in views)
 {
     ctx.ThrowIfCancelled();
-    var alreadyTagged = new HashSet<long>(
-        new FilteredElementCollector(doc, view.Id).OfClass(typeof(IndependentTag)).Cast<IndependentTag>()
+    // Rooms have their own tags (RoomTag); everything else uses IndependentTag.
+    var isRooms = bic == BuiltInCategory.OST_Rooms;
+    var alreadyTagged = isRooms
+        ? new HashSet<long>(new FilteredElementCollector(doc, view.Id).OfCategory(BuiltInCategory.OST_RoomTags).OfType<Autodesk.Revit.DB.Architecture.RoomTag>()
+            .Where(t => t.Room != null).Select(t => t.Room.Id.Value))
+        : new HashSet<long>(new FilteredElementCollector(doc, view.Id).OfClass(typeof(IndependentTag)).Cast<IndependentTag>()
             .SelectMany(t => t.GetTaggedLocalElementIds())
             .Select(id => id.Value));
 
@@ -56,7 +60,14 @@ foreach (var view in views)
 
         try
         {
-            IndependentTag.Create(doc, view.Id, new Reference(e), ctx.Bool("leader"), TagMode.TM_ADDBY_CATEGORY, TagOrientation.Horizontal, point);
+            if (isRooms)
+            {
+                if (!(view is ViewPlan)) throw new Exception("rooms are tagged in plan views");
+                if (e is Autodesk.Revit.DB.Architecture.Room room && room.Area > 0)
+                    doc.Create.NewRoomTag(new LinkElementId(room.Id), new UV(point.X, point.Y), view.Id);
+                else throw new Exception("room not placed");
+            }
+            else IndependentTag.Create(doc, view.Id, new Reference(e), ctx.Bool("leader"), TagMode.TM_ADDBY_CATEGORY, TagOrientation.Horizontal, point);
             created++;
         }
         catch (Exception ex)

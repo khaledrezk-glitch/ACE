@@ -1,5 +1,7 @@
 // Shared paths, configuration and the HTTP client for the Revit add-in bridge.
 import fs from "node:fs";
+import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -24,15 +26,28 @@ export class RevitError extends Error {}
 /** The MCP request being handled (its cancel signal), so every bridge call it makes stops when the client cancels. */
 export const currentCall = new AsyncLocalStorage();
 
-/** A signal that fires when either does (AbortSignal.any needs Node 20; the installer allows 18). */
-function either(a, b) {
-  if (!a) return b;
-  const both = new AbortController();
-  for (const s of [a, b]) {
-    if (s.aborted) both.abort(s.reason);
-    else s.addEventListener("abort", () => both.abort(s.reason), { once: true });
-  }
-  return both.signal;
+/**
+ * POST to the local bridge with node:http. Not fetch: Node's fetch gives up waiting for the answer after 300 s, and a
+ * clash run or a large workset move can take far longer. Our own timeout and the caller's cancel signal end the wait;
+ * every listener and timer is removed when the call ends.
+ */
+function post(url, headers, body, { timeoutMs, signal }) {
+  return new Promise((resolve, reject) => {
+    const fail = (name, message) => { const e = new Error(message); e.name = name; return e; };
+    if (signal?.aborted) return reject(fail("AbortError", "cancelled"));
+    const req = http.request(url, { method: "POST", headers: { ...headers, "Content-Length": Buffer.byteLength(body) } }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => { done(); resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString("utf8") }); });
+      res.on("error", (err) => { done(); reject(err); });
+    });
+    const timer = setTimeout(() => req.destroy(fail("TimeoutError", "timed out")), timeoutMs);
+    const onAbort = () => req.destroy(fail("AbortError", "cancelled"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    function done() { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); }
+    req.on("error", (err) => { done(); reject(Object.assign(err, { cause: { code: err.code } })); });
+    req.end(body);
+  });
 }
 
 /**
@@ -74,22 +89,23 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
   }
   const base = bridgeUrl(cfg);
   let response;
+  const clientSignal = signal ?? currentCall.getStore()?.signal;
+  const requestId = randomUUID();   // a cancel reaches exactly this request in Revit
   try {
-    response = await fetch(`${base}/command`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Ace-Token": cfg.token },
-      body: JSON.stringify({ command, args, timeoutSeconds }),
-      // The add-in answers within the timeout (it reports its own timeouts); this is only the backstop. The client's
-      // cancel stops the wait here; a request Revit has not started yet is then skipped by the add-in.
-      signal: either(signal ?? currentCall.getStore()?.signal, AbortSignal.timeout((timeoutSeconds + 15) * 1000)),
-    });
+    // The add-in answers within the timeout (it reports its own timeouts); this is only the backstop. The client's
+    // cancel stops the wait here; a request Revit has not started yet is then skipped by the add-in.
+    response = await post(`${base}/command`, { "Content-Type": "application/json", "X-Ace-Token": cfg.token },
+      JSON.stringify({ command, args, timeoutSeconds, requestId }), { timeoutMs: (timeoutSeconds + 15) * 1000, signal: clientSignal });
   } catch (err) {
     const reason = err?.cause?.code || err?.name || err?.message;
-    const cancelledByClient = (signal ?? currentCall.getStore()?.signal)?.aborted;
+    const cancelledByClient = clientSignal?.aborted;
     if (cancelledByClient) {
       // Tell Revit too: the running script or clash run stops where it checks, queued requests are dropped.
-      fetch(`${base}/cancel`, { method: "POST", headers: { "X-Ace-Token": cfg.token }, signal: AbortSignal.timeout(5000) }).catch(() => {});
-      throw new RevitError(`'${command}' was cancelled. Revit stops it where it can; anything not finished is rolled back.`);
+      post(`${base}/cancel`, { "Content-Type": "application/json", "X-Ace-Token": cfg.token }, JSON.stringify({ id: requestId }), { timeoutMs: 5000 }).catch(() => {});
+      throw new RevitError(
+        `'${command}' was cancelled. If Revit had not started it, nothing happened; if it was running, it stops where it ` +
+          "can and rolls back. If it had already finished, it may have been applied: check with a read-only query.",
+      );
     }
     if (err?.name === "TimeoutError" || err?.name === "AbortError") {
       throw new RevitError(
@@ -104,7 +120,7 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
   }
   let payload;
   try {
-    payload = await response.json();
+    payload = JSON.parse(response.text);
   } catch {
     throw new RevitError(`Revit bridge returned HTTP ${response.status} with a non-JSON body.`);
   }
@@ -137,38 +153,46 @@ export function fit(value, max = MAX_TEXT) {
   let s = JSON.stringify(value ?? null);
   if (s.length <= max) return s;
   const box = { root: JSON.parse(s) };
-  const dropped = new Map(); // shortened array -> how many items it has lost so far
-  for (let round = 0; round < 40 && s.length > max; round++) {
-    const longest = longestArray(box);
-    if (!longest || longest.items.length <= 3) break;
-    const { owner, key, items } = longest;
-    const keep = Math.max(3, Math.floor(items.length / 2));
-    const shortened = items.slice(0, keep);
-    const lost = items.length - keep + (dropped.get(items) || 0);
-    dropped.set(shortened, lost);
-    owner[key] = shortened;
-    const note = `${lost} more not shown - ask for less (limit, filter) to see them`;
-    if (Array.isArray(owner)) shortened.push(note);
-    else owner[`${key}Truncated`] = note;
+  const notes = new Set();          // the "N more not shown" notes we add (never counted as data)
+  const lost = new Map();           // shortened array -> items it has lost so far
+  for (let round = 0; round < 60 && s.length > max; round++) {
+    const lists = arrays(box, notes);
+    if (lists.length === 0) break;
+    // Shorten the lists that carry the most data of their own (not counting lists inside them), all of the largest
+    // ones at once, so e.g. 20 warning types with 3000 ids each lose ids, not warning types.
+    const top = Math.max(...lists.map((l) => l.own));
+    for (const { owner, key, items } of lists.filter((l) => l.own >= top / 2)) {
+      const data = items.filter((x) => !notes.has(x));
+      const keep = Math.max(3, Math.floor(data.length / 2));
+      const shortened = data.slice(0, keep);
+      const gone = data.length - keep + (lost.get(items) || 0);
+      lost.set(shortened, gone);
+      const note = `${gone} more not shown - ask for less (limit, filter) to see them`;
+      if (Array.isArray(owner) || owner === box) { shortened.push(note); notes.add(note); }
+      else owner[`${key}Truncated`] = note;
+      owner[key] = shortened;
+    }
     s = JSON.stringify(box.root);
   }
-  return s.length <= max ? s : s.slice(0, max) + ` ... [cut: ${s.length - max} more characters - ask for less data]`;
+  // Still too long (one huge text, not lists): send it as a value inside valid JSON rather than cut JSON.
+  return s.length <= max ? s : JSON.stringify({ truncated: `the reply was ${s.length} characters; ask for less data`, start: s.slice(0, max - 200) });
 }
 
-/** The array with the longest JSON anywhere in the value, with the object or array that holds it. */
-function longestArray(box) {
-  let best = null;
+/** Every array with more than 3 data items, with its own size (its JSON minus the arrays inside it). */
+function arrays(box, notes) {
+  const found = [];
   const visit = (owner, key) => {
     const v = owner[key];
-    if (!v || typeof v !== "object") return;
-    if (Array.isArray(v)) {
-      const size = JSON.stringify(v).length;
-      if (!best || size > best.size) best = { owner, key, items: v, size };
-    }
-    for (const k of Object.keys(v)) visit(v, k);
+    if (!v || typeof v !== "object") return 0;
+    let nested = 0;
+    for (const k of Object.keys(v)) nested += visit(v, k);
+    if (!Array.isArray(v)) return nested;
+    const size = JSON.stringify(v).length;
+    if (v.filter((x) => !notes.has(x)).length > 3) found.push({ owner, key, items: v, own: size - nested });
+    return size;
   };
   visit(box, "root");
-  return best;
+  return found;
 }
 
 export function failure(err) {

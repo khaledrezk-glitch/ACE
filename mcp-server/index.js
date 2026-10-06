@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { BUILTIN_SCRIPTS, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
+import { DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
 import { fingerprint, gated, journal, outcomeOf, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
@@ -404,7 +404,7 @@ tool("set_parameters", {
     () => callRevit("set_parameters", { changes, dry_run }, 300), succeeded);
   if (result?.alreadyApplied) return text(result);
   const ok = succeeded(result);
-  if (ok && !dry_run) briefCache.clear();
+  if (!dry_run && result?.applied > 0) briefCache.clear();   // also when some values failed: the model changed
   journal({
     title: `${dry_run ? "Preview" : "Change"}: set parameters`,
     explanation,
@@ -551,23 +551,24 @@ tool("assign_worksets", {
     timeout_seconds: z.number().int().min(10).max(3600).optional().describe("Default 900 (large models)"),
   },
   annotations: writes,
-}, async (a) => {
-  const src = a.rules ? { file: "given in the request", rules: a.rules } : worksetRules(a.rules_file);
-  // Always the built-in script: a user or team script with the same name must not replace a native tool's logic.
-  const script = { file: path.join(BUILTIN_SCRIPTS, "assign_worksets.cs") };
-  const inputs = {
+}, async ({ check_only, dry_run, explanation, timeout_seconds, rules_file, ...a }) => {
+  // The rules travel with the request (from the BEP file unless given), so the preview and the apply use the same rules.
+  const src = a.rules ? { file: "given in the request", rules: a.rules } : worksetRules(rules_file);
+  const req = {
     rules: src.rules, default_workset: a.default_workset ?? src.default_workset ?? "",
-    only_workset1: !!a.only_workset1, create_missing: !!a.create_missing, check_only: !!a.check_only,
+    only_workset1: !!a.only_workset1, create_missing: !!a.create_missing,
+    rules_name: src.name || "rules", rules_source: src.file,
   };
-  const result = await runCode({
-    // check_only is read-only: always rolled back, no Apply card.
-    code: fs.readFileSync(script.file, "utf8"), mode: a.check_only ? "readonly" : "auto", inputs,
-    dry_run: a.check_only ? undefined : a.dry_run, explanation: a.explanation,
-    transaction_name: `Claude: assign worksets per the BEP${a.only_workset1 ? " (Workset1 only)" : ""}`,
-    timeout_seconds: a.timeout_seconds ?? 900,
-  });
-  const note = { type: "text", text: `Workset rules: ${src.name || "rules"} (${src.file}), ${src.rules?.length ?? 0} rules.` };
-  return { ...result, content: [...(result.content || []), note] };
+  const seconds = timeout_seconds ?? 900;
+  if (check_only) return text(await callRevit("assign_worksets", { ...req, check_only: true }, seconds));
+  const result = await gated(fingerprint("worksets", req),
+    { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
+    () => callRevit("assign_worksets", { ...req, dry_run: !!dry_run }, seconds), (r) => r?.success === true);
+  if (result?.alreadyApplied) return text(result);
+  if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
+  if (!dry_run && result?.success) briefCache.clear();
+  journal({ title: `${dry_run ? "Preview" : "Change"}: assign worksets per the BEP`, explanation, outcome: outcomeOf(result, dry_run), details: result?.byWorkset });
+  return text(result);
 });
 
 tool("presentation_standard", {

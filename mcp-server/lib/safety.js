@@ -62,20 +62,21 @@ const RISKY = [
   [/\bRegistry\b/, "changes Windows settings"],
   [/\bEnvironment\.Exit\b|\bApplication\.Exit\b/, "closes programs"],
   [/\.(SaveAs|Save|SaveAndClose|SaveCloudModel|Close)\s*\(/, "saves or closes a model"],
-  [/\b(OpenAndActivateDocument|OpenDocumentFile|Unload|UnloadLocally)\s*\(/, "opens other models or unloads links"],
+  [/\b(OpenAndActivateDocument|OpenDocumentFile)\s*\(|\.(Unload|UnloadLocally)\s*\(/, "opens other models or unloads links"],
   [/\bFile\.(Read\w*|Open\w*)\b|\bStreamReader\b/, "reads files on disk"],
-  [/\b(Activator|InvokeMember|AssemblyLoadContext|dynamic)\b|\bType\.GetType\b|\.GetMethod\s*\(/, "uses reflection to reach code beyond the Revit API"],
+  [/\b(Activator|InvokeMember|AssemblyLoadContext)\b|\bType\.GetType\b|\.GetMethod\s*\(/, "uses reflection to reach code beyond the Revit API"],
   [/\busing\s+\w+\s*=\s*(global::)?System\.(IO|Net|Diagnostics|Reflection|Runtime)\b/, "hides a system class behind an alias"],
-  [/\\u[0-9a-fA-F]{4}/, "uses escaped characters, which can hide what the code calls"],
   [/\b(SynchronizeWithCentral|RelinquishOwnership|ReloadLatest)\b/, "syncs with the central model"],
   [/\bPostCommand\b/, "triggers Revit commands"],
   [/\bAssembly\.Load|\bDllImport\b|\bMarshal\./, "loads external code"],
 ];
 
 export function screenCode(code, allowRisky) {
-  // Comments and spaces around dots must not hide a call ("File /**/ . Delete").
+  // A quick first check; the add-in's compiler screen (resolved symbols, also dynamic and escaped names) is the real one.
+  // Checked as written AND without comments and spaces around dots ("File /**/ . Delete"): stripping alone could hide
+  // a call behind a string such as "http://..." that looks like a comment.
   const plain = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ").replace(/\s*\.\s*/g, ".");
-  const found = RISKY.filter(([re]) => re.test(plain)).map(([, why]) => why);
+  const found = RISKY.filter(([re]) => re.test(code) || re.test(plain)).map(([, why]) => why);
   if (found.length && !allowRisky) {
     throw new RevitError(
       `Blocked for safety: this code ${[...new Set(found)].join(", ")}. That goes beyond editing the model. ` +

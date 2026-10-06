@@ -45,28 +45,27 @@ namespace AceRevitMcp.Dashboard
             void Add(string kind, ElementType t) { if (!result.TryGetValue(kind, out var l)) result[kind] = l = new List<ElementType>(); l.Add(t); }
             foreach (var t in new FilteredElementCollector(doc).OfClass(typeof(TextNoteType)).Cast<ElementType>()) Add("text", t);
             foreach (var t in new FilteredElementCollector(doc).OfClass(typeof(DimensionType)).Cast<DimensionType>())
-                if (RevitJson.Safe(() => t.StyleType) is var style) Add("dim:" + style, t);
+                if (!string.IsNullOrWhiteSpace(t.Name) && RevitJson.Safe(() => t.StyleType) is var style) Add("dim:" + style, t);   // not Revit's unnamed system types
             return result;
         }
 
         public static JsonObject Run(Document doc, PresentationStandard std, Options opt)
         {
-            var views = AnnotationAudit.Views(doc, std);
-            if (opt.ViewNames != null && opt.ViewNames.Count > 0)
-                views = views.Values.Where(v => opt.ViewNames.Contains(v.Name)).ToDictionary(v => v.Id.Value);
+            var views = AnnotationAudit.Views(doc, std, opt.ViewNames);
 
             // Everything to look at, with the text height its view's scale asks for.
             var items = new List<Item>();
             IEnumerable<Element> annotations = new FilteredElementCollector(doc).OfClass(typeof(TextNote)).ToElements()
-                .Concat(new FilteredElementCollector(doc).OfClass(typeof(Dimension)).ToElements())
-                .Concat(new FilteredElementCollector(doc).OfClass(typeof(SpotDimension)).ToElements());
+                .Concat(new FilteredElementCollector(doc).OfClass(typeof(Dimension)).ToElements());   // includes spot dimensions (derived)
             if (std.UnifyTagTypes) annotations = annotations.Concat(new FilteredElementCollector(doc).OfClass(typeof(IndependentTag)).ToElements());
             foreach (var e in annotations)
             {
                 if (!views.TryGetValue(e.OwnerViewId.Value, out var view)) continue;
                 var kind = KindOf(e);
                 if (kind == null) continue;
-                items.Add(new Item { Element = e, Kind = kind, TargetMm = kind.StartsWith("tag:") ? null : std.TextMm(view.Scale) });
+                var target = kind.StartsWith("tag:") ? null : std.TextMm(view.Scale);
+                if (target == null && !kind.StartsWith("tag:")) continue;   // no size row covers this scale: leave it
+                items.Add(new Item { Element = e, Kind = kind, TargetMm = target });
             }
 
             // How often each type is used (in the whole model), to pick the type people already use most.
@@ -76,6 +75,7 @@ namespace AceRevitMcp.Dashboard
             var created = new List<string>();
             var notes = new List<string>();
             var canonical = new Dictionary<string, ElementType>();
+            var toMake = new HashSet<string>();   // plan only: kind|size whose type would be made
 
             ElementType Canonical(string kind, double? mm)
             {
@@ -106,7 +106,7 @@ namespace AceRevitMcp.Dashboard
                     var from = candidates.OrderByDescending(Used).ThenBy(t => t.Name).FirstOrDefault();
                     if (from == null) return canonical[key] = null;
                     var name = Unique(candidates, kind == "text" ? $"ACE Text {band}mm{(std.Font != null ? " " + std.Font : "")}" : $"{from.Name} {band}mm");
-                    if (opt.PlanOnly) { created.Add($"{name} (would be made from '{from.Name}')"); return canonical[key] = null; }
+                    if (opt.PlanOnly) { created.Add($"{name} (would be made from '{from.Name}')"); toMake.Add(key); return canonical[key] = null; }
                     pick = from.Duplicate(name);
                     pick.get_Parameter(BuiltInParameter.TEXT_SIZE)?.Set(Lengths.Ft(mm.Value));
                     if (std.Font != null) { var f = pick.get_Parameter(BuiltInParameter.TEXT_FONT); if (f != null && !f.IsReadOnly) f.Set(std.Font); }
@@ -126,7 +126,13 @@ namespace AceRevitMcp.Dashboard
                 var current = item.Element.GetTypeId();
                 var group = item.Kind.StartsWith("tag:") ? "tags" : item.Kind == "text" ? "text" : "dimensions";
                 if (item.TargetMm != null && Math.Abs(AnnotationAudit.SizeMm(doc.GetElement(current)) - item.TargetMm.Value) > 0.05) Count(off, group);
-                if (target == null || target.Id == current) continue;
+                if (target == null)
+                {
+                    // Plan only: the type would be made, so every item of that kind and size would change.
+                    if (opt.PlanOnly && toMake.Contains(item.Kind + "|" + (item.TargetMm == null ? "" : PresentationStandard.Band(item.TargetMm.Value)))) Count(changed, group);
+                    continue;
+                }
+                if (target.Id == current) continue;
                 if (opt.PlanOnly) { Count(changed, group); continue; }
                 if (doc.IsWorkshared && WorksharingUtils.GetCheckoutStatus(doc, item.Element.Id) == CheckoutStatus.OwnedByOtherUser)
                 { if (skipped.Count < 50) skipped.Add($"{item.Element.Id.Value} (in use by a colleague)"); continue; }

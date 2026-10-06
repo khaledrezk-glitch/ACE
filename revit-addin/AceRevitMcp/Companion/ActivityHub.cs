@@ -288,6 +288,9 @@ namespace AceRevitMcp.Companion
             };
         }
 
+        /// <summary>Whether a preview of exactly this change is waiting for a decision.</summary>
+        public static bool HasPreview(string hash) => Waiting.Any(p => p.Hash == hash);
+
         public static PendingChange DecisionFor(string hash)
         {
             var p = Pending.FirstOrDefault(x => x.Hash == hash && x.State != PendingState.Waiting && x.DecidedAt.HasValue &&

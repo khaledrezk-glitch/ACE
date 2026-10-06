@@ -85,7 +85,7 @@ notifications (section 8). Each suggestion has a one-click action.
 | Clash engine | sources, clash rules | clashes, issues, responsibility, cause, status | Clash Browser, clash view, coordination report, dashboard |
 | Clash view (DirectContext3D) | a clash, colours | focused 3D view | Clash Browser, Claude |
 | Coordination report | issues | HTML with pictures, CSV | meetings |
-| Worksets per BEP (script) | workset rules | moves, wrong-workset report | model check (Workset1 only today) |
+| Worksets per BEP (native engine) | workset rules file | moves, wrong-workset report | model check (elements on the wrong workset per the BEP), approvals |
 | Presentation standard (window, Claude) | office check set, section `presentation` | text height by scale, one type per kind and size, tag types unified | model check (Annotation), status store, approvals |
 | Test fit, structure from ARC | brief, rules in the script | model changes (previewed) | preview pictures, approvals |
 | Work modes | mode definitions | ribbon focus / dim / hide, prompts, Claude tools | Companion, Claude |
@@ -104,7 +104,7 @@ Each item is a recommendation. None is applied yet.
 | D4 | Three ways to make an issue picture (preview pictures, coordination report, clash focus) | One **issue view engine**: section box around elements or points, highlight by role, export a picture. Also the base for **BCF** export (Navisworks, ACC) | Consistent pictures, BCF | M · primitives shared (`Util/ViewTools`, 1.7.0) |
 | D5 | `get_model_overview`, `get_model_brief` and the dashboard counts | The **brief** is the model knowledge; the overview becomes its quick level | One call for Claude | S · **done (1.7.0)** |
 | D6 | `clash_view`, `reset_clash_view`, `focus_clash` | One `clash_view` with overview / focus / reset | Simpler for Claude | S · **done (1.7.0)** |
-| D7 | Workset rules run in a script (Claude only); the model check only knows "Workset1" | A native **rules engine** in the add-in. The model check reports "elements on the wrong workset per the BEP"; the workset tool fixes them | Monitored all the time, not only when asked | M |
+| D7 | Workset rules run in a script (Claude only); the model check only knows "Workset1" | A native **rules engine** in the add-in. The model check reports "elements on the wrong workset per the BEP"; the workset tool fixes them | Monitored all the time, not only when asked | M · **done (1.8.1)**: one engine (`Rules/WorksetRules`) for the model check and `assign_worksets` |
 | D8 | The dashboard, Companion Home and Claude each read results their own way | A **status store**: each engine publishes its latest result (health, clashes, changes, requirements), and every surface reads it | Always the same numbers | S · **done (1.7.0)** |
 | D9 | Ribbon: *Model Health* (Audit) and *Dashboard* (Insights) are the same tool | One button | Clearer ribbon | S · **done (1.7.0)** |
 | D10 | *Parameter Check* (planned), "Key parameters filled" (model check), LOIN | One **information requirements** check driven by the LOIN | Checks what the project actually requires | M |

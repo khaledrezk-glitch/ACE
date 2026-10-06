@@ -35,6 +35,7 @@ namespace AceRevitMcp.Compiler
             ("System.Diagnostics.Process", "starts other programs"), ("System.Diagnostics.ProcessStartInfo", "starts other programs"),
             ("System.Activator", "uses reflection to reach code beyond the Revit API"),
             ("System.AppDomain", "loads external code"),
+            ("System.IO.MemoryMappedFiles.MemoryMappedFile", "reads or changes files on disk"),
         };
 
         private static readonly (string Type, string Member, string Why)[] Members =
@@ -60,6 +61,17 @@ namespace AceRevitMcp.Compiler
             ("Autodesk.Revit.UI.UIApplication", "OpenAndActivateDocument", "opens other models or unloads links"),
             ("Autodesk.Revit.UI.UIApplication", "PostCommand", "triggers Revit commands"),
             ("Autodesk.Revit.UI.UIDocument", "SaveAndClose", "saves or closes a model"),
+            ("Autodesk.Revit.UI.UIDocument", "SaveAs", "saves or closes a model"),
+            ("Autodesk.Revit.ApplicationServices.Application", "CopyModel", "creates, changes or deletes files on disk"),
+            ("Autodesk.Revit.DB.TransmissionData", "WriteTransmissionData", "creates, changes or deletes files on disk"),
+            ("Autodesk.Revit.DB.PrintManager", "SubmitPrint", "prints or writes files"),
+            ("Autodesk.Revit.DB.DefinitionGroups", "Create", "changes the shared parameter file"),
+            ("Autodesk.Revit.DB.Definitions", "Create", "changes the shared parameter file"),
+            ("System.IO.Path", "GetTempFileName", "creates, changes or deletes files on disk"),
+            ("System.Xml.XmlDocument", "Save", "creates, changes or deletes files on disk"),
+            ("System.Xml.Linq.XDocument", "Save", "creates, changes or deletes files on disk"),
+            ("System.Xml.Linq.XElement", "Save", "creates, changes or deletes files on disk"),
+            ("System.Xml.XmlWriter", "Create", "creates, changes or deletes files on disk"),
         };
 
         public static string[] Find(CSharpCompilation compilation, SyntaxTree tree)

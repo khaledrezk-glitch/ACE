@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.8.1 (6 Oct 2026)
+- **Worksets per the BEP, native** (concept D7): the rules engine moved from a script into the add-in. The model check
+  now reports elements on the wrong workset whenever there is a rules file; `assign_worksets` uses the same engine,
+  previewed and applied like every change (Apply card, one undo step).
+- **Review fixes** (`/code-review` of the 1.8.0 changes):
+  - Cancel: each request has its own id and token; a cancel in Claude stops only that request, never a clash run you
+    start from the ribbon or your own actions queued behind it.
+  - Long calls no longer fail after 5 minutes (the bridge call no longer uses Node's fetch).
+  - Long replies always stay valid JSON; lists inside lists are shortened first, with a note.
+  - Presentation standard: spot dimensions no longer counted twice; scales without a size row are left alone instead of
+    failing; a check now counts the annotations that need a new type; an apply uses exactly the standard that was
+    previewed; the window no longer saves on Check or Preview, keeps choices for kinds the model doesn't have, accepts
+    "1:50", and its previews leave no Apply card; named views are used even when not on sheets; dependent views count.
+  - Scripts: `tag_untagged` tags rooms; `delete_duplicate_instances` never deletes a copy that hosts something or is in a
+    group; `renumber_doors` never repeats a mark of a door it does not renumber and letters go A..Z, AA...
+  - Safety: task dialogs are never answered with OK; the quick text screen checks the code as written too and no longer
+    flags "m²" or the word "dynamic"; the compiler screen also catches XML files, temp files, copying models, writing
+    transmission data, printing and the shared parameter file.
+  - Snapshots record a model version only when it is saved; find_elements' `truncated` is right when paging; the
+    team check set is written to the share even before it exists; area warnings get the area hint.
+
 ## 1.8.0 (2 Oct 2026)
 - **Merged duplicates** (concept D1, D3, D5, D6, D8, D9):
   - The *Clash Results* window is merged into the **Clash Browser**; `run_clash_test` with `show` opens the browser.
