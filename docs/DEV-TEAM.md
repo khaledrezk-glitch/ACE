@@ -31,26 +31,32 @@ are what the usage scout reads.
 | Group | Agent | Does | Model |
 |---|---|---|---|
 | Ideas | `ace-ideas-owner` | Candidates from the owner's ideas, the concept and `docs/BACKLOG.md` | Sonnet, read-only |
-| Ideas | `ace-ideas-usage` | Candidates from real usage: the radar, learning and issue reports, lessons, failing bench cases | Sonnet, read-only |
-| Ideas | `ace-ideas-market` | Candidates from comparable tools (Navisworks, ACC, Model Checker, pyRevit, other Revit MCP servers) | Sonnet, read-only + 5 web searches |
+| Ideas | `ace-ideas-usage` | Candidates from real usage: the radar, learning and issue reports, lessons, failing bench cases (only when `reports` is given) | Sonnet, read-only |
+| Ideas | `ace-ideas-market` | Candidates from comparable tools (Navisworks, ACC, Model Checker, pyRevit, other Revit MCP servers) (only with `market: true`) | Sonnet, read-only + 5 web searches |
 | Build | `ace-planner` | Turns approved items into a plan split by file ownership, with checks and a bench case | Session model, read-only |
 | Build | `ace-builder-addin` | Implements the add-in part, runs the add-in checks | Session model |
 | Build | `ace-builder-server` | Implements the server, scripts and docs part, runs the server checks | Session model |
 | Review | `ace-review-bugs` | Real bugs with a failure scenario | Sonnet, report only |
 | Review | `ace-review-efficiency` | Wasted work, tokens, extra interactions, duplication | Sonnet, report only |
 | Review | `ace-review-safety` | The CLAUDE.md invariants, workshared models, brand rules; runs the touched checks | Sonnet, report only |
-| Monitor | `ace-monitor` | Triage into a short list; the final report (done, cost, what is left, next action) | Sonnet, read-only |
+| Monitor | `ace-monitor` | The live-check gate; triage into a short list; the final report (done, cost, what is left, next action) | Sonnet, read-only |
 
 ## 3. One cycle, one decision
 
-1. **Propose** (4 agents, read-only):
+1. **Propose** (2 to 4 agents, read-only):
    `Workflow({ name: "ace-dev-cycle", args: { mode: "propose", max: 3 } })`, optionally with `focus` (e.g. "fewer
-   steps") or `reports` (a folder of shared learning reports). Returns a short list of at most `max` items, what was
-   dropped and the backlog updates.
+   steps"). The owner-and-concept scout always runs; the usage scout runs only with `reports` (a folder of shared
+   learning reports, since the call log stays on the PCs), and the market scout only with `market: true`. Returns a
+   short list of at most `max` items, what was dropped and the backlog updates.
 2. **The owner approves** the short list (or edits it), in one message.
-3. **Build** (up to 9 agents): `Workflow({ name: "ace-dev-cycle", args: { mode: "build", items: [ ... ] } })`. The
-   planner splits the work; the two builders work at the same time on disjoint files; three reviewers check the result;
-   one fix round handles high-severity findings only; the monitor writes the report. Nothing is committed by the agents.
+3. **Build** (up to 11 agents): `Workflow({ name: "ace-dev-cycle", args: { mode: "build", items: [ ... ] } })`.
+   - **Gate first:** if more than `maxLiveCheck` (default 3) backlog items are "live check", the cycle builds nothing
+     and returns the owner's live tests for them instead. Verification in Revit is the bottleneck, not ideas.
+     `force: true` overrides it.
+   - The planner splits the work and writes the **integration contract** (command names, payloads); both builders get
+     it and work at the same time on disjoint files.
+   - Three reviewers check the result; one fix round handles high-severity findings only; the offline checks run
+     again after the fixes; the monitor writes the report. Nothing is committed by the agents.
 4. **The maintainer session** reads the report, runs the checks once more, commits, bumps the version, builds the
    package. The owner installs it and tests in Revit.
 
@@ -58,6 +64,8 @@ are what the usage scout reads.
 
 - **No standing processes.** No loops, no schedules, no polling. A cycle runs only when started.
 - **Hard limits:** at most 5 items per cycle (3 by default), one fix round, one triage, one report.
+- **Verify before building more:** the gate stops new building while too many items wait for a live check.
+- **Scouts only with input:** no usage scout without shared reports, no market scout unless asked.
 - **The right model for the job:** scouts, reviewers and the monitor use Sonnet; only the planner and the builders use
   the session model.
 - **Short inputs:** scouts read the backlog, the concept and the radar, not the whole code base; reviewers read the

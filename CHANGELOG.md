@@ -5,7 +5,10 @@
   candidates: tasks with many calls, repeated previews, failures, expensive tasks, large replies, code written again
   and again. No tokens, no background process. The call log now records reply sizes.
 - **Development team:** ten agents (`.claude/agents/`) and the saved workflow `ace-dev-cycle` (propose, one approval,
-  build); `docs/DEV-TEAM.md` and the ranked `docs/BACKLOG.md`.
+  build); `docs/DEV-TEAM.md` and the ranked `docs/BACKLOG.md`. A build cycle first checks how many items wait for a
+  live check in Revit and, above 3, returns the owner's live tests instead of building; both builders get the planner's
+  integration contract; the offline checks run again after the fix round; the usage and market scouts run only with
+  shared reports or when asked.
 - Claude is told to work with the fewest interactions (one question up front, one script and one approval per job).
 - **Navisworks clash reports:** a Clash Detective report (XML, or the tabular HTML) is imported into the clash engine
   (Clash Browser **Import Navisworks report**, or `run_clash_test` with `import_report`). Each Navisworks test becomes
