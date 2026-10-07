@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.3 (7 Oct 2026)
 - **Development radar** (in the learning report): groups the local call log into tasks and flags development
   candidates: tasks with many calls, repeated previews, failures, expensive tasks, large replies, code written again
   and again. No tokens, no background process. The call log now records reply sizes.
