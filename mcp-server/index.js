@@ -162,10 +162,11 @@ tool("snapshots", {
 
 tool("run_clash_test", {
   title: "Clash detection",
-  description: "Find clashes across this model, its links and the other open models (the model is not changed). Standard tests \"STR vs MEP\", \"ARC vs STR\", \"MEP vs ARC\", \"MEP vs MEP\", \"all\", or custom a_categories / b_categories (e.g. [\"OST_PipeCurves\"]). Returns clashes with depth, level, RESPONSIBLE discipline (who gives way) and cause (whose change made it), grouped into issues (topIssues with issueKey), and status kept between runs (new, active, resolved, approved). Saves an HTML report; show: true opens the Clash Browser. stored: true returns the stored results without running (fast). sources: true lists the models that take part (this model, links, other open models, each with its discipline), the standard tests and the responsibility rules. Details: revit_guide workflows.",
+  description: "Find clashes across this model, its links and the other open models (the model is not changed). Standard tests \"STR vs MEP\", \"ARC vs STR\", \"MEP vs ARC\", \"MEP vs MEP\", \"all\", or custom a_categories / b_categories (e.g. [\"OST_PipeCurves\"]). Returns clashes with depth, level, RESPONSIBLE discipline (who gives way) and cause (whose change made it), grouped into issues (topIssues with issueKey), and status kept between runs (new, active, resolved, approved). Saves an HTML report; show: true opens the Clash Browser. stored: true returns the stored results without running (fast). sources: true lists the models that take part (this model, links, other open models, each with its discipline), the standard tests and the responsibility rules. import_report: a Navisworks Clash Detective report (XML best, or tabular HTML) becomes ACE clashes (tests \"NW: <name>\"), matched to the elements of the loaded models, with the same issues, responsibility, browser, view, approvals and report; re-import a newer report to track it. Details: revit_guide workflows.",
   inputSchema: {
     stored: z.boolean().optional().describe("Only the stored results of earlier runs: counts and top issues with their keys"),
     sources: z.boolean().optional().describe("Only list the models, tests and rules"),
+    import_report: z.string().optional().describe("Path of a Navisworks clash report (.xml or .html) to import instead of running a test; test then picks one Navisworks test"),
     test: z.string().optional().describe("Standard test name, \"all\" (default), or a name for a custom test"),
     tolerance_mm: z.number().optional().describe("Ignore overlaps smaller than this (default per test, 10-25 mm)"),
     clearance_mm: z.number().optional().describe("Also report elements closer than this (soft clashes)"),
@@ -178,9 +179,10 @@ tool("run_clash_test", {
     show: z.boolean().optional(),
   },
   annotations: benign,
-}, async ({ stored, sources, ...a }) => {
+}, async ({ stored, sources, import_report, ...a }) => {
   if (sources) return text(await callRevit("coordination_sources", {}, 60));
   if (stored) return text(await callRevit("clash_results", {}, 60));
+  if (import_report) return text(await callRevit("import_clash_report", { path: import_report, test: a.test, show: a.show }, 600));
   return text(await callRevit("run_clash_test", a, 1800));
 });
 

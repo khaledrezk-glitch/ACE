@@ -198,12 +198,18 @@ namespace AceRevitMcp.Coordination
             var sources = Clashes.Sources(app, doc);
             Source Find(string name) => sources.FirstOrDefault(s => s.Name == name);
             var sa = Find(clash.SourceA); var sb = Find(clash.SourceB);
-            if (sa == null || sb == null) throw new CommandException($"The model {(sa == null ? clash.SourceA : clash.SourceB)} is not loaded or open.");
-            var ea = sa.Doc.GetElement(clash.UA); var eb = sb.Doc.GetElement(clash.UB);
-            if (ea == null || eb == null) throw new CommandException("One of the two elements no longer exists (the clash may be resolved). Run the clash test again.");
+            // An imported Navisworks clash may have one side outside the loaded models: show the side that is here.
+            var imported = ClashImport.IsStandIn(clash.UA) || ClashImport.IsStandIn(clash.UB);
+            if (!imported && (sa == null || sb == null)) throw new CommandException($"The model {(sa == null ? clash.SourceA : clash.SourceB)} is not loaded or open.");
+            var ea = ClashImport.IsStandIn(clash.UA) ? null : sa?.Doc.GetElement(clash.UA);
+            var eb = ClashImport.IsStandIn(clash.UB) ? null : sb?.Doc.GetElement(clash.UB);
+            if (imported ? ea == null && eb == null : ea == null || eb == null)
+                throw new CommandException(imported ? $"Neither element of this Navisworks clash is in a loaded model ({clash.SourceA}, {clash.SourceB}). Link or open them, then import the report again."
+                                                    : "One of the two elements no longer exists (the clash may be resolved). Run the clash test again.");
 
             // Both elements in the active model's coordinates, and their exact intersection.
-            var solidsA = Clashes.Solids(ea, sa.ToHost); var solidsB = Clashes.Solids(eb, sb.ToHost);
+            var solidsA = ea != null ? Clashes.Solids(ea, sa.ToHost) : new List<Solid>();
+            var solidsB = eb != null ? Clashes.Solids(eb, sb.ToHost) : new List<Solid>();
             var hits = new List<Solid>();
             foreach (var x in solidsA)
                 foreach (var y in solidsB)
@@ -223,7 +229,7 @@ namespace AceRevitMcp.Coordination
 
             var session = Session(doc.Title);
             var primaryName = PrimaryName(doc);
-            var withModel = session.With ?? (Same(sa.Name, primaryName) ? sb.Name : sa.Name);
+            var withModel = session.With ?? (Same(clash.SourceA, primaryName) ? clash.SourceB : clash.SourceA);
             View3D v;
             using (var t = new Transaction(doc, "ACE clash view"))
             {
@@ -236,7 +242,7 @@ namespace AceRevitMcp.Coordination
 
             // Highlight: element colours by role (primary green, compared red), cut to the focus box, and the intersection in gold.
             var box = BoxSolid(fmin, fmax);
-            var colours = Colours(primaryName, session.With, sa.Name, sb.Name, Others(sources, primaryName));
+            var colours = Colours(primaryName, session.With, clash.SourceA, clash.SourceB, Others(sources, primaryName));
             var off = Lengths.Ft(3);
             var shapes = new List<ClashHighlight.Shape>
             {

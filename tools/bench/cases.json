@@ -316,6 +316,37 @@
       ]
     },
     {
+      "name": "Navisworks clash report imports (XML, one test; only a resolved clash, so the browser stays clean)",
+      "command": "import_clash_report",
+      "args": {
+        "path": "repo:tools/clash-test/fixtures/navisworks-report.xml",
+        "test": "MEP vs ARC clearance"
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "format",
+          "op": "==",
+          "value": "Navisworks XML"
+        },
+        {
+          "path": "tests[0].test",
+          "op": "==",
+          "value": "NW: MEP vs ARC clearance"
+        },
+        {
+          "path": "tests[0].reported",
+          "op": "==",
+          "value": 1
+        },
+        {
+          "path": "tests[0].resolved",
+          "op": "==",
+          "value": 1
+        }
+      ]
+    },
+    {
       "name": "Working mode can be read",
       "command": "working_mode",
       "args": {},

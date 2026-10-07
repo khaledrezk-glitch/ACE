@@ -144,7 +144,7 @@ namespace AceRevitMcp.Coordination
             return _rules = r;
         }
 
-        private static void Assign(Clash c, Document doc, string discA, string discB) => ClashLogic.Assign(c, Rules(doc), discA, discB);
+        internal static void Assign(Clash c, Document doc, string discA, string discB) => ClashLogic.Assign(c, Rules(doc), discA, discB);
 
         /// <summary>Pairs that are one piece of work, not a clash: MEP parts connected to each other, an element and its host.</summary>
         private static bool Related(Element a, Element b)
@@ -346,7 +346,7 @@ namespace AceRevitMcp.Coordination
             return clashes.Values.ToList();
         }
 
-        private static string Name(Element e) => e is FamilyInstance fi ? $"{fi.Symbol.FamilyName} : {fi.Symbol.Name}" : (e.Document.GetElement(e.GetTypeId())?.Name ?? e.Name);
+        internal static string Name(Element e) => e is FamilyInstance fi ? $"{fi.Symbol.FamilyName} : {fi.Symbol.Name}" : (e.Document.GetElement(e.GetTypeId())?.Name ?? e.Name);
 
         // ---- cause: what changed since the snapshot before the previous run -----------------------------------
 

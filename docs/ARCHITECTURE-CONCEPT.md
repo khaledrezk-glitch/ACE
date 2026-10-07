@@ -82,7 +82,7 @@ notifications (section 8). Each suggestion has a one-click action.
 | Model brief | host, links, open models | levels, room types, families, naming, alignment | clash (sources), test fit, structure from ARC, Claude |
 | Snapshots / change tracker | model + links | added / moved / retyped / changed, by person | clash cause, dashboard, Companion |
 | Model check (dashboard) | model, check set | pass / review / action per check, score | Companion, submission, requirements |
-| Clash engine | sources, clash rules | clashes, issues, responsibility, cause, status | Clash Browser, clash view, coordination report, dashboard |
+| Clash engine | sources, clash rules, **Navisworks clash reports** (XML / HTML, imported as "NW:" tests) | clashes, issues, responsibility, cause, status | Clash Browser, clash view, coordination report, dashboard |
 | Clash view (DirectContext3D) | a clash, colours | focused 3D view | Clash Browser, Claude |
 | Coordination report | issues | HTML with pictures, CSV | meetings |
 | Worksets per BEP (native engine) | workset rules file | moves, wrong-workset report | model check (elements on the wrong workset per the BEP), approvals |
@@ -335,6 +335,7 @@ hidden capability and the thinking behind it) and the demo that proves it.
 |---|---|---|---|
 | **Who caused this clash** | Clash detection alone says *what* clashes. Joined with the change tracker, ACE says *whose change made it and when*, and separately *who should give way* by the priority rules | Move a duct in the MEP link, re-run: the new clash names the change and the person | Built, not yet verified live |
 | **Navisworks-style review inside Revit** | Two models in colour, one clash at a time: everything else dimmed, zoomed to the intersection even on a large slab, and linked elements coloured, which Revit itself can't do | Clash Browser → click through issues → Coordination report for the meeting | Built, not yet verified live |
+| **Navisworks results, ACE intelligence** | The office's Navisworks clash report comes into Revit: every reported item matched to the real element, grouped into issues, with who gives way and whose change caused it, tracked report after report. Navisworks finds, ACE explains and coordinates | Import a Clash Detective XML in the Clash Browser → issues → Clash View → Coordination report | Built, not yet verified live |
 | **Issues, not clashes** | 40 clashes can be 3 real problems: one duct through 8 beams is one issue, with one responsible discipline | The same test as a raw list, then grouped | Built, not yet verified live |
 | **Office test fits** | "How many people fit in this office?" answered by placing real desks, with options applied one by one | Management demo (done 29 Sep) | Shown |
 | **The model knows its own health** | Model Checker-style checks with an office check set, a score and a trend, plus coordination status on one page | Dashboard before and after a clean-up | Built, not yet verified live |
@@ -365,6 +366,35 @@ The owner's idea: one look on every drawing. Annotation types unified across vie
 7. **Notifications:** later, through the one notification system (a sheet placed with off-standard text).
 8. **Smart, not rigid:** it picks the type people already use at the right size before making a new one, keeps a
    chosen type even if its height differs (and says so), skips elements colleagues are editing, and previews first.
+
+## 15. Navisworks clash reports (built after 1.8.2, studied with the integration rule)
+
+The office runs federated clash tests in Navisworks. ACE reads their Clash Detective report (XML, or the tabular HTML)
+and turns it into ACE clashes, so everything ACE does with its own clashes also works on Navisworks results.
+
+### Integration rule answers
+
+1. **Engine:** the clash engine. A report is one more source of clashes next to ACE's own run: the parser
+   (`ClashReportParser`, plain .NET) and the matcher (`ClashImport`) produce the same `Clash` records; merge, issues,
+   responsibility, cause, storage and publishing are the engine's own (`ClashLogic`, `Clashes`). No parallel store.
+2. **Rules:** responsibility from the same clash rules (`clash-rules.json`); the Navisworks test settings stay in
+   Navisworks. Matching: model by file name (extension, punctuation and local-copy suffixes ignored), then element id;
+   without a file name, an id counts only if exactly one loaded model has that element and its category or name fits.
+3. **Publishes:** to the status store with the other tests, so the Clash Browser, the dashboard, the Companion and
+   Claude see Navisworks and ACE results together, as separate tests ("NW: name").
+4. **Connects to:** clash view, Clash Browser, approvals (`set_clash_status`), coordination report, cause (snapshots),
+   dashboard. New circle: **Navisworks finds, ACE explains and coordinates in Revit**.
+5. **Replaces or merges:** nothing; it removes the manual step of reading a report and finding the elements by id.
+   ACE's own test and the Navisworks test are kept apart (different tolerances and rules), not merged.
+6. **Project Hub:** later, the report becomes a document of the hub with its import history.
+7. **Notifications:** new clashes from a report will raise the same notification as ACE's own run (section 8).
+8. **Proactive:** it names the models that are not loaded, and Claude suggests linking them.
+
+### The later stage: Navisworks itself (backlog N1 to N4)
+
+A Navisworks add-in (Navisworks .NET API; Automation for batch runs) gives what a report cannot: the test settings,
+viewpoints and comments, all properties of each item, and status written back, so a clash approved in Revit is
+approved in Navisworks. Until then the report is the bridge (one way: Navisworks to ACE).
 
 ## 12. Family creator and checker (idea, studied with the integration rule)
 

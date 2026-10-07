@@ -9,4 +9,7 @@
     <!-- Build the add-in first (Release); only its plain C# clash logic (ClashLogic) is exercised. -->
     <Reference Include="AceRevitMcp"><HintPath>../../revit-addin/AceRevitMcp/bin/Release/net8.0-windows/AceRevitMcp.dll</HintPath></Reference>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="fixtures/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

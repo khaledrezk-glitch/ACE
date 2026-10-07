@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<exchange xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://download.autodesk.com/us/navisworks/schemas/nw-exchange-12.0.xsd" units="m" filename="Tower Coordination.nwf" filepath="C:\Projects\Tower">
+  <batchtest name="Report" internal_name="Report" units="m">
+    <clashtests>
+      <clashtest name="STR vs MEP" test_type="hard" status="ok" tolerance="0.0100" merge_composites="1">
+        <summary total="3" new="1" active="1" reviewed="0" approved="1" resolved="0"><testtype>Hard</testtype><teststatus>OK</teststatus></summary>
+        <clashresults>
+          <clashresult name="Clash1" guid="6a1f" href="Report_files\cd000001.jpg" status="new" distance="-0.120">
+            <description>Hard</description>
+            <resultstatus>New</resultstatus>
+            <clashpoint><pos3f x="10.500" y="4.200" z="3.100"/></clashpoint>
+            <gridlocation>B-3 : Level 2</gridlocation>
+            <clashobjects>
+              <clashobject>
+                <objectattribute><name>Element ID</name><value>345678</value></objectattribute>
+                <layer>Level 2</layer>
+                <pathlink><node>File</node><node>Tower-STR.nwc</node><node>Level 2</node><node>Structural Framing</node></pathlink>
+                <smarttags><smarttag><name>Item Name</name><value>W310x60</value></smarttag><smarttag><name>Item Type</name><value>Structural Framing</value></smarttag></smarttags>
+              </clashobject>
+              <clashobject>
+                <objectattribute><name>Element ID</name><value>912345</value></objectattribute>
+                <layer>Level 2</layer>
+                <pathlink><node>File</node><node>C:\Projects\Tower\Tower-MEP.nwc</node><node>Level 2</node><node>Ducts</node></pathlink>
+                <smarttags><smarttag><name>Item Name</name><value>Rectangular Duct</value></smarttag><smarttag><name>Item Type</name><value>Ducts</value></smarttag></smarttags>
+              </clashobject>
+            </clashobjects>
+          </clashresult>
+          <clashresult name="Clash2" guid="6a20" status="active" distance="-0.035">
+            <resultstatus>Reviewed</resultstatus>
+            <clashpoint><pos3f x="12.000" y="4.000" z="3.200"/></clashpoint>
+            <clashobjects>
+              <clashobject><objectattribute><name>Element ID</name><value>345679</value></objectattribute><pathlink><node>File</node><node>Tower-STR.nwc</node></pathlink></clashobject>
+              <clashobject><objectattribute><name>Element ID</name><value>912400</value></objectattribute><pathlink><node>File</node><node>Tower-MEP.nwc</node></pathlink></clashobject>
+            </clashobjects>
+          </clashresult>
+          <clashresult name="Clash3" guid="6a21" status="approved" distance="-0.015">
+            <resultstatus>Approved</resultstatus>
+            <clashobjects>
+              <clashobject><objectattribute><name>Element ID</name><value>345680</value></objectattribute><pathlink><node>File</node><node>Tower-STR.nwc</node></pathlink></clashobject>
+              <clashobject><objectattribute><name>Element ID</name><value>912401</value></objectattribute><pathlink><node>File</node><node>Tower-MEP.nwc</node></pathlink></clashobject>
+            </clashobjects>
+          </clashresult>
+        </clashresults>
+      </clashtest>
+      <clashtest name="MEP vs ARC clearance" test_type="clearance" status="ok" tolerance="0.0500">
+        <clashresults>
+          <clashresult name="Clash1" guid="7b01" status="resolved" distance="0.030">
+            <resultstatus>Resolved</resultstatus>
+            <clashobjects>
+              <clashobject><objectattribute><name>Element ID</name><value>912345</value></objectattribute><pathlink><node>File</node><node>Tower-MEP.nwc</node></pathlink></clashobject>
+              <clashobject><objectattribute><name>Element ID</name><value>200100</value></objectattribute><pathlink><node>File</node><node>Tower-ARC.rvt</node></pathlink></clashobject>
+            </clashobjects>
+          </clashresult>
+        </clashresults>
+      </clashtest>
+    </clashtests>
+  </batchtest>
+</exchange>

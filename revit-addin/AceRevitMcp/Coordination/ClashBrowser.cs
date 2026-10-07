@@ -130,6 +130,7 @@ namespace AceRevitMcp.Coordination
             top.Children.Add(_with);
             top.Children.Add(Btn("Run clash test", true, async (s, e) => await Run()));
             top.Children.Add(Btn("Show both models", false, async (s, e) => await Call("clash_view", new JsonObject { ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() }, r => "Both models in their colours in the ACE Clash View.")));
+            top.Children.Add(Btn("Import Navisworks report", false, async (s, e) => await Import()));
             top.Children.Add(Btn("Coordination report", false, async (s, e) => await Call("coordination_report", new JsonObject { ["open"] = true }, r => $"Report saved: {r?["htmlReport"]}")));
 
             // Row 2: legend.
@@ -345,7 +346,7 @@ namespace AceRevitMcp.Coordination
                     Responsible = c.Responsible, Cause = c.CausedBy != null ? $"{c.CausedBy}: {c.Cause}" : c.Cause,
                     HostIds = new[] { c.SourceA == _host ? c.IdA : 0, c.SourceB == _host ? c.IdB : 0 }.Where(x => x > 0).ToArray(),
                 };
-                row.SearchText = $"{row.Issue} {row.ThisSide} {row.OtherSide} {row.Level} {row.Responsible} {row.Cause}";
+                row.SearchText = $"{row.Issue} {c.Test} {row.ThisSide} {row.OtherSide} {row.Level} {row.Responsible} {row.Cause}";
                 return row;
             }).OrderBy(r => r.IssueIndex).ThenByDescending(r => r.DepthMm).ToList();
             // One grouped view; filters only change its Filter (no rebuild per keystroke).
@@ -400,6 +401,20 @@ namespace AceRevitMcp.Coordination
         {
             await Call("run_clash_test", new JsonObject { ["test"] = "all", ["primary_model"] = PrimaryModel(), ["with_model"] = WithModel() },
                 r => "Clash test finished.", TimeSpan.FromMinutes(15));
+            var results = StatusStore.For(_host)?.Clashes;
+            if (results != null) Build(results);
+        }
+
+        /// <summary>A Navisworks Clash Detective report (XML or HTML) into ACE: matched to the elements, tracked between imports.</summary>
+        private async System.Threading.Tasks.Task Import()
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "Navisworks clash report", Filter = "Navisworks clash report (*.xml;*.html;*.htm)|*.xml;*.html;*.htm|All files (*.*)|*.*",
+            };
+            if (dialog.ShowDialog(this) != true) return;
+            await Call("import_clash_report", new JsonObject { ["path"] = dialog.FileName },
+                r => $"Imported {r?["tests"]?.AsArray().Sum(t => (int?)t?["reported"] ?? 0)} clash(es) from {r?["file"]}. {r?["notes"]?.AsArray().FirstOrDefault()}", TimeSpan.FromMinutes(5));
             var results = StatusStore.For(_host)?.Clashes;
             if (results != null) Build(results);
         }

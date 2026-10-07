@@ -12,6 +12,16 @@ with save_snapshot: false (a new snapshot would become the baseline the clash ca
 run_clash_test. On a large federated model, run per level (level) or per link (with_model): a run that hits
 max_elements is incomplete and does not mark anything resolved.
 
+Navisworks reports: when the user has a Clash Detective report ("here is the Navisworks report", a .xml or .html
+file), call run_clash_test with import_report: the full path (ask for the XML export if they have both; it is exact,
+the HTML tabular report also works when it includes Item ID and the source file). Each Navisworks test becomes the ACE
+test "NW: <name>": the items are matched to the elements of this model and its links or open models by file name and
+element id, so responsibility, issues, cause, clash_view, set_clash_status and coordination_report work on it as on
+ACE's own clashes. Report "matched" per test: items in models that are not loaded keep their Navisworks name and id but
+cannot be shown or selected; name those models (notes) and suggest linking them. Re-importing a newer report tracks
+new / active / resolved; Navisworks Approved and Resolved are kept and approvals made in ACE survive. ACE's own run and
+the Navisworks import can disagree (tolerances, Navisworks rules): present them as two tests, do not merge them.
+
 ## Change tracking and linked models
 
 model_changes compares this model and its linked models with an earlier snapshot (since: last, today, yesterday, week, month, a weekday such as monday, "3 days", or a date): added, deleted, moved, retyped and changed elements, by category and by person. Use it for "what changed", "what did STR change since Monday", and after a link is reloaded. Before a milestone (issue, submission), offer snapshot_model with a label. get_model_brief lists the linked and open discipline models and whether their levels and grids line up: when they don't, say so before any coordination work.

@@ -144,6 +144,50 @@ class P {
     }
     Check(gridOk, "clash search grid returns exactly the touching boxes (small, slab-sized and very large queries)");
 
+    // 9. Navisworks clash reports (XML and tabular HTML) are read into clashes with their two items.
+    var parser = a.GetType("AceRevitMcp.Coordination.ClashReportParser");
+    MethodInfo PM(string n) => parser.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    (IList List, string Format) Parse(string file) {
+      var args = new object[] { System.IO.File.ReadAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "fixtures", file)), null };
+      var list = (IList)PM("Parse").Invoke(null, args);
+      return (list, (string)args[1]); }
+    object Item(object rc, string side) => F(rc, side);
+    var (xml, xmlFormat) = Parse("navisworks-report.xml");
+    Check(xmlFormat == "Navisworks XML" && xml.Count == 4, $"XML report: 4 clashes in 2 tests (got {xml.Count}, {xmlFormat})");
+    var x1 = xml[0];
+    Check((string)F(x1, "Test") == "STR vs MEP" && (string)F(x1, "Name") == "Clash1" && (string)F(x1, "Status") == "new", "XML: test, name and status");
+    Check((double?)F(x1, "DistanceMm") == -120 && (string)F(x1, "Grid") == "B-3 : Level 2", "XML: distance in mm from the report's metres, grid");
+    Check((long?)F(Item(x1, "A"), "ElementId") == 345678 && (string)F(Item(x1, "A"), "File") == "Tower-STR.nwc" && (string)F(Item(x1, "A"), "Type") == "Structural Framing", "XML: item 1 id, model file and type");
+    Check((string)F(Item(x1, "B"), "File") == @"C:\Projects\Tower\Tower-MEP.nwc" && (string)F(Item(x1, "B"), "Name") == "Rectangular Duct" && (string)F(Item(x1, "B"), "Layer") == "Level 2", "XML: item 2 file path, name and layer");
+    Check((string)F(xml[1], "Status") == "active" && (string)F(xml[2], "Status") == "approved" && (string)F(xml[3], "Status") == "resolved", "XML: Reviewed = active; Approved and Resolved kept");
+    Check((string)F(xml[3], "Test") == "MEP vs ARC clearance" && (double?)F(xml[3], "DistanceMm") == 30, "XML: second test, positive distance (clearance)");
+
+    var (html, htmlFormat) = Parse("navisworks-report.html");
+    Check(htmlFormat == "Navisworks HTML" && html.Count == 2, $"HTML report: the clash table only, not the summary (got {html.Count})");
+    var h1 = html[0];
+    Check((string)F(h1, "Test") == "STR vs MEP" && (string)F(h1, "Name") == "Clash1" && (string)F(h1, "Status") == "new" && (double?)F(h1, "DistanceMm") == -120, "HTML: test from the heading, name, status, distance");
+    Check((long?)F(Item(h1, "A"), "ElementId") == 345678 && (long?)F(Item(h1, "B"), "ElementId") == 912345 && (string)F(Item(h1, "B"), "Type") == "Ducts", "HTML: Item 1 / Item 2 columns read by their group header");
+    Check(((double[])F(h1, "Point"))?.SequenceEqual(new[] { 10.5, 4.2, 3.1 }) == true, "HTML: clash point");
+    Check(F(Item(html[1], "B"), "ElementId") == null && (string)F(html[1], "Status") == "active", "HTML: an entity handle is not taken as a Revit element id");
+
+    var toMm = PM("ToMm");
+    Check((double?)toMm.Invoke(null, new object[] { "-0.39 ft", null }) == -118.9 && (double?)toMm.Invoke(null, new object[] { "-35", null }) == -35 && (double?)toMm.Invoke(null, new object[] { "-12 mm", "m" }) == -12, "distances: feet, bare millimetres, the unit beats the report's units");
+    var same = PM("SameModel");
+    bool Same(string f, string m) => (bool)same.Invoke(null, new object[] { f, m });
+    Check(Same("Tower-STR.nwc", "Tower-STR") && Same(@"C:\x\Tower_STR.nwc", "Tower STR") && Same("Tower-STR.nwc", "Tower-STR_jsmith") && !Same("Tower-STR.nwc", "Tower-MEP") && !Same("STR.nwc", "STRUCTURE"),
+      "report file matched to a loaded model by name (extension, punctuation, local copy), not by a short prefix");
+
+    // 10. A re-import keeps ACE approvals and takes Navisworks Approved / Resolved; Navisworks "active" is not new on first import.
+    var stored = List(C("p1", "approved", "a", "b", "Ducts", "Structural Framing", "L2"), C("p2", "active", "c", "d", "Ducts", "Structural Framing", "L2"));
+    var found = List(C("p1", "new", "a", "b", "Ducts", "Structural Framing", "L2"), C("p2", "new", "c", "d", "Ducts", "Structural Framing", "L2"),
+                     C("p3", "new", "e", "f", "Ducts", "Structural Framing", "L2"), C("p4", "new", "g", "h", "Ducts", "Structural Framing", "L2"));
+    var imp = (IList)merge.Invoke(null, new object[] { stored, found, null, t0.AddDays(1) });
+    var reported = new Dictionary<string, string> { ["p1"] = "active", ["p2"] = "resolved", ["p3"] = "active", ["p4"] = "approved" };
+    M("ApplyReported").Invoke(null, new object[] { imp, reported, new HashSet<string> { "p1", "p2" } });
+    string Si(string k) => (string)F(imp.Cast<object>().First(c => (string)F(c, "Key") == k), "Status");
+    Check(Si("p1") == "approved" && Si("p2") == "resolved" && Si("p3") == "active" && Si("p4") == "approved",
+      $"import status: ACE approval kept, Navisworks resolved/approved taken, reported active is active ({Si("p1")}, {Si("p2")}, {Si("p3")}, {Si("p4")})");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

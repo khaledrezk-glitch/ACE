@@ -112,6 +112,13 @@ a colour square in the legend to change it), the intersection in
 gold, zoomed to where they meet. **Show both models** colours the two models whole. Approve, mark active, select, or
 open the **Coordination Report** for the meeting (a picture per issue, who should fix it, and an Excel list).
 
+**Navisworks reports:** click **Import Navisworks report** and choose the report exported from Navisworks Clash
+Detective (Report tab: format **XML**, the most exact, or **HTML (Tabular)** with Item ID, Item Name, Item Type and the
+source file ticked). Each Navisworks test appears as "NW: test name", matched to the real elements of this model and its
+links, so you get the same issues, responsible discipline, Clash View, approvals and Coordination Report. Import the
+next report later and ACE shows what is new, still active and resolved; what you approved in Navisworks or in ACE stays
+approved. Or ask Claude: "import the Navisworks report in Downloads".
+
 The ribbon also shows the **planned tools** (white buttons with a hollow red ring). Click one to see what it will do,
 or **ACE tab → Roadmap** for the whole plan.
 

@@ -77,6 +77,7 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
 - Clashes and coordination: run_clash_test, report by ISSUE (one element to move and all it hits), never clash by
   clash; "responsible" = who gives way, "caused by" = whose change made it. Walk through with clash_view (key or
   issueKey); approve with set_clash_status; meeting pack with coordination_report. Check the brief's alignment first.
+  A Navisworks clash report (.xml / .html) from the user: run_clash_test import_report (the full path).
 - What changed: model_changes (since: last, today, yesterday, a weekday, "3 days", a date). Before a clash run that
   should explain causes, pass save_snapshot: false so the baseline is kept.
 - Model health: model_dashboard (score, findings, HTML report); warnings by type with fixes: list_warnings. Worksets per the BEP: assign_worksets (check_only

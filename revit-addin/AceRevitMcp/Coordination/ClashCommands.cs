@@ -71,7 +71,9 @@ namespace AceRevitMcp.Coordination
             }
             var issues = ClashLogic.Issues(all);
             var report = DashboardHtml.SaveAs(host.Title, "Clashes", DateTime.Now, ClashHtml.Render(host.Title, all, issues, notes, sw.ElapsedMilliseconds));
-            StatusStore.PublishClashes(host.Title, all, report);
+            // Published with the tests not run now (e.g. imported Navisworks tests), so the browser and dashboard keep them.
+            var ran = new HashSet<string>(tests.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
+            StatusStore.PublishClashes(host.Title, Clashes.Current(host).Where(c => !ran.Contains(c.Test ?? "")).Concat(all).ToList(), report);
             if (Args.Bool(args, "show")) ClashBrowser.ShowFor(app);
             return new JsonObject
             {

@@ -40,6 +40,16 @@ Effort: S (hours), M (a day or two), L (more). Status: **open**, **next** (appro
 | C8 | **Rule packs** for design and code checks (D12) | M | open |
 | C9 | **Family creator and checker** (concept section 12) | L | open |
 
+## 3b. Navisworks (owner, 7 Oct; concept section 15)
+
+| # | Item | Effort | Status |
+|---|---|---|---|
+| N0 | **Import Navisworks clash reports** (XML / tabular HTML) into the clash engine | M | live check (needs a real report from the office) |
+| N1 | **Watch folder:** a report saved to the project's clash folder is imported on its own when the model opens (no click) | S | open |
+| N2 | **Navisworks add-in (read):** test settings, viewpoints, comments and all item properties straight from the open NWF; no export step | L | open |
+| N3 | **Two-way status:** approvals and notes made in ACE written back to Navisworks (and the reverse), so one status lives in both | M | open, after N2 |
+| N4 | **Batch runs:** Navisworks Automation runs the federated tests overnight and drops the XML for N1 | M | open, after N2 |
+
 ## 4. Platform gaps (concept section 13)
 
 | # | Item | Effort | Status |

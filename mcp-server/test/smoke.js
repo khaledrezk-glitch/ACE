@@ -179,6 +179,10 @@ assert.equal((await call("execute_revit_code", { code: "doc.Save();", mode: "rea
 // --- merged tools route to the right bridge commands ---
 assert.equal(json(await call("run_clash_test", { stored: true })).command, "clash_results", "stored results without a run");
 assert.equal(json(await call("run_clash_test", { sources: true })).command, "coordination_sources", "the models that take part");
+const imported = json(await call("run_clash_test", { import_report: "C:/reports/STR vs MEP.xml", test: "STR vs MEP" }));
+assert.equal(imported.command, "import_clash_report", "a Navisworks report is imported, not a new run");
+assert.equal(imported.args.path, "C:/reports/STR vs MEP.xml", "the report path reaches the add-in");
+assert.equal(imported.args.test, "STR vs MEP", "one Navisworks test can be picked");
 assert.equal(json(await call("snapshots", {})).command, "list_snapshots", "snapshots lists by default");
 assert.equal(json(await call("list_warnings", { contains: "identical" })).args.contains, "identical");
 

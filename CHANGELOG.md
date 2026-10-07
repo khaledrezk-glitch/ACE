@@ -7,6 +7,13 @@
 - **Development team:** ten agents (`.claude/agents/`) and the saved workflow `ace-dev-cycle` (propose, one approval,
   build); `docs/DEV-TEAM.md` and the ranked `docs/BACKLOG.md`.
 - Claude is told to work with the fewest interactions (one question up front, one script and one approval per job).
+- **Navisworks clash reports:** a Clash Detective report (XML, or the tabular HTML) is imported into the clash engine
+  (Clash Browser **Import Navisworks report**, or `run_clash_test` with `import_report`). Each Navisworks test becomes
+  "NW: name"; every item is matched to the real element (model by file name, then element id), so issues,
+  responsibility, cause, the Clash View, approvals, the coordination report and the dashboard work on it. Re-imports
+  track new / active / resolved; Navisworks Approved and Resolved are kept, ACE approvals survive. Items in models that
+  are not loaded keep their Navisworks name and id. A native clash run no longer hides imported tests from the browser.
+  The later stage (a Navisworks add-in, two-way status, batch runs) is in the backlog (N1 to N4).
 
 ## 1.8.2 (6 Oct 2026)
 - **Apply cards you can understand** (the owner: "I don't understand what to approve, especially for a long multi-step

@@ -51,7 +51,11 @@ for (const c of cases) {
       const mode = (code.match(/@mode:\s*(\w+)/) || [])[1] || "auto";
       result = await callRevit("execute_code", { code, mode, dry_run: !!c.dryRun, preview_image: !!c.previewImage, inputs: c.inputs || {}, transaction_name: `ACE bench: ${c.name}` }, 600);
       if (mode !== "readonly" && !c.dryRun) throw new Error("benchmark cases must not change the model: set dryRun");
-    } else result = await callRevit(c.command, c.args || {}, 600);
+    } else {
+      // "repo:tools/x" in an argument = that file of this repository (the add-in needs a full path).
+      const args = JSON.parse(JSON.stringify(c.args || {}), (k, v) => typeof v === "string" && v.startsWith("repo:") ? path.resolve(here, "..", "..", v.slice(5)) : v);
+      result = await callRevit(c.command, args, 600);
+    }
   } catch (err) { error = err.message; }
   const ms = Date.now() - started;
   const failed = error ? [error] : (c.expect || []).filter((e) => !check(result, e)).map((e) => `${e.path} ${e.op} ${JSON.stringify(e.value ?? "")} (got ${JSON.stringify(get(result, e.path))?.slice(0, 80)})`);

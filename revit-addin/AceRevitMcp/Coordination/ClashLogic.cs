@@ -138,6 +138,22 @@ namespace AceRevitMcp.Coordination
         }
 
         /// <summary>
+        /// After merging an imported Navisworks test: the report's status wins where it says more. Approved or resolved in
+        /// Navisworks is kept; a clash Navisworks already calls active is active (not new) on its first import; an approval
+        /// made in ACE stays (Merge keeps it).
+        /// </summary>
+        public static void ApplyReported(List<Clash> merged, IReadOnlyDictionary<string, string> reported, ICollection<string> storedKeys)
+        {
+            foreach (var c in merged)
+            {
+                if (c.Key == null || !reported.TryGetValue(c.Key, out var s) || s == null) continue;
+                if (s == "approved") { c.Status = "approved"; c.Approved = true; }
+                else if (s == "resolved") c.Status = "resolved";
+                else if (s == "active" && c.Status == "new" && !storedKeys.Contains(c.Key)) c.Status = "active";
+            }
+        }
+
+        /// <summary>
         /// Groups open clashes into issues: the element that has to move and everything it hits. With equal priority,
         /// the element involved in more clashes leads. Sets Clash.Group. Largest issues first.
         /// </summary>
