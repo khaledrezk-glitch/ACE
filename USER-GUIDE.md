@@ -103,6 +103,23 @@ The project rules merge with the office rules and the project wins: a check's se
 section with `"inheritOffice": false` replaces the office section. The model check, the workset assignment, the
 clash responsibility and the presentation standard all read the same merged rules.
 
+### Requirements vault and audit report
+
+The project's client documents (EIR, BEP, LOIN, MIDP, client comments) live in an `ACE Vault` folder beside the
+central model, or in the project folder you name. Ask Claude *"create the requirements vault for this project"*, then
+*"register the EIR"* and *"extract its requirements"*: every requirement keeps the document's own words and the page,
+clause or cell it comes from.
+
+- **ACE > Audit > Vault** opens the vault (documents, requirements, decisions, reports). The first time, ACE asks
+  whether it may save audit records there.
+- After each model check, ACE marks every requirement **met**, **partly met** (for example 3 of 100 elements wrong),
+  **not met** or **not checkable** (manual, or no check bound yet). An accepted deviation is shown beside the result,
+  never counted as met.
+- Ask *"make the master audit report"*: a Word report, an HTML copy and an actions list (CSV) are saved in
+  `04 Audits`, with what closed and what is new since the last report. **ACE > Audit > Master Report** opens the latest.
+- If you want the result to travel with the model, ask *"keep the audit summary in the model"*: ACE previews it, then
+  stores a small summary on Project Information as one undo step.
+
 ### Presentation standard (drawings)
 
 **ACE > Deliver > Presentation Standard** keeps every drawing in one style:

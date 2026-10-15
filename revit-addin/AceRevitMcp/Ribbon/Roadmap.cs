@@ -43,6 +43,12 @@ namespace AceRevitMcp.Ribbon
                 Prompt = "Undo your last change in Revit, and tell me exactly what was reverted." },
 
             // ---- Audit ----
+            new Feature { Key = "vault", Panel = "Audit", Label = "Vault", Phase = 2, Glyph = Glyphs.Package, LiveCommand = "AceRevitMcp.Rules.VaultCommand",
+                Summary = "The project's requirements vault: client documents, requirement records, decisions and audit reports.",
+                LiveSummary = "Open the project's ACE Vault (documents, requirements, decisions, reports). Asks once whether ACE may save audit records there." },
+            new Feature { Key = "masterreport", Panel = "Audit", Label = "Master\nReport", Phase = 2, Glyph = Glyphs.Clipboard, LiveCommand = "AceRevitMcp.Rules.MasterReportCommand",
+                Summary = "The latest master audit report of this model: compliance per requirement, findings, decisions, actions, trend.",
+                LiveSummary = "Open this model's latest master audit report (HTML; the Word file and actions CSV are beside it)." },
             new Feature { Key = "warnings", Panel = "Audit", Label = "Warning Solver", Large = false, Phase = 2, Glyph = Glyphs.Warning,
                 Summary = "Groups the model's warnings and fixes the ones that can be fixed safely.",
                 WillDo = new[] {

@@ -9,6 +9,9 @@
   the next report compares with; the vault index links the latest. Compliance run records now carry the model check
   (score and every check). New `vault model_summary`: keeps the latest report's summary on Project Information
   (extensible storage, readable by anyone, writable only by ACE), previewed and applied as one undo step, only when asked.
+- **Ribbon Audit > Vault and Master Report (V5):** Vault opens the project's vault and asks once per vault whether ACE
+  may save audit records there (the same permission Claude's vault tool uses). Master Report opens the model's latest
+  report; without one it shows the summary kept in the model and a ready prompt for Claude.
 
 ## 1.9.0 (15 Oct 2026)
 - **Revit 2024 support, first part (R24):** the add-in is now built twice from one source, for Revit 2024 (.NET Framework
