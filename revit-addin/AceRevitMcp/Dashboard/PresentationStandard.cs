@@ -70,16 +70,17 @@ namespace AceRevitMcp.Dashboard
         }));
 
         /// <summary>The standard from the office check set, with sizes from <paramref name="overrideSizes"/> when given (e.g. a project's BEP).</summary>
-        public static PresentationStandard Load(JsonArray overrideSizes = null)
+        public static PresentationStandard Load(JsonArray overrideSizes = null, Rules.ProjectRules rules = null)
         {
-            var std = new PresentationStandard();
+            var std = new PresentationStandard { _rules = rules };
             try
             {
-                var file = CheckSet.FilePath();
-                if (file != null && File.Exists(file) && JsonNode.Parse(File.ReadAllText(file)) is JsonObject set && set["presentation"] is JsonObject p)
+                rules ??= Rules.ProjectRules.Office();
+                std._rules = rules;
+                if (rules.Section("presentation") is JsonObject p)
                 {
-                    std.Name = p["name"]?.ToString() ?? set["name"]?.ToString() ?? std.Name;
-                    std.Source = file;
+                    std.Name = p["name"]?.ToString() ?? rules.OfficeCheckSetName() ?? std.Name;
+                    std.Source = rules.SourceOf("presentation");
                     if (p["textSizes"] is JsonArray sizes) std.Sizes = Parse(sizes) ?? std.Sizes;
                     std.Font = string.IsNullOrWhiteSpace(p["font"]?.ToString()) ? null : p["font"].ToString();
                     if (p["viewsOnSheetsOnly"] is JsonValue vs && vs.TryGetValue<bool>(out var onSheets)) std.ViewsOnSheetsOnly = onSheets;
@@ -96,15 +97,18 @@ namespace AceRevitMcp.Dashboard
             return std;
         }
 
-        /// <summary>Writes the standard into the "presentation" section of the office check set (other sections are kept).</summary>
+        private Rules.ProjectRules _rules;
+
+        /// <summary>
+        /// Writes the standard into the "presentation" section it was read from: the project requirements file when the
+        /// project defines one, else the office check set (other sections are kept either way).
+        /// </summary>
         public string Save()
         {
-            var file = CheckSet.FilePath();
-            var set = File.Exists(file) ? JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? new JsonObject() : new JsonObject { ["name"] = "ACE Standard" };
             var types = new JsonObject();
             foreach (var (band, kinds) in Types.Where(t => t.Value.Count > 0))
                 types[band] = new JsonObject(kinds.Select(k => new KeyValuePair<string, JsonNode>(k.Key, k.Value)));
-            set["presentation"] = new JsonObject
+            var section = new JsonObject
             {
                 ["name"] = Name,
                 ["about"] = "Printed text height by view scale (upToScale 50 = 1:50 and larger scales; a row without upToScale covers the rest), optional font, and the type chosen per size and kind. Read by the model check and applied by ACE > Deliver > Presentation Standard or Claude's presentation_standard.",
@@ -115,6 +119,10 @@ namespace AceRevitMcp.Dashboard
                 ["unifyTagTypes"] = UnifyTagTypes,
                 ["types"] = types,
             };
+            if (_rules != null && _rules.TrySaveProjectSection("presentation", section)) { Source = _rules.SourceOf("presentation"); return _rules.ProjectFile; }
+            var file = CheckSet.FilePath();
+            var set = File.Exists(file) ? JsonNode.Parse(File.ReadAllText(file)) as JsonObject ?? new JsonObject() : new JsonObject { ["name"] = "ACE Standard" };
+            set["presentation"] = section;
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
             File.WriteAllText(file, set.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
             Source = file;

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+- **Project rules (C1, first part):** one `project-requirements.json` per project holds the project's own rules in the
+  same sections as the office files (`checks`, `presentation`, `worksets`, `clash`). It is found beside the central model
+  or in its `ACE Vault` folder, or, for cloud models, through `config.json` "projects" (cloud model id, central path or
+  title to the project folder). One resolver merges it over the office files key by key and the project wins (a check's
+  settings merge one by one, project workset rules come first, `"inheritOffice": false` replaces a section). The model
+  check, `assign_worksets`, the clash responsibility ranks and the presentation standard all read the merged rules; the
+  presentation window saves to the project file when the project defines the standard. Clash ranks are re-read when the
+  rules change (before: only after a Revit restart). New read-only tool `project_rules`: which file applies, how it was
+  found, where each section comes from, a hash per section and the merged rules.
+- **One source for workset rules (T11):** the MCP server no longer falls back to the packaged example rules; it asks the
+  add-in for the rules in force, so Claude and the model check always use the same rules.
+- **Fix (T10):** the Companion's "Clash issues" tile showed a type name instead of the number of issues.
+
 ## 1.8.3 (7 Oct 2026)
 - **Development radar** (in the learning report): groups the local call log into tasks and flags development
   candidates: tasks with many calls, repeated previews, failures, expensive tasks, large replies, code written again

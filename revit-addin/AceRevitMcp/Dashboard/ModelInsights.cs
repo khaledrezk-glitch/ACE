@@ -106,7 +106,7 @@ namespace AceRevitMcp.Dashboard
             PerLevel(doc, x);
             StandardChecks(doc, x, warnings);
             ClashStatus(doc, x);
-            CheckSet.Apply(x);
+            CheckSet.Apply(x, Rules.ProjectRules.For(doc));
 
             var penalty = x.Checks.Sum(c => c.Penalty);
             x.Score = (int)Math.Round(Math.Max(0, Math.Min(100, 100 - penalty)));

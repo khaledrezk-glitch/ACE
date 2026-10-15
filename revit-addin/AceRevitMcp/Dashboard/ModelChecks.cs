@@ -59,7 +59,7 @@ namespace AceRevitMcp.Dashboard
                     x.Counts["Worksets"] = user.Count;
                 });
             // Worksets per the BEP rules (when the office has a rules file): the same engine assign_worksets uses.
-            if (doc.IsWorkshared && Rules.WorksetRules.LoadOffice() is { } wsRules)
+            if (doc.IsWorkshared && Rules.WorksetRules.Load(Rules.ProjectRules.For(doc)) is { } wsRules)
                 Safe("worksets per the BEP", () =>
                 {
                     var plan = wsRules.Apply(doc, new Rules.WorksetRules.Options { PlanOnly = true });
@@ -194,7 +194,7 @@ namespace AceRevitMcp.Dashboard
             // ---- Presentation standard: text height by view scale, one type per size and style --------------------------
             Safe("presentation standard", () =>
             {
-                var std = PresentationStandard.Load();
+                var std = PresentationStandard.Load(null, Rules.ProjectRules.For(doc));
                 var audit = AnnotationAudit.Run(doc, std);
                 var off = Add(x, "Annotation", "Text off the presentation standard", audit.OffStandard.Count, 0.02, 4,
                     $"{audit.OffStandard.Count} of {audit.Checked} text notes and dimensions in {audit.Views} views have the wrong text height for their scale ({std.Describe()})",
@@ -256,18 +256,19 @@ namespace AceRevitMcp.Dashboard
             catch { return Path.Combine(AceConfig.Directory, "checkset.json"); }
         }
 
-        internal static void Apply(Insights x)
+        /// <summary>Applies the checks in force: the office check set merged with the project's "checks" (project wins).</summary>
+        internal static void Apply(Insights x, Rules.ProjectRules projectRules)
         {
             string file = null;
             try
             {
-                file = FilePath();
-                if (!File.Exists(file)) return;
-                var json = JsonNode.Parse(File.ReadAllText(file)) as JsonObject;
-                if (json == null) return;
-                x.CheckSetName = json["name"]?.ToString() ?? Path.GetFileNameWithoutExtension(file);
-                x.CheckSetSource = file;
-                if (!(json["checks"] is JsonObject rules)) return;
+                projectRules ??= Rules.ProjectRules.Office();
+                file = projectRules.ProjectFile ?? FilePath();
+                var officeName = projectRules.OfficeCheckSetName();
+                if (officeName == null && projectRules.ProjectSection("checks") == null) return;
+                x.CheckSetName = string.Join(" + ", new[] { officeName, projectRules.ProjectSection("checks") != null ? projectRules.ProjectName ?? "project" : null }.Where(n => n != null));
+                x.CheckSetSource = projectRules.SourceOf("checks");
+                if (!(projectRules.Section("checks") is JsonObject rules)) return;
                 foreach (var c in x.Checks.ToList())
                 {
                     var rule = rules[c.Key] as JsonObject ?? rules.FirstOrDefault(r => string.Equals(r.Key, c.Name, StringComparison.OrdinalIgnoreCase)).Value as JsonObject;

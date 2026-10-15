@@ -124,23 +124,31 @@ namespace AceRevitMcp.Coordination
         };
 
         private static Dictionary<string, (int Rank, string Discipline)> _rules;
+        private static string _rulesStamp;
 
-        /// <summary>Ranks by category name: ACE defaults, overridden by %APPDATA%\ACE-RevitMCP\clash-rules.json if present.</summary>
+        /// <summary>
+        /// Ranks by category name: ACE defaults, overridden by the office clash-rules.json (config.json "clashRules", else
+        /// %APPDATA%) and the project's "clash" section (project wins). Re-read whenever those rules change.
+        /// </summary>
         private static Dictionary<string, (int Rank, string Discipline)> Rules(Document doc)
         {
-            if (_rules != null) return _rules;
+            global::AceRevitMcp.Rules.ProjectRules rules = null;
+            string stamp = doc.Title;
+            try { rules = global::AceRevitMcp.Rules.ProjectRules.For(doc); stamp += "|" + rules.HashOf("clash"); }
+            catch (Exception ex) { Log.Warn($"Clash rules: {ex.Message}"); }
+            if (_rules != null && _rulesStamp == stamp) return _rules;
             var r = new Dictionary<string, (int, string)>(StringComparer.OrdinalIgnoreCase);
             foreach (var (bic, v) in DefaultRanks)
                 try { var c = Category.GetCategory(doc, bic); if (c != null) r[c.Name] = v; } catch { }
             try
             {
-                var file = Path.Combine(AceConfig.Directory, "clash-rules.json");
-                if (File.Exists(file) && JsonNode.Parse(File.ReadAllText(file))?["ranks"] is JsonObject ranks)
+                if (rules?.Section("clash")?["ranks"] is JsonObject ranks)
                     foreach (var (name, node) in ranks)
                         if (node?["rank"] is JsonValue rv && rv.TryGetValue<int>(out var rank))
                             r[name] = (rank, node["discipline"]?.ToString() ?? "");
             }
-            catch (Exception ex) { Log.Warn($"clash-rules.json: {ex.Message}"); }
+            catch (Exception ex) { Log.Warn($"Clash rules: {ex.Message}"); }
+            _rulesStamp = stamp;
             return _rules = r;
         }
 

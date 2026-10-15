@@ -15,7 +15,7 @@ namespace AceRevitMcp.Dashboard
     {
         public const string Name = "ACE: presentation standard";
 
-        public static JsonNode Run(UIApplication app, JsonObject args) => RunWith(app, args, PresentationStandard.Load(args["text_sizes"] as JsonArray));
+        public static JsonNode Run(UIApplication app, JsonObject args) => RunWith(app, args, PresentationStandard.Load(args["text_sizes"] as JsonArray, Rules.ProjectRules.For(app.ActiveUIDocument.Document)));
 
         /// <summary>With a given standard (the window passes what is on screen; nothing is saved until the user saves).</summary>
         internal static JsonObject RunWith(UIApplication app, JsonObject args, PresentationStandard std)

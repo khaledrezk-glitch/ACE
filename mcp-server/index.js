@@ -540,20 +540,32 @@ tool("saved_scripts", {
   ? text(fs.readFileSync(findScript(name).file, "utf8"))
   : text(listScripts().map(({ name, description, mode, inputs, source, saved }) => ({ name, description, mode, inputs, source, saved }))));
 
-// Workset rules from the BEP: the tool's rules > rules_file > config "worksetRules" > %APPDATA%\ACE-RevitMCP\worksets.json > the packaged example.
-function worksetRules(rulesFile) {
-  const candidates = [rulesFile, readConfig()?.worksetRules, path.join(DATA_DIR, "worksets.json"), path.join(ROOT, "bep", "worksets.example.json")].filter(Boolean);
-  for (const f of candidates) {
-    if (!fs.existsSync(f)) continue;
-    try { return { file: f, ...JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, "")) }; }
-    catch (err) { throw new RevitError(`The workset rules file ${f} is not valid JSON: ${err.message}`); }
+// Workset rules: the tool's rules > rules_file > the rules in force for the open model, which the add-in resolves (project
+// requirements file merged over the office worksets.json), so Claude and the model check always use the same rules (T11).
+async function worksetRules(rulesFile) {
+  if (rulesFile) {
+    if (!fs.existsSync(rulesFile)) throw new RevitError(`The workset rules file ${rulesFile} does not exist.`);
+    try { return { file: rulesFile, ...JSON.parse(fs.readFileSync(rulesFile, "utf8").replace(/^\uFEFF/, "")) }; }
+    catch (err) { throw new RevitError(`The workset rules file ${rulesFile} is not valid JSON: ${err.message}`); }
   }
-  throw new RevitError("No workset rules found. Save the BEP rules as %APPDATA%\\ACE-RevitMCP\\worksets.json (see bep/worksets.example.json).");
+  const r = await callRevit("project_rules", { section: "worksets" }, 30);
+  if (!r?.rules?.rules?.length) throw new RevitError("No workset rules found for this model. Put them in the project's project-requirements.json (section \"worksets\") or the office worksets.json (see bep/worksets.example.json), or pass rules.");
+  return { file: r.source, ...r.rules };
 }
+
+tool("project_rules", {
+  title: "Project rules in force",
+  description: "Which rules apply to the open model and where they come from: the project requirements file (project-requirements.json, found beside the central model or mapped in config.json \"projects\" for cloud models) merged over the office files (check set, worksets, clash ranks), project wins key by key. Read-only. section: checks | presentation | worksets | clash returns that section's merged rules; include_rules: true returns all of them.",
+  inputSchema: {
+    section: z.enum(["checks", "presentation", "worksets", "clash"]).optional(),
+    include_rules: z.boolean().optional(),
+  },
+  annotations: readOnly,
+}, async (a) => text(await callRevit("project_rules", a, 30)));
 
 tool("assign_worksets", {
   title: "Assign worksets per the BEP",
-  description: "Put elements on the right worksets by the BEP rules: category, function (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or a parameter value; the first matching rule wins and names can use {level}, {zone}, {category}. Rules come from the office / project rules file (worksets.json; the example follows the ACE naming) unless given. check_only: true reports what is on the wrong workset (read-only in effect). Otherwise it moves elements, with the usual dry_run preview and confirmation; elements borrowed by others are skipped. One undo step.",
+  description: "Put elements on the right worksets by the BEP rules: category, function (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or a parameter value; the first matching rule wins and names can use {level}, {zone}, {category}. Rules are the ones in force for the open model (the project's project-requirements.json merged over the office worksets.json, project first; see project_rules) unless given. check_only: true reports what is on the wrong workset (read-only in effect). Otherwise it moves elements, with the usual dry_run preview and confirmation; elements borrowed by others are skipped. One undo step.",
   inputSchema: {
     check_only: z.boolean().optional().describe("Only report elements on the wrong workset"),
     only_workset1: z.boolean().optional().describe("Move only elements still on Workset1 (leave deliberate choices alone)"),
@@ -569,7 +581,7 @@ tool("assign_worksets", {
   annotations: writes,
 }, async ({ check_only, dry_run, explanation, timeout_seconds, rules_file, plan, step, ...a }) => {
   // The rules travel with the request (from the BEP file unless given), so the preview and the apply use the same rules.
-  const src = a.rules ? { file: "given in the request", rules: a.rules } : worksetRules(rules_file);
+  const src = a.rules ? { file: "given in the request", rules: a.rules } : await worksetRules(rules_file);
   const req = {
     rules: src.rules, default_workset: a.default_workset ?? src.default_workset ?? "",
     only_workset1: !!a.only_workset1, create_missing: !!a.create_missing,

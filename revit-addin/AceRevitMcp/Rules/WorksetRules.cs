@@ -57,22 +57,19 @@ namespace AceRevitMcp.Rules
         }
 
         /// <summary>
-        /// The office / project rules file, as the MCP server finds it: config.json "worksetRules", else
-        /// %APPDATA%\ACE-RevitMCP\worksets.json. Null when there is none (the model check then skips the BEP check).
+        /// The rules in force: the project's "worksets" section first, then the office worksets.json (config.json
+        /// "worksetRules", else %APPDATA%\ACE-RevitMCP\worksets.json), merged by <see cref="ProjectRules"/>. Null when
+        /// there are none (the model check then skips the BEP check). Never the packaged example.
         /// </summary>
-        public static WorksetRules LoadOffice()
+        public static WorksetRules Load(ProjectRules rules)
         {
             try
             {
-                var cfg = File.Exists(AceConfig.FilePath) ? JsonNode.Parse(File.ReadAllText(AceConfig.FilePath)) as JsonObject : null;
-                var configured = cfg?["worksetRules"]?.ToString();
-                var file = !string.IsNullOrWhiteSpace(configured) && File.Exists(configured) ? configured : Path.Combine(AceConfig.Directory, "worksets.json");
-                if (!File.Exists(file)) return null;
-                var json = JsonNode.Parse(File.ReadAllText(file).TrimStart('﻿')) as JsonObject;
-                if (json?["rules"] is not JsonArray rules) return null;
-                var r = Parse(rules, json["default_workset"]?.ToString());
-                r.Name = json["name"]?.ToString() ?? Path.GetFileNameWithoutExtension(file);
-                r.Source = file;
+                var json = (rules ?? ProjectRules.Office()).Section("worksets");
+                if (json?["rules"] is not JsonArray list) return null;
+                var r = Parse(list, json["default_workset"]?.ToString());
+                r.Name = json["name"]?.ToString() ?? "worksets";
+                r.Source = (rules ?? ProjectRules.Office()).SourceOf("worksets");
                 return r.Items.Count == 0 ? null : r;
             }
             catch (Exception ex) { Log.Warn($"Workset rules: {ex.Message}"); return null; }

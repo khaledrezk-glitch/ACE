@@ -49,6 +49,7 @@ namespace AceRevitMcp.Commands
                 ["list_warnings"] = Dashboard.WarningCommands.List,
                 ["presentation_standard"] = Dashboard.PresentationCommands.Run,
                 ["assign_worksets"] = Rules.WorksetCommands.Run,
+                ["project_rules"] = Rules.ProjectRulesCommands.Run,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

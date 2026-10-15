@@ -15,7 +15,7 @@ namespace AceRevitMcp.Rules
         {
             var rules = args["rules"] is JsonArray given
                 ? WorksetRules.Parse(given, Args.Str(args, "default_workset"))
-                : WorksetRules.LoadOffice() ?? throw new Bridge.CommandException("No workset rules found. Save the BEP rules as %APPDATA%\\ACE-RevitMCP\\worksets.json (see bep/worksets.example.json), or pass rules.");
+                : WorksetRules.Load(ProjectRules.For(app.ActiveUIDocument.Document)) ?? throw new Bridge.CommandException("No workset rules found. Put them in the project's project-requirements.json (section \"worksets\") or the office worksets.json (see bep/worksets.example.json), or pass rules.");
             if (args["rules"] is JsonArray && args["rules_name"] is JsonValue) { rules.Name = Args.Str(args, "rules_name"); rules.Source = Args.Str(args, "rules_source"); }
             if (rules.Items.Count == 0) throw new Bridge.CommandException("The workset rules are empty: each rule needs at least a 'workset'.");
             if (Args.Str(args, "default_workset") is string dw && !string.IsNullOrWhiteSpace(dw)) rules.DefaultWorkset = dw;

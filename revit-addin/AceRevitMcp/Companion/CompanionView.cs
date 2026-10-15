@@ -236,7 +236,7 @@ namespace AceRevitMcp.Companion
                 tiles.Children.Add(Stat(health.Score.ToString(), $"Health · {health.Grade}", $"{health.Checks.Count(c => c.Status == "fail")} to act on · {health.Time:HH:mm}", health.Score < 65));
             else tiles.Children.Add(Stat("-", "Health", "Run the model check", false));
             if (status?.Clashes != null)
-                tiles.Children.Add(Stat(status.ClashIssues.ToString(), "Clash issues", $"{status.OpenClashes} clashes · {status.NewClashes} new", status.OpenClashes > 0));
+                tiles.Children.Add(Stat(status.ClashIssues.Count.ToString(), "Clash issues", $"{status.OpenClashes} clashes · {status.NewClashes} new", status.OpenClashes > 0));
             else tiles.Children.Add(Stat("-", "Clash issues", "Open the Clash Browser", false));
             var diffs = status?.Changes;
             if (diffs != null && diffs.Count > 0)

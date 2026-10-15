@@ -1,0 +1,22 @@
+{
+  "schema": "ace.project-requirements/1",
+  "about": "One file per project: the rules the project's EIR / BEP set. Put it beside the central model (or in its 'ACE Vault' folder); for cloud (ACC) models map the model in %APPDATA%\\ACE-RevitMCP\\config.json: \"projects\": { \"<cloud model id>\": \"<project folder>\" }. Every section merges over the office files key by key and the project wins; \"inheritOffice\": false makes a section replace the office one. 'requirement' links a rule to the requirement record it proves (ACE Vault\\requirements.json).",
+  "project": { "name": "Example project", "number": "", "stages": ["2", "3", "4", "5"], "currentStage": "3" },
+  "checks": {
+    "in-place-families": { "warnAt": 1, "failAt": 3, "requirement": "REQ-BEP-0042" },
+    "design-options": { "enabled": false }
+  },
+  "presentation": {
+    "textSizes": [ { "upToScale": 50, "textMm": 3 }, { "textMm": 2.5 } ]
+  },
+  "worksets": {
+    "name": "Example project worksets",
+    "rules": [
+      { "id": "ws-doors", "workset": "A-DOORS", "category": "Doors", "requirement": "REQ-BEP-0031" },
+      { "id": "ws-ducts", "workset": "M-DUCTS-{level}", "category": ["Ducts", "Duct Fittings"], "requirement": "REQ-BEP-0031" }
+    ]
+  },
+  "clash": {
+    "ranks": { "Cable Trays": { "rank": 45, "discipline": "E" } }
+  }
+}

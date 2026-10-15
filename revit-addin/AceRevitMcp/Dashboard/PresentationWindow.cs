@@ -50,7 +50,7 @@ namespace AceRevitMcp.Dashboard
         {
             _app = app;
             _doc = app.ActiveUIDocument.Document;
-            _std = PresentationStandard.Load();
+            _std = PresentationStandard.Load(null, Rules.ProjectRules.For(_doc));
             _types = PresentationFix.TypesByKind(_doc);
             _tagTypes = new FilteredElementCollector(_doc).OfClass(typeof(IndependentTag)).Cast<IndependentTag>()
                 .Where(t => t.Category != null)

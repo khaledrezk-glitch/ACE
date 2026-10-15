@@ -90,6 +90,19 @@ shows what would move, and applies only after you confirm (one undo step). Your 
 `worksets.json` (example in the package: `mcp-server\bep\worksets.example.json`). With that file in place, the
 dashboard also reports elements on the wrong workset every time you check the model.
 
+### Project rules (one file per project)
+
+A project's own rules from its EIR / BEP live in one file, `project-requirements.json` (example:
+`mcp-server\bep\project-requirements.example.json`), with the same sections as the office files: `checks`,
+`presentation`, `worksets` and `clash`. Put it beside the central model or in its `ACE Vault` folder. For a cloud
+(ACC) model, name the project folder once in `%APPDATA%\ACE-RevitMCP\config.json`:
+`"projects": { "<cloud model id>": "<project folder>" }` (ask Claude *"which project rules apply?"* to see the id).
+
+The project rules merge with the office rules and the project wins: a check's settings merge one by one
+(`"enabled": false` switches an office check off), the project's workset rules come before the office ones, and a
+section with `"inheritOffice": false` replaces the office section. The model check, the workset assignment, the
+clash responsibility and the presentation standard all read the same merged rules.
+
 ### Presentation standard (drawings)
 
 **ACE > Deliver > Presentation Standard** keeps every drawing in one style:
