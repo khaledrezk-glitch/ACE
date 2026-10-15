@@ -27,7 +27,7 @@ namespace AceRevitMcp.Util
                 case char c: return JsonValue.Create(c.ToString());
                 case int or long or short or byte or uint or ulong or ushort or sbyte:
                     return JsonValue.Create(Convert.ToInt64(value));
-                case double d: return double.IsFinite(d) ? JsonValue.Create(Math.Round(d, 9)) : JsonValue.Create(d.ToString());
+                case double d: return Compat.IsFinite(d) ? JsonValue.Create(Math.Round(d, 9)) : JsonValue.Create(d.ToString());
                 case float f: return JsonValue.Create((double)f);
                 case decimal m: return JsonValue.Create(m);
                 case Enum e: return JsonValue.Create(e.ToString());

@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+#if !NETFRAMEWORK
 using System.Runtime.Loader;
+#endif
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -70,6 +72,13 @@ public static class AceScript
         private static MethodInfo _compile;
         private static int _counter;
 
+#if NETFRAMEWORK
+        /// <summary>Revit 2024 (.NET Framework 4.8): the script compiler is not ported yet (backlog R24, second slice).</summary>
+        internal const string NotOnThisRevit = "Running C# scripts (execute_revit_code, run_saved_script) is not available on Revit 2024 yet. " +
+            "The other ACE tools work: model check, model brief, element search, warnings, clash tests, worksets, parameters.";
+
+        public static JsonObject Run(UIApplication uiapp, JsonObject args) => throw new CommandException(NotOnThisRevit);
+#else
         /// <summary>The script assembly's load context of the current run, unloaded when the run ends (runs are one at a time).</summary>
         private static AssemblyLoadContext _scriptContext;
 
@@ -84,6 +93,7 @@ public static class AceScript
                 try { alc?.Unload(); } catch (Exception ex) { Log.Warn($"Script unload: {ex.Message}"); }
             }
         }
+#endif
 
         private static JsonObject RunScript(UIApplication uiapp, JsonObject args)
         {
@@ -370,7 +380,7 @@ public static class AceScript
 
         private static (Assembly assembly, string[] errors, string[] risks) Compile(string source)
         {
-            var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)));
+            var key = Compat.Sha256Hex(source);
             byte[] bytes;
             string[] risks;
             lock (Compiled) (_, bytes, risks) = Compiled.FirstOrDefault(c => c.Key == key);
@@ -389,12 +399,16 @@ public static class AceScript
                     if (Compiled.Count > CompiledKept) Compiled.RemoveAt(0);
                 }
             }
+#if NETFRAMEWORK
+            return (Assembly.Load(bytes), Array.Empty<string>(), risks ?? Array.Empty<string>());
+#else
             var assemblyNameOf = $"AceScript_{Interlocked.Increment(ref _counter)}";
 
             // Collectible context so thousands of scripts don't leak memory; Revit/our types resolve from the default context.
             var alc = _scriptContext = new AssemblyLoadContext(assemblyNameOf, isCollectible: true);
             using var ms = new MemoryStream(bytes);
             return (alc.LoadFromStream(ms), Array.Empty<string>(), risks ?? Array.Empty<string>());
+#endif
         }
 
         private static MethodInfo LoadCompiler()
@@ -404,10 +418,13 @@ public static class AceScript
             var path = Path.Combine(compilerDir, "AceRevitMcp.Compiler.dll");
             if (!File.Exists(path))
                 throw new CommandException($"C# compiler not found at {path}. Re-run install.ps1.");
-
+#if NETFRAMEWORK
+            throw new CommandException(NotOnThisRevit);
+#else
             var alc = new CompilerLoadContext(compilerDir);
             var asm = alc.LoadFromAssemblyPath(path);
             return asm.GetType("AceRevitMcp.Compiler.ScriptCompiler")!.GetMethod("Compile")!;
+#endif
         }
 
         private static Tuple<int, string[]> _references;   // one reference: the count and the list always belong together
@@ -416,22 +433,31 @@ public static class AceScript
         /// Compiles a trivial script on a background thread when Revit starts, so the first real script does not pay
         /// for loading Roslyn and reading the reference assemblies.
         /// </summary>
-        public static void WarmUp() => System.Threading.Tasks.Task.Run(() =>
+        public static void WarmUp()
         {
-            try
+#if !NETFRAMEWORK
+            System.Threading.Tasks.Task.Run(() =>
             {
-                MethodInfo compile;
-                lock (CompilerGate) compile = _compile ??= LoadCompiler();
-                compile.Invoke(null, new object[] { BuildSource("return null;"), ReferencePaths(), "AceScript_warmup" });
-            }
-            catch (Exception ex) { Log.Warn($"Script compiler warm-up: {ex.Message}"); }
-        });
+                try
+                {
+                    MethodInfo compile;
+                    lock (CompilerGate) compile = _compile ??= LoadCompiler();
+                    compile.Invoke(null, new object[] { BuildSource("return null;"), ReferencePaths(), "AceScript_warmup" });
+                }
+                catch (Exception ex) { Log.Warn($"Script compiler warm-up: {ex.Message}"); }
+            });
+#endif
+        }
 
         /// <summary>The reference list, rebuilt only when assemblies have been loaded since the last time.</summary>
         private static string[] ReferencePaths()
         {
             // Counted without script assemblies (collectible, unloaded later), so a script coming and going never hides a newly loaded assembly.
+#if NETFRAMEWORK
+            var count = AppDomain.CurrentDomain.GetAssemblies().Count(a => !a.IsDynamic);
+#else
             var count = AppDomain.CurrentDomain.GetAssemblies().Count(a => !a.IsDynamic && !a.IsCollectible);
+#endif
             if (_references is { } cached && cached.Item1 == count) return cached.Item2;
             var paths = BuildReferencePaths();
             _references = Tuple.Create(count, paths);
@@ -447,7 +473,9 @@ public static class AceScript
                 string location;
                 try { location = asm.Location; } catch { continue; }
                 if (string.IsNullOrEmpty(location)) continue;
+#if !NETFRAMEWORK
                 if (AssemblyLoadContext.GetLoadContext(asm) is CompilerLoadContext) continue;
+#endif
                 paths.Add(location);
             }
 
@@ -471,6 +499,7 @@ public static class AceScript
             return paths.ToArray();
         }
 
+#if !NETFRAMEWORK
         private sealed class CompilerLoadContext : AssemblyLoadContext
         {
             private readonly string _dir;
@@ -482,5 +511,6 @@ public static class AceScript
                 return File.Exists(candidate) ? LoadFromAssemblyPath(candidate) : null;
             }
         }
+#endif
     }
 }

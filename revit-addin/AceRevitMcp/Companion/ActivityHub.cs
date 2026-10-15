@@ -99,7 +99,7 @@ namespace AceRevitMcp.Companion
                 var keys = args.Select(kv => kv.Key).Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name" or "explanation" or "plan" or "step")).OrderBy(k => k, StringComparer.Ordinal);
                 material = kind + "\n" + string.Join("\n", keys.Select(k => $"{k}={part(k)}"));
             }
-            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material)));
+            return Util.Compat.Sha256Hex(material);
         }
 
         // ---- Activity feed --------------------------------------------------------------------------

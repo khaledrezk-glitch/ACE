@@ -1,7 +1,7 @@
-# ACE: Claude ↔ Revit 2025 (MCP)
+# ACE: Claude ↔ Revit 2024 / 2025 (MCP)
 
 Tell Claude what you want in plain language ("please do this for me in Revit") and it does the whole
-job in your open Revit 2025 model: it looks at the model, plans the steps, writes and runs Revit API
+job in your open Revit model (2025; on 2024 everything except C# scripts, for now): it looks at the model, plans the steps, writes and runs Revit API
 code, checks the result, and reports back.
 
 ```
@@ -11,7 +11,7 @@ Claude Desktop / Claude Code
 ACE MCP server (Node.js)                    %LOCALAPPDATA%\ACE-RevitMCP\mcp-server
         │  HTTP on localhost only + secret token
         ▼
-ACE add-in inside Revit 2025                %APPDATA%\Autodesk\Revit\Addins\2025\AceRevitMcp
+ACE add-in inside Revit 2024 / 2025         %APPDATA%\Autodesk\Revit\Addins\<year>\AceRevitMcp
         │  runs on Revit's main thread via ExternalEvent
         ▼
 Your model
@@ -134,7 +134,7 @@ report.cmd                    create an issue report for the maintainers
 build-package.ps1             build the team release zip (prebuilt add-in + bundled dependencies)
 uninstall.ps1                 removes everything (-Purge also removes settings, scripts and journals)
 team.example.json             team settings template (shared scripts and reports folders)
-revit-addin/                  Revit 2025 add-in (.NET 8) + isolated Roslyn compiler
+revit-addin/                  Revit add-in (net8.0-windows for 2025, net48 for 2024) + isolated Roslyn compiler (2025)
 mcp-server/                   MCP server: index.js, lib/, instructions.md, guides/, scripts/, test/
 USER-GUIDE / AGENT-GUIDE / REQUIREMENTS / TEAM-DEPLOYMENT / FIRST-TEST / CHANGELOG / CLAUDE.md
 ```

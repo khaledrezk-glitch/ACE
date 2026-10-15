@@ -50,7 +50,7 @@ namespace AceRevitMcp.Tracking
         public static string ModelKey(Document doc)
         {
             var id = string.IsNullOrEmpty(doc.PathName) ? doc.Title : doc.PathName.ToLowerInvariant();
-            var hash = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(id))).Substring(0, 8);
+            var hash = Util.Compat.Sha1Hex(id).Substring(0, 8);
             var safe = string.Concat(doc.Title.Select(c => System.IO.Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
             return $"{safe}-{hash}";
         }
@@ -144,7 +144,7 @@ namespace AceRevitMcp.Tracking
                 }
                 sb.Append('|');
             }
-            return Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(sb.ToString()))).Substring(0, 12);
+            return Util.Compat.Md5Hex(sb.ToString()).Substring(0, 12);
         }
 
         /// <summary>Type, workset and phase names looked up once per capture, not once per element.</summary>
@@ -218,7 +218,7 @@ namespace AceRevitMcp.Tracking
                     using (var fs = File.Create(temp))
                     using (var gz = new GZipStream(fs, CompressionLevel.Fastest))
                         JsonSerializer.Serialize(gz, snap, Json);
-                    File.Move(temp, file, true);
+                    Util.Compat.MoveOverwrite(temp, file);
                     foreach (var extra in List(dir).Skip(KeepPerModel)) try { File.Delete(extra.File); } catch { }
                 }
                 catch (Exception ex) { Log.Warn($"Saving snapshot {file}: {ex.Message}"); }
@@ -305,7 +305,7 @@ namespace AceRevitMcp.Tracking
             var words = since.Replace("last ", "").Replace(" ago", "").Trim();
             if (Enum.TryParse<DayOfWeek>(words, true, out var day) && !int.TryParse(words, out _))
                 return today.AddDays(-(((int)today.DayOfWeek - (int)day + 7) % 7));
-            var parts = words.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var parts = words.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length == 2 && int.TryParse(parts[0], out var n) && n >= 0)
             {
                 if (parts[1].StartsWith("day")) return today.AddDays(-n);

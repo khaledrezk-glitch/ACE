@@ -108,7 +108,7 @@ namespace AceRevitMcp.Commands
         public static JsonNode QueryElements(UIApplication app, JsonObject args)
         {
             var doc = Args.RequireDoc(app);
-            var limit = Math.Clamp(Args.Int(args, "limit", 200), 1, 5000);
+            var limit = Util.Compat.Clamp(Args.Int(args, "limit", 200), 1, 5000);
             var offset = Math.Max(0, Args.Int(args, "offset", 0));
 
             FilteredElementCollector collector;

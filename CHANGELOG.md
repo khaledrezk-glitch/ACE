@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 (15 Oct 2026)
+- **Revit 2024 support, first part (R24):** the add-in is now built twice from one source, for Revit 2024 (.NET Framework
+  4.8) and Revit 2025 (.NET 8). The installer puts the right build into each installed Revit (or the years given with
+  `-RevitYear`); the package holds `bin\addin\2024` and `bin\addin\2025`. On Revit 2024 every native tool works (model
+  check, model brief, element search, warnings, clash tests, worksets, parameters, presentation standard, change
+  tracking, compliance), but C# scripts (`execute_revit_code`, `run_saved_script`) are not available yet and say so.
+  System.Text.Json 8 and its dependencies ship beside the 2024 add-in, served by a resolver that only ever loads ACE's
+  own copies. doctor, uninstall and `check_setup` check each year (no script compiler expected on 2024). Use one Revit
+  with ACE at a time: both share one port.
 - **Compliance per requirement (C1+):** every model check now also evaluates the project's requirements: met, partly
   (a measured part of a set, e.g. 3 of 100 elements on the wrong workset), not-met or not-checkable, with the evidence and
   any accepted deviation shown beside the status (a deviation made against an earlier text of the clause asks to be

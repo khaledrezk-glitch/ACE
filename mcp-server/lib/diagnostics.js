@@ -15,7 +15,9 @@ import { listScripts } from "./scripts.js";
 import { status as registrationStatus } from "./register.js";
 
 const isWindows = process.platform === "win32";
-const ADDIN_DIR = path.join(APPDATA, "Autodesk", "Revit", "Addins", "2025");
+// Revit years ACE supports; 2024 runs the .NET Framework build, which has no script compiler yet.
+const REVIT_YEARS = ["2024", "2025"];
+const addinsDir = (year) => path.join(APPDATA, "Autodesk", "Revit", "Addins", year);
 const ADDIN_LOG = path.join(LOG_DIR, "addin.log");
 
 const check = (name, status, detail, fix) => ({ name, status, detail, ...(fix ? { fix } : {}) });
@@ -35,20 +37,25 @@ export async function runChecks({ deep = true } = {}) {
   );
 
   if (isWindows) {
-    const manifest = path.join(ADDIN_DIR, "AceRevitMcp.addin");
-    const dll = path.join(ADDIN_DIR, "AceRevitMcp", "AceRevitMcp.dll");
-    const compiler = path.join(ADDIN_DIR, "AceRevitMcp", "Compiler", "AceRevitMcp.Compiler.dll");
-    const missing = [manifest, dll, compiler].filter((f) => !fs.existsSync(f));
-    checks.push(
-      missing.length === 0
-        ? check("Revit add-in files", "ok", path.dirname(dll))
-        : check("Revit add-in files", "fail", `Missing: ${missing.join(", ")}`, "Close Revit and run install.ps1 (or doctor.ps1 -Fix)."),
-    );
-    try {
-      const others = fs.readdirSync(ADDIN_DIR).filter((f) => f.endsWith(".addin") && f !== "AceRevitMcp.addin");
-      if (others.length) checks.push(check("Other Revit add-ins", "info", others.join(", ")));
-    } catch {
-      /* no add-ins folder */
+    // Check each year ACE is installed for; with none installed, report the missing 2025 files as before.
+    const installed = REVIT_YEARS.filter((y) => fs.existsSync(path.join(addinsDir(y), "AceRevitMcp.addin")));
+    for (const year of installed.length ? installed : ["2025"]) {
+      const dir = addinsDir(year);
+      const dll = path.join(dir, "AceRevitMcp", "AceRevitMcp.dll");
+      const required = [path.join(dir, "AceRevitMcp.addin"), dll];
+      if (year !== "2024") required.push(path.join(dir, "AceRevitMcp", "Compiler", "AceRevitMcp.Compiler.dll"));
+      const missing = required.filter((f) => !fs.existsSync(f));
+      checks.push(
+        missing.length === 0
+          ? check(`Revit ${year} add-in files`, "ok", path.dirname(dll) + (year === "2024" ? " (C# scripts are not available on Revit 2024 yet)" : ""))
+          : check(`Revit ${year} add-in files`, "fail", `Missing: ${missing.join(", ")}`, "Close Revit and run install.ps1 (or doctor.ps1 -Fix)."),
+      );
+      try {
+        const others = fs.readdirSync(dir).filter((f) => f.endsWith(".addin") && f !== "AceRevitMcp.addin");
+        if (others.length) checks.push(check(`Other Revit ${year} add-ins`, "info", others.join(", ")));
+      } catch {
+        /* no add-ins folder */
+      }
     }
     for (const r of registrationStatus()) {
       const where = `${r.kind}: ${r.file}`;
@@ -62,7 +69,7 @@ export async function runChecks({ deep = true } = {}) {
   const h = await health();
   if (!h.ok) {
     checks.push(check("Revit connection", "fail", `No answer from the add-in (${h.error}).`,
-      "Open Revit 2025 and a model. If it's open: ACE tab > MCP Status > Start/Restart. If there's no ACE tab: re-run install.ps1 and click 'Always Load' when Revit asks."));
+      "Open Revit (2024 or 2025) and a model. If it's open: ACE tab > MCP Status > Start/Restart. If there's no ACE tab: re-run install.ps1 and click 'Always Load' when Revit asks."));
   } else {
     checks.push(check("Revit connection", "ok", `Add-in listening (Revit ${h.revitVersion})`));
     try {

@@ -20,7 +20,7 @@ namespace AceRevitMcp.Bridge
 
         /// <summary>Constant-time comparison, so the token cannot be guessed from response times.</summary>
         private bool TokenMatches(string given) =>
-            given != null && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            given != null && Util.Compat.FixedTimeEquals(
                 Encoding.UTF8.GetBytes(given), Encoding.UTF8.GetBytes(_config.Token ?? ""));
 
         private readonly AceConfig _config;

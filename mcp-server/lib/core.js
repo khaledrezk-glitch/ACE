@@ -84,7 +84,7 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
   const cfg = readConfig();
   if (!cfg) {
     throw new RevitError(
-      `Cannot find ${CONFIG_PATH}. Start Revit 2025 once with the ACE add-in installed (run install.ps1), then try again.`,
+      `Cannot find ${CONFIG_PATH}. Start Revit (2024 or 2025) once with the ACE add-in installed (run install.ps1), then try again.`,
     );
   }
   const base = bridgeUrl(cfg);
@@ -114,7 +114,7 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
       );
     }
     throw new RevitError(
-      `Revit is not reachable at ${base} (${reason}). Make sure Revit 2025 is open with a model; ` +
+      `Revit is not reachable at ${base} (${reason}). Make sure Revit (2024 or 2025) is open with a model; ` +
         `the ACE tab > "MCP Status" shows whether the connection is running. Call check_setup for a full diagnosis.`,
     );
   }

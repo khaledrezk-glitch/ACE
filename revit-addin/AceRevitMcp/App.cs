@@ -19,6 +19,17 @@ namespace AceRevitMcp
 
         public Result OnStartup(UIControlledApplication application)
         {
+#if NETFRAMEWORK
+            // Revit 2024: serve System.Text.Json and its dependencies from ACE's folder before anything uses them.
+            Util.DependencyResolver.Register();
+#endif
+            return Start(application);
+        }
+
+        // Separate so the libraries it uses are loaded only after the resolver above is in place.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private Result Start(UIControlledApplication application)
+        {
             try
             {
                 Config = AceConfig.LoadOrCreate();

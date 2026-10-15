@@ -2,7 +2,7 @@
 // ACE Revit MCP server.
 //
 // Claude (Desktop or Code) starts this process over stdio. It forwards tool calls to the ACE add-in
-// running inside Revit 2025 (http://localhost:<port>, token-protected), so Claude can understand the
+// running inside Revit 2024 or 2025 (http://localhost:<port>, token-protected), so Claude can understand the
 // model, change it safely (explain -> preview -> confirm -> apply -> verify), and write and run
 // Revit API C# for any multi-step task.
 
@@ -65,7 +65,7 @@ const benign = { readOnlyHint: false, destructiveHint: false, idempotentHint: fa
 
 tool("revit_status", {
   title: "Revit connection status",
-  description: "Check that Revit 2025 is running and reachable, the add-in version, and which documents are open. If anything fails, call check_setup.",
+  description: "Check that Revit (2024 or 2025) is running and reachable, the add-in version, and which documents are open. If anything fails, call check_setup.",
   inputSchema: {},
   annotations: readOnly,
 }, async () => text(await callRevit("ping", {}, 20)));

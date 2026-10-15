@@ -224,7 +224,7 @@ namespace AceRevitMcp.Commands
             var doc = Args.RequireDoc(app);
             var catName = Args.Str(args, "category") ?? throw new CommandException("'category' is required, e.g. \"Doors\".");
             var cat = Args.ResolveCategory(doc, catName);
-            var sampleSize = Math.Clamp(Args.Int(args, "sample", 300), 10, 5000);
+            var sampleSize = Util.Compat.Clamp(Args.Int(args, "sample", 300), 10, 5000);
 
             // Ids first (cheap), then load only the sampled elements.
             var allIds = new FilteredElementCollector(doc).OfCategoryId(cat.Id).WhereElementIsNotElementType().ToElementIds().ToList();
@@ -295,7 +295,7 @@ namespace AceRevitMcp.Commands
         public static JsonNode ListTypes(UIApplication app, JsonObject args)
         {
             var doc = Args.RequireDoc(app);
-            var limit = Math.Clamp(Args.Int(args, "limit", 300), 1, 3000);
+            var limit = Util.Compat.Clamp(Args.Int(args, "limit", 300), 1, 3000);
             var offset = Math.Max(0, Args.Int(args, "offset", 0));
             var collector = new FilteredElementCollector(doc).WhereElementIsElementType();
             var catName = Args.Str(args, "category");

@@ -1,11 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Makes this PC ready to control Revit 2025 from Claude (Desktop or Claude Code) via MCP.
+  Makes this PC ready to control Revit 2024 and 2025 from Claude (Desktop or Claude Code) via MCP.
 
 .DESCRIPTION
   1. Installs prerequisites if missing (.NET 8 SDK, Node.js LTS) using winget.
-  2. Builds the ACE Revit add-in and registers it with Revit 2025 (per-user, no admin needed).
+  2. Builds the ACE Revit add-in and registers it with each installed Revit (2024 and/or 2025; per-user, no admin needed).
+     Revit 2024 gets the .NET Framework 4.8 build, which does not run C# scripts yet; all other tools work.
   3. Installs the MCP server to %LOCALAPPDATA%\ACE-RevitMCP\mcp-server.
   4. Creates the shared config (%APPDATA%\ACE-RevitMCP\config.json: port + secret token).
   5. Registers the "ace-revit" MCP server in Claude Desktop and, if installed, Claude Code.
@@ -22,7 +23,8 @@ param(
     [switch]$SkipClaudeCode,
     [switch]$NonInteractive,
     [switch]$Silent,     # for IT / mass deployment: no prompts (same as -NonInteractive)
-    [switch]$SkipAddin   # only (re)install the MCP server + Claude registration; leaves Revit alone
+    [switch]$SkipAddin,  # only (re)install the MCP server + Claude registration; leaves Revit alone
+    [string[]]$RevitYear # default: every supported Revit installed on this PC (2024, 2025)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,10 +32,26 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($Silent) { $NonInteractive = $true }
 # A release package ships a prebuilt add-in (bin\addin) and bundled Node dependencies, so team PCs
 # need neither the .NET SDK nor internet access to npm. A source checkout builds on the machine.
-$Prebuilt = Test-Path (Join-Path $Root 'bin\addin\AceRevitMcp.dll')
+# Prebuilt add-ins per Revit year: bin\addin\2024 (.NET Framework 4.8) and bin\addin\2025 (.NET 8). Packages before 1.9
+# had only bin\addin (2025).
+$Frameworks = @{ '2024' = 'net48'; '2025' = 'net8.0-windows' }
+function Get-PrebuiltDir($year) {
+    $d = Join-Path $Root "bin\addin\$year"
+    if (Test-Path (Join-Path $d 'AceRevitMcp.dll')) { return $d }
+    if ($year -eq '2025' -and (Test-Path (Join-Path $Root 'bin\addin\AceRevitMcp.dll'))) { return (Join-Path $Root 'bin\addin') }
+    return $null
+}
+$Prebuilt = [bool](Get-PrebuiltDir '2025') -or [bool](Get-PrebuiltDir '2024')
 $BundledNodeModules = Test-Path (Join-Path $Root 'mcp-server\node_modules\@modelcontextprotocol')
 $PackageVersion = (Get-Content (Join-Path $Root 'mcp-server\package.json') -Raw | ConvertFrom-Json).version
-$RevitYear = '2025'
+if ($RevitYear) {
+    $RevitYears = @($RevitYear | Where-Object { $Frameworks.ContainsKey($_) })
+    if (-not $RevitYears) { throw "Supported Revit versions: 2024, 2025 (given: $($RevitYear -join ', '))." }
+} else {
+    $RevitYears = @('2024', '2025' | Where-Object { Test-Path (Join-Path $env:ProgramFiles "Autodesk\Revit $_\Revit.exe") })
+    if (-not $RevitYears) { $RevitYears = @('2025') }
+}
+$RevitLabel = $RevitYears -join ' and '
 
 function Step($m) { Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Ok($m)   { Write-Host "    OK  $m" -ForegroundColor Green }
@@ -64,16 +82,16 @@ function Winget-Install($id, $label) {
 # Windows PowerShell 5.1 otherwise serialises some arrays as {"value":[...],"Count":n}.
 Remove-TypeData System.Array -ErrorAction SilentlyContinue
 
-Write-Host "ACE Revit MCP $PackageVersion installer (Revit $RevitYear)" -ForegroundColor White
+Write-Host "ACE Revit MCP $PackageVersion installer (Revit $RevitLabel)" -ForegroundColor White
 Write-Host $(if ($Prebuilt) { "    prebuilt package" } else { "    source checkout (the add-in is built on this PC)" })
 Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
 # ------------------------------------------------------------------------------------------------
 if (-not $SkipAddin) {
-Step "Checking Revit $RevitYear"
-$existingDll = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitYear\AceRevitMcp\AceRevitMcp.dll"
+Step "Checking Revit $RevitLabel"
+$existingDll = @($RevitYears | Where-Object { Test-Path (Join-Path $env:APPDATA "Autodesk\Revit\Addins\$_\AceRevitMcp\AceRevitMcp.dll") })
 if (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
-    if (Test-Path $existingDll) {
+    if ($existingDll.Count -gt 0) {
         # Upgrade: Revit has the old add-in loaded and its files are locked.
         while (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
             if ($NonInteractive) { throw "Revit is running and has the current add-in loaded. Close Revit, then re-run the installer." }
@@ -84,9 +102,14 @@ if (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
         Warn "Revit is running. That's fine for a first install - restart Revit afterwards to load the add-in."
     }
 }
-$revitExe = Join-Path $env:ProgramFiles "Autodesk\Revit $RevitYear\Revit.exe"
-if (Test-Path $revitExe) { Ok "Revit $RevitYear found" }
-else { Warn "Revit $RevitYear was not found at $revitExe. Continuing; the add-in will load once Revit $RevitYear is installed." }
+foreach ($year in $RevitYears) {
+    $revitExe = Join-Path $env:ProgramFiles "Autodesk\Revit $year\Revit.exe"
+    if (Test-Path $revitExe) { Ok "Revit $year found$(if ($year -eq '2024') { ' (C# scripts are not available on 2024 yet; all other tools work)' })" }
+    else { Warn "Revit $year was not found at $revitExe. Continuing; the add-in will load once Revit $year is installed." }
+}
+foreach ($year in $RevitYears) {
+    if ($Prebuilt -and -not (Get-PrebuiltDir $year)) { throw "This package has no add-in for Revit $year. Use a package built with ACE 1.9 or later." }
+}
 
 }
 
@@ -138,26 +161,30 @@ Ok "Node.js $((& node --version).Trim()) at $NodeExe"
 # ------------------------------------------------------------------------------------------------
 if (-not $SkipAddin) {
 Step "Building and installing the Revit add-in"
-$AddinRoot  = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitYear"
-$InstallDir = Join-Path $AddinRoot 'AceRevitMcp'
-if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-
-if ($Prebuilt) {
-    Copy-Item (Join-Path $Root 'bin\addin\*') -Destination $InstallDir -Recurse -Force
-} else {
-    & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp\AceRevitMcp.csproj') -c Release -o $InstallDir --nologo -v quiet
-    if ($LASTEXITCODE -ne 0) { throw "Building the add-in failed (see errors above)." }
-    & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Compiler\AceRevitMcp.Compiler.csproj') -c Release -o (Join-Path $InstallDir 'Compiler') --nologo -v quiet
-    if ($LASTEXITCODE -ne 0) { throw "Building the script compiler failed (see errors above)." }
-}
-Get-ChildItem $InstallDir -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
-
 $template = Join-Path $Root 'revit-addin\AceRevitMcp.addin.template'
 if (-not (Test-Path $template)) { $template = Join-Path $Root 'bin\AceRevitMcp.addin.template' }
-$manifest = (Get-Content $template -Raw).Replace('{{ASSEMBLY_PATH}}', (Join-Path $InstallDir 'AceRevitMcp.dll'))
-Write-Utf8NoBom (Join-Path $AddinRoot 'AceRevitMcp.addin') $manifest
-Ok "Add-in installed to $InstallDir"
+foreach ($year in $RevitYears) {
+    $AddinRoot  = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$year"
+    $InstallDir = Join-Path $AddinRoot 'AceRevitMcp'
+    if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+    if ($Prebuilt) {
+        $src = Get-PrebuiltDir $year
+        Get-ChildItem $src | Where-Object { $_.Name -notin '2024', '2025' } | Copy-Item -Destination $InstallDir -Recurse -Force
+    } else {
+        & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp\AceRevitMcp.csproj') -c Release -f $Frameworks[$year] -o $InstallDir --nologo -v quiet
+        if ($LASTEXITCODE -ne 0) { throw "Building the add-in for Revit $year failed (see errors above)." }
+        if ($year -ne '2024') {   # the script compiler runs on .NET 8 only (Revit 2025)
+            & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Compiler\AceRevitMcp.Compiler.csproj') -c Release -o (Join-Path $InstallDir 'Compiler') --nologo -v quiet
+            if ($LASTEXITCODE -ne 0) { throw "Building the script compiler failed (see errors above)." }
+        }
+    }
+    Get-ChildItem $InstallDir -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+    $manifest = (Get-Content $template -Raw).Replace('{{ASSEMBLY_PATH}}', (Join-Path $InstallDir 'AceRevitMcp.dll'))
+    Write-Utf8NoBom (Join-Path $AddinRoot 'AceRevitMcp.addin') $manifest
+    Ok "Add-in for Revit $year installed to $InstallDir"
+}
 
 }
 
@@ -295,7 +322,7 @@ try {
 # ------------------------------------------------------------------------------------------------
 Write-Host ""
 Write-Host "Done! Next steps:" -ForegroundColor Green
-Write-Host "  1. Start Revit $RevitYear. If it asks about the unsigned add-in 'ACE Revit MCP', click 'Always Load'."
+Write-Host "  1. Start Revit ($RevitLabel; one at a time with ACE). If it asks about the unsigned add-in 'ACE Revit MCP', click 'Always Load'."
 Write-Host "  2. Open a model. The 'ACE' ribbon tab > 'MCP Status' shows the connection."
 Write-Host "  3. (Re)start Claude Desktop, then ask e.g.: 'Give me an overview of the open Revit model.'"
 Write-Host "  Problems? Start menu > ACE Revit MCP > 'Check and fix ACE Revit', or 'Report a problem'."

@@ -1,7 +1,8 @@
 # ACE Revit MCP: notes for Claude Code (maintainers)
 
 ## Layout
-- `revit-addin/AceRevitMcp`: Revit 2025 add-in (.NET 8). `Bridge/` is the localhost HTTP + ExternalEvent
+- `revit-addin/AceRevitMcp`: Revit add-in, built for Revit 2025 (net8.0-windows) and Revit 2024 (net48) from one source;
+  use `Util/Compat.cs` instead of .NET 5+ only APIs, and `#if NETFRAMEWORK` only where a runtime feature differs (the code runner). `Bridge/` is the localhost HTTP + ExternalEvent
   queue, `Commands/` holds native commands (registered in `CommandRegistry.cs`), `Scripting/` is the
   C# code runner (TransactionGroup wrapping, dry runs, change tracking), and `Util/` has JSON, ModelGuard
   (warnings/dialogs) and ChangeTracker (DocumentChanged, safe undo).
@@ -14,7 +15,7 @@
 
 ## Checks before pushing
 ```bash
-dotnet build revit-addin/AceRevitMcp/AceRevitMcp.csproj -c Release       # must be warning-free
+dotnet build revit-addin/AceRevitMcp/AceRevitMcp.csproj -c Release       # both targets (2024 + 2025), must be warning-free
 dotnet build revit-addin/AceRevitMcp.Compiler/AceRevitMcp.Compiler.csproj -c Release
 dotnet run --project tools/tracker-test                                   # change-tracker comparison (after the add-in build)
 dotnet run --project tools/clash-test                                     # clash logic: responsibility, merge, issues (after the add-in build)

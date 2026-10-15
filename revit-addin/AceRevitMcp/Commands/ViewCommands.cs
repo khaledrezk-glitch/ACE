@@ -86,7 +86,7 @@ namespace AceRevitMcp.Commands
             if (view == null || !view.CanBePrinted)
                 throw new CommandException("This view cannot be exported as an image.");
 
-            var size = Math.Clamp(Args.Int(args, "pixel_size", 1400), 256, 4000);
+            var size = Util.Compat.Clamp(Args.Int(args, "pixel_size", 1400), 256, 4000);
             var dir = Path.Combine(Path.GetTempPath(), "ACE-RevitMCP", "images");
             Directory.CreateDirectory(dir);
             var file = ViewTools.ExportPng(doc, view.Id, dir, $"view_{DateTime.Now:yyyyMMdd_HHmmss_fff}", size, fitHorizontal: true)

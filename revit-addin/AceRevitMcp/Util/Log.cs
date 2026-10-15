@@ -32,7 +32,7 @@ namespace AceRevitMcp.Util
                     Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
                     var info = new FileInfo(FilePath);
                     if (info.Exists && info.Length > 5 * 1024 * 1024)
-                        File.Move(FilePath, FilePath + ".old", overwrite: true);
+                        Compat.MoveOverwrite(FilePath, FilePath + ".old");
                     File.AppendAllText(FilePath, line + Environment.NewLine);
                 }
                 catch

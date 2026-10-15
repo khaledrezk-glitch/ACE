@@ -149,6 +149,6 @@ The vault is the document store of C2 / C4, not a parallel hub.
 
 | # | Item | Status |
 |---|---|---|
-| R24 | **Revit 2024 support** beside 2025 (owner, 15 Oct: the Al Nahda project stays on Revit 2024). Revit 2024 runs .NET Framework 4.8, so the add-in needs a second build target; scope, size and blockers are being worked out in the capability assessment. New code avoids .NET 5+ only APIs where it costs nothing | L | scoping |
+| R24 | **Revit 2024 support** beside 2025 (owner, 15 Oct: the Al Nahda project stays on Revit 2024). Revit 2024 runs .NET Framework 4.8, so the add-in needs a second build target; sizing in analysis/11. New code uses `Util/Compat.cs` instead of .NET 5+ only APIs. **Slice 1 done in 1.9.0:** one csproj builds net48 + net8.0-windows, System.Text.Json shipped with a resolver, installer / doctor / uninstall / check_setup per year; scripts answer "not available on Revit 2024 yet". Next: live check on the Al Nahda 2024 project (assembly conflicts with other add-ins are the main unknown). Slice 2: the code runner on net48 (AppDomain-hosted compiler, scripts loaded once per hash) | L | slice 1 done (1.9.0), live check pending; slice 2 open |
 | R1 | Rename (Constella or Datum, `docs/NAMING.md`), ideally before the Project Hub | owner decides |
 | R2 | Brand guidelines and logo into the repository (it is private now) | owner sends the files |

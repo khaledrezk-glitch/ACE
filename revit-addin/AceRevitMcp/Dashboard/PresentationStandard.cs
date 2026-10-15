@@ -45,7 +45,7 @@ namespace AceRevitMcp.Dashboard
         {
             var text = string.Join(";", Sizes.OrderBy(s => s.UpToScale).Select(s => $"{s.UpToScale}:{Band(s.TextMm)}")) + $"|{Font}|{ViewsOnSheetsOnly}|{UnifyTagTypes}|" +
                        string.Join(";", Types.SelectMany(b => b.Value.Select(k => $"{b.Key}/{k.Key}={k.Value}")).OrderBy(x => x, StringComparer.Ordinal));
-            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))).Substring(0, 16);
+            return Util.Compat.Sha256Hex(text).Substring(0, 16);
         }
 
         public static string Band(double mm) => mm.ToString("0.##", CultureInfo.InvariantCulture);

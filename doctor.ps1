@@ -18,14 +18,12 @@ param(
 
 $ErrorActionPreference = 'Continue'
 Remove-TypeData System.Array -ErrorAction SilentlyContinue
-$RevitYear = '2025'
+# Revit years ACE supports: 2024 (.NET Framework 4.8 build, no C# scripts yet) and 2025 (.NET 8 build).
+$RevitYears = @('2024', '2025' | Where-Object { Test-Path (Join-Path $env:ProgramFiles "Autodesk\Revit $_\Revit.exe") })
 $Here      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppData   = $env:APPDATA
 $DataDir   = Join-Path $AppData 'ACE-RevitMCP'
 $CfgFile   = Join-Path $DataDir 'config.json'
-$AddinRoot = Join-Path $AppData "Autodesk\Revit\Addins\$RevitYear"
-$AddinDir  = Join-Path $AddinRoot 'AceRevitMcp'
-$Manifest  = Join-Path $AddinRoot 'AceRevitMcp.addin'
 $McpDir    = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\mcp-server'
 $InfoFile  = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\install-info.json'
 
@@ -56,11 +54,12 @@ Write-Host "Checking $([Environment]::MachineName) as $([Environment]::UserName)
 $os = [Environment]::OSVersion.Version
 Add-Result 'INFO' 'Windows' ("{0} (PowerShell {1})" -f $os, $PSVersionTable.PSVersion)
 
-$revitExe = Join-Path $env:ProgramFiles "Autodesk\Revit $RevitYear\Revit.exe"
-if (Test-Path $revitExe) {
-    Add-Result 'OK' "Revit $RevitYear" ((Get-Item $revitExe).VersionInfo.ProductVersion)
-} else {
-    Add-Result 'FAIL' "Revit $RevitYear" "Not found at $revitExe" "Install Revit $RevitYear (the add-in only supports 2025)."
+foreach ($year in $RevitYears) {
+    $revitExe = Join-Path $env:ProgramFiles "Autodesk\Revit $year\Revit.exe"
+    Add-Result 'OK' "Revit $year" ((Get-Item $revitExe).VersionInfo.ProductVersion)
+}
+if (-not $RevitYears) {
+    Add-Result 'FAIL' 'Revit' "Neither Revit 2024 nor 2025 found under $(Join-Path $env:ProgramFiles 'Autodesk')" 'Install Revit 2024 or 2025 (the versions ACE supports).'
 }
 
 $node = Get-Command node -ErrorAction SilentlyContinue
@@ -74,23 +73,33 @@ if ($node) {
 
 # --- Revit add-in -------------------------------------------------------------------------------
 $revitProc = Get-Process -Name Revit -ErrorAction SilentlyContinue | Select-Object -First 1
-$addinOk = (Test-Path $Manifest) -and (Test-Path (Join-Path $AddinDir 'AceRevitMcp.dll')) -and (Test-Path (Join-Path $AddinDir 'Compiler\AceRevitMcp.Compiler.dll'))
-if ($addinOk) {
-    $ver = (Get-Item (Join-Path $AddinDir 'AceRevitMcp.dll')).VersionInfo.FileVersion
-    $manifestText = Get-Content $Manifest -Raw
-    if ($manifestText -notmatch [regex]::Escape((Join-Path $AddinDir 'AceRevitMcp.dll'))) {
-        Add-Result 'FAIL' 'Add-in manifest' "Points to the wrong file: $Manifest" 'Reinstall the add-in.' 'addin'
+$addinOk = $false
+$AddinDirs = @()
+foreach ($year in $RevitYears) {
+    $AddinRoot = Join-Path $AppData "Autodesk\Revit\Addins\$year"
+    $AddinDir  = Join-Path $AddinRoot 'AceRevitMcp'
+    $Manifest  = Join-Path $AddinRoot 'AceRevitMcp.addin'
+    $AddinDirs += $AddinDir
+    # Revit 2024 has no script compiler yet (it runs on .NET 8 only), so it is not required there.
+    $needsCompiler = $year -ne '2024'
+    $yearOk = (Test-Path $Manifest) -and (Test-Path (Join-Path $AddinDir 'AceRevitMcp.dll')) -and ((-not $needsCompiler) -or (Test-Path (Join-Path $AddinDir 'Compiler\AceRevitMcp.Compiler.dll')))
+    if ($yearOk) {
+        $addinOk = $true
+        $ver = (Get-Item (Join-Path $AddinDir 'AceRevitMcp.dll')).VersionInfo.FileVersion
+        $manifestText = Get-Content $Manifest -Raw
+        if ($manifestText -notmatch [regex]::Escape((Join-Path $AddinDir 'AceRevitMcp.dll'))) {
+            Add-Result 'FAIL' "Add-in manifest ($year)" "Points to the wrong file: $Manifest" 'Reinstall the add-in.' 'addin'
+        } else {
+            Add-Result 'OK' "Revit $year add-in" "v$ver in $AddinDir$(if (-not $needsCompiler) { ' (C# scripts not available on 2024 yet)' })"
+        }
+        $blocked = Get-ChildItem $AddinDir -Recurse -File | Where-Object { Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue }
+        if ($blocked) { Add-Result 'FAIL' "Blocked files ($year)" "$($blocked.Count) add-in file(s) are marked as downloaded from the internet; Revit may refuse to load them." 'Unblock them.' 'unblock' }
     } else {
-        Add-Result 'OK' 'Revit add-in' "v$ver in $AddinDir"
+        Add-Result 'FAIL' "Revit $year add-in" "Not installed (or incomplete) in $AddinDir" 'Install the add-in (needs Revit closed).' 'addin'
     }
-    $blocked = Get-ChildItem $AddinDir -Recurse -File | Where-Object { Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue }
-    if ($blocked) { Add-Result 'FAIL' 'Blocked files' "$($blocked.Count) add-in file(s) are marked as downloaded from the internet; Revit may refuse to load them." 'Unblock them.' 'unblock' }
-} else {
-    Add-Result 'FAIL' 'Revit add-in' "Not installed (or incomplete) in $AddinDir" 'Install the add-in (needs Revit closed).' 'addin'
+    $others = Get-ChildItem $AddinRoot -Filter *.addin -ErrorAction SilentlyContinue | Where-Object Name -ne 'AceRevitMcp.addin' | ForEach-Object Name
+    if ($others) { Add-Result 'INFO' "Other Revit $year add-ins" ($others -join ', ') }
 }
-
-$others = Get-ChildItem $AddinRoot -Filter *.addin -ErrorAction SilentlyContinue | Where-Object Name -ne 'AceRevitMcp.addin' | ForEach-Object Name
-if ($others) { Add-Result 'INFO' 'Other Revit add-ins' ($others -join ', ') }
 
 if ($revitProc) {
     $loaded = $false
@@ -179,7 +188,7 @@ if ($Fix -and $fixes.Count -gt 0) {
     $src = Source-Dir
     foreach ($k in $fixes) {
         switch ($k) {
-            'unblock' { Get-ChildItem $AddinDir -Recurse -File | Unblock-File; Write-Host "  unblocked add-in files" }
+            'unblock' { foreach ($d in $AddinDirs) { Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue | Unblock-File }; Write-Host "  unblocked add-in files" }
             'node' {
                 if (Get-Command winget -ErrorAction SilentlyContinue) {
                     winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --accept-package-agreements | Out-Host

@@ -46,7 +46,7 @@ namespace AceRevitMcp.Util
                 config.Token = token;
             else
             {
-                config.Token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+                config.Token = Compat.Hex(Compat.RandomBytes(24)).ToLowerInvariant();
                 json["token"] = config.Token;
                 changed = true;
             }

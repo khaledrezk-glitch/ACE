@@ -436,7 +436,8 @@ namespace AceRevitMcp.Dashboard
                 result.Add((x.Time, x.Score));
             }
             catch (Exception ex) { Log.Warn($"Dashboard history: {ex.Message}"); result.Add((x.Time, x.Score)); }
-            return result.OrderBy(r => r.Item1).TakeLast(20).ToList();
+            var ordered = result.OrderBy(r => r.Item1).ToList();
+            return ordered.Skip(Math.Max(0, ordered.Count - 20)).ToList();
         }
     }
 }

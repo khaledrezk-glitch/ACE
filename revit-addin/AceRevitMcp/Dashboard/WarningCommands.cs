@@ -32,8 +32,8 @@ namespace AceRevitMcp.Dashboard
         {
             var doc = Args.RequireDoc(app);
             var contains = Args.Str(args, "contains");
-            var types = Math.Clamp(Args.Int(args, "types", 20), 1, 200);
-            var perType = Math.Clamp(Args.Int(args, "ids_per_type", 200), 1, 5000);
+            var types = Util.Compat.Clamp(Args.Int(args, "types", 20), 1, 200);
+            var perType = Util.Compat.Clamp(Args.Int(args, "ids_per_type", 200), 1, 5000);
 
             var warnings = doc.GetWarnings().Select(w => (Message: w, Text: w.GetDescriptionText() ?? "")).ToList();
             var groups = warnings
