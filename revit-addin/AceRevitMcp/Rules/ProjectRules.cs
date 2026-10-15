@@ -209,7 +209,8 @@ namespace AceRevitMcp.Rules
         public string HashOf(string section)
         {
             var s = Section(section)?.ToJsonString() ?? "";
-            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s))).Substring(0, 12).ToLowerInvariant();
+            using var sha = SHA256.Create();   // works on .NET Framework 4.8 too (Revit 2024 target, backlog R24)
+            return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(s))).Replace("-", "").Substring(0, 12).ToLowerInvariant();
         }
 
         /// <summary>Deep merge: objects merge key by key, the overlay wins; arrays and values are replaced.</summary>

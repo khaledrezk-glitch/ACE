@@ -149,5 +149,6 @@ The vault is the document store of C2 / C4, not a parallel hub.
 
 | # | Item | Status |
 |---|---|---|
+| R24 | **Revit 2024 support** beside 2025 (owner, 15 Oct: the Al Nahda project stays on Revit 2024). Revit 2024 runs .NET Framework 4.8, so the add-in needs a second build target; scope, size and blockers are being worked out in the capability assessment. New code avoids .NET 5+ only APIs where it costs nothing | L | scoping |
 | R1 | Rename (Constella or Datum, `docs/NAMING.md`), ideally before the Project Hub | owner decides |
 | R2 | Brand guidelines and logo into the repository (it is private now) | owner sends the files |
