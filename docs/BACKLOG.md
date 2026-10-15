@@ -105,7 +105,7 @@ The vault is the document store of C2 / C4, not a parallel hub.
 | W1 | Show the clash cause and who changed it in the Companion and Clash Browser (the data exists) | S | open |
 | W2 | Persist the status store per model (keyed by the model key) so the Companion is not empty after opening a model | S | open |
 | W3 | After-sync step that builds the "since last sync" greeting (at most three lines, one action) | M | open |
-| W4 | Compliance tab and tree map (document > section > requirement > check) in the dashboard, with drill-down to elements | M | open, after V2 and C1+ |
+| W4 | Compliance tab and tree map (document > section > requirement > check) in the dashboard, with drill-down to elements | M | Companion tab done (unreleased): against which documents, met %, status bar, groups by kind, requirement cards with source, quote, evidence, decision and "Show in model"; Re-run audit, master report, vault. Still to do: the visual tree map in the dashboard and the trend per audit |
 | P10 | Revit 2027 path on Autodesk's read / write MCP servers: ACE keeps the workflow and the safety gate | L | open, after the presentation |
 
 ## 3b. Navisworks (owner, 7 Oct; concept section 15)

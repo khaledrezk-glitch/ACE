@@ -55,7 +55,7 @@ namespace AceRevitMcp.Companion
             DockPanel.SetDock(header, Dock.Top);
             root.Children.Add(header);
 
-            foreach (var name in new[] { "Home", "Approvals", "Activity", "Results", "Prompts" })
+            foreach (var name in new[] { "Home", "Compliance", "Approvals", "Activity", "Results", "Prompts" })
             {
                 var b = new Button { Background = Brushes.Transparent, BorderThickness = new Thickness(0, 0, 0, 2), Padding = new Thickness(8, 6, 8, 5), Margin = new Thickness(0, 0, 2, 0), Cursor = System.Windows.Input.Cursors.Hand, Foreground = _c.Text };
                 var n = name;
@@ -164,7 +164,8 @@ namespace AceRevitMcp.Companion
             if (waiting.Any(w => DateTime.Now - w.PreviewedAt < TimeSpan.FromSeconds(5)) && _current != "Approvals") _current = "Approvals";
             foreach (var (name, b) in _navButtons)
             {
-                var count = name == "Approvals" ? waiting.Count : name == "Results" ? ActivityHub.Results.Count : 0;
+                var count = name == "Approvals" ? waiting.Count : name == "Results" ? ActivityHub.Results.Count
+                    : name == "Compliance" ? StatusStore.For(ActivityHub.Context.Document)?.Compliance?.Results.Count(x => x.Status is "not-met" or "partly") ?? 0 : 0;
                 b.Content = count > 0 ? $"{name} ({count})" : name;
                 var on = name == _current;
                 b.BorderBrush = on ? _c.Rule : Brushes.Transparent;
@@ -180,6 +181,7 @@ namespace AceRevitMcp.Companion
                 "Approvals" => RenderApprovals(waiting),
                 "Activity" => RenderActivity(),
                 "Results" => RenderResults(),
+                "Compliance" => RenderCompliance(),
                 "Prompts" => RenderPrompts(),
                 _ => RenderHome(waiting),
             };
@@ -320,6 +322,184 @@ namespace AceRevitMcp.Companion
 
         private TextBlock Section(string text) =>
             new TextBlock { Text = text.ToUpperInvariant(), FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = _c.Muted, Margin = new Thickness(0, 0, 0, 6) };
+
+        // ---- Compliance (C1+): status per requirement from the last model check, grouped by kind -------------
+
+        private string _complianceGroup;
+        private (string RunId, string Against) _against;
+        private static readonly string[] StatusOrder = { "not-met", "partly", "met", "not-checkable" };
+        private static string StatusWord(string s) => s switch { "not-met" => "NOT MET", "partly" => "PARTLY", "met" => "MET", _ => "NOT CHECKABLE" };
+        private Brush StatusBrush(string s) => s switch
+        {
+            "not-met" => _c.Rule,
+            "partly" => _c.Text,   // amber is not a brand colour: dark marker plus the word PARTLY
+            "met" => new SolidColorBrush(Coordination.ClashColours.Green),
+            _ => _c.Border,
+        };
+
+        private UIElement RenderCompliance()
+        {
+            var panel = new StackPanel { Margin = new Thickness(10) };
+            var model = ActivityHub.Context.Document;
+            var run = StatusStore.For(model)?.Compliance;
+            if (run == null)
+            {
+                panel.Children.Add(Hint(model == null ? "Open a model." :
+                    "No compliance result for this model yet. It appears after a model check when the project has a requirements vault " +
+                    "(ACE > Audit > Vault). Without a vault, ask Claude to create one and register the client's documents."));
+                var check = ActionButton("Run the model check", true);
+                check.HorizontalAlignment = HorizontalAlignment.Left;
+                check.Click += async (s, e) => await RunModelCheckAsync();
+                panel.Children.Add(check);
+                return panel;
+            }
+
+            // Header: what the model was audited against, when, and the overall picture.
+            if (_against.RunId != run.Id) _against = (run.Id, AgainstText(run.Vault));
+            var head = Card();
+            var hb = (StackPanel)head.Child;
+            hb.Children.Add(Section("Compliance"));
+            if (!string.IsNullOrEmpty(_against.Against)) hb.Children.Add(new TextBlock { Text = "Against " + _against.Against, Foreground = _c.Text, TextWrapping = TextWrapping.Wrap });
+            var when = DateTime.TryParse(run.Time, null, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var t) ? t.ToLocalTime().ToString("d MMM HH:mm") : run.Time;
+            hb.Children.Add(new TextBlock { Text = $"Model check {when} · {run.Results.Count} requirements", Foreground = _c.Muted, FontSize = 11, Margin = new Thickness(0, 0, 0, 6) });
+            int n(string st) => run.Results.Count(x => x.Status == st);
+            var checkable = n("met") + n("partly") + n("not-met");
+            var tiles = new UniformGrid { Columns = 3 };
+            tiles.Children.Add(Stat(checkable == 0 ? "-" : $"{100 * n("met") / checkable}%", "Met", $"{n("met")} of {checkable} checkable", false));
+            tiles.Children.Add(Stat(n("not-met").ToString(), "Not met", $"{n("partly")} partly", n("not-met") > 0));
+            tiles.Children.Add(Stat(n("not-checkable").ToString(), "Not checkable", "manual or no check yet", false));
+            hb.Children.Add(tiles);
+            hb.Children.Add(StatusBar(run));
+            panel.Children.Add(head);
+
+            var groups = run.Results.GroupBy(x => string.IsNullOrWhiteSpace(x.Kind) ? "other" : x.Kind)
+                .Select(g => (Kind: g.Key, Items: g.OrderBy(x => Array.IndexOf(StatusOrder, x.Status)).ThenBy(x => x.Requirement, StringComparer.Ordinal).ToList()))
+                .OrderBy(g => g.Items.Any(x => x.Status == "not-met") ? 0 : g.Items.Any(x => x.Status == "partly") ? 1 : g.Items.Any(x => x.Status == "met") ? 2 : 3)
+                .ThenBy(g => g.Kind, StringComparer.OrdinalIgnoreCase).ToList();
+            var open = groups.FirstOrDefault(g => g.Kind == _complianceGroup);
+
+            if (open.Items == null)
+            {
+                _complianceGroup = null;
+                foreach (var g in groups)
+                {
+                    var worst = g.Items.Select(x => x.Status).OrderBy(x => Array.IndexOf(StatusOrder, x)).First();
+                    var met = g.Items.Count(x => x.Status == "met");
+                    var counted = g.Items.Count(x => x.Status != "not-checkable");
+                    var row = Row(StatusBrush(worst), $"{Cap(g.Kind)}   {(counted == 0 ? "not checkable" : $"{met} / {counted} met")}",
+                        string.Join(" · ", g.Items.Where(x => x.Status is "not-met" or "partly").Take(3).Select(x => $"{x.Requirement} {StatusWord(x.Status).ToLowerInvariant()}")), worst == "not-met");
+                    var button = new Button { Content = row, Background = Brushes.Transparent, BorderThickness = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Stretch, Cursor = System.Windows.Input.Cursors.Hand, Padding = new Thickness(0) };
+                    var kind = g.Kind;
+                    button.Click += (s, e) => { _complianceGroup = kind; Render(); };
+                    panel.Children.Add(button);
+                }
+            }
+            else
+            {
+                var back = ActionButton("< All groups", false);
+                back.HorizontalAlignment = HorizontalAlignment.Left;
+                back.Click += (s, e) => { _complianceGroup = null; Render(); };
+                panel.Children.Add(back);
+                panel.Children.Add(Section(Cap(open.Kind)));
+                foreach (var x in open.Items.Take(200)) panel.Children.Add(RequirementCard(run, x));
+                if (open.Items.Count > 200) panel.Children.Add(Hint($"... and {open.Items.Count - 200} more: see the master report."));
+            }
+
+            // Actions
+            var actions = new WrapPanel { Margin = new Thickness(0, 6, 0, 0) };
+            var rerun = ActionButton("Re-run audit", true);
+            rerun.Click += async (s, e) => await RunModelCheckAsync();
+            actions.Children.Add(rerun);
+            var report = run.Vault != null ? Rules.VaultUi.LatestReport(run.Vault, model) : null;
+            var openReport = ActionButton(report != null ? "Open master report" : "Make master report", false);
+            openReport.Click += (s, e) =>
+            {
+                if (report != null) { try { Rules.VaultUi.Open(report); } catch (Exception ex) { Toast(ex.Message); } }
+                else Copy("Using ace-revit: make the master audit report for this model.", "Copied: paste it into Claude to make the master report.");
+            };
+            actions.Children.Add(openReport);
+            if (run.Vault != null)
+            {
+                var vault = ActionButton("Vault", false);
+                vault.Click += (s, e) =>
+                {
+                    var index = System.IO.Path.Combine(run.Vault, "index.html");
+                    try { Rules.VaultUi.Open(System.IO.File.Exists(index) ? index : run.Vault); } catch (Exception ex) { Toast(ex.Message); }
+                };
+                actions.Children.Add(vault);
+            }
+            panel.Children.Add(actions);
+            return panel;
+        }
+
+        private Border RequirementCard(Rules.Compliance.Run run, Rules.Compliance.Result x)
+        {
+            var card = Card();
+            card.BorderBrush = StatusBrush(x.Status);
+            card.BorderThickness = new Thickness(3, 1, 1, 1);
+            var b = (StackPanel)card.Child;
+            b.Children.Add(new TextBlock { Text = $"{x.Requirement}   {StatusWord(x.Status)}", FontWeight = FontWeights.SemiBold, Foreground = x.Status == "not-met" ? _c.Rule : _c.Text, TextWrapping = TextWrapping.Wrap });
+            var source = string.Join(", ", new[] { x.Doc, x.Where }.Where(v => !string.IsNullOrWhiteSpace(v)));
+            if (source.Length > 0) b.Children.Add(new TextBlock { Text = source, Foreground = _c.Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap });
+            if (!string.IsNullOrWhiteSpace(x.Text)) b.Children.Add(new TextBlock { Text = $"\u201C{x.Text}\u201D", Foreground = _c.Text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) });
+            if (!string.IsNullOrWhiteSpace(x.Evidence)) b.Children.Add(new TextBlock { Text = x.Evidence, Foreground = _c.Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap });
+            if (!string.IsNullOrWhiteSpace(x.Decision)) b.Children.Add(new TextBlock { Text = "Decision: " + x.Decision, Foreground = _c.Text, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
+            // The failing elements of the bound checks, to look at in the model.
+            var ids = x.Status is "not-met" or "partly"
+                ? run.Checks.Where(c => x.CheckKeys.Contains(c.Key, StringComparer.OrdinalIgnoreCase)).SelectMany(c => c.Ids).Distinct().ToArray()
+                : new long[0];
+            if (ids.Length > 0)
+            {
+                var show = ActionButton($"Show {ids.Length} in model", false);
+                show.HorizontalAlignment = HorizontalAlignment.Left;
+                show.Click += async (s, e) => await SelectAsync(ids, zoom: ids.Length <= 50);
+                b.Children.Add(show);
+            }
+            return card;
+        }
+
+        // One bar: met, partly, not met, not checkable, in proportion; the words are in the tiles above.
+        private UIElement StatusBar(Rules.Compliance.Run run)
+        {
+            var bar = new Grid { Height = 8, Margin = new Thickness(0, 6, 0, 0) };
+            foreach (var st in new[] { "met", "partly", "not-met", "not-checkable" })
+            {
+                var count = run.Results.Count(x => x.Status == st);
+                if (count == 0) continue;
+                bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(count, GridUnitType.Star) });
+                var cell = new Border { Background = StatusBrush(st), Margin = new Thickness(0, 0, 1, 0), ToolTip = $"{StatusWord(st)}: {count}" };
+                Grid.SetColumn(cell, bar.ColumnDefinitions.Count - 1);
+                bar.Children.Add(cell);
+            }
+            return bar;
+        }
+
+        // "EIR rev 3.0 · BEP rev 09 ..." from the vault register (read once per run).
+        private static string AgainstText(string vault)
+        {
+            try
+            {
+                var f = System.IO.Path.Combine(vault ?? "", "vault.json");
+                if (!System.IO.File.Exists(f)) return null;
+                var docs = JsonNode.Parse(System.IO.File.ReadAllText(f))?["documents"] as JsonArray;
+                return docs == null ? null : string.Join(" · ", docs.Select(d => $"{d?["key"]}{(string.IsNullOrWhiteSpace(d?["revision"]?.ToString()) ? "" : " rev " + d["revision"])}"));
+            }
+            catch { return null; }
+        }
+
+        private static string Cap(string s) => string.IsNullOrEmpty(s) ? s : char.ToUpperInvariant(s[0]) + s.Substring(1).Replace('-', ' ');
+
+        private async System.Threading.Tasks.Task RunModelCheckAsync()
+        {
+            Toast("Model check: working in Revit...");
+            try
+            {
+                var r = await App.Dispatcher.EnqueueAsync("get_model_insights", new JsonObject(), TimeSpan.FromMinutes(10));
+                Toast($"Model check: score {r?["score"]}/100. Compliance updated.");
+            }
+            catch (Exception ex) { Toast($"Model check: {ex.Message}"); }
+            finally { QueueRender(); }
+        }
 
         // ---- Approvals ----------------------------------------------------------------------------------
 

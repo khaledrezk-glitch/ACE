@@ -25,6 +25,10 @@ namespace AceRevitMcp.Rules
         public sealed class Result
         {
             public string Requirement, Binding, Status, Evidence, Severity, Kind, Decision;
+            /// <summary>Where the requirement comes from: document key and revision, place in it, and its words (short).</summary>
+            public string Doc, Where, Text;
+            /// <summary>The check keys it is bound to (to select the failing elements).</summary>
+            public List<string> CheckKeys = new List<string>();
             public int? Count, Of;
         }
 
@@ -89,10 +93,14 @@ namespace AceRevitMcp.Rules
                 {
                     Requirement = id, Kind = rec?["kind"]?.ToString(),
                     Severity = (rec?["severity"] as JsonObject)?["value"]?.ToString() ?? rec?["severity"]?.ToString() ?? "info",
+                    Doc = (rec?["doc"]?["key"]?.ToString() + " " + rec?["doc"]?["revision"]?.ToString()).Trim(),
+                    Where = LocationOf(rec?["source"] as JsonObject),
+                    Text = Short(rec?["normalized"]?.ToString() ?? rec?["source"]?["quote"]?.ToString(), 300),
                 };
                 if (bound.TryGetValue(id, out var keys))
                 {
                     res.Binding = string.Join(", ", keys.Select(k => "C1:checks/" + k));
+                    res.CheckKeys = keys.ToList();
                     var found = keys.Where(byKey.ContainsKey).Select(k => byKey[k]).ToList();
                     if (found.Count == 0) { res.Status = "not-checkable"; res.Evidence = $"the bound check ({string.Join(", ", keys)}) did not run on this model"; }
                     else
@@ -116,6 +124,25 @@ namespace AceRevitMcp.Rules
             foreach (var g in run.Results.GroupBy(r => r.Status)) run.Summary[g.Key] = g.Count();
             foreach (var g in run.Results.Where(r => r.Status == "not-met" || r.Status == "partly").GroupBy(r => r.Severity)) run.NotMetBySeverity[g.Key] = g.Count();
             return run;
+        }
+
+        // The place a record cites, in words (the same order as the vault's locationOf).
+        private static string LocationOf(JsonObject s)
+        {
+            if (s == null) return null;
+            var parts = new List<string>();
+            if (s["clause_ref"] != null) parts.Add($"clause {s["clause_ref"]}");
+            if (s["page"] != null) parts.Add($"page {s["page"]}");
+            if (s["table"]?["sheet"] != null) parts.Add($"sheet '{s["table"]["sheet"]}' row {s["table"]["row_first"] ?? s["table"]["row"]}".Trim());
+            if (parts.Count == 0 && s["section_path"] is JsonArray path && path.Count > 0) parts.Add(string.Join(" > ", path.Select(x => x?.ToString())));
+            return parts.Count == 0 ? null : string.Join(", ", parts);
+        }
+
+        private static string Short(string s, int max)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
+            return s.Length > max ? s.Substring(0, max - 1) + "…" : s;
         }
 
         internal static string RulesHashOf(ProjectRules rules) => rules == null ? null : Hash(string.Join("|", ProjectRules.Sections.Select(rules.HashOf)));
@@ -218,6 +245,7 @@ namespace AceRevitMcp.Rules
             {
                 ["requirement"] = r.Requirement, ["status"] = r.Status, ["severity"] = r.Severity, ["kind"] = r.Kind, ["binding"] = r.Binding,
                 ["count"] = r.Count, ["of"] = r.Of, ["evidence"] = r.Evidence, ["decision"] = r.Decision,
+                ["doc"] = r.Doc, ["at"] = r.Where, ["text"] = r.Text,
             }).ToArray()),
         };
     }

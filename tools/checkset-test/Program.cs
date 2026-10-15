@@ -164,6 +164,8 @@ class P {
     Check(Cs("REQ-EIR-0001") == "not-met" && Rf("REQ-EIR-0001", "Severity") == "error", "a failing check with no measured set -> not-met, severity kept from the record");
     Check(Cs("REQ-BEP-0010") == "partly" && Rf("REQ-BEP-0010", "Binding") == "C1:checks/elements-on-the-wrong-workset-bep", "a workset rule's requirement binds to the BEP workset check; 3 of 100 wrong -> partly");
     Check(Cs("REQ-LOIN-0003") == "met", "a record's own test.binding works; count 0 -> met");
+    Check(Rf("REQ-EIR-0001", "Doc") == "" && ((System.Collections.Generic.List<string>)resT.GetField("CheckKeys").GetValue(results["REQ-BEP-0010"]))[0] == "elements-on-the-wrong-workset-bep",
+      "results carry their source and bound check keys (the Companion selects the failing elements with them)");
     Check(Cs("REQ-EIR-0009") == "not-checkable" && Rf("REQ-EIR-0009", "Evidence").StartsWith("manual"), "a manual requirement is not-checkable, marked manual");
     Check(Cs("REQ-EIR-0010") == "not-checkable" && Rf("REQ-EIR-0010", "Evidence").Contains("did not run"), "a bound check that did not run -> not-checkable");
     Check(Rf("REQ-EIR-0001", "Decision")?.Contains("accepted deviation: agreed with the client") == true, "an accepted deviation is shown beside not-met, not turned into met");

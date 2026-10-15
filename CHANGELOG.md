@@ -9,6 +9,10 @@
   the next report compares with; the vault index links the latest. Compliance run records now carry the model check
   (score and every check). New `vault model_summary`: keeps the latest report's summary on Project Information
   (extensible storage, readable by anyone, writable only by ACE), previewed and applied as one undo step, only when asked.
+- **Companion: Compliance tab (W4, first part):** what the model was audited against, % met, a status bar, requirements
+  grouped by kind (worst first), and per requirement its source, the document's words, the evidence, any decision and
+  "Show in model" for the failing elements of the bound check. Re-run audit, open the master report and the vault from
+  there.
 - **Ribbon Audit > Vault and Master Report (V5):** Vault opens the project's vault and asks once per vault whether ACE
   may save audit records there (the same permission Claude's vault tool uses). Master Report opens the model's latest
   report; without one it shows the summary kept in the model and a ready prompt for Claude.
