@@ -17,6 +17,8 @@ namespace AceRevitMcp.Dashboard
         public int Count;
         /// <summary>How many items the check measured, when it measured a set (e.g. 36 of 120 views): makes "partly" possible.</summary>
         public int? Of;
+        /// <summary>Set when the count is a measured value (e.g. "MB"), not failing items: compliance then follows the pass rule.</summary>
+        public string Unit;
         public double Penalty, MaxPenalty;
         public List<long> Ids = new List<long>();
         /// <summary>The pass rule shown in reports, e.g. "warn at 1, fail at 5" (from the check set).</summary>

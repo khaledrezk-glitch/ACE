@@ -80,7 +80,7 @@ class P {
     var proj = Path.Combine(tmp, "Al Nahda"); Directory.CreateDirectory(Path.Combine(proj, "ACE Vault"));
     var projFile = Path.Combine(proj, "ACE Vault", "project-requirements.json");
     File.WriteAllText(projFile, @"{ ""schema"": ""ace.project-requirements/1"", ""project"": { ""name"": ""Test project"" },
-      ""checks"": { ""in-place-families"": { ""failAt"": 10, ""requirement"": ""REQ-EIR-0001"" }, ""Empty sheets"": { ""enabled"": false } },
+      ""checks"": { ""about"": ""a note for people (the Al Nahda file has one)"", ""in-place-families"": { ""failAt"": 10, ""requirement"": ""REQ-EIR-0001"" }, ""Empty sheets"": { ""enabled"": false } },
       ""presentation"": { ""textSizes"": [ { ""upToScale"": 50, ""textMm"": 3.5 }, { ""textMm"": 2.5 } ] },
       ""worksets"": { ""rules"": [ { ""id"": ""doors"", ""workset"": ""A-DOORS"", ""category"": ""Doors"", ""requirement"": ""REQ-BEP-0010"" },
                                 { ""workset"": ""M-DUCTS"", ""category"": ""Ducts"" } ] },
@@ -192,6 +192,18 @@ class P {
     var run3 = compT.GetMethod("Evaluate", flags).Invoke(null, new object[] { pr2, reqNow, System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(vaultDir, "decisions.json"))).AsObject(), cks, "Model A", "tester" });
     var r3 = ((IList)runT.GetField("Results").GetValue(run3)).Cast<object>().First(r => (string)resT.GetField("Requirement").GetValue(r) == "REQ-EIR-0001");
     Check(((string)resT.GetField("Decision").GetValue(r3)).Contains("confirm again"), "a deviation made against an earlier clause text asks to be confirmed again (D19)");
+
+    // A measured check (file size, count = MB) follows its pass rule: under failAt -> met, at or over -> not-met.
+    var sizeReq = System.Text.Json.Nodes.JsonNode.Parse(@"{ ""records"": [ { ""id"": ""REQ-SIZE"", ""test"": { ""binding"": ""C1:checks/file-size"" } } ] }").AsObject();
+    string SizeStatus(int mb, string status)
+    {
+      var l = Checks(("file-size", mb, null)); chkT.GetField("Unit").SetValue(l[0], "MB"); chkT.GetField("StatusOverride").SetValue(l[0], status);
+      var rr = compT.GetMethod("Evaluate", flags).Invoke(null, new object[] { pr2, sizeReq, null, l, "Model A", "tester" });
+      var res = ((IList)runT.GetField("Results").GetValue(rr)).Cast<object>().First(r => (string)resT.GetField("Requirement").GetValue(r) == "REQ-SIZE");
+      return (string)resT.GetField("Status").GetValue(res) + "|" + (string)resT.GetField("Evidence").GetValue(res);
+    }
+    Check(SizeStatus(280, "warn").StartsWith("met|") && SizeStatus(280, "warn").Contains("280 MB"), "a 280 MB model under a 300 MB limit is met (review noted), not 280 failing items");
+    Check(SizeStatus(320, "fail").StartsWith("not-met|"), "a model over the size limit is not met");
 
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }

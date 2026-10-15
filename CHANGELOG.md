@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.9.2 (15 Oct 2026)
+- **Model size in compliance:** a requirement bound to the file-size check is now met or not met by the check's pass
+  rule (e.g. `failAt: 300` MB), not by its count, which is MB rather than failing items. Evidence reads "File size:
+  280 MB (warn; review at 250, action at 300)". Reports show the size in MB.
+- **Fix:** a note in the project file's `checks` section (such as `"about": "..."`) made compliance fail; notes are
+  now skipped. Found with the Al Nahda project file.
+
 ## 1.9.1 (15 Oct 2026)
 - **Fixes from the release review:** the add-in and Claude's vault tool now find the same vault (the "ACE Vault" folder
   beside a project file, or the file's `"vault"` setting); one bad entry in the trust list no longer untrusts every

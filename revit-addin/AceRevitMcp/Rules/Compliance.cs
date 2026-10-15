@@ -70,7 +70,7 @@ namespace AceRevitMcp.Rules
                 }
             }
             if (rules?.Section("checks") is JsonObject cs)
-                foreach (var (key, rule) in cs) Bind(rule?["requirement"], key);
+                foreach (var (key, rule) in cs) Bind((rule as JsonObject)?["requirement"], key);   // skips notes such as "about"
             if (rules?.Section("worksets")?["rules"] is JsonArray wr)
                 foreach (var rule in wr.OfType<JsonObject>()) Bind(rule["requirement"], WorksetCheckKey);
 
@@ -105,11 +105,16 @@ namespace AceRevitMcp.Rules
                     if (found.Count == 0) { res.Status = "not-checkable"; res.Evidence = $"the bound check ({string.Join(", ", keys)}) did not run on this model"; }
                     else
                     {
-                        var failing = found.Sum(c => c.Count);
-                        var of = found.All(c => c.Of.HasValue) ? found.Sum(c => c.Of.Value) : (int?)null;
-                        res.Count = failing; res.Of = of;
-                        res.Status = failing == 0 ? "met" : of.HasValue && failing < of.Value ? "partly" : "not-met";
-                        res.Evidence = string.Join("; ", found.Select(c => $"{c.Name}: {c.Count}{(c.Of.HasValue ? $" of {c.Of}" : "")} ({c.Status})"));
+                        // A measured check (file size in MB) is met by its pass rule, not by a zero count.
+                        var items = found.Where(c => c.Unit == null).ToList();
+                        var measuredFail = found.Any(c => c.Unit != null && c.Status == "fail");
+                        var failing = items.Sum(c => c.Count);
+                        var of = items.Count > 0 && items.All(c => c.Of.HasValue) ? items.Sum(c => c.Of.Value) : (int?)null;
+                        if (items.Count > 0) { res.Count = failing; res.Of = of; }
+                        res.Status = measuredFail ? "not-met" : failing == 0 ? "met" : of.HasValue && failing < of.Value ? "partly" : "not-met";
+                        res.Evidence = string.Join("; ", found.Select(c => c.Unit != null
+                            ? $"{c.Name}: {c.Count} {c.Unit} ({c.Status}{(c.Rule != null ? $"; {c.Rule}" : "")})"
+                            : $"{c.Name}: {c.Count}{(c.Of.HasValue ? $" of {c.Of}" : "")} ({c.Status})"));
                     }
                 }
                 else
@@ -249,7 +254,7 @@ namespace AceRevitMcp.Rules
             },
             ["checks"] = new JsonArray(run.Checks.Select(c => (JsonNode)new JsonObject
             {
-                ["key"] = c.Key, ["area"] = c.Area, ["name"] = c.Name, ["count"] = c.Count, ["of"] = c.Of, ["status"] = c.Status, ["detail"] = c.Detail,
+                ["key"] = c.Key, ["area"] = c.Area, ["name"] = c.Name, ["count"] = c.Count, ["of"] = c.Of, ["unit"] = c.Unit, ["status"] = c.Status, ["detail"] = c.Detail,
             }).ToArray()),
             ["summary"] = new JsonObject(run.Summary.Select(kv => new KeyValuePair<string, JsonNode>(kv.Key, kv.Value))),
             ["openBySeverity"] = new JsonObject(run.NotMetBySeverity.Select(kv => new KeyValuePair<string, JsonNode>(kv.Key, kv.Value))),

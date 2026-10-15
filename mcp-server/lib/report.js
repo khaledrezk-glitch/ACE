@@ -109,7 +109,7 @@ export function build(v, run, { by = "", brand = {}, date = new Date() } = {}) {
   const docHead = ["Key", "Document", "Type", "Number", "Revision", "Status", "Changed since last audit"];
   const docRows = docs.map((d) => [d.key, d.title ?? "", d.type ?? "", d.number ?? "", d.revision ?? "", d.status ?? "", d.changedSince === null ? "(first audit)" : d.changedSince === "new" ? "new document" : d.changedSince ? "yes: check its requirements" : "no"]);
   const findHead = ["Section", "Check", "Result", "Status", "Detail"];
-  const findRows = failing.map((c) => [c.area ?? "", c.name ?? c.key, c.of != null ? `${c.count} of ${c.of}` : String(c.count), c.status, c.detail ?? ""]);
+  const findRows = failing.map((c) => [c.area ?? "", c.name ?? c.key, c.unit ? `${c.count} ${c.unit}` : c.of != null ? `${c.count} of ${c.of}` : String(c.count), c.status, c.detail ?? ""]);
   const decHead = ["Decision", "Kind", "Requirements", "Note", "By", "Date"];
   const decRows = decisions.map((d) => [d.id, d.kind, d.requirements.join(", "), d.note ?? "", d.by ?? "", (d.at ?? "").slice(0, 10)]);
   // Owner and due date stay blank on purpose: the team fills them in.

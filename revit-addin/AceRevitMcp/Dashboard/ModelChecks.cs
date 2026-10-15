@@ -31,6 +31,7 @@ namespace AceRevitMcp.Dashboard
                     x.FileBytes == 0 ? "The model has not been saved yet" : $"{mb} MB on disk",
                     "Purge unused content, remove CAD imports and unused views; split very large models by zone or discipline.");
                 c.Penalty = mb > 300 ? 5 : mb > 150 ? 2 : 0;
+                c.Unit = "MB";
                 c.Rule = "review above 150 MB, action above 300 MB";
             });
             Safe("starting view", () =>
