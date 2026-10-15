@@ -96,8 +96,8 @@ The vault is the document store of C2 / C4, not a parallel hub.
 
 | # | Item | Effort | Status |
 |---|---|---|---|
-| V1 | `vault` tool: init a vault in the project folder (D2), register documents (type, revision, status, hash), read text (DOCX, XLSX, PDF), re-read only changed documents | M | next |
-| V2 | Requirement records and decisions (JSON; every record tied to a document, revision and clause; stable ids, D4; severity and status apart, D5) | S | next |
+| V1 | `vault` tool: init a vault in the project folder (D2), register documents (type, revision, status, hash), read text (DOCX, XLSX, PDF), re-read only changed documents | M | done (unreleased); live check with the real project folder |
+| V2 | Requirement records and decisions (JSON; every record tied to a document, revision and clause; stable ids, D4; severity and status apart, D5) | S | done (unreleased) |
 | V3 | Comparisons: EIR vs BEP, revision vs revision, LOIN vs MIDP / TIDP, documents vs ACE settings (= the C2 analyser) | M | open, with C2 |
 | V4 | Master report (DOCX + HTML) saved in the vault; summary and pointer in the model (extensible storage) | M | open |
 | V5 | Ribbon Audit > Vault / Master Report; consent once per vault for file writes | S | open |

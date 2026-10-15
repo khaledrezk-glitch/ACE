@@ -85,13 +85,15 @@ namespace AceRevitMcp.Rules
         }
 
         /// <summary>The project file for a model: config.json "projects" first, then beside the (central) model.</summary>
-        public static string Locate(Document doc, out string how)
+        public static string Locate(Document doc, out string how) => LocateIn(Keys(doc), ModelFolders(doc), out how);
+
+        /// <summary>The folders of the central model and of the model file (local and network models; none for cloud models).</summary>
+        public static List<string> ModelFolders(Document doc)
         {
-            var keys = Keys(doc);
             var folders = new List<string>();
-            foreach (var k in keys.Where(k => k.IndexOfAny(new[] { '\\', '/' }) >= 0 && !k.Contains("://")))
-                try { var d = Path.GetDirectoryName(k); if (!string.IsNullOrEmpty(d)) folders.Add(d); } catch { }
-            return LocateIn(keys, folders, out how);
+            foreach (var k in Keys(doc).Where(k => k.IndexOfAny(new[] { '\\', '/' }) >= 0 && !k.Contains("://")))
+                try { var d = Path.GetDirectoryName(k); if (!string.IsNullOrEmpty(d) && !folders.Contains(d, StringComparer.OrdinalIgnoreCase)) folders.Add(d); } catch { }
+            return folders;
         }
 
         /// <summary>Locate without Revit: <paramref name="keys"/> are looked up in config.json "projects", then each folder is searched.</summary>

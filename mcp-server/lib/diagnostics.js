@@ -23,7 +23,8 @@ const check = (name, status, detail, fix) => ({ name, status, detail, ...(fix ? 
 export async function runChecks({ deep = true } = {}) {
   const checks = [];
   const [major] = process.versions.node.split(".").map(Number);
-  checks.push(check("Node.js", major >= 18 ? "ok" : "fail", `v${process.versions.node}`, major >= 18 ? null : "Install Node.js 18+ (install.ps1 does this with winget)."));
+  checks.push(check("Node.js", major >= 22 ? "ok" : major >= 18 ? "warn" : "fail", `v${process.versions.node}`,
+    major >= 22 ? null : major >= 18 ? "Everything works except reading PDFs in the requirements vault, which needs Node.js 22+ (install the current Node.js LTS)." : "Install Node.js 18+ (install.ps1 does this with winget)."));
   checks.push(check("MCP server", "ok", `ace-revit-mcp ${VERSION} at ${ROOT}`));
 
   const cfg = readConfig();

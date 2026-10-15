@@ -11,7 +11,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
+import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
+import * as Vault from "./lib/vault.js";
+import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
@@ -562,6 +564,99 @@ tool("project_rules", {
   },
   annotations: readOnly,
 }, async (a) => text(await callRevit("project_rules", a, 30)));
+
+// ---------------------------------------------------------------------------------------------
+// Requirements vault (V1, V2): documents, requirement records and decisions for one project
+// ---------------------------------------------------------------------------------------------
+
+// The vault folder: the one given, else the open model's (the project requirements file's folder, or beside the central).
+async function vaultFolder(folder, forInit) {
+  if (folder) return { dir: Vault.vaultDir(folder) };
+  let info;
+  try { info = await callRevit("project_rules", {}, 30); }
+  catch { throw new RevitError("Give 'folder' (the project folder or its ACE Vault): Revit is not reachable to find the open model's project."); }
+  if (info?.projectFile) return { dir: Vault.vaultDir(path.dirname(info.projectFile)), info };
+  if (forInit && info?.modelFolders?.length) return { dir: Vault.vaultDir(info.modelFolders[0]), info };
+  throw new RevitError(info?.cloud
+    ? "This is a cloud model: give 'folder' (the project folder on the share), and map_model: true to remember it for this model (decision D2)."
+    : `No vault found for ${info?.model ?? "this model"}. Create one with action "init" (beside the central model by default).`);
+}
+
+const WRITES = new Set(["init", "register", "import", "decide", "revalidate"]);
+
+tool("vault", {
+  title: "Requirements vault",
+  description: "The project's requirements vault (an 'ACE Vault' folder): a register of the client's documents (EIR, BEP, LOIN, MIDP...) with revision and hash, their text, requirement records that quote the document and cite page / clause / cell, and the auditor's decisions; index.html makes it browsable. Actions: status | init | register (key, path, type, revision...) | scan (unregistered or changed files) | read (key; from/to pages or rows, sheet, find) | import (file: an extraction JSON, or records) | requirements (list with filters) | decide (ids, decision: accept | deviation | reject | note) | revalidate (key: re-check every record's quote against the document's current revision; only that document is read). Records keep stable ids across revisions; severity is info / warning / error. Writing files in a vault needs the user's consent once (consent: true after asking), then the vault is trusted.",
+  inputSchema: {
+    action: z.enum(["status", "init", "register", "scan", "read", "import", "requirements", "decide", "revalidate"]),
+    folder: z.string().optional().describe("Project folder or its ACE Vault; default: the open model's"),
+    consent: z.boolean().optional().describe("The user agreed to ACE writing files in this vault (asked once per vault)"),
+    project: z.string().optional(), map_model: z.boolean().optional().describe("init: remember this folder for the open (cloud) model in config.json"),
+    key: z.string().optional().describe("Document key used in requirement ids: EIR, BEP, LOIN ..."),
+    path: z.string().optional(), type: z.string().optional(), title: z.string().optional(), number: z.string().optional(),
+    revision: z.string().optional(), status: z.string().optional(), date: z.string().optional(),
+    from: z.number().int().min(1).optional(), to: z.number().int().min(1).optional(), sheet: z.string().optional(), find: z.string().optional(),
+    max_chars: z.number().int().min(1000).max(100000).optional(),
+    file: z.string().optional().describe("import: an extraction file { meta: { documents }, records }"),
+    records: z.array(z.record(z.any())).max(500).optional(),
+    kind: z.string().optional(), doc: z.string().optional(), checkability: z.enum(["A", "P", "X", "M"]).optional(),
+    review: z.boolean().optional(), accepted: z.boolean().optional(), text: z.string().optional(),
+    ids: z.array(z.string()).max(1000).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
+    decision: z.enum(["accept", "deviation", "reject", "note"]).optional(), note: z.string().max(2000).optional(), by: z.string().optional(),
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+}, async (a) => {
+  const { dir, info } = await vaultFolder(a.folder, a.action === "init");
+  if (WRITES.has(a.action) && !Vault.trusted(path.dirname(CONFIG_PATH), dir)) {
+    if (!a.consent) return { isError: true, content: [{ type: "text", text: `ACE needs the user's permission to write files in ${dir} (asked once per vault). Ask them, then repeat the call with consent: true.` }] };
+    Vault.trust(path.dirname(CONFIG_PATH), dir);
+  }
+  switch (a.action) {
+    case "init": {
+      const r = Vault.init(dir, { project: a.project ?? info?.model, number: a.number });
+      if (a.map_model && info?.keys?.length) {
+        const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8").replace(/^\uFEFF/, ""));
+        cfg.projects = { ...(cfg.projects ?? {}), [info.keys[0]]: dir };
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+        r.mapped = `config.json projects["${info.keys[0]}"] = ${dir}`;
+      }
+      return text(r);
+    }
+    case "status": {
+      const v = Vault.load(dir);
+      return text({ vault: dir, project: v.register.project, documents: v.register.documents.map(({ key, type, title, revision, status, changed }) => ({ key, type, title, revision, status, changed })),
+        requirements: Vault.list(v, { limit: 0 }).summary, decisions: v.decisions.decisions.length, scan: Vault.scan(v), index: path.join(dir, "index.html") });
+    }
+    case "scan": return text(Vault.scan(Vault.load(dir)));
+    case "read": return text(await Vault.read(Vault.load(dir), a.key, a));
+    case "requirements": return text(Vault.list(Vault.load(dir), a));
+    case "register": {
+      const v = Vault.load(dir);
+      const r = Vault.register(v, a);
+      Vault.save(v, ["register"]);
+      return text({ ...r, next: r.outcome === "new revision" ? `Run revalidate with key ${a.key} to check its ${r.records} requirements against the new revision.` : undefined });
+    }
+    case "import": {
+      const v = Vault.load(dir);
+      const r = a.file ? Vault.importFile(v, a.file) : Vault.upsert(v, a.records ?? []);
+      Vault.save(v);
+      return text({ ...r, rejected: r.rejected.slice(0, 20), rejectedCount: r.rejected.length || undefined, total: v.reqs.records.length });
+    }
+    case "decide": {
+      const v = Vault.load(dir);
+      const d = Vault.decide(v, { ids: a.ids, kind: a.decision ?? "accept", note: a.note, by: a.by ?? os.userInfo().username });
+      Vault.save(v);
+      return text(d);
+    }
+    case "revalidate": {
+      if (!a.key) throw new RevitError("Give the document key to re-check.");
+      const v = Vault.load(dir);
+      const r = await Vault.revalidate(v, a.key);
+      Vault.save(v);
+      return text(r);
+    }
+  }
+});
 
 tool("assign_worksets", {
   title: "Assign worksets per the BEP",

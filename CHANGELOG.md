@@ -12,6 +12,20 @@
   found, where each section comes from, a hash per section and the merged rules.
 - **One source for workset rules (T11):** the MCP server no longer falls back to the packaged example rules; it asks the
   add-in for the rules in force, so Claude and the model check always use the same rules.
+- **Requirements vault (V1, V2):** new tool `vault`. An `ACE Vault` folder per project (created beside the central model,
+  or in a folder you name and, for cloud models, remember in `config.json`) with the five folders of the audit design, a
+  document register (`vault.json`: key, type, revision, status, SHA-256), the requirement records
+  (`requirements.json`), the decisions (`decisions.json`), the project requirements file and a browsable `index.html`.
+  ACE reads the documents itself: PDF (pages, and client comments made as PDF annotations), DOCX (paragraphs with their
+  heading path, table rows; unaccepted deletions are left out and flagged), XLSX / XLSM (rows by sheet; hidden sheets
+  flagged) and text files (UTF-8 or UTF-16, e.g. shared parameter files). Records are validated: a record without its
+  document, quote and location is rejected. Ids stay the same across revisions; a new quote for an id keeps the old one
+  and asks for acceptance again. Severity is info / warning / error (the extraction's own word is kept); status is not
+  stored on a requirement. `revalidate` re-reads one changed document and checks every record's quote at the page, row
+  or paragraph it cites. Decisions (accept, deviation, reject, note) record who and when. The first write to a vault
+  asks for the user's consent; then the folder is trusted. Tested on the first real project set: 341 records from 17
+  documents imported, and all 341 quotes found at their cited place by ACE's own reader. PDF reading needs Node.js 22+
+  (the doctor says so on older versions).
 - **Fix (T10):** the Companion's "Clash issues" tile showed a type name instead of the number of issues.
 
 ## 1.8.3 (7 Oct 2026)

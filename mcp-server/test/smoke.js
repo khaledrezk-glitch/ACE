@@ -80,7 +80,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -298,6 +298,17 @@ assert.ok(wsBlocked.isError || /not been previewed/.test(wsBlocked.content[0].te
 await call("assign_worksets", { dry_run: true, explanation: "preview for the test" });
 const wsApplied = (await call("assign_worksets", { explanation: "move to BEP worksets" })).content[0].text;
 assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
+// The requirements vault: writing needs consent once per vault, then the folder is trusted.
+const vtmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-smoke-vault-"));
+const vNo = await call("vault", { action: "init", folder: vtmp, project: "Smoke" });
+assert.ok(vNo.isError && /permission/.test(vNo.content[0].text), "the first write to a vault asks for consent");
+assert.match((await call("vault", { action: "init", folder: vtmp, project: "Smoke", consent: true })).content[0].text, /"created": ?true/, "init with consent");
+fs.writeFileSync(path.join(vtmp, "ACE Vault", "01 Requirements", "eir.txt"), "Doors shall carry a fire rating.\n");
+assert.match((await call("vault", { action: "register", folder: vtmp, key: "EIR", path: path.join(vtmp, "ACE Vault", "01 Requirements", "eir.txt"), revision: "A" })).content[0].text, /registered/, "a trusted vault needs no consent again");
+assert.match((await call("vault", { action: "import", folder: vtmp, records: [{ id: "REQ-EIR-0001", doc: { key: "EIR" }, source: { quote: "Doors shall carry a fire rating.", section_path: ["1"] }, kind: "loin", severity: "minor" }] })).content[0].text, /"added": ?1/, "records import");
+assert.match((await call("vault", { action: "revalidate", folder: vtmp, key: "EIR" })).content[0].text, /"atCitedPlace": ?1/, "revalidate finds the quote");
+assert.match((await call("vault", { action: "status", folder: vtmp })).content[0].text, /"warning": ?1/, "status summarises the records (minor -> warning)");
+fs.rmSync(vtmp, { recursive: true, force: true });
 const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
 assert.match(wm, /Coordination/, "working mode can be set");
 for (const harmless of ["ctx.Log(\"area m\\u00b2\");", "ctx.Log(\"dynamic\");"])

@@ -37,6 +37,19 @@ for "put things on the right worksets", "workset check", "set up worksets" use a
 With a rules file in place, model_dashboard also reports "Elements on the wrong workset (BEP)" (the same rules), so
 the check runs every time the model is checked, not only when asked.
 
+## Requirements vault and audits
+
+The project's client documents (EIR, BEP, LOIN, MIDP, client comments) live in its vault (`vault`). Start with
+`vault status`. To add a document: `register` with a short key (EIR, BEP, LOIN) and the revision as printed, then read it
+(`read`, by pages, sheet rows or `find`) and write requirement records: one per obligation, the document's own words in
+`source.quote` (verbatim, short), the page / clause / sheet and row, kind, scope, a test (A automatic in Revit, P partial,
+X on files, M manual) and severity (info / warning / error). Never invent a clause or a page; a record without its source is
+rejected. Save with `import` (records or an extraction file), then ask the user to accept them (`decide`, decision
+accept). When a document gets a new revision, `register` it under the same key and run `revalidate`: records whose quote
+is still there move to the new revision with the same id; the others are flagged for the auditor. The rules ACE checks
+live in the vault's project-requirements.json (`project_rules` shows what is in force). Ask before the first write to a
+vault (consent).
+
 ## Space planning (office test fit)
 
 for an office test fit ("how many people fit", "put desks in room X", "fit out the office") use the saved script test_fit_out (inputs: room_number, m2_per_person, desk_type, min_aisle_mm, door_clearance_mm, wall_clearance_mm). It places 4-desk pods on a regular grid clear of walls, doors, columns and fixtures, reports the seats, m2 per person and the room's maximum, and a re-run replaces the previous test fit in that room. Preview it with preview_image: true. If the target does not fit, say so plainly with the maximum, rather than squeezing aisles below the minimum.

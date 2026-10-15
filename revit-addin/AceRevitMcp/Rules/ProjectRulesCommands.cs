@@ -24,13 +24,16 @@ namespace AceRevitMcp.Rules
                 if (!ProjectRules.Sections.Contains(section)) throw new Bridge.CommandException($"Unknown section '{section}'. Known: {string.Join(", ", ProjectRules.Sections)}");
                 return new JsonObject
                 {
-                    ["model"] = doc.Title, ["projectFile"] = rules.ProjectFile, ["foundBy"] = rules.FoundBy,
+                    ["model"] = doc.Title, ["projectFile"] = rules.ProjectFile, ["foundBy"] = rules.FoundBy, ["cloud"] = doc.IsModelInCloud,
+                    ["modelFolders"] = new JsonArray(ProjectRules.ModelFolders(doc).Select(k => (JsonNode)k).ToArray()),
                     ["section"] = section, ["source"] = rules.SourceOf(section), ["hash"] = rules.HashOf(section), ["rules"] = rules.Section(section),
                 };
             }
             var o = rules.Describe(Args.Bool(args, "include_rules"));
             o["model"] = doc.Title;
             o["keys"] = new JsonArray(ProjectRules.Keys(doc).Select(k => (JsonNode)k).ToArray());
+            o["modelFolders"] = new JsonArray(ProjectRules.ModelFolders(doc).Select(k => (JsonNode)k).ToArray());
+            o["cloud"] = doc.IsModelInCloud;
             return o;
         }
     }
