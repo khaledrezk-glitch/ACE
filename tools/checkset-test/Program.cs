@@ -136,6 +136,52 @@ class P {
     Check(((System.Text.Json.Nodes.JsonArray)Sec(pr2, "worksets")["rules"]).Count == 2 && Sec(pr2, "worksets")["inheritOffice"] == null && Src(pr2, "worksets").StartsWith("project (replaces office)"), "inheritOffice: false -> the project's rules alone");
     Check(Hash(pr2, "worksets") != h1 && Hash(pr2, "checks") == Hash(pr, "checks"), "the rules hash changes only for the section that changed");
     Check(Src(Office(), "worksets").StartsWith("office: ") && Src(ForFile(null), "presentation").StartsWith("office: "), "without a project file the office rules apply alone");
+
+    // Compliance per requirement (C1+): bindings from the rules and the records, status scale D5, deviations, run records.
+    var compT = a.GetType("AceRevitMcp.Rules.Compliance");
+    var flags = BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public;
+    IList Checks(params (string Key, int Count, int? Of)[] cs)
+    {
+      var l = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(chkT));
+      foreach (var (k, n, of) in cs) { var c = Activator.CreateInstance(chkT); chkT.GetField("Key").SetValue(c, k); chkT.GetField("Name").SetValue(c, k); chkT.GetField("Count").SetValue(c, n); chkT.GetField("Of").SetValue(c, of); l.Add(c); }
+      return l;
+    }
+    var vaultDir = Path.GetDirectoryName(projFile);
+    File.WriteAllText(Path.Combine(vaultDir, "requirements.json"), @"{ ""records"": [
+      { ""id"": ""REQ-EIR-0001"", ""severity"": { ""value"": ""error"" }, ""source"": { ""quote_sha256"": ""q1"" } },
+      { ""id"": ""REQ-BEP-0010"", ""severity"": ""warning"" },
+      { ""id"": ""REQ-LOIN-0003"", ""test"": { ""binding"": ""C1:checks/views-not-on-sheets"" } },
+      { ""id"": ""REQ-EIR-0009"", ""test"": { ""checkability"": ""M"" } },
+      { ""id"": ""REQ-EIR-0010"", ""test"": { ""binding"": ""C1:checks/no-such-check"" } } ] }");
+    File.WriteAllText(Path.Combine(vaultDir, "decisions.json"), @"{ ""decisions"": [ { ""id"": ""DEC-0001"", ""kind"": ""deviation"", ""requirements"": [ ""REQ-EIR-0001"" ], ""quotes"": { ""REQ-EIR-0001"": ""q1"" }, ""note"": ""agreed with the client"" } ] }");
+    var cks = Checks(("in-place-families", 2, null), ("elements-on-the-wrong-workset-bep", 3, 100), ("views-not-on-sheets", 0, 40));
+    var forModel = compT.GetMethod("ForModel", flags);
+    var run = forModel.Invoke(null, new object[] { pr2, cks, "Model A", "model-a", "tester" });
+    var runT = run.GetType(); var resT = compT.GetNestedType("Result");
+    var results = ((IList)runT.GetField("Results").GetValue(run)).Cast<object>().ToDictionary(r => (string)resT.GetField("Requirement").GetValue(r), r => r);
+    string Cs(string id) => (string)resT.GetField("Status").GetValue(results[id]);
+    string Rf(string id, string f) => (string)resT.GetField(f).GetValue(results[id]);
+    Check(Cs("REQ-EIR-0001") == "not-met" && Rf("REQ-EIR-0001", "Severity") == "error", "a failing check with no measured set -> not-met, severity kept from the record");
+    Check(Cs("REQ-BEP-0010") == "partly" && Rf("REQ-BEP-0010", "Binding") == "C1:checks/elements-on-the-wrong-workset-bep", "a workset rule's requirement binds to the BEP workset check; 3 of 100 wrong -> partly");
+    Check(Cs("REQ-LOIN-0003") == "met", "a record's own test.binding works; count 0 -> met");
+    Check(Cs("REQ-EIR-0009") == "not-checkable" && Rf("REQ-EIR-0009", "Evidence").StartsWith("manual"), "a manual requirement is not-checkable, marked manual");
+    Check(Cs("REQ-EIR-0010") == "not-checkable" && Rf("REQ-EIR-0010", "Evidence").Contains("did not run"), "a bound check that did not run -> not-checkable");
+    Check(Rf("REQ-EIR-0001", "Decision")?.Contains("accepted deviation: agreed with the client") == true, "an accepted deviation is shown beside not-met, not turned into met");
+    var runsDir = Path.Combine(vaultDir, "04 Audits", "model-a", "runs");
+    Check(!Directory.Exists(runsDir), "no run record is written into a vault the user has not trusted (D21)");
+    File.WriteAllText(Path.Combine(dir, "trusted-vaults.json"), "[" + System.Text.Json.JsonSerializer.Serialize(vaultDir) + "]");
+    var run2 = forModel.Invoke(null, new object[] { pr2, cks, "Model A", "model-a", "tester" });
+    Check(Directory.Exists(runsDir) && Directory.GetFiles(runsDir, "*.json").Length == 1 && File.ReadAllText(Directory.GetFiles(runsDir)[0]).Contains("REQ-BEP-0010"), "a trusted vault gets the run record in 04 Audits/<model>/runs");
+    var outOfDate = compT.GetMethod("OutOfDate", flags);
+    Check(outOfDate.Invoke(null, new object[] { run2, pr2 }) == null, "a fresh run is not out of date");
+    File.WriteAllText(Path.Combine(vaultDir, "requirements.json"), File.ReadAllText(Path.Combine(vaultDir, "requirements.json")).Replace("REQ-EIR-0010", "REQ-EIR-0011"));
+    Check(((string)outOfDate.Invoke(null, new object[] { run2, pr2 }))?.Contains("requirements") == true, "changed requirements make the stored run out of date");
+    var reqNow = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(vaultDir, "requirements.json"))).AsObject();
+    reqNow["records"][0]["source"]["quote_sha256"] = "q2";
+    var run3 = compT.GetMethod("Evaluate", flags).Invoke(null, new object[] { pr2, reqNow, System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(vaultDir, "decisions.json"))).AsObject(), cks, "Model A", "tester" });
+    var r3 = ((IList)runT.GetField("Results").GetValue(run3)).Cast<object>().First(r => (string)resT.GetField("Requirement").GetValue(r) == "REQ-EIR-0001");
+    Check(((string)resT.GetField("Decision").GetValue(r3)).Contains("confirm again"), "a deviation made against an earlier clause text asks to be confirmed again (D19)");
+
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("check set test passed");

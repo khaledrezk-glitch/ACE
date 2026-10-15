@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- **Compliance per requirement (C1+):** every model check now also evaluates the project's requirements: met, partly
+  (a measured part of a set, e.g. 3 of 100 elements on the wrong workset), not-met or not-checkable, with the evidence and
+  any accepted deviation shown beside the status (a deviation made against an earlier text of the clause asks to be
+  confirmed again). Requirements reach a check through `"requirement"` on a check or workset rule in
+  project-requirements.json, or the record's `test.binding`. The result goes to the status store, and in a trusted vault a
+  run record (rules and requirements hashes) is saved in `04 Audits/<model>/runs`. New `vault` action `compliance` reads
+  the last result without re-running the check and says when it is out of date. Checks that measure a set now report its
+  size (views, sheets, key parameters, project information, BEP worksets).
 - **Project rules (C1, first part):** one `project-requirements.json` per project holds the project's own rules in the
   same sections as the office files (`checks`, `presentation`, `worksets`, `clash`). It is found beside the central model
   or in its `ACE Vault` folder, or, for cloud models, through `config.json` "projects" (cloud model id, central path or

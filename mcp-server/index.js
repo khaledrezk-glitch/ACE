@@ -586,9 +586,9 @@ const WRITES = new Set(["init", "register", "import", "decide", "revalidate"]);
 
 tool("vault", {
   title: "Requirements vault",
-  description: "The project's requirements vault (an 'ACE Vault' folder): a register of the client's documents (EIR, BEP, LOIN, MIDP...) with revision and hash, their text, requirement records that quote the document and cite page / clause / cell, and the auditor's decisions; index.html makes it browsable. Actions: status | init | register (key, path, type, revision...) | scan (unregistered or changed files) | read (key; from/to pages or rows, sheet, find) | import (file: an extraction JSON, or records) | requirements (list with filters) | decide (ids, decision: accept | deviation | reject | note) | revalidate (key: re-check every record's quote against the document's current revision; only that document is read). Records keep stable ids across revisions; severity is info / warning / error. Writing files in a vault needs the user's consent once (consent: true after asking), then the vault is trusted.",
+  description: "The project's requirements vault (an 'ACE Vault' folder): a register of the client's documents (EIR, BEP, LOIN, MIDP...) with revision and hash, their text, requirement records that quote the document and cite page / clause / cell, and the auditor's decisions; index.html makes it browsable. Actions: status | init | register (key, path, type, revision...) | scan (unregistered or changed files) | read (key; from/to pages or rows, sheet, find) | import (file: an extraction JSON, or records) | requirements (list with filters) | decide (ids, decision: accept | deviation | reject | note) | revalidate (key: re-check every record's quote against the document's current revision; only that document is read) | compliance (status per requirement from the last model check: met / partly / not-met / not-checkable, with evidence, accepted deviations and whether the result is out of date; run: true re-runs the model check; status filters, e.g. not-met). Records keep stable ids across revisions; severity is info / warning / error. Writing files in a vault needs the user's consent once (consent: true after asking), then the vault is trusted.",
   inputSchema: {
-    action: z.enum(["status", "init", "register", "scan", "read", "import", "requirements", "decide", "revalidate"]),
+    action: z.enum(["status", "init", "register", "scan", "read", "import", "requirements", "decide", "revalidate", "compliance"]),
     folder: z.string().optional().describe("Project folder or its ACE Vault; default: the open model's"),
     consent: z.boolean().optional().describe("The user agreed to ACE writing files in this vault (asked once per vault)"),
     project: z.string().optional(), map_model: z.boolean().optional().describe("init: remember this folder for the open (cloud) model in config.json"),
@@ -603,9 +603,12 @@ tool("vault", {
     review: z.boolean().optional(), accepted: z.boolean().optional(), text: z.string().optional(),
     ids: z.array(z.string()).max(1000).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
     decision: z.enum(["accept", "deviation", "reject", "note"]).optional(), note: z.string().max(2000).optional(), by: z.string().optional(),
+    run: z.boolean().optional().describe("compliance: run the model check first instead of reading the last result"),
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, async (a) => {
+  // Compliance is computed in Revit with each model check (status store); the add-in finds the vault itself.
+  if (a.action === "compliance") return text(await callRevit("compliance", { run: a.run, status: a.status, max_results: a.limit }, a.run ? 600 : 30));
   const { dir, info } = await vaultFolder(a.folder, a.action === "init");
   if (WRITES.has(a.action) && !Vault.trusted(path.dirname(CONFIG_PATH), dir)) {
     if (!a.consent) return { isError: true, content: [{ type: "text", text: `ACE needs the user's permission to write files in ${dir} (asked once per vault). Ask them, then repeat the call with consent: true.` }] };

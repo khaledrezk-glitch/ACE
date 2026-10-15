@@ -36,6 +36,8 @@ const bridge = http.createServer((req, res) => {
         const ex = JSON.parse(fs.readFileSync(new URL("../bep/worksets.example.json", import.meta.url), "utf8"));
         return reply({ ok: true, result: { model: "Test", section: args.section, source: "project: C:/Projects/Test/ACE Vault/project-requirements.json", hash: "abc", rules: ex } });
       }
+      case "compliance":
+        return reply({ ok: true, result: { run: { id: "r1", model: "Test" }, summary: { met: 1, "not-met": 1 }, ranNow: !!args.run, echo: args, results: [{ requirement: "REQ-EIR-0001", status: "not-met", evidence: "Doors: 3 of 40" }] } });
       case "assign_worksets":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, transaction: args.check_only ? undefined : args.dry_run ? "RolledBack" : "Committed", rules: `${args.rules_name} (${args.rules_source}), ${args.rules?.length} rules`, firstRule: args.rules?.[0]?.workset } });
       case "presentation_standard":
@@ -308,6 +310,10 @@ assert.match((await call("vault", { action: "register", folder: vtmp, key: "EIR"
 assert.match((await call("vault", { action: "import", folder: vtmp, records: [{ id: "REQ-EIR-0001", doc: { key: "EIR" }, source: { quote: "Doors shall carry a fire rating.", section_path: ["1"] }, kind: "loin", severity: "minor" }] })).content[0].text, /"added": ?1/, "records import");
 assert.match((await call("vault", { action: "revalidate", folder: vtmp, key: "EIR" })).content[0].text, /"atCitedPlace": ?1/, "revalidate finds the quote");
 assert.match((await call("vault", { action: "status", folder: vtmp })).content[0].text, /"warning": ?1/, "status summarises the records (minor -> warning)");
+const comp = (await call("vault", { action: "compliance", status: "not-met", limit: 5 })).content[0].text;
+assert.match(comp, /"status": ?"not-met"/, "compliance passes the status filter to Revit");
+assert.match(comp, /"max_results": ?5/, "compliance passes the result limit");
+assert.match(comp, /"ranNow": ?false/, "compliance reads the last result unless run: true");
 fs.rmSync(vtmp, { recursive: true, force: true });
 const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
 assert.match(wm, /Coordination/, "working mode can be set");

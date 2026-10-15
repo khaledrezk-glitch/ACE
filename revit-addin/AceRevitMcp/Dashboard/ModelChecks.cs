@@ -66,9 +66,10 @@ namespace AceRevitMcp.Dashboard
                     var wrongCount = plan["wrongWorkset"]?.GetValue<int>() ?? 0;
                     var ids = (plan["wrongIds"] as JsonArray)?.Select(n => new ElementId(n.GetValue<long>())) ?? Enumerable.Empty<ElementId>();
                     var missing = (plan["worksetsMissing"] as JsonArray)?.Count ?? 0;
-                    Add(x, "Worksets", "Elements on the wrong workset (BEP)", wrongCount, 0.01, 5,
+                    var wc = Add(x, "Worksets", "Elements on the wrong workset (BEP)", wrongCount, 0.01, 5,
                         $"{wrongCount} elements are not on the workset the BEP rules give them ({wsRules.Name}, {wsRules.Items.Count} rules){(missing > 0 ? $"; {missing} workset(s) the rules name do not exist" : "")}",
                         "Ask Claude to put them on the right worksets (assign_worksets, previewed first).", ids);
+                    wc.Of = (int?)plan["elementsChecked"];
                 });
 
             // ---- Levels, grids and links -----------------------------------------------------------------------------

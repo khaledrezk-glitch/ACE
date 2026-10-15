@@ -35,6 +35,9 @@ namespace AceRevitMcp.Util
             public string ChangesReport;
             public int ChangeCount;
 
+            /// <summary>Compliance per requirement from the last model check (C1+); null when the model has no project file.</summary>
+            public Rules.Compliance.Run Compliance;
+
             public readonly ClashSession Session = new ClashSession();
         }
 
@@ -73,6 +76,11 @@ namespace AceRevitMcp.Util
         public static void PublishChanges(string model, List<Tracking.ModelDiff> diffs, string report)
         {
             var e = Entry(model); e.Changes = diffs; e.ChangesReport = report; e.ChangeCount = diffs.Sum(d => d.Changes.Count); Raise();
+        }
+
+        public static void PublishCompliance(string model, Rules.Compliance.Run run)
+        {
+            var e = Entry(model); e.Compliance = run; Raise();
         }
 
         private static void Raise() { try { Changed?.Invoke(); } catch { } }

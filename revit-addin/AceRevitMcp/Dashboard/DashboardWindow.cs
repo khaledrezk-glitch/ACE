@@ -26,9 +26,22 @@ namespace AceRevitMcp.Dashboard
             var x = ModelInsights.Collect(doc, app.Application.Username);
             var path = DashboardHtml.SaveAs(x.Model, "Insights", x.Time, DashboardHtml.Render(x));
             StatusStore.PublishHealth(doc.Title, x, path);
+            PublishCompliance(doc, x, app.Application.Username);
             var model = doc.Title;
             if (Args.Bool(args, "show")) ReportWindow.ShowOrRefresh(app.MainWindowHandle, "Model insights", "get_model_insights", () => State(model));
             return ModelInsights.ToJson(x, path);
+        }
+
+        /// <summary>Compliance per requirement follows every model check; a broken vault never fails the model check.</summary>
+        internal static Rules.Compliance.Run PublishCompliance(Autodesk.Revit.DB.Document doc, Insights x, string user)
+        {
+            try
+            {
+                var run = Rules.Compliance.ForModel(Rules.ProjectRules.For(doc), x.Checks, doc.Title, Tracking.Snapshots.ModelKey(doc), user);
+                StatusStore.PublishCompliance(doc.Title, run);
+                return run;
+            }
+            catch (Exception ex) { Log.Warn($"Compliance: {ex.Message}"); return null; }
         }
 
         private static ReportWindow.State State(string model)

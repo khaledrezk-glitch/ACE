@@ -15,6 +15,8 @@ namespace AceRevitMcp.Dashboard
     {
         public string Key, Area, Name, Detail, Hint;
         public int Count;
+        /// <summary>How many items the check measured, when it measured a set (e.g. 36 of 120 views): makes "partly" possible.</summary>
+        public int? Of;
         public double Penalty, MaxPenalty;
         public List<long> Ids = new List<long>();
         /// <summary>The pass rule shown in reports, e.g. "warn at 1, fail at 5" (from the check set).</summary>
@@ -236,12 +238,14 @@ namespace AceRevitMcp.Dashboard
             var c = Add(x, "Views and sheets", "Views not on sheets", notOnSheet.Count, 0, 8,
                 $"{notOnSheet.Count} of {views.Count} views ({ratio:P0}) are not placed on a sheet", "Delete working views that are no longer needed, or place them.", notOnSheet.Select(v => v.Id));
             c.Penalty = Math.Min(8, Math.Max(0, ratio - 0.3) * 12);
+            c.Of = views.Count;
 
             var noTemplate = views.Where(v => v.ViewType != ViewType.DraftingView && v.ViewTemplateId == ElementId.InvalidElementId).ToList();
             var tRatio = views.Count == 0 ? 0 : (double)noTemplate.Count / views.Count;
             var t = Add(x, "Views and sheets", "Views without a view template", noTemplate.Count, 0, 4,
                 $"{noTemplate.Count} views ({tRatio:P0}) have no view template", "Apply the office view templates for consistent graphics.", noTemplate.Select(v => v.Id));
             t.Penalty = Math.Min(4, tRatio * 5);
+            t.Of = views.Count(v => v.ViewType != ViewType.DraftingView);
 
             var empty = sheets.Where(s => s.GetAllPlacedViews().Count == 0 && new FilteredElementCollector(doc, s.Id).OfClass(typeof(ScheduleSheetInstance)).GetElementCount() == 0).ToList();
             Add(x, "Views and sheets", "Empty sheets", empty.Count, 0.5, 4, $"{empty.Count} sheets with no views or schedules", "Fill or delete them before issue.", empty.Select(s => s.Id));
@@ -264,6 +268,7 @@ namespace AceRevitMcp.Dashboard
                 $"{incomplete.Count} of {sheets.Count} sheets miss issue date, drawn, checked, approved or designed by",
                 "Fill the title block fields before issue.", incomplete.Select(i => new ElementId(i)));
             sc.Penalty = Math.Min(5, sRatio * 5);
+            sc.Of = sheets.Count;
         }
 
         private static void ParameterCompleteness(Document doc, Insights x)
@@ -291,6 +296,7 @@ namespace AceRevitMcp.Dashboard
             var check = Add(x, "Parameters", "Key parameters filled", missingIds.Count, 0, 8,
                 $"{avg:0}% of key door, window and room parameters are filled", "Fill the missing values (Claude can do this with a preview).", missingIds);
             check.Penalty = Math.Min(8, (100 - avg) * 0.08);
+            check.Of = x.Completeness.Sum(c => c.Total);
         }
 
         private static void ProjectInformation(Document doc, Insights x)
@@ -310,9 +316,10 @@ namespace AceRevitMcp.Dashboard
                 x.ProjectInfo.Add((label, filled, v?.Trim()));
             }
             var missing = x.ProjectInfo.Count(p => !p.Filled);
-            Add(x, "Submission readiness", "Project information missing", missing, 0.6, 3,
+            var pi = Add(x, "Submission readiness", "Project information missing", missing, 0.6, 3,
                 missing == 0 ? "All project information fields are filled" : $"{missing} of {fields.Length} project information fields are empty",
                 "Fill Manage > Project Information.", new[] { info.Id });
+            pi.Of = fields.Length;
         }
 
         private static void PerLevel(Document doc, Insights x)
