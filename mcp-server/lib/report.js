@@ -29,12 +29,18 @@ export function runs(vaultDir, modelKey) {
   return out.sort((a, b) => b.id.localeCompare(a.id));
 }
 
+/** The model a run record belongs to (its title). */
+export function modelOf(file) { try { return readJson(file).run?.model ?? null; } catch { return null; } }
+
+// <model>_audit_<yyyy-mm-dd>_R<nn>.<ext>: the whole pattern, so "Tower" never matches "Tower_audit_X"'s reports.
+const reportPattern = (model, ext) => new RegExp(`^${safe(model).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_audit_\\d{4}-\\d{2}-\\d{2}_R\\d+\\.${ext}$`);
+
 /** The latest earlier report of this model (its sidecar), for "this audit vs the last one". */
 function previousReport(vaultDir, model) {
   const root = path.join(vaultDir, AUDITS);
   if (!fs.existsSync(root)) return null;
-  const prefix = `${safe(model)}_audit_`;
-  const sidecars = fs.readdirSync(root).filter((f) => f.startsWith(prefix) && f.endsWith(".json")).sort();
+  const re = reportPattern(model, "json");
+  const sidecars = fs.readdirSync(root).filter((f) => re.test(f)).sort();
   return sidecars.length ? { ...readJson(path.join(root, sidecars.at(-1))), file: sidecars.at(-1), count: sidecars.length } : { count: 0 };
 }
 

@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.9.1 (15 Oct 2026)
+- **Fixes from the release review:** the add-in and Claude's vault tool now find the same vault (the "ACE Vault" folder
+  beside a project file, or the file's `"vault"` setting); one bad entry in the trust list no longer untrusts every
+  vault; `vault report` defaults to the open model when a vault holds several; report names are matched in full, so
+  "Tower" never picks up "Tower_audit_X"'s reports; on Revit 2024, files are replaced in one step (no window where the
+  old snapshot or log is deleted but the new one not yet in place).
 - **Master audit report (V4):** `vault report` builds one report per audit from the vault and the latest compliance run:
   cover, summary (counts, open findings by severity, score, the three actions that matter most, what closed and what is
   new since the last report), document register (changed since the last audit), compliance matrix (requirement, source

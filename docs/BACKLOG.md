@@ -6,7 +6,7 @@ architecture concept (`docs/ARCHITECTURE-CONCEPT.md`), the stress review (`docs/
 development radar (the "Development radar" section of a learning report: real usage on the PCs).
 
 Effort: S (hours), M (a day or two), L (more). Status: **open**, **next** (approved for the next cycle), **live check**
-(built, waiting for verification in Revit), **in progress**, **done (unreleased)**.
+(built, waiting for verification in Revit), **in progress**, **done (1.9.1)**.
 
 ## Product focus (approved by the owner, 15 Oct 2026)
 
@@ -71,7 +71,7 @@ USD per model; ACE's reuse tools (save_script, run_saved_script, lessons) used 0
 | # | Item | Effort | Status |
 |---|---|---|---|
 | C1 | **Project requirements file** (D2): check set, worksets, clash matrix, naming, LOIN in one project file; office settings stay separate; old files keep working. Done so far: `project-requirements.json` (checks, presentation, worksets, clash ranks) found by cloud id or beside the model, merged by one resolver; `project_rules` tool. Still to do: clash tests and roles from the file (#9 of the spine contract), check options (T12), naming / LOIN / classification sections | M | in progress |
-| C1+ | Status store gains a Compliance slot and a run record (run id, rule hash, snapshot), persisted per model and keyed by the model key, not the title; requirement status lives in the store, not in the record | M | done (unreleased): every model check evaluates the vault's requirements (met / partly / not-met / not-checkable, deviations beside the status), publishes to the status store and, in a trusted vault, writes `04 Audits/<model key>/runs/<run id>.json` with the rules and requirements hashes; `vault compliance` reads it and says when it is out of date. Still to do: link the run to a change-tracker snapshot, reload the last run when a model opens (W2); live check |
+| C1+ | Status store gains a Compliance slot and a run record (run id, rule hash, snapshot), persisted per model and keyed by the model key, not the title; requirement status lives in the store, not in the record | M | done (1.9.1): every model check evaluates the vault's requirements (met / partly / not-met / not-checkable, deviations beside the status), publishes to the status store and, in a trusted vault, writes `04 Audits/<model key>/runs/<run id>.json` with the rules and requirements hashes; `vault compliance` reads it and says when it is out of date. Still to do: link the run to a change-tracker snapshot, reload the last run when a model opens (W2); live check |
 | C2 | **Requirements hub:** BEP / LOD / LOIN read into rules, recommendations, and the **contradiction monitor** (documents vs settings vs model) | L | open |
 | C3 | **Notifications like Revit warnings** for requirement findings (concept section 8) | M | open |
 | C4 | **Project Hub:** one container for rules, findings, models and documents, opened from the ribbon; click a point to edit | L | open |
@@ -96,16 +96,16 @@ The vault is the document store of C2 / C4, not a parallel hub.
 
 | # | Item | Effort | Status |
 |---|---|---|---|
-| V1 | `vault` tool: init a vault in the project folder (D2), register documents (type, revision, status, hash), read text (DOCX, XLSX, PDF), re-read only changed documents | M | done (unreleased); live check with the real project folder |
-| V2 | Requirement records and decisions (JSON; every record tied to a document, revision and clause; stable ids, D4; severity and status apart, D5) | S | done (unreleased) |
+| V1 | `vault` tool: init a vault in the project folder (D2), register documents (type, revision, status, hash), read text (DOCX, XLSX, PDF), re-read only changed documents | M | done (1.9.1); live check with the real project folder |
+| V2 | Requirement records and decisions (JSON; every record tied to a document, revision and clause; stable ids, D4; severity and status apart, D5) | S | done (1.9.1) |
 | V3 | Comparisons: EIR vs BEP, revision vs revision, LOIN vs MIDP / TIDP, documents vs ACE settings (= the C2 analyser) | M | open, with C2 |
-| V4 | Master report (DOCX + HTML) saved in the vault; summary and pointer in the model (extensible storage) | M | done (unreleased): `vault report` writes HTML, Word and an actions CSV to `04 Audits` with the trend since the last report; `vault model_summary` keeps the summary on Project Information (previewed, one undo step, only when asked; owner decision pending). Contradictions section waits for V3; pictures per finding wait for the issue view engine. Live check |
-| V5 | Ribbon Audit > Vault / Master Report; consent once per vault for file writes | S | done (unreleased): Vault opens the vault's index and asks once whether ACE may save audit records there (same trust list as the `vault` tool); Master Report opens the model's latest report, or shows the summary kept in the model and a prompt for Claude. Live check |
+| V4 | Master report (DOCX + HTML) saved in the vault; summary and pointer in the model (extensible storage) | M | done (1.9.1): `vault report` writes HTML, Word and an actions CSV to `04 Audits` with the trend since the last report; `vault model_summary` keeps the summary on Project Information (previewed, one undo step, only when asked; owner decision pending). Contradictions section waits for V3; pictures per finding wait for the issue view engine. Live check |
+| V5 | Ribbon Audit > Vault / Master Report; consent once per vault for file writes | S | done (1.9.1): Vault opens the vault's index and asks once whether ACE may save audit records there (same trust list as the `vault` tool); Master Report opens the model's latest report, or shows the summary kept in the model and a prompt for Claude. Live check |
 | V6 | Export requirement-derived rules as buildingSMART IDS 1.0 (an `ifc_binding` per record; coverage report of what IDS cannot express; round-trip check before any "IDS ready" claim) | S-M | open, after V2 |
 | W1 | Show the clash cause and who changed it in the Companion and Clash Browser (the data exists) | S | open |
 | W2 | Persist the status store per model (keyed by the model key) so the Companion is not empty after opening a model | S | open |
 | W3 | After-sync step that builds the "since last sync" greeting (at most three lines, one action) | M | open |
-| W4 | Compliance tab and tree map (document > section > requirement > check) in the dashboard, with drill-down to elements | M | Companion tab done (unreleased): against which documents, met %, status bar, groups by kind, requirement cards with source, quote, evidence, decision and "Show in model"; Re-run audit, master report, vault. Still to do: the visual tree map in the dashboard and the trend per audit |
+| W4 | Compliance tab and tree map (document > section > requirement > check) in the dashboard, with drill-down to elements | M | Companion tab done (1.9.1): against which documents, met %, status bar, groups by kind, requirement cards with source, quote, evidence, decision and "Show in model"; Re-run audit, master report, vault. Still to do: the visual tree map in the dashboard and the trend per audit |
 | P10 | Revit 2027 path on Autodesk's read / write MCP servers: ACE keeps the workflow and the safety gate | L | open, after the presentation |
 
 ## 3b. Navisworks (owner, 7 Oct; concept section 15)
@@ -141,8 +141,8 @@ The vault is the document store of C2 / C4, not a parallel hub.
 | T7 | Claude should check `pending_changes` before sending an apply (7 "alreadyApplied" calls in the NRM run) | S | open |
 | T8 | Ship `tools/bench` and the clash-test fixtures in the release zip so the benchmark runs on a package install | S | open |
 | T9 | `assign_worksets` and `set_parameters` previews report `heldAfterPreview` like the code runner | S | open |
-| T10 | Companion "Clash issues" tile showed the list's type name instead of the count | S | done (unreleased) |
-| T11 | One settings resolver for all rule files; the server no longer falls back to the packaged example workset rules (it asks the add-in for the rules in force) | S | done (unreleased) |
+| T10 | Companion "Clash issues" tile showed the list's type name instead of the count | S | done (1.9.1) |
+| T11 | One settings resolver for all rule files; the server no longer falls back to the packaged example workset rules (it asks the add-in for the rules in force) | S | done (1.9.1) |
 | T12 | Requirement values hard-coded in the model check (900 mm door width, key parameter list, sheet and project information fields) move to check options in the check set, then C1; the two scripts that repeat them become thin callers | S | open |
 
 ## 6. Later

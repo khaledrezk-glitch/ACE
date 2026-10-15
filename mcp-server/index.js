@@ -576,7 +576,12 @@ async function vaultFolder(folder, forInit) {
   let info;
   try { info = await callRevit("project_rules", {}, 30); }
   catch { throw new RevitError("Give 'folder' (the project folder or its ACE Vault): Revit is not reachable to find the open model's project."); }
-  if (info?.projectFile) return { dir: Vault.vaultDir(path.dirname(info.projectFile)), info };
+  if (info?.projectFile) {
+    // The same rule as the add-in (Compliance.VaultOf): the file's "vault" setting, else its ACE Vault folder.
+    let rel;
+    try { rel = JSON.parse(fs.readFileSync(info.projectFile, "utf8").replace(/^\uFEFF/, "")).vault; } catch { /* unreadable: default */ }
+    return { dir: rel ? path.resolve(path.dirname(info.projectFile), rel) : Vault.vaultDir(path.dirname(info.projectFile)), info };
+  }
   if (forInit && info?.modelFolders?.length) return { dir: Vault.vaultDir(info.modelFolders[0]), info };
   throw new RevitError(info?.cloud
     ? "This is a cloud model: give 'folder' (the project folder on the share), and map_model: true to remember it for this model (decision D2)."
@@ -667,7 +672,10 @@ tool("vault", {
     case "report": {
       const v = Vault.load(dir);
       let run, from;
-      const found = Report.runs(dir, a.model).filter((r) => !a.run_id || r.id === a.run_id);
+      // Default: the open model's runs (one vault can hold several models).
+      const openModel = a.model ? null : info?.model ?? (await callRevit("project_rules", {}, 30).catch(() => null))?.model;
+      const found = Report.runs(dir, a.model).filter((r) => !a.run_id || r.id === a.run_id)
+        .filter((r) => a.run_id || !openModel || Report.modelOf(r.file) === openModel);
       if (found.length) { run = JSON.parse(fs.readFileSync(found[0].file, "utf8")); from = found[0].file; }
       else if (a.run_id) throw new RevitError(`No run record ${a.run_id} in ${path.join(dir, "04 Audits")}.`);
       else {

@@ -50,8 +50,10 @@ namespace AceRevitMcp.Rules
         {
             var dir = Path.Combine(vault, "04 Audits");
             if (!Directory.Exists(dir)) return null;
-            var prefix = ReportPrefix(model);
-            return Directory.GetFiles(dir, "*.html").Where(f => Path.GetFileName(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            // The whole name pattern (lib/report.js reportPattern), so "Tower" never picks up "Tower_audit_X"'s reports.
+            var re = new System.Text.RegularExpressions.Regex("^" + System.Text.RegularExpressions.Regex.Escape(ReportPrefix(model)) + @"\d{4}-\d{2}-\d{2}_R\d+\.html$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return Directory.GetFiles(dir, "*.html").Where(f => re.IsMatch(Path.GetFileName(f)))
                 .OrderBy(f => Path.GetFileName(f), StringComparer.Ordinal).LastOrDefault();
         }
 

@@ -40,11 +40,11 @@ namespace AceRevitMcp.Util
             return diff == 0;
         }
 
-        /// <summary>File.Move with overwrite (the overload is .NET Core only).</summary>
+        /// <summary>File.Move with overwrite (the overload is .NET Core only); File.Replace keeps the target until the swap.</summary>
         public static void MoveOverwrite(string from, string to)
         {
-            if (System.IO.File.Exists(to)) System.IO.File.Delete(to);
-            System.IO.File.Move(from, to);
+            if (System.IO.File.Exists(to)) System.IO.File.Replace(from, to, null);
+            else System.IO.File.Move(from, to);
         }
 
         public static int Clamp(int value, int min, int max) => value < min ? min : value > max ? max : value;

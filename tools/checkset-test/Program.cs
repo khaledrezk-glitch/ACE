@@ -177,6 +177,12 @@ class P {
     var rec = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Directory.GetFiles(runsDir)[0]));
     Check((int)rec["run"]["score"] == 72 && ((System.Text.Json.Nodes.JsonArray)rec["checks"]).Count == 3 && (string)rec["checks"][1]["key"] == "elements-on-the-wrong-workset-bep" && (int)rec["checks"][1]["of"] == 100,
       "the run record carries the model check (score and every check) for the master report");
+    File.WriteAllText(Path.Combine(dir, "trusted-vaults.json"), "[\"\", null, " + System.Text.Json.JsonSerializer.Serialize(vaultDir) + "]");
+    Check((bool)compT.GetMethod("Trusted", flags).Invoke(null, new object[] { vaultDir }), "a bad entry in the trust list does not untrust the other vaults");
+    var beside = Path.Combine(tmp, "Beside"); Directory.CreateDirectory(beside);
+    File.WriteAllText(Path.Combine(beside, "project-requirements.json"), @"{ ""schema"": ""ace.project-requirements/1"" }");
+    Check((string)compT.GetMethod("VaultOf").Invoke(null, new[] { ForFile(Path.Combine(beside, "project-requirements.json")) }) == Path.Combine(beside, "ACE Vault")
+      && (string)compT.GetMethod("VaultOf").Invoke(null, new[] { pr2 }) == vaultDir, "the vault is the ACE Vault folder beside a project file (as the server's vault tool), or the file's own ACE Vault folder");
     var outOfDate = compT.GetMethod("OutOfDate", flags);
     Check(outOfDate.Invoke(null, new object[] { run2, pr2 }) == null, "a fresh run is not out of date");
     File.WriteAllText(Path.Combine(vaultDir, "requirements.json"), File.ReadAllText(Path.Combine(vaultDir, "requirements.json")).Replace("REQ-EIR-0010", "REQ-EIR-0011"));

@@ -127,5 +127,7 @@ const run2 = { ...run1, run: { ...run1.run, id: "20261015T100000Z-bbbb", score: 
 const rep2 = Report.build(vr, run2, { date: new Date("2026-10-15T11:00:00Z") });
 assert.ok(rep2.rev === "R02" && rep2.summary.trend.closed === 1 && rep2.summary.trend.new === 0, "the next report counts what closed since the last one");
 assert.ok(rep2.html.includes("last audit: 70"), "score trend");
+fs.writeFileSync(path.join(dir, "04 Audits", "Tower A_audit_X_audit_2026-10-15_R07.json"), JSON.stringify({ statuses: {}, documents: {} }));
+assert.equal(Report.build(vr, run2, {}).rev, "R02", "another model whose name starts the same is not counted");
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("vault test passed");

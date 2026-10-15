@@ -187,13 +187,19 @@ namespace AceRevitMcp.Rules
 
         // ---- the vault side: requirements in, run records out ----------------------------------------------------
 
-        /// <summary>The vault folder of a project file ("vault" in the file, default the file's own folder).</summary>
+        public const string VaultFolderName = "ACE Vault";
+
+        /// <summary>
+        /// The vault folder of a project file: its "vault" setting (relative to the file), else the file's folder when that
+        /// is an "ACE Vault" folder, else the "ACE Vault" folder beside it. The MCP server's vault tool uses the same rule.
+        /// </summary>
         public static string VaultOf(ProjectRules rules)
         {
             if (rules?.ProjectFile == null) return null;
             var dir = Path.GetDirectoryName(rules.ProjectFile);
             var rel = ProjectRules.ReadJson(rules.ProjectFile)?["vault"]?.ToString();
-            return string.IsNullOrWhiteSpace(rel) ? dir : Path.GetFullPath(Path.Combine(dir, rel));
+            if (!string.IsNullOrWhiteSpace(rel)) return Path.GetFullPath(Path.Combine(dir, rel));
+            return string.Equals(Path.GetFileName(dir.TrimEnd('\\', '/')), VaultFolderName, StringComparison.OrdinalIgnoreCase) ? dir : Path.Combine(dir, VaultFolderName);
         }
 
         /// <summary>Evaluates a model check against the project's vault; null when the model has no project file.</summary>
@@ -221,8 +227,14 @@ namespace AceRevitMcp.Rules
             try
             {
                 var f = Path.Combine(AceConfig.Directory, "trusted-vaults.json");
-                return File.Exists(f) && JsonNode.Parse(File.ReadAllText(f)) is JsonArray list
-                    && list.Any(x => string.Equals(Path.GetFullPath(x?.ToString() ?? "").TrimEnd('\\', '/'), Path.GetFullPath(vault).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
+                if (!File.Exists(f) || JsonNode.Parse(File.ReadAllText(f)) is not JsonArray list) return false;
+                var wanted = Path.GetFullPath(vault).TrimEnd('\\', '/');
+                // One bad entry must not untrust every vault.
+                return list.Any(x =>
+                {
+                    try { return !string.IsNullOrWhiteSpace(x?.ToString()) && string.Equals(Path.GetFullPath(x.ToString()).TrimEnd('\\', '/'), wanted, StringComparison.OrdinalIgnoreCase); }
+                    catch { return false; }
+                });
             }
             catch { return false; }
         }
