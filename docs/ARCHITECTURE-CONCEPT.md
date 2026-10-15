@@ -91,6 +91,9 @@ notifications (section 8). Each suggestion has a one-click action.
 | Work modes | mode definitions | ribbon focus / dim / hide, prompts, Claude tools | Companion, Claude |
 | Approvals + preview pictures | dry runs | Apply cards | every modifying tool |
 | Lessons + learning report + benchmark | telemetry, lessons | improvements | every tool |
+| Requirements vault (`vault`, V1/V2) | client documents (DOCX, XLSX, PDF) | register, requirement records with quotes, decisions, index.html | rules engine (project-requirements.json), compliance, report |
+| Compliance (C1+) | model check results, vault records and decisions, project rules | status per requirement, run record in `04 Audits/<model>/runs` | status store, master report, Claude (`vault compliance`) |
+| Master report (V4) | vault, latest run record, last report's record | HTML + DOCX + actions CSV in `04 Audits`, trend since the last audit; optional summary in the model (extensible storage, only when asked) | vault index, auditors, the model itself |
 
 ## 4. Duplications found, and merge recommendations
 
@@ -110,6 +113,7 @@ Each item is a recommendation. None is applied yet.
 | D10 | *Parameter Check* (planned), "Key parameters filled" (model check), LOIN | One **information requirements** check driven by the LOIN | Checks what the project actually requires | M |
 | D11 | *Submission Check* (planned), the Submission mode, "Submission readiness" checks | Submission check = the requirements monitor at the issue stage | No separate tool to build | S |
 | D13 | Presentation rules could have become an eighth settings file | Kept in the office check set (`presentation`): one reader (`PresentationStandard`) feeds the model check and the fix, so they never disagree | No new file; check and fix agree | S · **done (1.7.0)** |
+| D14 | Three HTML report renderers: model dashboard (`DashboardHtml.cs`), coordination report (`CoordinationReport.cs`), master report (`mcp-server/lib/report.js`) | The master report is built in the server because the vault lives there and it must work without Revit; share one brand stylesheet and one table/badge vocabulary between them before adding a fourth | Consistent look, one place to restyle | S |
 | D12 | *Design Check* / *Code Packs* (planned) and the rules engine | The same rules engine with different rule packs (design, code, client) | One engine, many packs | M |
 
 ## 5. The bigger circle: the BIM requirements hub

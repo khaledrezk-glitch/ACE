@@ -38,6 +38,8 @@ const bridge = http.createServer((req, res) => {
       }
       case "compliance":
         return reply({ ok: true, result: { run: { id: "r1", model: "Test" }, summary: { met: 1, "not-met": 1 }, ranNow: !!args.run, echo: args, results: [{ requirement: "REQ-EIR-0001", status: "not-met", evidence: "Doors: 3 of 40" }] } });
+      case "audit_summary":
+        return reply({ ok: true, result: args.summary ? { success: true, dryRun: !!args.dry_run, after: args.summary } : { model: "Test", summary: null } });
       case "assign_worksets":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, transaction: args.check_only ? undefined : args.dry_run ? "RolledBack" : "Committed", rules: `${args.rules_name} (${args.rules_source}), ${args.rules?.length} rules`, firstRule: args.rules?.[0]?.workset } });
       case "presentation_standard":
@@ -314,6 +316,16 @@ const comp = (await call("vault", { action: "compliance", status: "not-met", lim
 assert.match(comp, /"status": ?"not-met"/, "compliance passes the status filter to Revit");
 assert.match(comp, /"max_results": ?5/, "compliance passes the result limit");
 assert.match(comp, /"ranNow": ?false/, "compliance reads the last result unless run: true");
+const vrep = (await call("vault", { action: "report", folder: vtmp, by: "smoke" })).content[0].text;
+assert.match(vrep, /"from": ?"Revit \(last model check\)"/, "with no run in the vault, the report uses Revit's last result");
+assert.match(vrep, /"notMet": ?1/, "report summary");
+assert.ok(fs.existsSync(path.join(vtmp, "ACE Vault", "04 Audits", "Test_audit_" + new Date().toISOString().slice(0, 10) + "_R01.docx")), "report saved in 04 Audits");
+assert.match((await call("vault", { action: "model_summary", folder: vtmp })).content[0].text, /"summary": ?null/, "model_summary without dry_run only reads");
+const msNo = await call("vault", { action: "model_summary", folder: vtmp, dry_run: false, explanation: "Keep the audit result in the model" });
+assert.ok(msNo.isError && /previewed/.test(msNo.content[0].text), "writing the summary into the model needs a preview first");
+const msPrev = (await call("vault", { action: "model_summary", folder: vtmp, dry_run: true, explanation: "Keep the audit result in the model" })).content[0].text;
+assert.match(msPrev, /"rev": ?"R01"/, "the preview carries the latest report's summary");
+assert.match((await call("vault", { action: "model_summary", folder: vtmp, dry_run: false, explanation: "Keep the audit result in the model" })).content[0].text, /"dryRun": ?false/, "apply after the identical preview");
 fs.rmSync(vtmp, { recursive: true, force: true });
 const wm = (await call("working_mode", { mode: "coordination" })).content[0].text;
 assert.match(wm, /Coordination/, "working mode can be set");

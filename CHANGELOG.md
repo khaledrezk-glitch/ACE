@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+- **Master audit report (V4):** `vault report` builds one report per audit from the vault and the latest compliance run:
+  cover, summary (counts, open findings by severity, score, the three actions that matter most, what closed and what is
+  new since the last report), document register (changed since the last audit), compliance matrix (requirement, source
+  clause, test, evidence, status, severity, decision), model findings, decisions and deviations, and actions. Saved in
+  `04 Audits` as HTML, Word (A4 landscape, real tables, brand font and colour) and an actions CSV, plus a small record
+  the next report compares with; the vault index links the latest. Compliance run records now carry the model check
+  (score and every check). New `vault model_summary`: keeps the latest report's summary on Project Information
+  (extensible storage, readable by anyone, writable only by ACE), previewed and applied as one undo step, only when asked.
+
 ## 1.9.0 (15 Oct 2026)
 - **Revit 2024 support, first part (R24):** the add-in is now built twice from one source, for Revit 2024 (.NET Framework
   4.8) and Revit 2025 (.NET 8). The installer puts the right build into each installed Revit (or the years given with

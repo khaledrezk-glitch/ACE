@@ -38,7 +38,7 @@ namespace AceRevitMcp.Rules
             {
                 Id = run.Id, Model = run.Model, Engine = run.Engine, RulesHash = run.RulesHash, RequirementsHash = run.RequirementsHash,
                 User = run.User, Time = run.Time, ProjectFile = run.ProjectFile, Vault = run.Vault, Summary = run.Summary,
-                NotMetBySeverity = run.NotMetBySeverity, Results = run.Results.Where(r => string.Equals(r.Status, status, System.StringComparison.OrdinalIgnoreCase)).ToList(),
+                NotMetBySeverity = run.NotMetBySeverity, Score = run.Score, Checks = run.Checks, Results = run.Results.Where(r => string.Equals(r.Status, status, System.StringComparison.OrdinalIgnoreCase)).ToList(),
             };
             var o = Compliance.ToJson(filtered, max);
             o["ranNow"] = ranNow;

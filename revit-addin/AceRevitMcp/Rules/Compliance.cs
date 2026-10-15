@@ -32,6 +32,9 @@ namespace AceRevitMcp.Rules
         {
             public string Id, Model, Engine = "model-check", RulesHash, RequirementsHash, User, Time, ProjectFile, Vault;
             public List<Result> Results = new List<Result>();
+            /// <summary>The model check this run was made from: score and every check's result (the report's model findings).</summary>
+            public int? Score;
+            internal List<Check> Checks = new List<Check>();
             public Dictionary<string, int> Summary = new Dictionary<string, int>();
             public Dictionary<string, int> NotMetBySeverity = new Dictionary<string, int>();
         }
@@ -48,7 +51,7 @@ namespace AceRevitMcp.Rules
             var run = new Run
             {
                 Model = model, User = user, Time = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"), ProjectFile = rules?.ProjectFile,
-                RulesHash = RulesHashOf(rules), RequirementsHash = RequirementsHashOf(requirements),
+                RulesHash = RulesHashOf(rules), RequirementsHash = RequirementsHashOf(requirements), Checks = checks.ToList(),
             };
             run.Id = run.Time.Replace(":", "").Replace("-", "") + "-" + Hash(model + run.RulesHash + run.RequirementsHash).Substring(0, 4);
 
@@ -167,13 +170,13 @@ namespace AceRevitMcp.Rules
         }
 
         /// <summary>Evaluates a model check against the project's vault; null when the model has no project file.</summary>
-        internal static Run ForModel(ProjectRules rules, IList<Check> checks, string model, string modelKey, string user)
+        internal static Run ForModel(ProjectRules rules, IList<Check> checks, string model, string modelKey, string user, int? score = null)
         {
             var vault = VaultOf(rules);
             if (vault == null) return null;
             JsonObject Read(string f) { try { return ProjectRules.ReadJson(Path.Combine(vault, f)); } catch (Exception ex) { Log.Warn($"Compliance: {ex.Message}"); return null; } }
             var run = Evaluate(rules, Read("requirements.json"), Read("decisions.json"), checks, model, user);
-            run.Vault = vault;
+            run.Vault = vault; run.Score = score;
             // Run records travel with the project, but only into a vault the user has allowed ACE to write to (D21).
             if (Trusted(vault))
                 try
@@ -203,7 +206,12 @@ namespace AceRevitMcp.Rules
             {
                 ["id"] = run.Id, ["model"] = run.Model, ["engine"] = run.Engine, ["time"] = run.Time, ["user"] = run.User,
                 ["rulesHash"] = run.RulesHash, ["requirementsHash"] = run.RequirementsHash, ["projectFile"] = run.ProjectFile, ["vault"] = run.Vault,
+                ["score"] = run.Score,
             },
+            ["checks"] = new JsonArray(run.Checks.Select(c => (JsonNode)new JsonObject
+            {
+                ["key"] = c.Key, ["area"] = c.Area, ["name"] = c.Name, ["count"] = c.Count, ["of"] = c.Of, ["status"] = c.Status, ["detail"] = c.Detail,
+            }).ToArray()),
             ["summary"] = new JsonObject(run.Summary.Select(kv => new KeyValuePair<string, JsonNode>(kv.Key, kv.Value))),
             ["openBySeverity"] = new JsonObject(run.NotMetBySeverity.Select(kv => new KeyValuePair<string, JsonNode>(kv.Key, kv.Value))),
             ["results"] = new JsonArray(run.Results.OrderBy(r => r.Status == "not-met" ? 0 : r.Status == "partly" ? 1 : r.Status == "met" ? 2 : 3).Take(maxResults).Select(r => (JsonNode)new JsonObject

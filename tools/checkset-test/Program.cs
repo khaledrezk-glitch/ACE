@@ -156,7 +156,7 @@ class P {
     File.WriteAllText(Path.Combine(vaultDir, "decisions.json"), @"{ ""decisions"": [ { ""id"": ""DEC-0001"", ""kind"": ""deviation"", ""requirements"": [ ""REQ-EIR-0001"" ], ""quotes"": { ""REQ-EIR-0001"": ""q1"" }, ""note"": ""agreed with the client"" } ] }");
     var cks = Checks(("in-place-families", 2, null), ("elements-on-the-wrong-workset-bep", 3, 100), ("views-not-on-sheets", 0, 40));
     var forModel = compT.GetMethod("ForModel", flags);
-    var run = forModel.Invoke(null, new object[] { pr2, cks, "Model A", "model-a", "tester" });
+    var run = forModel.Invoke(null, new object[] { pr2, cks, "Model A", "model-a", "tester", 72 });
     var runT = run.GetType(); var resT = compT.GetNestedType("Result");
     var results = ((IList)runT.GetField("Results").GetValue(run)).Cast<object>().ToDictionary(r => (string)resT.GetField("Requirement").GetValue(r), r => r);
     string Cs(string id) => (string)resT.GetField("Status").GetValue(results[id]);
@@ -170,8 +170,11 @@ class P {
     var runsDir = Path.Combine(vaultDir, "04 Audits", "model-a", "runs");
     Check(!Directory.Exists(runsDir), "no run record is written into a vault the user has not trusted (D21)");
     File.WriteAllText(Path.Combine(dir, "trusted-vaults.json"), "[" + System.Text.Json.JsonSerializer.Serialize(vaultDir) + "]");
-    var run2 = forModel.Invoke(null, new object[] { pr2, cks, "Model A", "model-a", "tester" });
+    var run2 = forModel.Invoke(null, new object[] { pr2, cks, "Model A", "model-a", "tester", 72 });
     Check(Directory.Exists(runsDir) && Directory.GetFiles(runsDir, "*.json").Length == 1 && File.ReadAllText(Directory.GetFiles(runsDir)[0]).Contains("REQ-BEP-0010"), "a trusted vault gets the run record in 04 Audits/<model>/runs");
+    var rec = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Directory.GetFiles(runsDir)[0]));
+    Check((int)rec["run"]["score"] == 72 && ((System.Text.Json.Nodes.JsonArray)rec["checks"]).Count == 3 && (string)rec["checks"][1]["key"] == "elements-on-the-wrong-workset-bep" && (int)rec["checks"][1]["of"] == 100,
+      "the run record carries the model check (score and every check) for the master report");
     var outOfDate = compT.GetMethod("OutOfDate", flags);
     Check(outOfDate.Invoke(null, new object[] { run2, pr2 }) == null, "a fresh run is not out of date");
     File.WriteAllText(Path.Combine(vaultDir, "requirements.json"), File.ReadAllText(Path.Combine(vaultDir, "requirements.json")).Replace("REQ-EIR-0010", "REQ-EIR-0011"));

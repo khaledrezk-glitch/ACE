@@ -56,6 +56,11 @@ returns met / partly (a measured part of a set, e.g. 3 of 100 elements) / not-me
 the evidence and any accepted deviation; it reads the last result (and says if the rules or requirements changed since),
 `run: true` runs the model check first. Report not-met by severity, and never call a deviation "met".
 
+The master report (`vault report`) is built from the latest compliance run: cover, summary with the trend since the last
+report, document register, compliance matrix, model findings, decisions, actions (CSV beside it, owner and due left blank
+for the team). Run the model check first if the requirements changed (the report says so). `vault model_summary` keeps
+the latest report's summary inside the model: only when the user asks, preview first (dry_run: true), then apply.
+
 ## Space planning (office test fit)
 
 for an office test fit ("how many people fit", "put desks in room X", "fit out the office") use the saved script test_fit_out (inputs: room_number, m2_per_person, desk_type, min_aisle_mm, door_clearance_mm, wall_clearance_mm). It places 4-desk pods on a regular grid clear of walls, doors, columns and fixtures, reports the seats, m2 per person and the room's maximum, and a re-run replaces the previous test fit in that room. Preview it with preview_image: true. If the target does not fit, say so plainly with the maximum, rather than squeezing aisles below the minimum.

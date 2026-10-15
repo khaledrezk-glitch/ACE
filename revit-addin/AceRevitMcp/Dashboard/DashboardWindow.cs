@@ -37,7 +37,7 @@ namespace AceRevitMcp.Dashboard
         {
             try
             {
-                var run = Rules.Compliance.ForModel(Rules.ProjectRules.For(doc), x.Checks, doc.Title, Tracking.Snapshots.ModelKey(doc), user);
+                var run = Rules.Compliance.ForModel(Rules.ProjectRules.For(doc), x.Checks, doc.Title, Tracking.Snapshots.ModelKey(doc), user, x.Score);
                 StatusStore.PublishCompliance(doc.Title, run);
                 return run;
             }

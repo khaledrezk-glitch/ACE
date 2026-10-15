@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
+import * as Report from "./lib/report.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
@@ -582,13 +583,20 @@ async function vaultFolder(folder, forInit) {
     : `No vault found for ${info?.model ?? "this model"}. Create one with action "init" (beside the central model by default).`);
 }
 
-const WRITES = new Set(["init", "register", "import", "decide", "revalidate"]);
+const WRITES = new Set(["init", "register", "import", "decide", "revalidate", "report"]);
+
+// Brand for reports: the installed branding (install.ps1 copies it beside config.json), else the repository's.
+function brand() {
+  for (const f of [path.join(path.dirname(CONFIG_PATH), "branding", "brand.json"), path.join(ROOT, "..", "branding", "brand.json")])
+    try { return JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, "")); } catch { /* next */ }
+  return {};
+}
 
 tool("vault", {
   title: "Requirements vault",
-  description: "The project's requirements vault (an 'ACE Vault' folder): a register of the client's documents (EIR, BEP, LOIN, MIDP...) with revision and hash, their text, requirement records that quote the document and cite page / clause / cell, and the auditor's decisions; index.html makes it browsable. Actions: status | init | register (key, path, type, revision...) | scan (unregistered or changed files) | read (key; from/to pages or rows, sheet, find) | import (file: an extraction JSON, or records) | requirements (list with filters) | decide (ids, decision: accept | deviation | reject | note) | revalidate (key: re-check every record's quote against the document's current revision; only that document is read) | compliance (status per requirement from the last model check: met / partly / not-met / not-checkable, with evidence, accepted deviations and whether the result is out of date; run: true re-runs the model check; status filters, e.g. not-met). Records keep stable ids across revisions; severity is info / warning / error. Writing files in a vault needs the user's consent once (consent: true after asking), then the vault is trusted.",
+  description: "The project's requirements vault (an 'ACE Vault' folder): a register of the client's documents (EIR, BEP, LOIN, MIDP...) with revision and hash, their text, requirement records that quote the document and cite page / clause / cell, and the auditor's decisions; index.html makes it browsable. Actions: status | init | register (key, path, type, revision...) | scan (unregistered or changed files) | read (key; from/to pages or rows, sheet, find) | import (file: an extraction JSON, or records) | requirements (list with filters) | decide (ids, decision: accept | deviation | reject | note) | revalidate (key: re-check every record's quote against the document's current revision; only that document is read) | compliance (status per requirement from the last model check: met / partly / not-met / not-checkable, with evidence, accepted deviations and whether the result is out of date; run: true re-runs the model check; status filters, e.g. not-met) | model_summary (the last report's summary kept inside the open model on Project Information, so it travels with the RVT: without dry_run it reads what is stored; dry_run: true previews writing the latest report's summary, then the identical call with dry_run: false and an explanation writes it, ONE undo step; only when the user asks for it) | report (the master audit report from the latest compliance run: HTML, Word and an actions CSV saved in 04 Audits, with the trend since the last report; model: the model folder under 04 Audits, run_id: a specific run; by: the auditor). Records keep stable ids across revisions; severity is info / warning / error. Writing files in a vault needs the user's consent once (consent: true after asking), then the vault is trusted.",
   inputSchema: {
-    action: z.enum(["status", "init", "register", "scan", "read", "import", "requirements", "decide", "revalidate", "compliance"]),
+    action: z.enum(["status", "init", "register", "scan", "read", "import", "requirements", "decide", "revalidate", "compliance", "report", "model_summary"]),
     folder: z.string().optional().describe("Project folder or its ACE Vault; default: the open model's"),
     consent: z.boolean().optional().describe("The user agreed to ACE writing files in this vault (asked once per vault)"),
     project: z.string().optional(), map_model: z.boolean().optional().describe("init: remember this folder for the open (cloud) model in config.json"),
@@ -604,11 +612,16 @@ tool("vault", {
     ids: z.array(z.string()).max(1000).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
     decision: z.enum(["accept", "deviation", "reject", "note"]).optional(), note: z.string().max(2000).optional(), by: z.string().optional(),
     run: z.boolean().optional().describe("compliance: run the model check first instead of reading the last result"),
+    model: z.string().optional().describe("report: the model's folder under '04 Audits' (default: the newest run of any model)"),
+    run_id: z.string().optional().describe("report: a specific run record id (default: the newest)"),
+    dry_run: z.boolean().optional().describe("model_summary: true previews, false applies (after a preview and the user's confirmation)"),
+    explanation: z.string().max(600).optional(),
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, async (a) => {
   // Compliance is computed in Revit with each model check (status store); the add-in finds the vault itself.
   if (a.action === "compliance") return text(await callRevit("compliance", { run: a.run, status: a.status, max_results: a.limit }, a.run ? 600 : 30));
+  if (a.action === "model_summary" && a.dry_run == null) return text(await callRevit("audit_summary", {}, 30));
   const { dir, info } = await vaultFolder(a.folder, a.action === "init");
   if (WRITES.has(a.action) && !Vault.trusted(path.dirname(CONFIG_PATH), dir)) {
     if (!a.consent) return { isError: true, content: [{ type: "text", text: `ACE needs the user's permission to write files in ${dir} (asked once per vault). Ask them, then repeat the call with consent: true.` }] };
@@ -650,6 +663,38 @@ tool("vault", {
       const d = Vault.decide(v, { ids: a.ids, kind: a.decision ?? "accept", note: a.note, by: a.by ?? os.userInfo().username });
       Vault.save(v);
       return text(d);
+    }
+    case "report": {
+      const v = Vault.load(dir);
+      let run, from;
+      const found = Report.runs(dir, a.model).filter((r) => !a.run_id || r.id === a.run_id);
+      if (found.length) { run = JSON.parse(fs.readFileSync(found[0].file, "utf8")); from = found[0].file; }
+      else if (a.run_id) throw new RevitError(`No run record ${a.run_id} in ${path.join(dir, "04 Audits")}.`);
+      else {
+        // No run saved in the vault yet (e.g. it was trusted after the last model check): ask Revit for the last result.
+        try { run = await callRevit("compliance", { max_results: 100000 }, 600); from = "Revit (last model check)"; }
+        catch (err) { throw new RevitError(`No compliance run in this vault yet and Revit did not answer (${err.message}). Run the model check with the model open (vault action compliance, run: true), then make the report.`); }
+      }
+      const rep = Report.build(v, run, { by: a.by ?? os.userInfo().username, brand: brand() });
+      const files = Report.save(v, rep);
+      Vault.writeIndex(v);
+      return text({ report: rep.name, files, from, ...rep.summary,
+        note: rep.summary.staleRun ? "Requirements changed after this model check: run the model check again (vault compliance, run: true) and make a new report for a current result." : undefined });
+    }
+    case "model_summary": {
+      const model = info?.model ?? (await callRevit("project_rules", {}, 30))?.model;
+      const last = Report.latest(dir, model);
+      if (!last?.summary) throw new RevitError(`No master report of ${model} in ${dir} yet: make one first (action report).`);
+      const summary = { report: last.file.replace(/\.json$/, ""), rev: last.rev, date: last.date, by: last.by, score: last.score, run: last.run,
+        ...Object.fromEntries(["requirements", "met", "partly", "notMet", "notCheckable", "openBySeverity"].map((k) => [k, last.summary[k]])),
+        reportPath: last.html, vault: dir };
+      requireExplanation(a.dry_run, a.explanation);
+      const result = await gated(fingerprint("audit_summary", summary),
+        { apply: !a.dry_run, explanation: a.explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
+        () => callRevit("audit_summary", { summary, dry_run: !!a.dry_run, explanation: a.explanation }, 120), (r) => r?.success === true);
+      if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
+      journal({ title: `${a.dry_run ? "Preview" : "Change"}: audit summary in the model`, explanation: a.explanation, outcome: outcomeOf(result, a.dry_run), details: { report: summary.report } });
+      return text(result);
     }
     case "revalidate": {
       if (!a.key) throw new RevitError("Give the document key to re-check.");

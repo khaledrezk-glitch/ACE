@@ -99,7 +99,7 @@ The vault is the document store of C2 / C4, not a parallel hub.
 | V1 | `vault` tool: init a vault in the project folder (D2), register documents (type, revision, status, hash), read text (DOCX, XLSX, PDF), re-read only changed documents | M | done (unreleased); live check with the real project folder |
 | V2 | Requirement records and decisions (JSON; every record tied to a document, revision and clause; stable ids, D4; severity and status apart, D5) | S | done (unreleased) |
 | V3 | Comparisons: EIR vs BEP, revision vs revision, LOIN vs MIDP / TIDP, documents vs ACE settings (= the C2 analyser) | M | open, with C2 |
-| V4 | Master report (DOCX + HTML) saved in the vault; summary and pointer in the model (extensible storage) | M | open |
+| V4 | Master report (DOCX + HTML) saved in the vault; summary and pointer in the model (extensible storage) | M | done (unreleased): `vault report` writes HTML, Word and an actions CSV to `04 Audits` with the trend since the last report; `vault model_summary` keeps the summary on Project Information (previewed, one undo step, only when asked; owner decision pending). Contradictions section waits for V3; pictures per finding wait for the issue view engine. Live check |
 | V5 | Ribbon Audit > Vault / Master Report; consent once per vault for file writes | S | open |
 | V6 | Export requirement-derived rules as buildingSMART IDS 1.0 (an `ifc_binding` per record; coverage report of what IDS cannot express; round-trip check before any "IDS ready" claim) | S-M | open, after V2 |
 | W1 | Show the clash cause and who changed it in the Companion and Clash Browser (the data exists) | S | open |

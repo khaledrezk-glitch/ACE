@@ -6,7 +6,8 @@ import path from "node:path";
 import zlib from "node:zlib";
 import assert from "node:assert/strict";
 import * as Vault from "../lib/vault.js";
-import { readDocx, readXlsx, normalise, textOf } from "../lib/docs.js";
+import { readDocx, readXlsx, normalise, textOf, unzip } from "../lib/docs.js";
+import * as Report from "../lib/report.js";
 
 // A minimal zip writer (deflated entries), enough to make DOCX and XLSX files for the readers.
 function zip(files) {
@@ -101,5 +102,30 @@ const read = await Vault.read(Vault.load(dir), "EIR", { find: "fire rating" });
 assert.ok(read.text.length === 1 && read.text[0].section === "Information standard", "read finds a phrase with its section");
 assert.ok(fs.readFileSync(path.join(dir, "index.html"), "utf8").includes("Test project"), "index.html is written");
 assert.ok(!Vault.trusted(tmp, dir)); Vault.trust(tmp, dir); assert.ok(Vault.trusted(tmp, dir), "trust is remembered per vault");
+
+// Master report (V4): built from a run record; the second report says what closed since the first.
+const runDir = path.join(dir, "04 Audits", "model-a", "runs");
+fs.mkdirSync(runDir, { recursive: true });
+const run1 = { run: { id: "20261015T080000Z-aaaa", model: "Tower A.rvt", time: "2026-10-15T08:00:00Z", user: "tester", score: 70 },
+  results: [{ requirement: "REQ-EIR-0001", status: "not-met", severity: "error", evidence: "Doors narrower than 900 mm: 3 of 40 (fail)", binding: "C1:checks/doors" }],
+  checks: [{ key: "doors", area: "Rooms and doors", name: "Doors narrower than 900 mm", count: 3, of: 40, status: "fail", detail: "3 doors under 900 mm & <check>" }] };
+fs.writeFileSync(path.join(runDir, "20261015T080000Z-aaaa.json"), JSON.stringify(run1));
+assert.equal(Report.runs(dir)[0].modelKey, "model-a", "run records are found per model");
+let vr = Vault.load(dir);
+const rep1 = Report.build(vr, JSON.parse(fs.readFileSync(Report.runs(dir)[0].file, "utf8")), { by: "auditor", date: new Date("2026-10-15T09:00:00Z") });
+assert.equal(rep1.name, "Tower A_audit_2026-10-15_R01");
+assert.ok(rep1.summary.notMet === 1 && rep1.summary.notEvaluated === 1 && rep1.summary.trend === null, "every vault requirement is in the matrix; one the run did not cover is 'not evaluated'");
+assert.ok(rep1.html.includes("REQ-EIR-0002") && rep1.html.includes("&amp; &lt;check&gt;") && !rep1.html.includes("<check>"), "HTML lists every requirement and escapes text");
+const parts = unzip(rep1.docx);
+assert.ok(parts.names.includes("word/document.xml") && parts.read("word/document.xml").includes("Compliance matrix") && parts.read("word/document.xml").includes("&amp; &lt;check&gt;"), "the Word file is a valid zip with the report");
+assert.ok(rep1.csv.startsWith("\uFEFFRequirement,Severity") && rep1.csv.includes("REQ-EIR-0001,error,Not met"), "actions CSV, owner and due left blank for the team");
+const files = Report.save(vr, rep1);
+assert.ok(fs.existsSync(files.docx) && fs.existsSync(files.record), "report files saved in 04 Audits");
+Vault.writeIndex(vr);
+assert.ok(fs.readFileSync(path.join(dir, "index.html"), "utf8").includes("Tower A_audit_2026-10-15_R0"), "the vault index links the latest report");
+const run2 = { ...run1, run: { ...run1.run, id: "20261015T100000Z-bbbb", score: 80 }, results: [{ ...run1.results[0], status: "met" }] };
+const rep2 = Report.build(vr, run2, { date: new Date("2026-10-15T11:00:00Z") });
+assert.ok(rep2.rev === "R02" && rep2.summary.trend.closed === 1 && rep2.summary.trend.new === 0, "the next report counts what closed since the last one");
+assert.ok(rep2.html.includes("last audit: 70"), "score trend");
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("vault test passed");
