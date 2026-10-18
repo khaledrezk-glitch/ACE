@@ -81,7 +81,10 @@ export async function runChecks({ deep = true } = {}) {
         checks.push(check("Version match", "warn", `Add-in ${ping.addinVersion} vs MCP server ${VERSION}.`, "Close Revit, run install.ps1, restart Revit."));
       }
       if (!ping.activeDocument) checks.push(check("Open model", "warn", "No model is open in Revit.", "Open a model before asking Claude to work on it."));
-      if (deep) {
+      if (deep && String(h.revitVersion).startsWith("2024")) {
+        // Not a fault: the code runner is not built for Revit 2024 yet (backlog R24 slice 2).
+        checks.push(check("C# scripts", "info", "Not available on Revit 2024 yet; every other ACE tool works."));
+      } else if (deep) {
         const c = await callRevit("execute_code", { code: "return 6 * 7;", mode: "readonly", compile_only: true }, 60);
         checks.push(c.success
           ? check("C# compiler", "ok", "Scripts compile inside Revit.")

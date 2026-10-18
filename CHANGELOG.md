@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- `check_setup` on Revit 2024 lists C# scripts as "not available yet" (info) instead of a failed Revit session with a wrong fix.
+
 ## 1.9.2 (15 Oct 2026)
 - **Model size in compliance:** a requirement bound to the file-size check is now met or not met by the check's pass
   rule (e.g. `failAt: 300` MB), not by its count, which is MB rather than failing items. Evidence reads "File size:
