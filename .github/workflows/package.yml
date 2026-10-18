@@ -19,9 +19,12 @@ jobs:
           node-version: "20"
       - name: MCP server tests
         working-directory: mcp-server
+        shell: pwsh
+        # On failure the last lines also become annotations, readable through the API without the full log.
         run: |
-          npm ci
-          npm run check
+          npm ci 2>&1 | Tee-Object -FilePath ci.log
+          if ($LASTEXITCODE -eq 0) { npm run check 2>&1 | Tee-Object -FilePath ci.log -Append }
+          if ($LASTEXITCODE -ne 0) { Get-Content ci.log -Tail 40 | ForEach-Object { "::error::$_" }; exit 1 }
       - name: Build package
         shell: pwsh
         run: ./build-package.ps1
