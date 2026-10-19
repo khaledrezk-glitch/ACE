@@ -246,6 +246,10 @@ assert.match(X.bindProblem({ name: "Type Mark", origin: "built-in", guid: "g", m
   const tb = X.impactLines({ impact: { "TST_Name": { titleBlocks: { families: 2, sheets: 45, instances: 45 }, labels: [{ family: "TST A1", kind: "titleblock", sheets: 40, instances: 40, proxy: "built-in" }, { family: "TST A3", kind: "titleblock", sheets: 5, instances: 5, proxy: "built-in" }] } }, value: "NA" });
   assert.deepEqual(tb, ["TST_Name: shown on 45 sheet(s) via title blocks: TST A1, TST A3 (45 instance(s)) will print NA (inferred: a built-in parameter leaves no trace in the family, so every title block on sheets is listed)"]);
   assert.match(X.impactLines({ impact: { P: { labels: [{ family: "TST tb", kind: "titleblock", sheets: 2 }] } } })[0], /label in TST tb \(titleblock\) will print NA on 2 sheet/, "an older add-in without titleBlocks: labels one by one");
+  const tbImpact = { "TST_Name": { titleBlocks: { families: 1, sheets: 3, instances: 3 }, labels: [{ family: "TST A1", kind: "titleblock", sheets: 3, proxy: "built-in" }] }, "TST_Copy": { labels: [{ family: "TST tag", kind: "tag", sheets: 1 }] } };
+  const shown = X.impactLines({ impact: tbImpact, value: "N/A", derive: [{ target: "TST_Name", value: "TST Villa" }, { target: "TST_Copy", copyFrom: "TST_Src" }] });
+  assert.match(shown[0], /will print "TST Villa" \(inferred/, "a literal derive: the impact shows the value written, not the NA");
+  assert.match(shown[1], /will print the value of TST_Src \(N\/A if that is empty\) on 1 sheet/, "a copy: the source, with the fill value as fallback");
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

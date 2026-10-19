@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.11.3 (19 Oct 2026)
+- **Impact shows what is actually written:** for a target a derive rule fills (a literal Project Information value, a copy
+  or a join), the title block and label lines show that value or source instead of the NA text.
+- **Guide:** a preview is remembered per MCP server process; after a restart the dry run must be repeated before the apply.
+
 ## 1.11.2 (19 Oct 2026)
 - **Discipline from the title:** the mapping's `titleField` (the title token that holds the discipline) reaches the
   add-in. A title with several discipline codes (or none) puts a warning first in the check reply and the summary

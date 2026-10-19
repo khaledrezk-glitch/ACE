@@ -1167,7 +1167,7 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
     const ifc = a.ifc_property_sets ? ParamExec.readIfcPropertySets(fs.readFileSync(a.ifc_property_sets)) : null;
     const params = uniqList([...mine.rows.filter((r) => mine.fill).map((r) => r.name), ...mine.derive.map((r) => r.target)]);
     const flips = ParamExec.checkerFlips(src.checker, params, ParamSources.checkRequirement);
-    const imp = ParamExec.impactLines({ impact: result?.impact ?? {}, ifc, flips, params, value: mine.value ?? "NA" });
+    const imp = ParamExec.impactLines({ impact: result?.impact ?? {}, ifc, flips, params, value: mine.value ?? "NA", derive: mine.derive });
     if (imp.length) lines.push(`Impact (what the writes reach):\n${imp.map((l) => `- ${l}`).join("\n")}${mine.fill ? `\n${ParamExec.NA_CAVEAT}` : ""}`);
   }
   if (blocked.length) lines.push(`Blocked (held, not written):\n${blocked.map((b) => `- ${ParamExec.blockLine(b)}`).join("\n")}`);

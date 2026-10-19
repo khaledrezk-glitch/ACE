@@ -162,10 +162,14 @@ export function checkerFlips(checker, params, checkRequirement) {
  * Impact lines per parameter: the add-in's scan (schedules with their filters, view filters, labels on sheets: inferred),
  * the IFC property sets and the client checks that flip. value: what the fill writes ("NA").
  */
-export function impactLines({ impact = {}, ifc = null, flips = {}, params = [], value = "NA" }) {
+export function impactLines({ impact = {}, ifc = null, flips = {}, params = [], value = "NA", derive = [] }) {
   const lines = [];
+  // What a derived target will actually print: the literal, or the source(s); the fill value only where no rule applies.
+  const printed = new Map(derive.map((r) => [r.target, r.value != null ? `"${r.value}"`
+    : r.copyFrom ? `the value of ${r.copyFrom} (${value} if that is empty)` : `${r.join.join(r.separator ? ` + '${r.separator}' + ` : " + ")} (${value} if a part is empty)`]));
   for (const p of uniq([...params, ...Object.keys(impact ?? {})])) {
     const i = impact?.[p] ?? {};
+    const shows = printed.get(p) ?? value;
     const bits = [];
     const sch = i.schedules ?? [];
     if (sch.length) {
@@ -176,8 +180,8 @@ export function impactLines({ impact = {}, ifc = null, flips = {}, params = [], 
     const tb = i.titleBlocks;
     const tbLabels = (i.labels ?? []).filter((l) => l.kind === "titleblock");
     // Title blocks: one line for all of them (sheets counted once); other labels one by one.
-    if (tb?.sheets) bits.push(`shown on ${tb.sheets} sheet(s) via title blocks: ${uniq(tbLabels.map((l) => l.family)).join(", ") || `${tb.families} family(ies)`} (${tb.instances ?? 0} instance(s)) will print ${value}${tbLabels.some((l) => l.proxy === "built-in") ? " (inferred: a built-in parameter leaves no trace in the family, so every title block on sheets is listed)" : ""}`);
-    for (const l of tb?.sheets ? (i.labels ?? []).filter((x) => x.kind !== "titleblock") : i.labels ?? []) bits.push(`label in ${l.family}${l.kind ? ` (${l.kind})` : ""} will print ${value} on ${l.sheets ?? 0} sheet(s) (inferred)`);
+    if (tb?.sheets) bits.push(`shown on ${tb.sheets} sheet(s) via title blocks: ${uniq(tbLabels.map((l) => l.family)).join(", ") || `${tb.families} family(ies)`} (${tb.instances ?? 0} instance(s)) will print ${shows}${tbLabels.some((l) => l.proxy === "built-in") ? " (inferred: a built-in parameter leaves no trace in the family, so every title block on sheets is listed)" : ""}`);
+    for (const l of tb?.sheets ? (i.labels ?? []).filter((x) => x.kind !== "titleblock") : i.labels ?? []) bits.push(`label in ${l.family}${l.kind ? ` (${l.kind})` : ""} will print ${shows} on ${l.sheets ?? 0} sheet(s) (inferred)`);
     for (const s of ifc?.byParameter?.get(p) ?? []) bits.push(`IFC ${s.pset}.${s.property} (${s.entities.join(", ") || "all entities"})`);
     if (flips[p]?.length) bits.push(`client checker: ${flips[p].length} check(s) turn from fail to pass`);
     if (bits.length) lines.push(`${p}: ${bits.join(", ")}`);

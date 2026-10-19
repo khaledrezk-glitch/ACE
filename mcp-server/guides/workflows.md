@@ -76,7 +76,8 @@ value on the blanks that remain. dry_run: true first: it writes the missing regi
 shows the impact (schedules, view filters, labels on sheets, IFC property sets with ifc_property_sets, client checks that
 flip: "NA" passes a HasValue check without the data), then the identical call applies; the add-in reads every write back
 and rolls the whole plan back on any mismatch (then nothing was set: report the counts as "would have been set; rolled
-back", never as done). The apply writes the evidence file. With all_documents: true the other
+back", never as done). The preview is remembered by this MCP server process only: after a restart (or from another
+Claude session) the apply is refused as "not previewed", so run the dry run again first. The apply writes the evidence file. With all_documents: true the other
 models' plans are listed read-only: the user switches to each model and repeats the call (one approval per model).
 Blocks are never silent: an unapproved NA policy or derive section, a missing project shared parameter file, a changed
 source file, another ACE version, borrowed elements: say what, why and how to clear it, as the reply gives it.
