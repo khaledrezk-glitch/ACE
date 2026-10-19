@@ -230,3 +230,35 @@ sheet and row, checker check). Written as xlsx (the zip writer in `lib/docx.js`)
   elements borrowed or updated in central, groups and design options, project shared parameter file present (for
   bindings). A blocked model stops at once with its plain-language reason; other models carry on. Stage 1 (check) still
   runs on a blocked model; only stages 3 and 4 are held.
+
+## 1.11.0 bridge contract (one plan per model)
+
+`parameter_fill` request gains (all optional; 1.10.0 requests keep working):
+```json
+{ "rows": [...], "scope": {...}, "na_values": ["NA"], "value": "NA",
+  "fill": true,
+  "derive": [ { "target": "A", "copyFrom": "B" }, { "target": "C", "join": ["D", "E"], "separator": "-" } ],
+  "bind": [ { "name": "P", "guid": "…", "dataType": "TEXT", "group": "project", "level": "instance",
+              "categories": ["OST_ProjectInformation"], "file": "<shared parameter file path>", "groupTypeId": "General" } ],
+  "impact": true, "register": true, "expect_model": "<title>", "expect_version": "1.11.0",
+  "check_only": false, "dry_run": true }
+```
+- **Order inside the one transaction group** (one undo step): blockers first (fail fast, before any write: version
+  mismatch → refuse; target elements borrowed by others / updated in central → that row's elements are held, and the
+  whole plan is refused only when `block_on_borrowed` is true, default true), then bindings, `Regenerate`, derived
+  values, then the fill value on the remaining blank text parameters.
+- **Bindings:** from the given shared parameter file only (the server writes a temporary file holding exactly the
+  client lines when a parameter is missing from the project file); `Application.SharedParametersFilename` restored in
+  `finally`. Same GUID already bound: extend categories (ReInsert). Same name with another GUID: not changed,
+  reported. Never a new GUID.
+- **Self-check before commit:** after the writes, the touched rows are re-scanned; every planned write must show (bound
+  where bound was planned, value set where set was planned). Any divergence rolls the whole group back and the answer
+  says which rows diverged (`verify: { ok, mismatches: [...] }`).
+- **Answer** adds `blocked` (list of { what, why, elements: n, sample ids, holder, how }) — never silent —,
+  `bindings` ({ planned, done, skipped: [{ name, reason }] }), `derived` ({ rule, set, skipped }), `fill` (as 1.10),
+  `after`, `verify`, `impact` (P4: per parameter { schedules: [{ name, filters }], viewFilters: [names],
+  labels: [{ family, kind: tag|titleblock, sheets: n }], inferred: true }), `register` (P7: per row
+  [{ key, name, category, level, ids: [...] }], every blank id before the writes), `model`, `modelPath`, `aceVersion`.
+- `impact: true` and `register: true` also work with `check_only` (no transaction) so `parameter_check` can show them.
+- `EditFamily` for the label scan runs only outside a transaction (check_only path, or before the group starts), is
+  cached per family, and closes each family document without saving.
