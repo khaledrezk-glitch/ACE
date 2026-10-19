@@ -305,7 +305,10 @@ export function buildActions({ result, rows = [], unmappedRows = [], defects = {
   for (const [a, b] of defects.nearDuplicates ?? [])
     add(4, 1, { id: actionId("typo", a, b), what: `Typo twins in the shared parameter files: "${a}" / "${b}"`, why: "near-duplicate names", impact: { rows: 1 }, owner: "client", type: TYPES.party, blockers: [{ what: "both names may be required in different places", how: "ask the client which one is meant and to retire the other" }] });
   if (defects.pseudoNames?.length)
-    add(4, defects.pseudoNames.length, { id: actionId("notes", defects.pseudoNames.length), what: `${defects.pseudoNames.length} list entr(ies) are notes, not parameter names (brackets)`, why: defects.pseudoNames.slice(0, 5).map((p) => p.loin ?? p.name).join("; "), impact: { rows: defects.pseudoNames.length }, owner: "client", type: TYPES.party });
+    add(4, defects.pseudoNames.length, { id: actionId("notes", defects.pseudoNames.length), what: `${defects.pseudoNames.length} list entr(ies) are not parameter names (notes in brackets, or cells with several names to check)`, why: defects.pseudoNames.slice(0, 5).map((p) => `${p.loin ?? p.name}${p.reason ? ` (${p.reason})` : ""}`).join("; "), impact: { rows: defects.pseudoNames.length }, owner: "client", type: TYPES.party });
+  for (const c of (defects.splitNames ?? []).filter((x) => x.definedAsOne))
+    add(4, c.names.length, { id: actionId("split", c.cell), what: `The LOIN cell "${c.cell}" lists ${c.names.length} names; ACE checks them one by one, but ${c.definedAsOne} also defines the whole cell as one parameter`, why: `LOIN ${c.loin}`, impact: { rows: c.names.length }, owner: "client", type: TYPES.party,
+      blockers: [{ what: "the combined definition is likely an artefact", how: "ask the client which is meant and to retire the combined name" }] });
   for (const s of review?.scopeDefects ?? [])
     add(4, 1, { id: actionId("checker", s.check, s.param), what: `The client's checker tests ${s.param} only on Project Information${s.parked ? " (a parked check: it runs once moved out of Unused / Unplaced)" : ""}`, why: `checker "${s.check}": ${s.reason}`, impact: { rows: 1 }, owner: "client", type: TYPES.party,
       blockers: [{ what: "the checker will pass or fail it on the wrong element", how: "report it to the client; ACE checks the requirement where it belongs" }] });

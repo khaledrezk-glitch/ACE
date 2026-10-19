@@ -78,10 +78,12 @@ tool("revit_status", {
 }, async ({ instance }) => {
   if (instance !== undefined) preferInstance(instance || null);
   const pick = await chooseInstance();
+  const sessions = pick.list.map((s) => ({ pid: s.pid, port: s.port, revitVersion: s.revitVersion, aceVersion: s.aceVersion, activeDocument: s.activeDocument, openDocuments: s.openDocuments, user: s.user, chosen: s === pick.chosen }));
+  // Several sessions with a model and none chosen: list them and ask, never ping a guessed one.
+  if (pick.ambiguous) return text({ ok: false, chooseSession: pick.note, sessions });
   const status = await callRevit("ping", {}, 20);
   if (!pick.list.length) return text(status);
-  return text({ ...status, session: pick.chosen ? describeInstance(pick.chosen) : undefined,
-    sessions: pick.list.map((s) => ({ pid: s.pid, port: s.port, revitVersion: s.revitVersion, aceVersion: s.aceVersion, activeDocument: s.activeDocument, openDocuments: s.openDocuments, user: s.user, chosen: s === pick.chosen })) });
+  return text({ ...status, session: pick.chosen ? describeInstance(pick.chosen) : undefined, sessions });
 });
 
 // The brief is cached per model for a few minutes (it reads the whole model and its links).
@@ -868,10 +870,10 @@ function linksNote(result, a) {
  * (xlsx, CSV, markdown, actions) when report_dir is given or the result is large. After an apply the add-in's `after`
  * block (the state after the fill) drives statuses, actions and reports; the pre-fill state is labelled "before".
  */
-function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0 } = {}) {
+function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0, rolledBack = false } = {}) {
   // The add-in's after block: { summary, rows: [{ key, name, status, blank, na, filled }] } for the active model (the
   // touched rows re-scanned); merged into a copy of that model's rows. A documents array is accepted as is.
-  const afterBlock = result?.after;
+  const afterBlock = rolledBack ? null : result?.after;   // rolled back: the end state was never kept (afterIfKept)
   let afterDocs = Array.isArray(afterBlock) ? afterBlock : afterBlock?.documents;
   if (!afterDocs && afterBlock?.rows && result?.documents?.length) {
     const byKey = new Map(afterBlock.rows.map((r) => [r.key ?? r.name, r]));
@@ -893,7 +895,7 @@ function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0 } = {})
   const runnable = actions.filter((x) => x.run);
   const summary = [
     afterDocs ? `Before the fill:\n${ParamList.summaryText({ documents: result.documents })}\nAfter the fill:` : "",
-    ParamList.summaryText(view, { ...src.listInfo, dryRun: dryRun || plan }),
+    ParamList.summaryText(view, { ...src.listInfo, dryRun: dryRun || plan, rolledBack }),
     linksNote(result, a),
     draftOnly ? `${draftOnly} row(s) left out of the fill: their categories come only from a draft (unconfirmed) mapping. They are still checked.` : "",
     ParamSources.defectsText(defects), ...sourceNotes(src),
@@ -913,8 +915,10 @@ function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0 } = {})
   for (const k of f?.skipped ?? []) reasons[k.reason] = (reasons[k.reason] ?? 0) + 1;
   const body = {
     success: result?.success, model: result?.model, dryRun: result?.dryRun, checkOnly: result?.checkOnly, stage: result?.stage, error: result?.error,
-    fill: f ? { set: f.set, value: f.value, skipped: f.skippedCount ?? f.skipped?.length ?? 0, reasons } : undefined,
-    changed: result?.changed, wouldChange: result?.wouldChange,
+    fill: f ? { set: rolledBack ? 0 : f.set, ...(rolledBack ? { wouldSet: f.wouldSet ?? f.set } : {}), value: f.value, skipped: f.skippedCount ?? f.skipped?.length ?? 0, reasons } : undefined,
+    rolledBack: rolledBack || undefined,
+    // A rolled-back apply changed nothing: no changed block, only what would have changed.
+    changed: rolledBack ? undefined : result?.changed, wouldChange: result?.wouldChange, wouldHaveChanged: rolledBack ? result?.wouldHaveChanged ?? result?.changed : undefined,
     documents: docs.map(({ rows, register, impact, ...d }) => ({ ...d, rows: large ? undefined : (rows ?? []).map(compactRow), rowsInReport: large ? rows?.length ?? 0 : undefined })),
     skippedRows: result?.skippedRows?.length || undefined,
     defectCounts: Object.fromEntries(Object.entries(defects).filter(([, v]) => v?.length).map(([k, v]) => [k, v.length])),
@@ -1068,13 +1072,16 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
     projectFile: src.projectFile, tempDir, readFile: (f) => fs.readFileSync(f) };
   const plans = docs.map((d) => ParamExec.buildPlan(d, selected, ctx));
   const mine = plans[0];
+  // Model-title rules (derive globs, models keys) that match no open model are said, never silently skipped.
+  const titleWarnings = ParamExec.unmatchedTitleRules({ derive: deriveSet, models: src.mapping?.mapping?.models }, uniqList([...docs.map((d) => d.model), ...(session?.openDocuments ?? [])]));
+  mine.notes.unshift(...titleWarnings);
   held.push(...mine.held);
   if (asked && mine.held.length) { record({ outcome: "blocked", blocked: mine.held }); return blockedReply(mine.held, `Blocked in ${model}; nothing changed:`, { model, registerFile }); }
   const others = plans.slice(1).filter(ParamExec.hasWork).map(ParamExec.planLine);
   if (!ParamExec.hasWork(mine)) {
     record({ outcome: "nothing to run", held });
     const b = held.length ? held : [{ what: "the plan", why: `no auto-fixable action applies to ${model}`, how: "run parameter_check to see the action list" }];
-    return blockedReply(b, `Nothing to run in ${model}; nothing changed:${others.length ? `\nOther models' plans (switch to the model and run the same call): ${others.join("; ")}` : ""}`, { model, registerFile });
+    return blockedReply(b, `Nothing to run in ${model}; nothing changed:${titleWarnings.length ? `\n${titleWarnings.join("\n")}` : ""}${others.length ? `\nOther models' plans (switch to the model and run the same call): ${others.join("; ")}` : ""}`, { model, registerFile });
   }
   // Fail fast on the pre-flight: blanks on elements others have borrowed.
   const pf = active.preflight ?? {};
@@ -1115,22 +1122,27 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
   const blocked = result?.blocked ?? [];
   const skips = ParamExec.skipsOf(result);
   const v = result?.verify;
-  const rolledBack = v && v.ok === false;
+  const rolledBack = !dry_run && ParamExec.wasRolledBack(result);
   const outcome = result?.stage === "blocked" ? "blocked" : rolledBack ? "self-check failed, rolled back" : outcomeOf(result, dry_run);
   record({ outcome, plan: { rows: mine.rows.length, bind: mine.bind, derive: mine.derive, fill: mine.fill, value: mine.value }, held, blocked, skips, verify: v, notes: mine.notes });
   journal({ title: `${dry_run ? "Preview" : "Change"}: parameter plan in ${model} (${ParamExec.planLine(mine)})`, explanation, outcome, details: { blocked, held, skips: skips.slice(0, 30), verify: v, fill: result?.fill?.set, derived: Array.isArray(result?.derived) ? result.derived.map((d) => ({ rule: d.text, set: d.set })) : undefined, bindings: result?.bindings && { planned: result.bindings.planned, done: result.bindings.done } } });
   if (result?.stage === "blocked") return blockedReply(blocked.length ? blocked : [{ what: "the plan", why: result.error ?? "refused by the add-in" }], `Blocked in ${model}: ${result.error ?? "nothing changed"}`, { model, registerFile });
-  let evidence;
+  let evidence, items = [];
   if (!dry_run) {
-    evidence = writeOut(dir, `${ParamExec.fileStem("evidence", model, stamp)}.md`, ParamExec.evidenceMarkdown({ model, when: stamp, register, result, plan: { ...mine, sources: src.rows.filter((r) => mine.rows.some((b) => b.key === r.key)).flatMap((r) => r.sources) }, blocked, held, registerFile }));
-    if (result?.success) briefCache.clear();
+    // Requirement items (mapping evidence.items): their status after the apply, or as before when rolled back.
+    const active = (result?.documents ?? [])[0];
+    const endRows = rolledBack || !result?.after?.rows ? active?.rows ?? [] : (active?.rows ?? []).map((r) => ({ ...r, ...(result.after.rows.find((x) => (x.key ?? x.name) === (r.key ?? r.name)) ?? {}) }));
+    items = ParamExec.evidenceStatus(ParamExec.evidenceItems(src.mapping?.mapping), { rows: endRows.length ? endRows : result?.after?.rows ?? [], checkerRows: src.checkerRows ?? [] });
+    evidence = writeOut(dir, `${ParamExec.fileStem("evidence", model, stamp)}.md`, ParamExec.evidenceMarkdown({ model, when: stamp, register, result, plan: { ...mine, sources: src.rows.filter((r) => mine.rows.some((b) => b.key === r.key)).flatMap((r) => r.sources) }, blocked, held, registerFile, items }));
+    if (result?.success && !rolledBack) briefCache.clear();
   }
 
   // The reply: the 1.10 answer, then the plan, impact, blocks and skips in plain words.
-  const out = paramAnswer(src, result, a, { dryRun: !!dry_run, fill: true });
+  const out = paramAnswer(src, result, a, { dryRun: !!dry_run, fill: true, rolledBack });
+  const done = (o, field, would, verb) => rolledBack ? `0 (${o?.[would] ?? o?.[field] ?? 0} would have been ${verb}; rolled back)` : `${o?.[field] ?? 0}`;
   const lines = [`PLAN for ${model} (${dry_run ? "dry run, rolled back" : rolledBack ? "NOT applied" : "applied as ONE undo step"}): ${ParamExec.planLine(mine)}.`];
   const bd = result?.bindings;
-  if (bd) lines.push(`Bindings: ${bd.done ?? 0} of ${bd.planned ?? mine.bind.length} ${dry_run ? "would be made" : "made"}${(bd.items ?? []).length ? ` (${bd.items.map((i) => `${i.name}: ${i.action}`).join("; ")})` : ""}.${bd.note ? ` ${bd.note}` : ""}`);
+  if (bd) lines.push(`Bindings: ${dry_run ? `${bd.done ?? 0} of ${bd.planned ?? mine.bind.length} would be made` : `${done(bd, "done", "wouldDo", "made")} of ${bd.planned ?? mine.bind.length}${rolledBack ? "" : " made"}`}${(bd.items ?? []).length ? ` (${bd.items.map((i) => `${i.name}: ${i.action}`).join("; ")})` : ""}.${bd.note ? ` ${bd.note}` : ""}`);
   const rb = result?.rebound;
   if (mine.rebind.length) {
     lines.push(`Rebind (explicit): ${mine.rebind.map((e) => `${e.name} ${e.oldGuid} -> ${e.guid}`).join("; ")}; the values are kept: read before, written back under the new definition and verified.`);
@@ -1138,15 +1150,15 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
       // The add-in answers dropped as counts { schedules, viewFilters, labels }; a list is read too.
       const dropped = Array.isArray(rb.dropped) ? rb.dropped.map((d) => typeof d === "string" ? d : ParamExec.blockLine(d))
         : Object.entries(rb.dropped ?? {}).filter(([, n]) => n).map(([k, n]) => `${n} ${{ schedules: "schedule field(s)", viewFilters: "view filter rule(s)", labels: "label(s) (keep the old GUID)" }[k] ?? k}`);
-      lines.push(`Rebind: ${rb.done ?? 0} of ${rb.planned ?? mine.rebind.length} ${dry_run ? "would be replaced" : "replaced"}${(rb.values ?? rb.restored) != null ? `, ${rb.values ?? rb.restored} value(s) restored` : ""}.`);
+      lines.push(`Rebind: ${dry_run ? `${rb.done ?? 0} of ${rb.planned ?? mine.rebind.length} would be replaced` : `${done(rb, "done", "wouldDo", "replaced")} of ${rb.planned ?? mine.rebind.length}${rolledBack ? "" : " replaced"}`}${!rolledBack && (rb.values ?? rb.restored) != null ? `, ${rb.values ?? rb.restored} value(s) restored` : ""}.`);
       lines.push(dropped.length ? `Dropped with the old definition (schedule fields, filter rules, labels that used it):\n${dropped.map((d) => `- ${d}`).join("\n")}` : "Nothing is dropped with the old definition.");
       const oldImp = ParamExec.impactLines({ impact: rb.impact ?? Object.fromEntries(Object.entries(result?.impact ?? {}).filter(([k]) => k.endsWith(" (old definition)"))), value: mine.value ?? "NA" });
       if (oldImp.length) lines.push(`The old definition is used by:\n${oldImp.map((l) => `- ${l}`).join("\n")}`);
     }
   }
-  for (const d of Array.isArray(result?.derived) ? result.derived : []) lines.push(`Derived ${d.text ?? d.target}: ${d.set ?? 0} value(s)${dry_run ? " would be" : ""} set.`);
+  for (const d of Array.isArray(result?.derived) ? result.derived : []) lines.push(`Derived ${d.text ?? d.target}: ${dry_run ? `${d.set ?? 0} value(s) would be set` : rolledBack ? `${done(d, "set", "wouldSet", "set")} value(s)` : `${d.set ?? 0} value(s) set`}.`);
   const types = [...(result?.fill?.types ?? []), ...(Array.isArray(result?.derived) ? result.derived.flatMap((d) => d.types ?? []) : [])];
-  if (types.length) lines.push(`Type parameters: ${types.length} type(s) written once each, reaching ${types.reduce((n, t) => n + (t.instancesAffected ?? 0), 0)} instance(s) (e.g. ${types.slice(0, 3).map((t) => `${t.name}: ${t.parameter} -> ${t.instancesAffected ?? 0}`).join("; ")}).`);
+  if (types.length) lines.push(`Type parameters: ${types.length} type(s) ${dry_run ? "would be written" : rolledBack ? "would have been written (rolled back)" : "written"} once each, reaching ${types.reduce((n, t) => n + (t.instancesAffected ?? 0), 0)} instance(s) (e.g. ${types.slice(0, 3).map((t) => `${t.name}: ${t.parameter} -> ${t.instancesAffected ?? 0}`).join("; ")}).`);
   lines.push(...mine.notes);
   if (dry_run) {
     const ifc = a.ifc_property_sets ? ParamExec.readIfcPropertySets(fs.readFileSync(a.ifc_property_sets)) : null;
@@ -1161,6 +1173,7 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
   if (v && !v.ok && a.test_force_verify_mismatch) lines.push("Self-check FAILED (forced by test flag) - rolled back, nothing changed.");
   else if (v) lines.push(v.ok ? `Self-check: ok (${v.checked ?? "every"} planned write(s) read back).`
     : `Self-check FAILED: ${v.mismatchCount ?? v.mismatches?.length} mismatch(es); the whole plan was rolled back, nothing changed. ${(v.mismatches ?? []).slice(0, 5).map((m) => `${m.name ?? m.key}${m.id != null ? ` #${m.id}` : ""}: expected ${JSON.stringify(m.expected)}, found ${JSON.stringify(m.actual)}`).join("; ")}`);
+  if (items.length) lines.push(`Requirement items${rolledBack ? " (unchanged, rolled back)" : ""}: ${items.map((i) => `${i.id} ${i.status}`).join("; ")}.`);
   if (others.length) lines.push(`Other open models (read-only plans; switch to the model and run the same call, one approval each): ${others.join("; ")}`);
   lines.push(`Missing register: ${registerFile}${evidence ? `\nEvidence: ${evidence}` : ""}${dirNote ? `\n${dirNote}` : ""}`);
   out.content.push({ type: "text", text: lines.join("\n") });

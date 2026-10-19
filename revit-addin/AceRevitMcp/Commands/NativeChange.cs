@@ -96,7 +96,9 @@ namespace AceRevitMcp.Commands
                 result["transaction"] = status;
                 result["dryRun"] = dryRun;
                 var summary = recording.Summary();
-                result[dryRun ? "wouldChange" : "changed"] = summary;
+                // A change that was not kept never reports "changed": what it would have changed, and rolledBack.
+                result[dryRun ? "wouldChange" : ok ? "changed" : "wouldHaveChanged"] = summary;
+                result["rolledBack"] = !ok;
                 if (guard.Warnings.Count > 0) result["revitWarnings"] = new JsonArray(guard.Warnings.Distinct().Take(20).Select(w => (JsonNode)w).ToArray());
                 if (guard.Errors.Count > 0) result["revitErrors"] = new JsonArray(guard.Errors.Distinct().Take(20).Select(w => (JsonNode)w).ToArray());
                 if (guard.Dialogs.Count > 0) result["dialogs"] = new JsonArray(guard.Dialogs.Take(10).Select(w => (JsonNode)w).ToArray());

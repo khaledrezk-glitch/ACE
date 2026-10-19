@@ -154,8 +154,27 @@ namespace AceRevitMcp.Rules
                 return v["ok"] is JsonValue ok && ok.TryGetValue<bool>(out var b) && b;
             });
             if (!result.ContainsKey("verify")) result["verify"] = null;
+            if (result["rolledBack"] is JsonValue rb && rb.TryGetValue<bool>(out var rolled) && rolled) MarkRolledBack(result);
             Extras(result);
             return result;
+        }
+
+        /// <summary>
+        /// A rolled-back plan reports nothing as done: set / done become 0 and the counts move to wouldSet / wouldDo; the
+        /// end state read inside the transaction moves to afterIfKept (the model is as it was).
+        /// </summary>
+        private static void MarkRolledBack(JsonObject r)
+        {
+            void Move(JsonNode node, string from, string to)
+            {
+                if (node is JsonObject o && o[from] is JsonValue v && v.TryGetValue<int>(out var n)) { o[to] = n; o[from] = 0; }
+            }
+            Move(r["fill"], "set", "wouldSet");
+            if (r["derived"] is JsonArray derived) foreach (var d in derived) Move(d, "set", "wouldSet");
+            Move(r["bindings"], "done", "wouldDo");
+            Move(r["rebound"], "done", "wouldDo");
+            if (r["fill"] is JsonObject f && f["after"] != null) { f["afterIfKept"] = f["after"].DeepClone(); f["after"] = null; }
+            if (r["after"] != null) { r["afterIfKept"] = r["after"].DeepClone(); r["after"] = null; }
         }
 
         /// <summary>Reads every planned write again (after the transaction committed, before it is kept).</summary>
@@ -881,6 +900,7 @@ namespace AceRevitMcp.Rules
                     var t = Get(name);
                     t.Guid ??= entry.SharedGuid;
                     t.Ids.UnionWith(entry.ParamIds);
+                    if (entry.Result.BuiltIn && entry.Row.Group == "project") t.BuiltInProjectInfo = true;
                 }
                 foreach (var b in binds ?? new List<ParameterPlanLogic.BindEntry>())
                 {

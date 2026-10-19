@@ -150,7 +150,11 @@ export function matchInstances(list, hint, { substring = false } = {}) {
   return list.filter((s) => [s.activeDocument, ...(s.openDocuments ?? [])].some((d) => d && title(d).includes(h)));
 }
 
-/** Pure choice: hint match, else the only session, else the most recently updated with a note naming the others. */
+/**
+ * Pure choice: a hint match (the most recently updated first), else the only session, else the only one with a model
+ * open, else (no model anywhere) the most recent. Several sessions with a model and nothing to decide: no choice
+ * (ambiguous: true), the note lists them; ACE asks rather than guesses.
+ */
 export function pickInstance(list, hint, { exact = false } = {}) {
   if (!list.length) return { chosen: null, list, note: null };
   let m = matchInstances(list, hint);
@@ -161,12 +165,19 @@ export function pickInstance(list, hint, { exact = false } = {}) {
   }
   if (m.length) return { chosen: m[0], list, note };
   if (list.length === 1) return { chosen: list[0], list, note: hint ? `No Revit session has "${hint}" open; using the only one (${describeInstance(list[0])}).` : null };
-  const [chosen, ...others] = list;
-  return { chosen, list, note: `${list.length} Revit sessions are running; using ${describeInstance(chosen)}${hint ? ` (none has "${hint}" open)` : ""}. Others: ${others.map(describeInstance).join("; ")}. To use another: revit_status with instance (its model title or pid).` };
+  const none = hint ? ` (none has "${hint}" open)` : "";
+  const how = "To use another: revit_status with instance (its model title or pid).";
+  const withModel = list.filter(hasModel);
+  if (withModel.length > 1) return { chosen: null, list, ambiguous: true, note: `${withModel.length} Revit sessions have a model open${none}: ${withModel.map(describeInstance).join("; ")}. Which one? Say it with revit_status instance (a model title or pid); ACE does not guess.` };
+  const [chosen, ...others] = withModel.length ? [withModel[0], ...list.filter((s) => s !== withModel[0])] : list;
+  return { chosen, list, note: `${list.length} Revit sessions are running; using ${describeInstance(chosen)}${withModel.length ? ", the only one with a model open" : ""}${none}. Others: ${others.map(describeInstance).join("; ")}. ${how}` };
 }
+const hasModel = (s) => !!(s.activeDocument || s.openDocuments?.length);
 export const describeInstance = (s) => s ? `Revit ${s.revitVersion ?? "?"} pid ${s.pid ?? "?"} port ${s.port}${s.activeDocument ? `, active "${s.activeDocument}"` : ""}${s.user ? `, ${s.user}` : ""}` : "the configured Revit";
 
 let cached = null;
+/** Drops the cached session listing (the next call lists again). */
+export const forgetInstances = () => { cached = null; };
 /** The session for a call (listing cached for 5 s). With ACE_REVIT_URL set there is no choice to make. */
 export async function chooseInstance(hint = undefined, { exact = false } = {}) {
   if (process.env.ACE_REVIT_URL) return { chosen: null, list: [], note: null };
@@ -191,6 +202,7 @@ export async function resolveSession(hint = undefined, { exact = false } = {}) {
   const store = currentCall.getStore();
   if (store && Object.hasOwn(store, "pinned")) return store.pinned;
   const pick = await chooseInstance(hint, { exact });
+  if (pick.ambiguous) throw new RevitError(pick.note);
   if (pick.note) store?.notes?.add(pick.note);
   return pick.chosen;
 }

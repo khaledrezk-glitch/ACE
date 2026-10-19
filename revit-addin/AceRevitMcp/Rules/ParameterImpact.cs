@@ -21,6 +21,7 @@ namespace AceRevitMcp.Rules
             public HashSet<long> Ids = new HashSet<long>();   // parameter element ids (shared, project) or built-in parameter ids
             public string Key;                                // the answer's key (default: the name)
             public string Note;                               // an extra note for this parameter (e.g. a rebind drops these usages)
+            public bool BuiltInProjectInfo;                   // a built-in Project Information parameter: any title block may show it
         }
 
         private sealed class FamilyParams
@@ -41,19 +42,22 @@ namespace AceRevitMcp.Rules
             if (targets == null || targets.Count == 0) return answer;
             var schedules = Schedules(doc, targets);
             var filters = ViewFilters(doc, targets);
-            var (labels, notes) = Labels(doc, targets);
+            var (labels, notes, titleBlocks) = Labels(doc, targets);
             foreach (var t in targets)
             {
                 var key = t.Key ?? t.Name;
                 if (answer.ContainsKey(key)) continue;
                 var tnotes = notes.ToList();
                 if (t.Note != null) tnotes.Insert(0, t.Note);
+                if (t.BuiltInProjectInfo)
+                    tnotes.Insert(0, "Built-in Project Information parameter: it leaves no trace in a title block family, so every title block family on sheets is listed as one that may show it (proxy built-in).");
                 answer[key] = new JsonObject
                 {
                     ["guid"] = t.Guid?.ToString(),
                     ["schedules"] = schedules.TryGetValue(key, out var s) ? s : new JsonArray(),
                     ["viewFilters"] = filters.TryGetValue(key, out var f) ? new JsonArray(f.Select(n => (JsonNode)n).ToArray()) : new JsonArray(),
                     ["labels"] = labels.TryGetValue(key, out var l) ? l : new JsonArray(),
+                    ["titleBlocks"] = ParameterPlanLogic.TitleBlockSummary(titleBlocks.TryGetValue(key, out var tb) ? tb : null),
                     ["inferred"] = true,
                     ["notes"] = new JsonArray(tnotes.Select(n => (JsonNode)n).ToArray()),
                 };
@@ -140,14 +144,15 @@ namespace AceRevitMcp.Rules
 
         // ---- labels in tag and title block families -------------------------------------------------------------
 
-        private static (Dictionary<string, JsonArray>, List<string>) Labels(Document doc, IList<Target> targets)
+        private static (Dictionary<string, JsonArray>, List<string>, Dictionary<string, List<(string, ICollection<long>, int)>>) Labels(Document doc, IList<Target> targets)
         {
             var hits = new Dictionary<string, JsonArray>(StringComparer.Ordinal);
+            var titleBlocks = new Dictionary<string, List<(string, ICollection<long>, int)>>(StringComparer.Ordinal);
             var notes = new List<string> { "Labels are inferred: Revit cannot read a label's contents, so a family that holds the parameter (by shared GUID or name) is taken to show it." };
             if (doc.IsModifiable)
             {
                 notes.Add("Labels not scanned: the model is inside a transaction (families can only be opened outside one).");
-                return (hits, notes);
+                return (hits, notes, titleBlocks);
             }
 
             // Annotation instances per family, with their owner views.
@@ -173,7 +178,7 @@ namespace AceRevitMcp.Rules
                 var owner = e.OwnerViewId;
                 if (owner != null && owner != ElementId.InvalidElementId) entry.Views.Add(owner.Value);
             }
-            if (perFamily.Count == 0) return (hits, notes);
+            if (perFamily.Count == 0) return (hits, notes, titleBlocks);
 
             // Sheets, and the sheets each view is placed on.
             var sheets = new HashSet<long>(new FilteredElementCollector(doc).OfClass(typeof(ViewSheet)).ToElementIds().Select(i => i.Value));
@@ -193,22 +198,35 @@ namespace AceRevitMcp.Rules
             var skipped = new List<string>();
             foreach (var (family, kind, views) in perFamily.Values.OrderBy(v => v.Family.Name, StringComparer.Ordinal))
             {
-                if (openFamilies.Contains(family.Name)) { notes.Add($"{family.Name}: open in the family editor: not scanned"); continue; }
-                var fp = FamilyParamsOf(doc, docKey, family, ref opened);
-                if (fp == null) { skipped.Add(family.Name); continue; }
-                if (fp.Error != null) { notes.Add($"{family.Name}: not read ({fp.Error})"); continue; }
-                int? sheetCount = null;
+                // Built-in Project Information parameters need no family scan: any title block may show them.
+                FamilyParams fp = null;
+                var needScan = kind != "titleblock" || targets.Any(t => !t.BuiltInProjectInfo);
+                if (needScan)
+                {
+                    if (openFamilies.Contains(family.Name)) notes.Add($"{family.Name}: open in the family editor: not scanned");
+                    else
+                    {
+                        fp = FamilyParamsOf(doc, docKey, family, ref opened);
+                        if (fp == null) skipped.Add(family.Name);
+                        else if (fp.Error != null) { notes.Add($"{family.Name}: not read ({fp.Error})"); fp = null; }
+                    }
+                }
+                HashSet<long> onSheets = null;
                 foreach (var t in targets)
                 {
-                    if (!ParameterPlanLogic.LabelProxy(fp.Guids, fp.Names, t.Guid, t.Name)) continue;
-                    sheetCount ??= ParameterPlanLogic.SheetsShowing(views, viewToSheets, sheets);
-                    if (!hits.TryGetValue(t.Key ?? t.Name, out var list)) hits[t.Key ?? t.Name] = list = new JsonArray();
-                    list.Add(new JsonObject { ["family"] = family.Name, ["kind"] = kind, ["sheets"] = sheetCount.Value, ["instances"] = views.Count });
+                    var proxy = ParameterPlanLogic.LabelProxyKind(fp?.Guids, fp?.Names, t.Guid, t.Name, t.BuiltInProjectInfo, kind);
+                    if (proxy == null) continue;
+                    onSheets ??= ParameterPlanLogic.SheetSet(views, viewToSheets, sheets);
+                    var key = t.Key ?? t.Name;
+                    if (!hits.TryGetValue(key, out var list)) hits[key] = list = new JsonArray();
+                    list.Add(new JsonObject { ["family"] = family.Name, ["kind"] = kind, ["sheets"] = onSheets.Count, ["instances"] = views.Count, ["proxy"] = proxy });
+                    if (!titleBlocks.TryGetValue(key, out var tl)) titleBlocks[key] = tl = new List<(string, ICollection<long>, int)>();
+                    tl.Add((kind, onSheets, views.Count));
                 }
             }
             if (skipped.Count > 0)
                 notes.Add($"{skipped.Count} famil{(skipped.Count == 1 ? "y" : "ies")} not opened (more than {MaxFamilies} per scan): {string.Join(", ", skipped.Take(10))}{(skipped.Count > 10 ? ", ..." : "")}");
-            return (hits, notes);
+            return (hits, notes, titleBlocks);
         }
 
         /// <summary>The family's shared GUIDs and parameter names, from the cache or by opening it (closed without saving).</summary>

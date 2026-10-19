@@ -201,8 +201,40 @@ assert.deepEqual(drift.candidates, ["TST_MECH_Component ID", "TST_LSC_Component 
 assert.equal(S.classifyName("TST_AR_[Room Parameter]", idx).match, "pseudo");
 assert.equal(S.classifyName("TST_ZZ_Nothing", idx).match, "unknown");
 assert.deepEqual(S.classifyName("TST_ME_Component ID", idx, { "TST_ME_Component ID": "TST_MECH_Component ID" }),
-  { match: "alias", name: "TST_MECH_Component ID", aliasOf: "TST_ME_Component ID", guid: "g4", dataType: "TEXT" }, "an alias a person wrote is used");
+  { match: "alias", name: "TST_MECH_Component ID", aliasOf: "TST_ME_Component ID", guid: "g4", dataType: "TEXT", defFile: "client.txt" }, "an alias a person wrote is used");
+{
+  // An alias target a client file defines several times (one GUID per category): every GUID is accepted, as for a direct match.
+  const many = S.paramIndex([{ file: "c/TST_STR.txt", kind: "client", params: [{ name: "TST_ST_Bar Size", guid: "ga" }, { name: "TST_ST_Bar Size", guid: "gb" }] }]);
+  const viaAlias = S.classifyName("TST_ST_bar size", many, { "TST_ST_bar size": "TST_ST_Bar Size" });
+  assert.deepEqual([viaAlias.match, viaAlias.guid, viaAlias.guids], ["alias", "ga", ["ga", "gb"]], "explicit alias: every GUID");
+  const viaRule = S.classifyName("TST_ST_bar  size", many, { spellingRule: "case/space", aliases: {} });
+  assert.deepEqual([viaRule.match, viaRule.guids], ["alias", ["ga", "gb"]], "spelling-rule alias: every GUID");
+  const viaPrefix = S.classifyName("TST_SX_Bar Size", many, { aliases: {}, prefixMap: { TST_SX_: "TST_ST_" }, prefixApproved: true });
+  assert.deepEqual([viaPrefix.match, viaPrefix.guids], ["alias", ["ga", "gb"]], "prefix alias: every GUID");
+  assert.deepEqual(S.bridgeRow({ name: viaAlias.name, group: "elements", level: "any", key: "r1", guid: viaAlias.guid, guids: viaAlias.guids }).guids, ["ga", "gb"], "the add-in gets them all");
+}
 assert.equal(S.classifyName("Anything", null).match, "unchecked", "no shared parameter files given");
+{
+  // LOIN cells listing several names: one row per name (the first part's prefix carried), or a pseudo-name to check.
+  assert.deepEqual(S.splitNames("TST_ST_Bar Flex, Bar Shear"), ["TST_ST_Bar Flex", "TST_ST_Bar Shear"]);
+  assert.deepEqual(S.splitNames("TST_ST_A;TST_AR_B\nC"), ["TST_ST_A", "TST_AR_B", "TST_ST_C"]);
+  assert.deepEqual(S.splitNames("TST_ST_One"), ["TST_ST_One"]);
+  assert.deepEqual(S.splitNames("TST_KL_Size (width , depth, height)"), ["TST_KL_Size (width , depth, height)"], "separators inside parentheses belong to the name");
+  assert.deepEqual(S.splitNames("TST_ID_[Note ,Other] Finish"), ["TST_ID_[Note ,Other] Finish"], "bracketed notes are never split");
+  const ix = S.paramIndex([{ file: "c/TST_STR.txt", kind: "client", params: [{ name: "TST_ST_Bar Flex", guid: "f1" }, { name: "TST_ST_Bar Shear", guid: "s1" }, { name: "TST_ST_Bar Flex, Bar Shear", guid: "fs" }] }]);
+  const mp = { categories: { Floors: ["OST_Floors"] }, disciplines: { "02_TST": ["ST"] }, aliases: {} };
+  const m1 = S.mergeSources({ loin: [{ sheet: "02_TST", row: 7, category: "Floors", name: "TST_ST_Bar Flex, Bar Shear" }], mapping: mp, index: ix });
+  assert.deepEqual(m1.rows.map((r) => r.name).sort(), ["TST_ST_Bar Flex", "TST_ST_Bar Shear"], "split into one row per name, never one parameter");
+  assert.equal(m1.rows[0].sources[0].cell, "TST_ST_Bar Flex, Bar Shear", "the row says which cell it came from");
+  assert.deepEqual(m1.defects.splitNames, [{ cell: "TST_ST_Bar Flex, Bar Shear", loin: "02_TST!7", names: ["TST_ST_Bar Flex", "TST_ST_Bar Shear"], definedAsOne: "TST_STR.txt" }]);
+  assert.match(String(S.defectsText(m1.defects)), /LOIN cells listing several names, checked one row per name: 02_TST!7 -> TST_ST_Bar Flex \+ TST_ST_Bar Shear \(TST_STR.txt also defines/);
+  const m2 = S.mergeSources({ loin: [{ sheet: "02_TST", row: 8, category: "Floors", name: "TST_ST_Bar Flex, Nothing Known" }], mapping: mp, index: ix });
+  assert.equal(m2.rows.length, 0, "a split that does not classify cleanly is not counted as a parameter");
+  assert.match(m2.defects.pseudoNames[0].reason, /several names in one cell; to check: TST_ST_Nothing Known/);
+  const m3 = S.mergeSources({ loin: [{ sheet: "02_TST", row: 9, category: "Floors", name: "TST_ST_Bar Flex, Bar Ghost" }], mapping: { ...mp, aliases: { "TST_ST_Bar Ghost": "TST_ST_Not Defined" } }, index: ix });
+  assert.equal(m3.rows.length, 0, "an alias to a name no file defines is not a clean split");
+  assert.equal(S.mergeSources({ loin: [{ sheet: "02_TST", row: 9, category: "Floors", name: "TST_ST_Bar Flex, Bar Shear" }], mapping: mp }).defects.pseudoNames.length, 1, "no shared parameter files: a multi-name cell is to check");
+}
 assert.deepEqual(S.nearDuplicates(idx), [["TST_AR_Insulation Rating", "TST_AR_Insulatoin Rating"]], "typo twins; short codes (AAA / BBB) never count");
 
 // ---- merge and scope ---------------------------------------------------------------------------------------------

@@ -56,7 +56,12 @@ disciplines (`groupDisciplines`, "*" = every model), approved name
 aliases, model -> discipline, LOIN column names (loinTable) and the NA policy (the fill value and the texts that mean
 "declared missing"). Without one, only the generic checks run and the reply says what is missing. create_mapping: true
 writes a draft with best guesses for a person to confirm; a draft never drives a fill. Report unmapped categories and
-spelling / prefix-drift candidates as decisions for the user; never treat a guess as confirmed.
+spelling / prefix-drift candidates as decisions for the user; never treat a guess as confirmed. Model-title globs (the
+keys of `derive.projectInformationValues`) match the FULL model title ("*-ST-*-0001", not "ST-*"); `models` keys match a
+part of the title. A rule that matches no open model is a warning in the plan: tell the user. A LOIN cell listing several
+names ("A, B") is checked one row per name; if the parts do not resolve, it is a pseudo-name to check with the client.
+`evidence.items` ([{ id, text, rows: [names] | check: "<checker check>" }]) names the project's QA / requirement items;
+the evidence file states each one's status after the apply (met, met with NA, partly met, not met).
 
 Four stages: 1 check (parameter_check, read-only), 2 reports (report_dir: summary xlsx, CSV, markdown), 3 actions (the
 ranked list: each has a stable id, a type and its blockers; auto-fixable ones say whether they are ready), 4 execution
@@ -67,7 +72,8 @@ derived values (the mapping's approved derive rules and listed twins; never over
 value on the blanks that remain. dry_run: true first: it writes the missing register (blank values before the fill),
 shows the impact (schedules, view filters, labels on sheets, IFC property sets with ifc_property_sets, client checks that
 flip: "NA" passes a HasValue check without the data), then the identical call applies; the add-in reads every write back
-and rolls the whole plan back on any mismatch. The apply writes the evidence file. With all_documents: true the other
+and rolls the whole plan back on any mismatch (then nothing was set: report the counts as "would have been set; rolled
+back", never as done). The apply writes the evidence file. With all_documents: true the other
 models' plans are listed read-only: the user switches to each model and repeats the call (one approval per model).
 Blocks are never silent: an unapproved NA policy or derive section, a missing project shared parameter file, a changed
 source file, another ACE version, borrowed elements: say what, why and how to clear it, as the reply gives it.

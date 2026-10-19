@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.11.1 (19 Oct 2026)
+- **Alias rows accept every GUID:** a name matched through an alias (explicit, prefix map or the spelling rule) accepts
+  every GUID the files define for the target name, like a direct match (no false "GUID differs").
+- **Several Revit sessions:** the default is the session with a model open; with several models open and no `instance`
+  or expect_model to decide, ACE lists them and asks (a write never goes to a guessed Revit).
+- **Rolled back means nothing set:** after a rollback (failed self-check, `rolledBack`) the reply and the evidence say
+  "would have been set; rolled back" for fill, derive, bind and rebind counts; no `changed` block, no after state.
+- **Impact:** title blocks in one line ("shown on N sheet(s) via title blocks"), inferred for built-in Project
+  Information parameters (their labels leave no GUID or name in the family, so every title block family with instances
+  is listed; `titleBlocks: { families, sheets, instances }`, labels carry `proxy`).
+- **Add-in answers after a rollback:** every native change answers `rolledBack`; a failed apply puts its summary under
+  `wouldHaveChanged`, and parameter_fill moves counts to `wouldSet` / `wouldDo` and the end state to `afterIfKept`.
+- **Title rules:** a derive glob (matches the FULL model title) or `models` key that matches no open model is a warning
+  in the plan.
+- **LOIN cells with several names** ("A, B"): one row per name (the first part's prefix carried); parts that do not
+  resolve make the cell a pseudo-name "to check"; a client file that also defines the whole cell is a client action.
+- **Evidence items:** the mapping's `evidence.items` (id, text, rows / check) are listed in the evidence file with their
+  status after the apply.
+
 ## 1.11.0 (19 Oct 2026)
 - **Add-in: one plan per model, verified before it is kept:** `parameter_fill` takes `bind`, `rebind`, `derive`
   (copyFrom, join, or a literal `value` written only into truly blank targets), the fill, `impact` and `register` as one

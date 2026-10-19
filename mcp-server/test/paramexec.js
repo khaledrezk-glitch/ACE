@@ -133,6 +133,8 @@ assert.ok(dc.guid === "d-1" && dc.guids.join() === "d-1,d-2");
 const dm = S.mergeSources({ ais: [{ name: "TST_D", group: "project", level: "instance" }], index: dupIdx });
 assert.deepEqual(S.bridgeRow(dm.rows[0]).guids, ["d-1", "d-2"], "the bridge row accepts any of them");
 assert.ok(A.buildActions({ defects: dm.defects }).some((a) => /client file c\.txt defines TST_D 2 times with different GUIDs/.test(a.what) && a.owner === "client"));
+assert.ok(A.buildActions({ defects: { splitNames: [{ cell: "TST_X_A, B", loin: "S!2", names: ["TST_X_A", "TST_X_B"], definedAsOne: "c.txt" }], pseudoNames: [{ name: "TST_X_A, Q", loin: "S!3", reason: "several names in one cell; to check: TST_X_Q" }] } })
+  .filter((a) => /lists 2 names.*c\.txt also defines the whole cell/.test(a.what) || /S!3 \(several names in one cell/.test(a.why)).length === 2, "split cells and multi-name pseudo-names become client actions");
 assert.match(S.defectsText(dm.defects), /TST_D x2 \(c\.txt\)/);
 assert.match(X.bindProblem(dm.rows[0]), /2 times with different GUIDs/, "ACE cannot pick one to bind");
 
@@ -197,6 +199,36 @@ const csv = rowsFromCsv("parameter_name,categories,type_instance,origin\r\nType 
 assert.deepEqual(csv.rows.map((r) => r.origin ?? null), ["built-in", null]);
 assert.equal(S.mergeSources({ ais: csv.rows }).rows[0].origin, "built-in", "the origin reaches the merged row");
 assert.match(X.bindProblem({ name: "Type Mark", origin: "built-in", guid: "g", match: "exact" }), /built-in/);
+
+// 1.11.1: requirement items in the evidence, rolled-back wording, title rules, title blocks.
+{
+  const items = X.evidenceItems({ evidence: { status: "approved", items: [{ id: "TST-QA-1", text: "Codes", rows: ["TST_A", "TST_B"] }, { id: "TST-QA-2", check: "TST check" }, { id: "TST-QA-3", rows: "TST_C" }, { text: "no id: ignored" }] } });
+  assert.deepEqual(items.map((i) => i.id), ["TST-QA-1", "TST-QA-2", "TST-QA-3"]);
+  const st = X.evidenceStatus(items, { rows: [{ name: "TST_A", status: "complete" }, { name: "TST_B", status: "blanks" }, { name: "TST_D", status: "complete-with-na" }], checkerRows: [{ name: "TST_D", source: { checker: "TST check" } }] });
+  assert.deepEqual(st.map((i) => i.status), ["partly met", "met with NA", "not checked in this model"]);
+  assert.deepEqual(st[0].open, ["TST_B: blanks"]);
+  assert.equal(X.evidenceStatus([{ id: "q", text: "", rows: ["TST_B"] }], { rows: [{ name: "tst_b", status: "not-bound" }] })[0].status, "not met", "names match case-insensitively");
+  assert.deepEqual(X.evidenceItems({}), [], "no items: nothing invented");
+  const ev = X.evidenceMarkdown({ model: "TST", result: { success: false, rolledBack: true, fill: { set: 0, wouldSet: 5 }, bindings: { planned: 1, done: 0, wouldDo: 1 }, derived: [{ text: "TST_A = TST_B", set: 0, wouldSet: 2 }], verify: { ok: false, mismatchCount: 1 }, after: null, afterIfKept: { rows: [{ name: "TST_A", blank: 3 }] } }, items: st });
+  assert.match(ev, /Rolled back: nothing changed/);
+  assert.match(ev, /bound \| 0 \(1 would have been made; rolled back\) of 1/);
+  assert.match(ev, /derived \| 0 \(2 would have been set; rolled back\)/);
+  assert.match(ev, /TST_A = TST_B: 2 would have been set; rolled back/);
+  assert.match(ev, /still blank \(rows\) \| 0/, "the end state of a rolled-back plan is never reported as the model's");
+  assert.match(ev, /## Requirement items \(as before: nothing changed\)/);
+  assert.ok(X.wasRolledBack({ rolledBack: true }) && X.wasRolledBack({ verify: { ok: false } }) && !X.wasRolledBack({ rolledBack: false, verify: { ok: true } }));
+
+  const groups = X.deriveRules({ derive: { projectInformationValues: { "TST-*-1": { TST_A: "a" }, "*": { TST_B: "b" } }, status: "approved" } });
+  assert.deepEqual(X.unmatchedTitleRules({ derive: groups, models: { "TST-ST": "ST", "NOPE": "AR", status: "approved" } }, ["XX-TST-ST-1.rvt"]),
+    ["Warning: rule 'TST-*-1' matches no open model: XX-TST-ST-1.rvt (a glob matches the full model title; its values are not written).", "Warning: models entry 'NOPE' matches no open model: XX-TST-ST-1.rvt."],
+    "a glob matches the full title; models keys a part of it; '*' always matches");
+  assert.deepEqual(X.unmatchedTitleRules({ derive: groups }, ["TST-X-1"]), []);
+  assert.deepEqual(X.unmatchedTitleRules({ derive: groups }, []), [], "no titles known: no guess");
+
+  const tb = X.impactLines({ impact: { "TST_Name": { titleBlocks: { families: 2, sheets: 45, instances: 45 }, labels: [{ family: "TST A1", kind: "titleblock", sheets: 40, instances: 40, proxy: "built-in" }, { family: "TST A3", kind: "titleblock", sheets: 5, instances: 5, proxy: "built-in" }] } }, value: "NA" });
+  assert.deepEqual(tb, ["TST_Name: shown on 45 sheet(s) via title blocks: TST A1, TST A3 (45 instance(s)) will print NA (inferred: a built-in parameter leaves no trace in the family, so every title block on sheets is listed)"]);
+  assert.match(X.impactLines({ impact: { P: { labels: [{ family: "TST tb", kind: "titleblock", sheets: 2 }] } } })[0], /label in TST tb \(titleblock\) will print NA on 2 sheet/, "an older add-in without titleBlocks: labels one by one");
+}
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("paramexec test passed");

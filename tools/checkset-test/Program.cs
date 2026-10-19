@@ -519,6 +519,22 @@ class P {
     Check(Proxy(Guid.Parse("aaaaaaaa-1111-2222-3333-444444444444"), "TST_Other") && Proxy(null, "TST_Sheet Title") && !Proxy(Guid.Parse("bbbbbbbb-1111-2222-3333-444444444444"), "TST_Other") && !Proxy(null, "tst_sheet title"),
       "label proxy: the family holds the shared GUID, or a parameter of that exact name");
 
+    // Title blocks showing built-in Project Information parameters (Project Name / Number / Client Name leave no trace in the family).
+    string PK(Guid? g, string n, bool bpi, string kind) => (string)ppT.GetMethod("LabelProxyKind", flags).Invoke(null, new object[] {
+      new System.Collections.Generic.HashSet<Guid> { Guid.Parse("aaaaaaaa-1111-2222-3333-444444444444") }, new System.Collections.Generic.HashSet<string> { "TST_Sheet Title" }, g, n, bpi, kind });
+    Check(PK(null, "TST_Project Name", true, "titleblock") == "built-in" && PK(null, "TST_Project Name", true, "tag") == null && PK(null, "TST_Project Name", false, "titleblock") == null
+      && PK(Guid.Parse("aaaaaaaa-1111-2222-3333-444444444444"), "TST_X", true, "titleblock") == "guid" && PK(null, "TST_Sheet Title", false, "tag") == "name",
+      "label proxy kind: a built-in Project Information parameter is shown by every title block (not tags); GUID and name hits are named as such");
+    var tbList = new System.Collections.Generic.List<(string, System.Collections.Generic.ICollection<long>, int)> {
+      ("titleblock", new System.Collections.Generic.HashSet<long> { 100, 101, 102 }, 3),
+      ("titleblock", new System.Collections.Generic.HashSet<long> { 102, 103 }, 2),
+      ("tag", new System.Collections.Generic.HashSet<long> { 104 }, 9) };
+    var tbs = (System.Text.Json.Nodes.JsonObject)ppT.GetMethod("TitleBlockSummary", flags).Invoke(null, new object[] { tbList });
+    Check((int)tbs["families"] == 2 && (int)tbs["sheets"] == 4 && (int)tbs["instances"] == 5,
+      "title block summary per parameter: families, sheets (each once across families), instances; tags are not title blocks");
+    var sset = (System.Collections.Generic.HashSet<long>)ppT.GetMethod("SheetSet", flags).Invoke(null, new object[] { new long[] { 100, 200 }, vmap, new System.Collections.Generic.HashSet<long> { 100, 101 } });
+    Check(sset.SetEquals(new long[] { 100, 101 }), "sheet set: the title block's sheet and the sheets of a placed view");
+
     // The preview and the apply match only when the plan is identical; the model / version guards and read-only extras do not count.
     var hubT = a.GetType("AceRevitMcp.Companion.ActivityHub");
     string Fp(string json) => (string)hubT.GetMethod("Fingerprint", flags).Invoke(null, new object[] { "parameter_fill", System.Text.Json.Nodes.JsonNode.Parse(json).AsObject() });

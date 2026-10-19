@@ -36,6 +36,22 @@ const ruleText = (r) => r.value != null ? `${r.target} = "${r.value}"` : r.copyF
 /** A model title glob ("*" = any run, case-insensitive) -> does it match; and how specific it is (exact 2, glob 1, "*" 0). */
 export const globMatch = (glob, title) => new RegExp("^" + String(glob).trim().split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i").test(String(title ?? "").trim().replace(/\.rvt$/i, ""));
 export const globRank = (glob) => String(glob).trim() === "*" ? 0 : String(glob).includes("*") ? 1 : 2;
+/**
+ * Model-title rules in the mapping that match no open model: derive globs (projectInformationValues keys; a glob matches
+ * the FULL title) and models keys (matched as part of the title, as the add-in does, or as a glob). -> warning lines.
+ */
+export function unmatchedTitleRules({ derive = null, models = null } = {}, titles = []) {
+  const t = titles.filter(Boolean);
+  if (!t.length) return [];
+  const list = t.slice(0, 6).join(", ") + (t.length > 6 ? `, ... ${t.length - 6} more` : "");
+  const out = [];
+  for (const glob of uniq((derive?.groups ?? []).map((g) => g.glob).filter((g) => g != null && String(g).trim() !== "*")))
+    if (!t.some((x) => globMatch(glob, x))) out.push(`Warning: rule '${glob}' matches no open model: ${list} (a glob matches the full model title; its values are not written).`);
+  for (const key of Object.keys(models ?? {}).filter((k) => k !== "status" && !k.startsWith("_")))
+    if (!t.some((x) => String(x).toLowerCase().includes(key.toLowerCase()) || (key.includes("*") && globMatch(key, x))))
+      out.push(`Warning: models entry '${key}' matches no open model: ${list}.`);
+  return out;
+}
 /** Whether a derive group applies to a model: no glob, or its glob matches and no more specific glob sets the same target. */
 export function groupApplies(g, groups, model) {
   if (g.glob == null) return true;
@@ -157,7 +173,11 @@ export function impactLines({ impact = {}, ifc = null, flips = {}, params = [], 
       bits.push(`${sch.length} schedule(s)${hv ? ` (${hv} with a has-value filter: rows hidden now will show)` : ""}`);
     }
     if (i.viewFilters?.length) bits.push(`${i.viewFilters.length} view filter(s)`);
-    for (const l of i.labels ?? []) bits.push(`label in ${l.family}${l.kind ? ` (${l.kind})` : ""} will print ${value} on ${l.sheets ?? 0} sheet(s) (inferred)`);
+    const tb = i.titleBlocks;
+    const tbLabels = (i.labels ?? []).filter((l) => l.kind === "titleblock");
+    // Title blocks: one line for all of them (sheets counted once); other labels one by one.
+    if (tb?.sheets) bits.push(`shown on ${tb.sheets} sheet(s) via title blocks: ${uniq(tbLabels.map((l) => l.family)).join(", ") || `${tb.families} family(ies)`} (${tb.instances ?? 0} instance(s)) will print ${value}${tbLabels.some((l) => l.proxy === "built-in") ? " (inferred: a built-in parameter leaves no trace in the family, so every title block on sheets is listed)" : ""}`);
+    for (const l of tb?.sheets ? (i.labels ?? []).filter((x) => x.kind !== "titleblock") : i.labels ?? []) bits.push(`label in ${l.family}${l.kind ? ` (${l.kind})` : ""} will print ${value} on ${l.sheets ?? 0} sheet(s) (inferred)`);
     for (const s of ifc?.byParameter?.get(p) ?? []) bits.push(`IFC ${s.pset}.${s.property} (${s.entities.join(", ") || "all entities"})`);
     if (flips[p]?.length) bits.push(`client checker: ${flips[p].length} check(s) turn from fail to pass`);
     if (bits.length) lines.push(`${p}: ${bits.join(", ")}`);
@@ -371,35 +391,81 @@ export function registerMarkdown(model, register = [], { when = localDate(new Da
 }
 
 /** evidence-<model>-<stamp>.md after an applied fill. */
-export function evidenceMarkdown({ model, when = localDate(new Date(), { time: true }), register = [], result = {}, plan = {}, blocked = [], held = [], registerFile }) {
+/** Whether an apply was rolled back (the add-in's rolledBack, or a failed self-check). */
+export const wasRolledBack = (result) => result?.rolledBack === true || result?.verify?.ok === false;
+/** "N" for a kept apply, "N would have been ...; rolled back" for a rolled-back one (counts from wouldSet / wouldDo). */
+export function doneText(o, { field = "set", would = "wouldSet", rolledBack = false, verb = "set" } = {}) {
+  if (!rolledBack) return `${o?.[field] ?? 0}`;
+  return `0 (${o?.[would] ?? o?.[field] ?? 0} would have been ${verb}; rolled back)`;
+}
+
+/**
+ * The QA / requirement items the evidence answers, from the mapping: evidence.items [{ id, text, rows?: [names], check?:
+ * checker check name }] (a section with a status). Ids are the project's own; nothing is invented.
+ */
+export function evidenceItems(mapping) {
+  const list = mapping?.evidence?.items;
+  if (!Array.isArray(list)) return [];
+  return list.filter((x) => x && typeof x === "object" && x.id != null).map((x) => ({
+    id: String(x.id), text: x.text != null ? String(x.text) : "",
+    rows: (Array.isArray(x.rows) ? x.rows : typeof x.rows === "string" ? [x.rows] : []).map(String),
+    check: x.check != null ? String(x.check) : undefined,
+  }));
+}
+
+const DONE = new Set(["complete"]);
+/**
+ * Each item's status in this model after the apply (or as it was, when rolled back): its rows are the names it lists plus
+ * the parameters its checker check tests. met | met with NA (values are "NA", the data is still missing) | partly met |
+ * not met | not checked in this model (no row of it in scope).
+ */
+export function evidenceStatus(items, { rows = [], checkerRows = [] } = {}) {
+  return items.map((it) => {
+    const names = new Set([...it.rows, ...checkerRows.filter((c) => it.check && c.source?.checker === it.check).map((c) => c.name)].map((n) => n.toLowerCase()));
+    const mine = rows.filter((r) => names.has(String(r.name).toLowerCase()) && !["out-of-scope", "unmapped"].includes(r.status));
+    const ok = mine.filter((r) => DONE.has(r.status)).length, na = mine.filter((r) => r.status === "complete-with-na").length;
+    const open = mine.filter((r) => !DONE.has(r.status) && r.status !== "complete-with-na");
+    const status = !names.size || !mine.length ? "not checked in this model" : !open.length ? (na ? "met with NA" : "met") : ok + na ? "partly met" : "not met";
+    return { ...it, status, rows: mine.length, open: open.map((r) => `${r.name}: ${r.status}`) };
+  });
+}
+
+export function evidenceMarkdown({ model, when = localDate(new Date(), { time: true }), register = [], result = {}, plan = {}, blocked = [], held = [], registerFile, items = [] }) {
   const sum = (list, f) => (list ?? []).reduce((n, x) => n + (Number(f(x)) || 0), 0);
   const before = sum(register, (r) => r.count ?? r.ids?.length);
   const b = result.bindings ?? {};
   const derived = Array.isArray(result.derived) ? result.derived : [];
-  const after = result.after?.rows ?? [];
+  const rb = wasRolledBack(result);
+  // Rolled back: the model is as it was, so nothing is "still blank after" (the end state was never kept).
+  const after = rb ? [] : result.after?.rows ?? [];
   const stillBlank = after.filter((r) => r.blank > 0);
   const notBound = after.filter((r) => r.status === "not-bound");
   const v = result.verify;
   const skips = skipsOf(result);
-  const out = [`# Parameter fill evidence: ${model}`, "", `${when}. ${result.success ? "Applied as ONE undo step." : "Not applied: nothing changed."}${registerFile ? ` Missing register: ${registerFile}` : ""}`, "",
+  const out = [`# Parameter fill evidence: ${model}`, "", `${when}. ${result.success && !rb ? "Applied as ONE undo step." : rb ? "Rolled back: nothing changed; the counts below say what would have been written." : "Not applied: nothing changed."}${registerFile ? ` Missing register: ${registerFile}` : ""}`, "",
     "| | count |", "|---|---|",
     `| missing before (blank values) | ${before} |`,
-    `| bound | ${b.done ?? 0} of ${b.planned ?? plan.bind?.length ?? 0} |`,
-    `| derived | ${sum(derived, (d) => d.set)} (${derived.length} rule(s)) |`,
-    ...(result.rebound ? [`| rebound (explicit) | ${result.rebound.done ?? 0} of ${result.rebound.planned ?? plan.rebind?.length ?? 0}${(result.rebound.values ?? result.rebound.restored) != null ? `, ${result.rebound.values ?? result.rebound.restored} value(s) restored` : ""} |`] : []),
-    `| "${result.fill?.value ?? plan.value ?? "NA"}" written | ${result.fill?.set ?? 0} |`,
+    `| bound | ${doneText(b, { field: "done", would: "wouldDo", rolledBack: rb, verb: "made" })} of ${b.planned ?? plan.bind?.length ?? 0} |`,
+    `| derived | ${rb ? `0 (${sum(derived, (d) => d.wouldSet ?? d.set)} would have been set; rolled back)` : sum(derived, (d) => d.set)} (${derived.length} rule(s)) |`,
+    ...(result.rebound ? [`| rebound (explicit) | ${doneText(result.rebound, { field: "done", would: "wouldDo", rolledBack: rb, verb: "replaced" })} of ${result.rebound.planned ?? plan.rebind?.length ?? 0}${!rb && (result.rebound.values ?? result.rebound.restored) != null ? `, ${result.rebound.values ?? result.rebound.restored} value(s) restored` : ""} |`] : []),
+    `| "${result.fill?.value ?? plan.value ?? "NA"}" written | ${doneText(result.fill, { rolledBack: rb })} |`,
     `| skipped | ${sum(skips, (s) => s.elements ?? 1)} |`,
     `| still blank (rows) | ${stillBlank.length} |`,
     `| not bound (rows) | ${notBound.length} |`,
     `| self-check | ${v ? (v.ok ? `ok (${v.checked ?? "all"} write(s) read back)` : `FAILED: ${v.mismatchCount ?? v.mismatches?.length ?? "?"} mismatch(es), rolled back`) : "not reported"} |`, ""];
   const section = (title, items) => { if (items.length) out.push(`## ${title}`, "", ...items.map((i) => `- ${i}`), ""); };
   section("Bindings", (b.items ?? []).map((i) => `${i.name} (${i.guid}): ${i.action}${i.categories?.length ? ` ${i.categories.join(", ")}` : ""}${i.file ? ` from ${i.file}` : ""}`));
-  section("Derived", derived.map((d) => `${d.text ?? d.target}: ${d.set ?? 0} set`));
+  section("Derived", derived.map((d) => `${d.text ?? d.target}: ${rb ? `${d.wouldSet ?? d.set ?? 0} would have been set; rolled back` : `${d.set ?? 0} set`}`));
   section("Skipped", skips.map((s) => `[${s.part}${s.rule ? `: ${s.rule}` : ""}] ${blockLine(s)}`));
   section("Blocked", [...blocked, ...held].map(blockLine));
   section("Still blank", stillBlank.map((r) => `${r.name}: ${r.blank}`));
   section("Not bound", notBound.map((r) => r.name));
   section("Self-check mismatches", (v?.mismatches ?? []).map((m) => `${m.kind ?? ""} ${m.name ?? m.key ?? ""}${m.id != null ? ` #${m.id}` : ""}: expected ${JSON.stringify(m.expected)}, found ${JSON.stringify(m.actual)}${m.why ? ` (${m.why})` : ""}`));
+  if (items.length) {
+    out.push(`## Requirement items${rb ? " (as before: nothing changed)" : " (after the apply)"}`, "", "| id | item | status | rows | open |", "|---|---|---|---|---|",
+      ...items.map((i) => `| ${i.id} | ${String(i.text).replace(/\|/g, "/")} | ${i.status} | ${i.rows} | ${i.open.slice(0, 5).join("; ").replace(/\|/g, "/")}${i.open.length > 5 ? `; ${i.open.length - 5} more` : ""} |`), "");
+    if (items.some((i) => i.status === "met with NA")) out.push("\"met with NA\": the values are \"NA\"; a HasValue check passes, the data itself is still missing (missing register).", "");
+  }
   out.push(`Sources of the requirements: ${uniq((plan.sources ?? []).map(srcText)).slice(0, 20).join("; ") || "see the check report"}`, "");
   return out.join("\n");
 }

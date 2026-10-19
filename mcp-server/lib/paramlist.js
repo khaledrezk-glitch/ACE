@@ -99,7 +99,8 @@ export function summaryText(result, listInfo = {}) {
     const why = {};
     for (const k of f.skipped ?? []) why[k.reason] = (why[k.reason] ?? 0) + 1;
     const reasons = Object.entries(why).map(([r, n]) => `${n} ${r}`).join(", ");
-    lines.push(`Fill: ${f.set ?? 0} value(s) ${listInfo.dryRun ? "would be " : ""}set, ${(f.skipped ?? []).length} skipped${reasons ? ` (${reasons})` : ""}.`);
+    const set = listInfo.rolledBack ? `${f.wouldSet ?? f.set ?? 0} value(s) would have been set; rolled back, nothing changed` : `${f.set ?? 0} value(s) ${listInfo.dryRun ? "would be " : ""}set`;
+    lines.push(`Fill: ${set}, ${(f.skipped ?? []).length} skipped${reasons ? ` (${reasons})` : ""}.`);
   }
   if (listInfo.skipped?.length || listInfo.duplicates?.length) {
     lines.push(`List: ${listInfo.skipped?.length ?? 0} row(s) skipped (unknown category or type), ${listInfo.duplicates?.length ?? 0} duplicate(s) dropped.`);

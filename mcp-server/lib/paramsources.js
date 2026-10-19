@@ -277,7 +277,7 @@ export function normaliseMapping(raw) {
       .filter((k) => raw[k] && typeof raw[k] === "object" && raw[k].status != null).map((k) => [k, raw[k].status])),
     groupDisciplines: raw.groupDisciplines ? plainMap(raw.groupDisciplines) : null,
     aliases: {}, proposedAliases: {}, prefixMap: {}, models: plainMap(raw.models), ownership: plainMap(raw.ownership),
-    derive: raw.derive ?? null, naPolicy: raw.naPolicy ?? null, sources: raw.sources ?? null };
+    derive: raw.derive ?? null, naPolicy: raw.naPolicy ?? null, sources: raw.sources ?? null, evidence: raw.evidence ?? null };
   for (const [sheet, cats] of Object.entries(raw.loinCategories ?? {})) {
     if (!cats || typeof cats !== "object") continue;
     m.sheetCategories[sheet] = {};
@@ -378,8 +378,9 @@ export function classifyName(name, idx, aliases = {}) {
   const al = aliases && (aliases.aliases || aliases.prefixMap || aliases.proposedAliases) ? aliasFor(aliases, name)
     : Object.hasOwn(aliases ?? {}, name) && aliases[name] ? { to: String(aliases[name]), approved: true } : null;
   if (al && al.to !== name && al.approved) {
-    const p = idx && lookup(idx, al.to);
-    return { match: "alias", name: al.to, aliasOf: name, guid: p?.guid, dataType: p?.dataType };
+    // Like a direct match: every GUID the files define for the target name is accepted (guids), the file is named.
+    if (idx && lookup(idx, al.to)) return { ...expected(idx, al.to, "alias"), aliasOf: name };
+    return { match: "alias", name: al.to, aliasOf: name };
   }
   if (al && al.to !== name && !(idx && (idx.project.has(name) || idx.client.has(name)))) {
     // A proposed (not yet approved) alias: checked under the listed name, the alias reported as the candidate.
@@ -448,6 +449,30 @@ export function nearDuplicates(idx) {
 
 // ---- merge ---------------------------------------------------------------------------------------------------------
 
+const CLEAN = new Set(["exact", "exact-client", "alias"]);
+/**
+ * A LOIN cell listing several names ("A, B", ";" or a new line) -> the names; later parts without a prefix take the
+ * first part's ("TST_ST_X, Y" -> TST_ST_X, TST_ST_Y). One name -> [name].
+ */
+export function splitNames(cell) {
+  // Separators inside brackets or parentheses ("Dimensions (width, depth)") belong to the one name; bracketed notes are
+  // never split (they are pseudo-names anyway).
+  if (/[[\]]/.test(cell)) return [String(cell).trim()];
+  const parts = [];
+  let depth = 0, cur = "";
+  for (const ch of String(cell)) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if (!depth && /[,;\r\n]/.test(ch)) { parts.push(cur); cur = ""; } else cur += ch;
+  }
+  parts.push(cur);
+  for (let i = parts.length - 1; i >= 0; i--) { parts[i] = parts[i].trim(); if (!parts[i]) parts.splice(i, 1); }
+  if (parts.length < 2) return [String(cell).trim()];
+  const pm = PREFIX.exec(parts[0]);
+  const prefix = pm ? `${pm[1]}_${pm[2]}_` : "";
+  return uniq(parts.map((p, i) => (i && prefix && !PREFIX.test(p) ? prefix + p : p)));
+}
+
 /** A source reference in words: "AIS line 12", "LOIN Sheet1!5", "checker: <check name>". */
 export const srcText = (s) => s.ais != null ? `AIS line ${s.ais}` : s.loin != null ? `LOIN ${s.loin}` : s.checker != null ? `checker: ${s.checker}` : "";
 
@@ -472,15 +497,30 @@ export function mergeSources({ ais = [], loin = [], checker = [], mapping = null
   raw.forEach(scoped);
   for (const r of checker) raw.push(scoped({ ...r, categories: [...(r.categories ?? [])], source: { ...r.source } }));
   const unmapped = new Map(), pseudo = [], unmappedRows = [], noScope = new Set();
+  const splitCells = [];
+  const loinRows = [];
   for (const r of loin) {
     if (!r.name) continue;
+    const parts = splitNames(r.name);
+    if (parts.length < 2) { loinRows.push(r); continue; }
+    const where = `${r.sheet}!${r.row}`;
+    // Clean: each part is a name the shared parameter files define (directly or through an approved alias).
+    const bad = parts.filter((n) => { const c = classifyName(n, index, aliases); return !CLEAN.has(c.match) || !(index && lookup(index, c.name)); });
+    const whole = index && lookup(index, classifyName(r.name, index, aliases).name);
+    const cell = { cell: r.name, loin: where, names: parts, ...(whole ? { definedAsOne: path.basename(whole.file ?? "") } : {}) };
+    // Names that do not all classify cleanly: a pseudo-name to check, never one parameter.
+    if (bad.length) { pseudo.push({ name: r.name, loin: where, category: r.category, reason: `several names in one cell; to check: ${bad.join(", ")}` }); continue; }
+    splitCells.push(cell);
+    for (const n of parts) loinRows.push({ ...r, name: n, splitFrom: r.name });
+  }
+  for (const r of loinRows) {
     const label = r.category.trim();
     const perSheet = mapping?.sheetCategories?.[r.sheet];
     const cats = listOf(perSheet && Object.hasOwn(perSheet, label) ? perSheet[label] : mapping?.categories?.[label]);
     const disc = listOf(mapping?.disciplines?.[r.sheet]);
     if (mapping && !disc.length) noScope.add(r.sheet);
     const why = categoryHold(mapping, r.sheet, label) ?? (disc.length && !sectionApproved(mapping, "disciplines") ? "the LOIN sheet -> discipline scope in the mapping is not approved" : null);
-    const source = { loin: `${r.sheet}!${r.row}`, category: label, disciplines: disc, ...(why ? { draftMapping: true, planOnly: why } : {}) };
+    const source = { loin: `${r.sheet}!${r.row}`, category: label, disciplines: disc, ...(r.splitFrom ? { cell: r.splitFrom } : {}), ...(why ? { draftMapping: true, planOnly: why } : {}) };
     if (/[[\]]/.test(r.name)) { pseudo.push({ name: r.name, ...source }); continue; }
     if (!cats.length) {
       const u = unmapped.get(label) ?? { category: label, rows: 0, sheets: new Set(), names: new Set() };
@@ -532,6 +572,7 @@ export function mergeSources({ ais = [], loin = [], checker = [], mapping = null
   const defects = {
     unmappedCategories: [...unmapped.values()].map((u) => ({ category: u.category, rows: u.rows, sheets: [...u.sheets], names: u.names.size })),
     pseudoNames: pseudo,
+    splitNames: splitCells,   // LOIN cells listing several names, checked as one row per name
     nameCandidates: candidates,
     unknownNames: [...classes].filter(([, c]) => c.match === "unknown").map(([n]) => n),
     levelConflicts,
@@ -671,7 +712,8 @@ export function defectsText(d = {}) {
   const lines = [];
   if (d.unmappedCategories?.length) lines.push(`Unmapped client categories (${d.unmappedCategories.length}, rows not checked until a person maps them in the mapping file): ${few(d.unmappedCategories.map((u) => `${u.category} (${u.rows})`))}`);
   if (d.nameCandidates?.length) lines.push(`Name candidates to resolve (${d.nameCandidates.length}; checked under the listed name, add an alias once confirmed): ${few(d.nameCandidates.map((c) => `${c.name} -> ${c.candidate} (${c.match})`))}`);
-  if (d.pseudoNames?.length) lines.push(`Not parameter names (bracketed, skipped): ${d.pseudoNames.length}`);
+  if (d.pseudoNames?.length) lines.push(`Not parameter names (bracketed or several names to check, skipped): ${d.pseudoNames.length}`);
+  if (d.splitNames?.length) lines.push(`LOIN cells listing several names, checked one row per name: ${few(d.splitNames.map((c) => `${c.loin} -> ${c.names.join(" + ")}${c.definedAsOne ? ` (${c.definedAsOne} also defines the whole cell as one name: to check)` : ""}`))}`);
   if (d.unknownNames?.length) lines.push(`Not in the shared parameter files (built-in or missing): ${d.unknownNames.length}: ${few(d.unknownNames)}`);
   if (d.nearDuplicates?.length) lines.push(`Near-duplicate names in the shared parameter files (typo twins?): ${few(d.nearDuplicates.map(([a, b]) => `${a} / ${b}`))}`);
   if (d.duplicateGuids?.length) lines.push(`Names a client file defines several times with different GUIDs (every GUID is accepted): ${few(d.duplicateGuids.map((x) => `${x.name} x${x.guids.length} (${x.file})`))}`);
@@ -935,7 +977,7 @@ export function loadSources(args) {
   const merged = mergeSources({ ais, loin: loinRows, checker: chRows, mapping: map, index });
   const files = read.map(([f]) => f);
   const fileHashes = Object.fromEntries(read.map(([f, b]) => [f, hashBytes([[f, b]])]));
-  return { ...merged, scope: buildScope(map, merged.rows), mapping: mapInfo, naPolicy: naPolicy(map), listInfo, info, files, fileHashes, hash: read.length ? hashBytes(read) : null, checker: checkerData, ais, index, projectFile: project_parameters };
+  return { ...merged, scope: buildScope(map, merged.rows), mapping: mapInfo, naPolicy: naPolicy(map), listInfo, info, files, fileHashes, hash: read.length ? hashBytes(read) : null, checker: checkerData, checkerRows: chRows, ais, index, projectFile: project_parameters };
 }
 
 /** The project's NA policy from the mapping: naPolicy (project shape) or fill (ACE shape) { value, values }; nulls when unset. */

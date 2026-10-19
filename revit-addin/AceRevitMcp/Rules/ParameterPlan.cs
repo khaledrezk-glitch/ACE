@@ -400,7 +400,11 @@ namespace AceRevitMcp.Rules
         /// How many sheets show annotation instances, from their owner views: an owner view that is a sheet counts itself
         /// (title blocks); any other view counts the sheets it is placed on (tags). Each sheet once.
         /// </summary>
-        public static int SheetsShowing(IEnumerable<long> ownerViews, IDictionary<long, List<long>> viewToSheets, ICollection<long> sheets)
+        public static int SheetsShowing(IEnumerable<long> ownerViews, IDictionary<long, List<long>> viewToSheets, ICollection<long> sheets) =>
+            SheetSet(ownerViews, viewToSheets, sheets).Count;
+
+        /// <summary>The sheets themselves (see SheetsShowing), so counts across families take each sheet once.</summary>
+        public static HashSet<long> SheetSet(IEnumerable<long> ownerViews, IDictionary<long, List<long>> viewToSheets, ICollection<long> sheets)
         {
             var seen = new HashSet<long>();
             foreach (var v in ownerViews ?? Enumerable.Empty<long>())
@@ -408,13 +412,40 @@ namespace AceRevitMcp.Rules
                 if (sheets != null && sheets.Contains(v)) seen.Add(v);
                 else if (viewToSheets != null && viewToSheets.TryGetValue(v, out var on)) foreach (var s in on) seen.Add(s);
             }
-            return seen.Count;
+            return seen;
+        }
+
+        /// <summary>
+        /// Why a family is taken to show the parameter in a label, or null: "guid" (it holds the shared GUID), "name" (a
+        /// parameter of that exact name), or "built-in" (a built-in Project Information parameter such as Project Name,
+        /// Number or Client Name, which leaves no trace in the family: every title block family may show it).
+        /// </summary>
+        public static string LabelProxyKind(ICollection<Guid> familyGuids, ICollection<string> familyNames, Guid? guid, string name, bool builtInProjectInfo, string kind)
+        {
+            if (guid.HasValue && familyGuids != null && familyGuids.Contains(guid.Value)) return "guid";
+            if (!string.IsNullOrEmpty(name) && familyNames != null && familyNames.Contains(name)) return "name";
+            if (builtInProjectInfo && kind == "titleblock") return "built-in";
+            return null;
+        }
+
+        /// <summary>Per parameter, the title blocks that show it: { families, sheets (each sheet once), instances }.</summary>
+        public static JsonObject TitleBlockSummary(IEnumerable<(string Kind, ICollection<long> Sheets, int Instances)> labels)
+        {
+            var families = 0; var instances = 0;
+            var sheets = new HashSet<long>();
+            foreach (var l in labels ?? Enumerable.Empty<(string, ICollection<long>, int)>())
+            {
+                if (l.Kind != "titleblock") continue;
+                families++;
+                instances += l.Instances;
+                if (l.Sheets != null) sheets.UnionWith(l.Sheets);
+            }
+            return new JsonObject { ["families"] = families, ["sheets"] = sheets.Count, ["instances"] = instances };
         }
 
         /// <summary>Whether a family's parameters stand for a label of the parameter: the shared GUID, or the name.</summary>
         public static bool LabelProxy(ICollection<Guid> familyGuids, ICollection<string> familyNames, Guid? guid, string name) =>
-            (guid.HasValue && familyGuids != null && familyGuids.Contains(guid.Value))
-            || (!string.IsNullOrEmpty(name) && familyNames != null && familyNames.Contains(name));
+            LabelProxyKind(familyGuids, familyNames, guid, name, false, null) != null;
 
         private static string Text(JsonObject o, string key) => o[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
     }

@@ -267,7 +267,16 @@ sheet and row, checker check). Written as xlsx (the zip writer in `lib/docx.js`)
   cached per family, and closes each family document without saving.
 - **Literal derive** (`value`): written only into truly blank targets (never over NA or text). The server builds these
   from the mapping's `derive.projectInformationValues` (`{ "<model title glob>" | "*": { "<parameter>": "<value>" } }`,
-  most specific match wins).
+  most specific match wins). A glob matches the full model title (case-insensitive, `.rvt` ignored); a glob (or a
+  `models` key) that matches no open model is a warning in the plan, never silent.
+- **Several names in one LOIN cell** ("A, B", `;` or a new line): one row per name, later parts without a prefix take
+  the first part's; parts that do not classify (exact, client or alias) make the cell a pseudo-name "to check".
+- **Evidence items:** the mapping's `evidence.items` ([{ id, text, rows?: [names], check?: "<checker check name>" }]) are
+  listed in the evidence file with their status after the apply (as before when rolled back).
+- **Rolled back:** the add-in answers `rolledBack`; the server then says "would have been set; rolled back" for fill,
+  derive, bind and rebind counts (`wouldSet` / `wouldDo`) in the reply and the evidence, and shows no `changed` block.
+- **Sessions:** with several Revit sessions the default is the one with a model open; several with a model and no
+  `instance` / expect_model to decide: ACE lists them and asks.
 - **Rebind** (explicit-only action, for `guid-differs` once a person decides "rebind model to file"): the old values are
   read, the old definition deleted, the new one bound from the file, the values written back and verified; what the old
   definition drops (schedule fields, filter rules, labels) is shown in the dry run (`rebound`).

@@ -69,7 +69,7 @@ const bridge = http.createServer((req, res) => {
           summary: { rows: args.rows.length, complete: 0, withBlanks: args.rows.length, missingEverywhere: 0, notText: 0, notInGeneral: 0, withNA: 0, outOfScope: 0, wrongGuid: 0, notBound: 0, wrongLevel: 0, foreign: 0 } });
         const docs = [doc("Test"), ...(args.all_documents && names.some((n) => n.startsWith("TST_M_")) ? [doc("Test-STR")] : [])];
         const mismatch = writePlan && !args.dry_run && (names.some((n) => n.startsWith("TST_VERIFY")) || args.test_force_verify_mismatch);   // assumed: the flag fails the apply's self-check, not the dry run's
-        return reply({ ok: true, result: { success: !mismatch, model: "Test", dryRun: !!args.dry_run, checkOnly: !!args.check_only || undefined, echo: args,
+        const res = { success: !mismatch, model: "Test", dryRun: !!args.dry_run, checkOnly: !!args.check_only || undefined, echo: args, rolledBack: !!args.dry_run || mismatch,
           ...(args.fill && !args.dry_run && !args.check_only && !mismatch ? { after: { rows: args.rows.map((r) => ({ key: r.key, name: r.name, blank: 0, filled: 1, na: 1, status: "complete-with-na" })), summary: { rows: args.rows.length, complete: 0, withBlanks: 0, missingEverywhere: 0, notText: 0, notInGeneral: 0, withNA: args.rows.length } } } : {}),
           documents: docs,
           ...(writePlan ? {
@@ -80,10 +80,17 @@ const bridge = http.createServer((req, res) => {
               impact: { [args.rebind[0].name]: { schedules: [{ name: "TST schedule", filters: [] }], viewFilters: [], labels: [] } } } } : {}),
             derived: (args.derive ?? []).map((r) => ({ rule: r, text: `${r.target} = ${r.value != null ? `"${r.value}"` : r.copyFrom ?? r.join.join(" + ")}`, target: r.target, set: 1, skipped: [], types: [] })),
             verify: mismatch ? { ok: false, checked: 2, mismatchCount: 1, mismatches: [{ kind: "value", key: "r1", name: names[0], id: 101, expected: "NA", actual: "", why: "not written" }] } : { ok: true, checked: 2, mismatchCount: 0, mismatches: [] },
-            ...(args.impact ? { impact: { [names[0]]: { guid: null, schedules: [{ name: "TST schedule", id: 5, filters: [{ type: "HasValue", value: null }] }], viewFilters: ["TST filter"], labels: [{ family: "TST title block", kind: "titleblock", sheets: 41, instances: 41 }], inferred: true, notes: [] } } } : {}),
+            ...(args.impact ? { impact: { [names[0]]: { guid: null, schedules: [{ name: "TST schedule", id: 5, filters: [{ type: "HasValue", value: null }] }], viewFilters: ["TST filter"], labels: [{ family: "TST title block", kind: "titleblock", sheets: 41, instances: 41, proxy: "guid" }, { family: "TST tag", kind: "tag", sheets: 3, instances: 9, proxy: "guid" }], titleBlocks: { families: 1, sheets: 41, instances: 41 }, inferred: true, notes: [] } } } : {}),
             aceVersion: SERVER_VERSION,
           } : {}),
-          ...(args.fill ? { fill: { set: 2, skipped: [{ id: 9, name: "x", reason: "read-only" }], types: writePlan ? [{ id: 7, name: "TST type", parameter: names[0], instancesAffected: 12 }] : undefined }, [args.dry_run ? "wouldChange" : "changed"]: { added: 0, modified: 2, deleted: 0 } } : {}) } });
+          ...(args.fill ? { fill: { set: 2, skipped: [{ id: 9, name: "x", reason: "read-only" }], types: writePlan ? [{ id: 7, name: "TST type", parameter: names[0], instancesAffected: 12 }] : undefined }, [args.dry_run ? "wouldChange" : mismatch ? "wouldHaveChanged" : "changed"]: { added: 0, modified: 2, deleted: 0 } } : {}) };
+        if (mismatch) {
+          // The add-in's rolled-back answer: nothing counted as done, the counts under wouldSet / wouldDo, no after block.
+          const move = (o, from, to) => { if (o && typeof o[from] === "number") { o[to] = o[from]; o[from] = 0; } };
+          move(res.fill, "set", "wouldSet"); (res.derived ?? []).forEach((d) => move(d, "set", "wouldSet")); move(res.bindings, "done", "wouldDo"); move(res.rebound, "done", "wouldDo");
+          res.after = null; res.afterIfKept = { rows: args.rows.map((r) => ({ key: r.key, name: r.name, blank: 0, status: "complete-with-na" })) };
+        }
+        return reply({ ok: true, result: res });
       }
       case "presentation_standard":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
@@ -449,7 +456,8 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const clientLine = `PARAM\t${G2}\tTST_NB_Client\tTEXT\t\t7\t1\tfrom the client\t1`;
   fs.writeFileSync(xClient, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${head}GROUP\t7\tClient group\r\nGROUP\t8\tOther\r\n*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\tVISIBLE\tDESCRIPTION\tUSERMODIFIABLE\r\n${clientLine}\r\nPARAM\tcccccccc-0000-0000-0000-000000000003\tTST_Other\tTEXT\t\t8\t1\t\t1\r\n`, "utf16le")]));
   fs.writeFileSync(xList, "parameter_name,categories,type_instance,origin\r\nTST_NB_Proj,Project Information,Instance,Custom\r\nTST_NB_Client,Project Information,Instance,Custom\r\nTST_F_Code,Project Information,Instance,Custom\r\nTST_F_Name,Project Information,Instance,Custom\r\nTST_BI_Mark,\"Systems, Components, Elements\",Type,Built-In\r\n");
-  const mapping = (o = {}) => JSON.stringify({ about: "ACE parameter requirement mapping. Edit freely.", categories: {}, disciplines: {}, aliases: {}, models: {}, fill: { value: "NA", values: ["NA"] }, derive: [{ target: "TST_F_Code", copyFrom: "TST_F_Name" }], ...o });
+  const mapping = (o = {}) => JSON.stringify({ about: "ACE parameter requirement mapping. Edit freely.", categories: {}, disciplines: {}, aliases: {}, models: {}, fill: { value: "NA", values: ["NA"] }, derive: [{ target: "TST_F_Code", copyFrom: "TST_F_Name" }],
+    evidence: { items: [{ id: "TST-QA-1", text: "Project parameters | filled", rows: ["TST_F_Code", "tst_f_name"] }, { id: "TST-QA-2", text: "Not in this model", rows: ["TST_NOPE"] }] }, ...o });
   fs.writeFileSync(xMap, mapping());
   const xs = { list: xList, project_parameters: xProj, shared_parameters: [xClient], mapping: xMap, report_dir: regDir };
   const fills = () => seen.filter((x) => x.command === "parameter_fill");
@@ -481,10 +489,12 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const dryText = dry.content.map((c) => c.text).join("\n");
   assert.match(dryText, /PLAN for Test \(dry run, rolled back\): Test: bind 2, derive 1 rule\(s\), fill "NA"/);
   assert.match(dryText, /Add this line to the project shared parameter file:\n.*TST_NB_Client/, "the reply says which client line to add to the project file");
-  assert.match(dryText, /label in TST title block \(titleblock\) will print NA on 41 sheet\(s\) \(inferred\)/, "impact in plain words");
+  assert.match(dryText, /shown on 41 sheet\(s\) via title blocks: TST title block \(41 instance\(s\)\) will print NA/, "title blocks: the sheets that will show the value");
+  assert.match(dryText, /label in TST tag \(tag\) will print NA on 3 sheet\(s\) \(inferred\)/, "other labels in plain words");
+  assert.ok(!/label in TST title block/.test(dryText), "title blocks are said once, not again as a label");
   assert.match(dryText, /1 schedule\(s\) \(1 with a has-value filter/);
   assert.match(dryText, /"NA" passes a HasValue check/, "the NA caveat");
-  assert.match(dryText, /Type parameters: 1 type\(s\) written once each, reaching 12 instance\(s\)/, "type writes with the instances they reach");
+  assert.match(dryText, /Type parameters: 1 type\(s\) would be written once each, reaching 12 instance\(s\)/, "type writes with the instances they reach");
   assert.match(dryText, /Missing register: .*missing-register-Test-.*\.csv/);
   assert.ok(fs.readdirSync(regDir).some((f) => /^missing-register-Test-.*\.md$/.test(f)), "register summary");
   assert.ok(fs.readdirSync(regDir).some((f) => /^fill-run-Test-.*\.json$/.test(f)), "run record");
@@ -500,7 +510,26 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const evText = fs.readFileSync(path.join(regDir, ev), "utf8");
   assert.ok(/missing before \(blank values\) \| 3/.test(evText) && /bound \| 2 of 2/.test(evText) && /"NA" written \| 2/.test(evText) && /self-check \| ok/.test(evText), "evidence: missing before, bound, NA written, self-check");
   assert.match(app.content.map((c) => c.text).join("\n"), /Evidence: .*evidence-Test-/);
+  assert.match(evText, /## Requirement items \(after the apply\)/);
+  assert.match(evText, /\| TST-QA-1 \| Project parameters \/ filled \| met with NA \| 2 \|/, "a requirement item from the mapping with its status after the apply");
+  assert.match(evText, /\| TST-QA-2 \| Not in this model \| not checked in this model \| 0 \|/);
+  assert.match(app.content.map((c) => c.text).join("\n"), /Requirement items: TST-QA-1 met with NA; TST-QA-2 not checked in this model\./);
   assert.match((await call("parameter_fill", { action: "fill", ...xs, explanation: "Bind, derive and fill the project parameters" })).content[0].text, /not been previewed/, "a preview is used once");
+  // A rolled-back plan with bindings and derive rules: every count says "would have been ...; rolled back".
+  await call("parameter_fill", { action: "fill", ...xs, dry_run: true, test_force_verify_mismatch: true, explanation: "Rollback test" });
+  const rbk = (await call("parameter_fill", { action: "fill", ...xs, test_force_verify_mismatch: true, explanation: "Rollback test" })).content.map((c) => c.text).join("\n");
+  assert.match(rbk, /Bindings: 0 \(2 would have been made; rolled back\) of 2/);
+  assert.match(rbk, /Derived TST_F_Code = TST_F_Name: 0 \(1 would have been set; rolled back\) value\(s\)/);
+  assert.match(rbk, /Type parameters: 1 type\(s\) would have been written \(rolled back\)/);
+  assert.ok(!/After the fill:/.test(rbk), "no after state for a rolled-back plan");
+
+  // Model-title rules that match no open model are said in the plan, never silent.
+  fs.writeFileSync(xMap, mapping({ derive: { rules: [{ target: "TST_F_Code", copyFrom: "TST_F_Name" }], projectInformationValues: { "TST-*-NOPE": { TST_F_Name: "x" }, "Tes*": { TST_F_Name: "y" } }, status: "approved" }, models: { "TST-NOPE": "ST" } }));
+  const gw = (await call("parameter_fill", { action: "fill", ...xs, dry_run: true, explanation: "Globs" })).content.map((c) => c.text).join("\n");
+  assert.match(gw, /Warning: rule 'TST-\*-NOPE' matches no open model: Test \(a glob matches the full model title/, "an unmatched derive glob is a warning");
+  assert.match(gw, /Warning: models entry 'TST-NOPE' matches no open model: Test\./);
+  assert.ok(!/rule 'Tes\*'/.test(gw), "a matching glob is not reported");
+  fs.writeFileSync(xMap, mapping());
 
   // Fail fast before Revit is asked: an unapproved NA policy refuses a picked fill; the default plan holds it, never silently.
   fs.writeFileSync(xMap, mapping({ fill: { value: "NA", values: ["NA"], status: "proposed" } }));
@@ -534,7 +563,14 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   await call("parameter_fill", { action: "fill", rows: vr, value: "NA", report_dir: regDir, dry_run: true, explanation: "Fill" });
   const vm = await call("parameter_fill", { action: "fill", rows: vr, value: "NA", report_dir: regDir, explanation: "Fill" });
   assert.ok(vm.isError && /Self-check FAILED: 1 mismatch\(es\); the whole plan was rolled back, nothing changed\. TST_VERIFY_X #101: expected "NA", found ""/.test(vm.content.at(-1).text), "verify mismatch reported as rolled back");
-  assert.ok(fs.readdirSync(regDir).filter((f) => f.startsWith("evidence-")).some((f) => /FAILED: 1 mismatch/.test(fs.readFileSync(path.join(regDir, f), "utf8"))), "the evidence records the failed self-check");
+  const vmText = vm.content.map((c) => c.text).join("\n");
+  assert.match(vmText, /Fill: 2 value\(s\) would have been set; rolled back, nothing changed/, "a rolled-back apply never says values were set");
+  assert.ok(!/Fill: \d+ value\(s\) set/.test(vmText) && !/Bindings: .* made/.test(vmText.replace(/would have been made/g, "")), "no 'set' / 'made' counts after a rollback");
+  const vmBody = JSON.parse(vm.content[0].text);
+  assert.ok(vmBody.changed === undefined && vmBody.rolledBack === true && vmBody.fill.set === 0 && vmBody.fill.wouldSet === 2 && vmBody.wouldHaveChanged, "no changed block; what would have changed instead");
+  const vmEv = fs.readdirSync(regDir).filter((f) => f.startsWith("evidence-")).map((f) => fs.readFileSync(path.join(regDir, f), "utf8")).find((t) => /FAILED: 1 mismatch/.test(t));
+  assert.ok(vmEv, "the evidence records the failed self-check");
+  assert.ok(/Rolled back: nothing changed/.test(vmEv) && /"NA" written \| 0 \(2 would have been set; rolled back\)/.test(vmEv), "evidence: would have been set; rolled back");
 
   // All open models: the active model's plan runs; the others are listed as read-only plans.
   const multi = await call("parameter_fill", { action: "fill", rows: [{ name: "TST_M_A", categories: "Project Information" }], value: "NA", report_dir: regDir, all_documents: true, dry_run: true, explanation: "Fill" });

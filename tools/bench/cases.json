@@ -792,6 +792,40 @@
           "value": "version"
         }
       ]
+    },
+    {
+      "name": "Parameter plan (1.11.1): title blocks that show a Project Information value are counted in the impact",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance",
+            "key": "r1"
+          }
+        ],
+        "all_documents": false,
+        "fill": false,
+        "check_only": true,
+        "dry_run": false,
+        "impact": true,
+        "max_ids": 5
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "documents[0].impact.Project Name.titleBlocks.sheets",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "documents[0].impact.Project Name.titleBlocks.families",
+          "op": ">=",
+          "value": 1
+        }
+      ]
     }
   ]
 }
