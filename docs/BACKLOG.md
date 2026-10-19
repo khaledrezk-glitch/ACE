@@ -108,6 +108,22 @@ The vault is the document store of C2 / C4, not a parallel hub.
 | W4 | Compliance tab and tree map (document > section > requirement > check) in the dashboard, with drill-down to elements | M | Companion tab done (1.9.1): against which documents, met %, status bar, groups by kind, requirement cards with source, quote, evidence, decision and "Show in model"; Re-run audit, master report, vault. Still to do: the visual tree map in the dashboard and the trend per audit |
 | P10 | Revit 2027 path on Autodesk's read / write MCP servers: ACE keeps the workflow and the safety gate | L | open, after the presentation |
 
+## 3a. Al Nahda coverage (assessment proposal A1 to A8, 14 Oct; owner decisions DEC-0002 to DEC-0005 taken 19 Oct)
+
+Requirements the model check can prove, today 25 of 341 (proposal: `backlog-proposal-2026-10-14.md` in the project files).
+A1, A3 and A4 have build-ready specs and are no longer blocked by open decisions; building them waits for the owner's go-ahead.
+
+| # | What | Effort | Status |
+|---|---|---|---|
+| A1 | A check reports which requirements it proves, with evidence per row; LOIN parameter fill per category and stage from `rules/loin.json`; ALD_ names matched exactly, then ignoring case and space / underscore with a spelling warning (DEC-0005) | M (3.5 days; spec analysis/14) | open, unblocked 19 Oct |
+| A2 | Units and Revit version | S | open |
+| A3 | Classification fill and code grammar (same engine as A1) | S (spec analysis/16) | open, unblocked 19 Oct |
+| A4 | Naming from `rules/naming.json` (models, links, families, materials, worksets); ground floor 00 per the CDE template (DEC-0004) | M (spec analysis/16) | open, unblocked 19 Oct |
+| A5 | Element rules (no level, unhosted, room volumes, far geometry, Navisworks view) | S | open |
+| A6 | Text (font, plotted height, case) | S | open |
+| A7 | Coordinates and links (coordinates still TBD in the BEP) | M | open |
+| A8 | Clash matrix-driven clash run (tolerance 25 mm, DEC-0002) | L | open |
+
 ## 3b. Navisworks (owner, 7 Oct; concept section 15)
 
 | # | Item | Effort | Status |

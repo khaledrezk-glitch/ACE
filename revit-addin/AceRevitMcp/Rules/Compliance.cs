@@ -168,17 +168,22 @@ namespace AceRevitMcp.Rules
         }
 
         // An accepted deviation is shown beside the status; it stays valid while the clause text is unchanged (D19 default).
+        // A decided note (how the project reads a clause, e.g. which of two contradicting values is in force) is shown beside
+        // any status, met included, so the reader sees which reading the result rests on. Open notes are not shown.
         private static void ApplyDecision(Result res, JsonObject rec, JsonObject decisions)
         {
-            var list = (decisions?["decisions"] as JsonArray)?.OfType<JsonObject>().Where(d => d["kind"]?.ToString() == "deviation"
-                && (d["requirements"] as JsonArray)?.Any(x => string.Equals(x?.ToString(), res.Requirement, StringComparison.OrdinalIgnoreCase)) == true).ToList();
-            var d = list?.LastOrDefault();
-            if (d == null || res.Status == "met") return;
+            var mine = (decisions?["decisions"] as JsonArray)?.OfType<JsonObject>()
+                .Where(d => (d["requirements"] as JsonArray)?.Any(x => string.Equals(x?.ToString(), res.Requirement, StringComparison.OrdinalIgnoreCase)) == true).ToList();
+            var deviation = res.Status == "met" ? null : mine?.LastOrDefault(d => d["kind"]?.ToString() == "deviation");
+            var note = mine?.LastOrDefault(d => d["kind"]?.ToString() == "note" && d["status"]?.ToString() == "decided");
+            var d = deviation ?? note;
+            if (d == null) return;
             var quoteThen = d["quotes"]?[res.Requirement]?.ToString();
             var quoteNow = rec?["source"]?["quote_sha256"]?.ToString();
+            var what = (d["label"] ?? d["note"])?.ToString();
             res.Decision = quoteThen != null && quoteNow != null && quoteThen != quoteNow
-                ? $"{d["id"]} (deviation made against an earlier text of this clause: confirm again)"
-                : $"{d["id"]} (accepted deviation{(string.IsNullOrWhiteSpace(d["note"]?.ToString()) ? "" : ": " + d["note"])})";
+                ? $"{d["id"]} ({(deviation != null ? "deviation" : "decision")} made against an earlier text of this clause: confirm again)"
+                : $"{d["id"]} ({(deviation != null ? "accepted deviation" : "decided")}{(string.IsNullOrWhiteSpace(what) ? "" : ": " + what)})";
         }
 
         private static IEnumerable<string> Ids(JsonNode n) =>

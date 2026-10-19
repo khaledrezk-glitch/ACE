@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Compliance shows a decided project decision (kind "note", status "decided") beside the requirement's status, met included, so the result names the reading it rests on (e.g. "DEC-0002 (decided: 25 mm in force)"). Open notes stay hidden; deviations work as before.
 - `check_setup` on Revit 2024 lists C# scripts as "not available yet" (info) instead of a failed Revit session with a wrong fix.
 
 ## 1.9.2 (15 Oct 2026)

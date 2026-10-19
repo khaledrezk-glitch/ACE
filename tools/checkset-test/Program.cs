@@ -153,7 +153,9 @@ class P {
       { ""id"": ""REQ-LOIN-0003"", ""test"": { ""binding"": ""C1:checks/views-not-on-sheets"" } },
       { ""id"": ""REQ-EIR-0009"", ""test"": { ""checkability"": ""M"" } },
       { ""id"": ""REQ-EIR-0010"", ""test"": { ""binding"": ""C1:checks/no-such-check"" } } ] }");
-    File.WriteAllText(Path.Combine(vaultDir, "decisions.json"), @"{ ""decisions"": [ { ""id"": ""DEC-0001"", ""kind"": ""deviation"", ""requirements"": [ ""REQ-EIR-0001"" ], ""quotes"": { ""REQ-EIR-0001"": ""q1"" }, ""note"": ""agreed with the client"" } ] }");
+    File.WriteAllText(Path.Combine(vaultDir, "decisions.json"), @"{ ""decisions"": [ { ""id"": ""DEC-0001"", ""kind"": ""deviation"", ""requirements"": [ ""REQ-EIR-0001"" ], ""quotes"": { ""REQ-EIR-0001"": ""q1"" }, ""note"": ""agreed with the client"" },
+      { ""id"": ""DEC-0002"", ""kind"": ""note"", ""status"": ""decided"", ""requirements"": [ ""REQ-LOIN-0003"" ], ""label"": ""25 mm in force"" },
+      { ""id"": ""DEC-0003"", ""kind"": ""note"", ""status"": ""open"", ""requirements"": [ ""REQ-BEP-0010"" ], ""label"": ""still open"" } ] }");
     var cks = Checks(("in-place-families", 2, null), ("elements-on-the-wrong-workset-bep", 3, 100), ("views-not-on-sheets", 0, 40));
     var forModel = compT.GetMethod("ForModel", flags);
     var run = forModel.Invoke(null, new object[] { pr2, cks, "Model A", "model-a", "tester", 72 });
@@ -169,6 +171,8 @@ class P {
     Check(Cs("REQ-EIR-0009") == "not-checkable" && Rf("REQ-EIR-0009", "Evidence").StartsWith("manual"), "a manual requirement is not-checkable, marked manual");
     Check(Cs("REQ-EIR-0010") == "not-checkable" && Rf("REQ-EIR-0010", "Evidence").Contains("did not run"), "a bound check that did not run -> not-checkable");
     Check(Rf("REQ-EIR-0001", "Decision")?.Contains("accepted deviation: agreed with the client") == true, "an accepted deviation is shown beside not-met, not turned into met");
+    Check(Rf("REQ-LOIN-0003", "Decision") == "DEC-0002 (decided: 25 mm in force)" && Rf("REQ-BEP-0010", "Decision") == null,
+      "a decided note shows beside the status (met included); an open note does not");
     var runsDir = Path.Combine(vaultDir, "04 Audits", "model-a", "runs");
     Check(!Directory.Exists(runsDir), "no run record is written into a vault the user has not trusted (D21)");
     File.WriteAllText(Path.Combine(dir, "trusted-vaults.json"), "[" + System.Text.Json.JsonSerializer.Serialize(vaultDir) + "]");
