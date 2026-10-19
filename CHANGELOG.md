@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.2 (19 Oct 2026)
+- **Discipline from the title:** the mapping's `titleField` (the title token that holds the discipline) reaches the
+  add-in. A title with several discipline codes (or none) puts a warning first in the check reply and the summary
+  workbook; that model's discipline-scoped rows are plan-only until `models` or `titleField` says which.
+- **Complete with NA is its own state:** never counted as complete in the summary text, workbook, markdown or evidence.
+
 ## 1.11.1 (19 Oct 2026)
 - **Alias rows accept every GUID:** a name matched through an alias (explicit, prefix map or the spelling rule) accepts
   every GUID the files define for the target name, like a direct match (no false "GUID differs").

@@ -893,7 +893,10 @@ function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0, rolled
   const actions = ParamActions.buildActions({ result: view, rows: src.rows, unmappedRows: src.unmappedRows, defects, review, deriveSet: exec.deriveSet, exec });
   const top = actions.slice(0, 10).map(ParamActions.actionLine);
   const runnable = actions.filter((x) => x.run);
+  // A model whose discipline is not known (several codes in its title, or none): said first, in the reply and the workbook.
+  const discWarnings = docs.map(ParamExec.disciplineWarning).filter(Boolean);
   const summary = [
+    ...discWarnings,
     afterDocs ? `Before the fill:\n${ParamList.summaryText({ documents: result.documents })}\nAfter the fill:` : "",
     ParamList.summaryText(view, { ...src.listInfo, dryRun: dryRun || plan, rolledBack }),
     linksNote(result, a),
@@ -904,7 +907,7 @@ function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0, rolled
   let reports;
   if (a.report_dir || large) {
     reports = ParamSources.writeReports(a.report_dir ?? path.join(REPORTS_DIR, "parameter-check"), {
-      "parameter-summary.xlsx": ParamActions.summaryWorkbook(view, src.rows, src.unmappedRows, actions),
+      "parameter-summary.xlsx": ParamActions.summaryWorkbook(view, src.rows, src.unmappedRows, actions, discWarnings),
       "parameter-check.csv": ParamSources.checkCsv(view, src.rows, src.unmappedRows),
       "parameter-check.md": `# Parameter requirements check\n\n${localDate(new Date(), { time: true })}\n\n${ParamActions.summaryMarkdown(view, src.unmappedRows)}\n\n${summary.split("\n").map((l) => `- ${l}`).join("\n")}\n`,
       "actions.md": ParamActions.actionsMarkdown(actions),

@@ -61,6 +61,10 @@ const computed = summaryText({ documents: [{ model: "M2", rows: [
   { checked: 3, missing: 3, blank: 0, storageType: null },
   { checked: 1, missing: 0, blank: 0, isText: false, storageType: "Double" },
 ] }] });
-assert.match(computed, /M2: 4 rows - 2 complete, 1 with blanks, 1 missing everywhere, 1 not text .*, 1 Project Information/, "computed when the add-in sends no summary");
+assert.match(computed, /M2: 4 rows - 2 complete, 0 complete with NA, 1 with blanks, 1 missing everywhere, 1 not text .*, 1 Project Information/, "computed when the add-in sends no summary");
+// Complete with NA is its own state: from the add-in's completeWithNA, else from the row statuses (an older add-in).
+assert.match(summaryText({ documents: [{ model: "M3", summary: { rows: 3, complete: 1, completeWithNA: 2, withBlanks: 0, missingEverywhere: 0, notText: 0, notInGeneral: 0 } }] }), /M3: 3 rows - 1 complete, 2 complete with NA,/);
+assert.match(summaryText({ documents: [{ model: "M4", summary: { rows: 3, complete: 3, withBlanks: 0, missingEverywhere: 0, notText: 0, notInGeneral: 0 }, rows: [{ status: "complete" }, { status: "complete-with-na" }, { status: "complete-with-na" }] }] }), /M4: 3 rows - 1 complete, 2 complete with NA,/, "an older add-in's complete count is split");
+assert.match(summaryText({ documents: [{ model: "M5", rows: [{ checked: 2, missing: 0, blank: 0, na: 2 }] }] }), /M5: 1 rows - 0 complete, 1 complete with NA/);
 
 console.log("paramlist test passed");

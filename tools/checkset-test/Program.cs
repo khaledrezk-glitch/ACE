@@ -289,14 +289,27 @@ class P {
       ""ownership"": { ""OST_Walls"": [""AR"", ""ST""], ""OST_DuctCurves"": [""ME""], ""OST_Furniture"": [] } }").AsObject() });
     (string, string) Disc(string title, object sc)
     {
-      var args = new object[] { title, sc, null };
+      var args = new object[] { title, sc, null, null };
       var d = (string)pfT.GetMethod("ModelDiscipline", flags).Invoke(null, args);
       return (d, (string)args[2]);
+    }
+    System.Collections.Generic.List<string> Cands(string title, object sc)
+    {
+      var args = new object[] { title, sc, null, null };
+      pfT.GetMethod("ModelDiscipline", flags).Invoke(null, args);
+      return (System.Collections.Generic.List<string>)args[3];
     }
     Check(Disc("P100-XX-st_Main.rvt", scope) == ("ST", "title") && Disc("P100 ar-Main", scope) == ("AR", "title") && Disc("P100-MEP-Main", scope) == (null, null),
       "model discipline from the first title token equal to a code (split on - _ space ., any case); a longer token is not a code");
     Check(Disc("P100-ST-TOWER B", scope) == ("ME", "mapping") && Disc("P100-ST-Tower A", scope) == ("AR", "mapping"),
       "a models entry whose key is part of the title wins over the title code (the longest key first)");
+    var scopePl = pfT.GetMethod("ParseScope", flags).Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"{ ""codes"": [""AR"", ""ST"", ""PL""] }").AsObject() });
+    var scopeField = pfT.GetMethod("ParseScope", flags).Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"{ ""codes"": [""AR"", ""ST"", ""PL""], ""titleField"": 2 }").AsObject() });
+    Check(Disc("TST-PL-AR-001", scopePl) == (null, "ambiguous") && Cands("TST-PL-AR-001", scopePl).SequenceEqual(new[] { "PL", "AR" })
+      && Disc("TST-AR-x-AR", scopePl) == ("AR", "title") && Cands("TST-AR-x-AR", scopePl) == null,
+      "two distinct code tokens (building PL, discipline AR) are not guessed: null, source ambiguous, candidates; the same code twice is one code");
+    Check(Disc("TST-PL-AR-001", scopeField) == ("AR", "title") && Disc("TST-PL-XX-001", scopeField) == (null, null) && Disc("TST-PL", scopeField) == (null, null),
+      "scope.titleField: only that token (0-based) is read; no code there (or no such token) means unknown");
     Check(Disc("Anything", Activator.CreateInstance(scopeT)) == (null, null) && Disc("P1-AR", null) == (null, null), "no scope: discipline unknown");
     bool InScope(string[] ds, string d) => (bool)pfT.GetMethod("InScope", flags).Invoke(null, new object[] { ds, d });
     Check(InScope(new[] { "ST" }, "st") && !InScope(new[] { "ST" }, "AR") && InScope(new string[0], "AR") && InScope(new[] { "ST" }, null),
@@ -347,8 +360,8 @@ class P {
     foreach (var r in new[] { stOut, stUnm, stNone, stNotBound, stGuid, stPart, stUnb, stBlank, stNA, stDone }) { F(r, "Status", PfStatus(r)); results3.Add(r); }
     var sum3 = (System.Text.Json.Nodes.JsonObject)pfT.GetMethod("Summary", flags).Invoke(null, new object[] { results3, 7 });
     Check((int)sum3["withNA"] == 2 && (int)sum3["outOfScope"] == 1 && (int)sum3["guidDiffers"] == 2 && (int)sum3["notBound"] == 1 && (int)sum3["wrongLevel"] == 1 && (int)sum3["foreign"] == 7
-      && (int)sum3["noElements"] == 1 && (int)sum3["complete"] == 2,
-      "summary: with NA, out of scope, GUID differs, not bound, wrong level, foreign; out-of-scope and unmapped rows are not 'no elements'; complete agrees with status (complete or complete-with-na)");
+      && (int)sum3["noElements"] == 1 && (int)sum3["complete"] == 1 && (int)sum3["completeWithNA"] == 1,
+      "summary: with NA, out of scope, GUID differs, not bound, wrong level, foreign; out-of-scope and unmapped rows are not 'no elements'; complete counts only status complete, completeWithNA counts complete-with-na (NA is a placeholder, not information)");
 
     // ---- parameter plan (1.11.0): derive rules, bind entries, version, plain-language reasons, self-check, impact ----
     var ppT = a.GetType("AceRevitMcp.Rules.ParameterPlanLogic");

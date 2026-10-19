@@ -87,11 +87,16 @@ export function rowsFromCsv(csvText) {
 export function summaryText(result, listInfo = {}) {
   const lines = [];
   for (const d of result?.documents ?? []) {
-    const s = d.summary ?? summarise(d.rows ?? []);
+    const s = { ...(d.summary ?? summarise(d.rows ?? [])) };
+    // Complete with NA is its own state, never counted as complete (an older add-in counted both as complete).
+    if (s.completeWithNA == null && (d.rows ?? []).some((r) => r.status)) {
+      s.complete = d.rows.filter((r) => r.status === "complete").length;
+      s.completeWithNA = d.rows.filter((r) => r.status === "complete-with-na").length;
+    }
     // 1.10 fields (requirement sources): shown only when the add-in sends them.
     const more = [["withNA", "with NA"], ["outOfScope", "out of scope"], ["notBound", "not bound"], ["notAvailable", "built-in not available on some elements"], ["guidDiffers", "GUID differs from the files"], ["wrongGuid", "GUID differs from the files"], ["wrongLevel", "wrong type/instance"], ["foreign", "foreign element(s) not judged"]]
       .filter(([k]) => s[k] != null).map(([k, t]) => `${s[k]} ${t}`).join(", ");
-    lines.push(`${d.model}${d.discipline ? ` (${d.discipline})` : ""}: ${s.rows} rows - ${s.complete} complete, ${s.withBlanks} with blanks, ${s.missingEverywhere} missing everywhere, ` +
+    lines.push(`${d.model}${d.discipline ? ` (${d.discipline})` : ""}: ${s.rows} rows - ${s.complete} complete, ${s.completeWithNA != null ? `${s.completeWithNA} complete with NA, ` : ""}${s.withBlanks} with blanks, ${s.missingEverywhere} missing everywhere, ` +
       `${s.notText} not text (cannot take NA), ${s.notInGeneral} Project Information row(s) not in General${more ? `; ${more}` : ""}.`);
   }
   const f = result?.fill;
@@ -110,10 +115,11 @@ export function summaryText(result, listInfo = {}) {
 
 /** Fallback when the add-in sends no summary. */
 function summarise(rows) {
-  const s = { rows: rows.length, complete: 0, withBlanks: 0, missingEverywhere: 0, notText: 0, notInGeneral: 0 };
+  const s = { rows: rows.length, complete: 0, completeWithNA: 0, withBlanks: 0, missingEverywhere: 0, notText: 0, notInGeneral: 0 };
   for (const r of rows) {
     if (r.checked > 0 && r.missing === r.checked) s.missingEverywhere++;
     else if (r.blank > 0) s.withBlanks++;
+    else if (r.missing === 0 && r.na > 0) s.completeWithNA++;
     else if (r.missing === 0) s.complete++;
     if (r.storageType && r.isText === false) s.notText++;
     if (r.inGeneral === false) s.notInGeneral++;

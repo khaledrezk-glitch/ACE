@@ -47,7 +47,7 @@ export function unmatchedTitleRules({ derive = null, models = null } = {}, title
   const out = [];
   for (const glob of uniq((derive?.groups ?? []).map((g) => g.glob).filter((g) => g != null && String(g).trim() !== "*")))
     if (!t.some((x) => globMatch(glob, x))) out.push(`Warning: rule '${glob}' matches no open model: ${list} (a glob matches the full model title; its values are not written).`);
-  for (const key of Object.keys(models ?? {}).filter((k) => k !== "status" && !k.startsWith("_")))
+  for (const key of Object.keys(models ?? {}).filter((k) => k !== "status" && k !== "titleField" && !k.startsWith("_")))
     if (!t.some((x) => String(x).toLowerCase().includes(key.toLowerCase()) || (key.includes("*") && globMatch(key, x))))
       out.push(`Warning: models entry '${key}' matches no open model: ${list}.`);
   return out;
@@ -253,6 +253,15 @@ export function encodeLike(srcBuf, text) {
  * notes, temp: [{ file, bytes, lines }] } — held: what the selection asked for but cannot run here, with why and how.
  * ctx: { rows (merged), bridgeRow, index, derive (deriveRules()), value, valueProblem, projectFile, tempDir, readFile }.
  */
+/** The model's discipline could not be read from its title (several codes in it, or none while rows name disciplines). */
+export const disciplineUnsure = (d) => d?.disciplineSource === "ambiguous" || d?.disciplineUnknown === true;
+/** The warning for a model whose discipline is not known, or null. */
+export function disciplineWarning(d) {
+  if (!disciplineUnsure(d)) return null;
+  const c = d.disciplineCandidates ?? [];
+  return `Warning: ${d.model}: discipline not read from the title${c.length ? `: candidates ${c.join(", ")}` : " (no discipline code in it)"}; set models or titleField in the mapping. Until then this result judges every discipline's rows, and discipline-scoped rows are plan-only (never filled).`;
+}
+
 export function buildPlan(doc, selected, ctx) {
   const byKey = new Map(ctx.rows.map((r) => [r.key, r]));
   const docRows = new Map((doc.rows ?? []).map((x) => [x.key ?? x.name, x]));
@@ -270,6 +279,13 @@ export function buildPlan(doc, selected, ctx) {
     if (run.kind === "rebind") for (const k of run.keys) if (docRows.has(k)) rebindKeys.set(k, docRows.get(k).modelGuid ?? run.oldGuid ?? null);
     if (run.kind === "bind") for (const k of run.keys) if (docRows.has(k)) bindKeys.add(k);
     if (run.kind === "derive") deriveIds.add(run.rule);
+  }
+  if (disciplineUnsure(doc)) {
+    // Rows scoped to disciplines cannot be judged for this model while its discipline is unknown: never written.
+    const scoped = (k) => byKey.get(k)?.disciplines?.length > 0;
+    const out = [...fillKeys, ...bindKeys, ...rebindKeys.keys()].filter(scoped);
+    for (const k of out) { fillKeys.delete(k); bindKeys.delete(k); rebindKeys.delete(k); }
+    if (out.length) held.push({ what: `${new Set(out).size} discipline-scoped row(s) not written`, why: `the discipline of ${doc.model} is not known${doc.disciplineCandidates?.length ? ` (candidates ${doc.disciplineCandidates.join(", ")})` : ""}`, how: "set models or titleField in the mapping, then run the dry run again" });
   }
   if (planOnly.size) held.push({ what: `${planOnly.size} row(s) not filled`, why: `their category mapping is not approved (${[...new Set(planOnly.values())].slice(0, 3).join("; ")})`, how: "a person approves those mapping entries, then run the dry run again" });
   if (fillKeys.size && !ctx.value) {
@@ -331,7 +347,7 @@ export function buildPlan(doc, selected, ctx) {
   for (const g of ctx.derive.groups) {
     if (!deriveIds.has(g.id) || !groupApplies(g, ctx.derive.groups, doc.model)) continue;
     for (const rule of g.rules) {
-      const keys = (doc.rows ?? []).filter((x) => x.name === rule.target && !byKey.get(x.key)?.draftMapping).map((x) => x.key ?? x.name);
+      const keys = (doc.rows ?? []).filter((x) => x.name === rule.target && !byKey.get(x.key)?.draftMapping && !(disciplineUnsure(doc) && byKey.get(x.key)?.disciplines?.length)).map((x) => x.key ?? x.name);
       if (!keys.length) { held.push({ what: `derive ${ruleText(rule)}`, why: `${rule.target} is not a requirement row of ${doc.model}`, how: "add it to the requirement sources, or leave the rule out" }); continue; }
       keys.forEach((k) => deriveKeys.add(k));
       derive.push(rule.value != null ? { target: rule.target, value: rule.value } : rule.copyFrom ? { target: rule.target, copyFrom: rule.copyFrom } : { target: rule.target, join: rule.join, separator: rule.separator });

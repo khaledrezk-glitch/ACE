@@ -58,7 +58,10 @@ aliases, model -> discipline, LOIN column names (loinTable) and the NA policy (t
 writes a draft with best guesses for a person to confirm; a draft never drives a fill. Report unmapped categories and
 spelling / prefix-drift candidates as decisions for the user; never treat a guess as confirmed. Model-title globs (the
 keys of `derive.projectInformationValues`) match the FULL model title ("*-ST-*-0001", not "ST-*"); `models` keys match a
-part of the title. A rule that matches no open model is a warning in the plan: tell the user. A LOIN cell listing several
+part of the title. `titleField` (top level or under `models`) is the 0-based title token (split on - _ space .) that holds
+the discipline code. When the title holds several codes (or none while rows name disciplines) the reply starts with a
+warning: the result then judges every discipline's rows and those rows are plan-only until `models` or `titleField` is
+set. "Complete with NA" is its own state, never counted as complete. A rule that matches no open model is a warning in the plan: tell the user. A LOIN cell listing several
 names ("A, B") is checked one row per name; if the parts do not resolve, it is a pseudo-name to check with the client.
 `evidence.items` ([{ id, text, rows: [names] | check: "<checker check>" }]) names the project's QA / requirement items;
 the evidence file states each one's status after the apply (met, met with NA, partly met, not met).

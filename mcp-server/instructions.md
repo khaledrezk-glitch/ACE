@@ -94,6 +94,8 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   (parameter_fill action fill, only when asked): ONE plan and ONE approval per model (bind, derive, then NA), dry_run
   first, then the identical call. A block or skip always comes with its reason and how to clear it: tell the user.
   A rolled-back apply set nothing: report its counts as "would have been set", never as done.
+  "Discipline not read from the title": say it first and ask for models or titleField in the mapping. Complete with
+  NA is not complete: the data is still missing.
 - Several Revit sessions: ACE uses the one with a model open; if several have one, it lists them and asks: ask the
   user which model, then revit_status with instance.
 

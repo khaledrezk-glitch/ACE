@@ -277,7 +277,7 @@ export function normaliseMapping(raw) {
       .filter((k) => raw[k] && typeof raw[k] === "object" && raw[k].status != null).map((k) => [k, raw[k].status])),
     groupDisciplines: raw.groupDisciplines ? plainMap(raw.groupDisciplines) : null,
     aliases: {}, proposedAliases: {}, prefixMap: {}, models: plainMap(raw.models), ownership: plainMap(raw.ownership),
-    derive: raw.derive ?? null, naPolicy: raw.naPolicy ?? null, sources: raw.sources ?? null, evidence: raw.evidence ?? null };
+    derive: raw.derive ?? null, naPolicy: raw.naPolicy ?? null, sources: raw.sources ?? null, evidence: raw.evidence ?? null, titleField: raw.titleField ?? raw.models?.titleField };
   for (const [sheet, cats] of Object.entries(raw.loinCategories ?? {})) {
     if (!cats || typeof cats !== "object") continue;
     m.sheetCategories[sheet] = {};
@@ -645,8 +645,14 @@ export function bridgeRow(r) {
 export const ROLE_CODES = ["AR", "ST", "ME", "EL", "PL", "FP", "ID", "LA", "CV", "BM", "PS"];
 
 /** scope for the bridge: discipline codes, model -> discipline, category -> owning disciplines (LOIN sheets unless the mapping says otherwise). */
+/** The mapping's titleField (top level or under models): the 0-based title token that holds the discipline, or null. */
+export function titleField(mapping) {
+  const v = mapping?.titleField ?? mapping?.models?.titleField;
+  const n = typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : v;
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
 export function buildScope(mapping, rows = []) {
-  const models = { ...(mapping?.models ?? {}) };
+  const models = Object.fromEntries(Object.entries(mapping?.models ?? {}).filter(([k]) => k !== "titleField"));
   const ownership = {};
   for (const r of rows) {
     if (r.group !== "elements" || !r.categories?.length) continue;
@@ -659,7 +665,8 @@ export function buildScope(mapping, rows = []) {
   let codes = uniq([...Object.values(mapping?.disciplines ?? {}).flatMap(listOf), ...Object.values(groupScope(mapping)).flat(), ...Object.values(models).flatMap(listOf), ...Object.values(ownership).flat()]).sort();
   // Without project codes the model's discipline still comes from its title, through the generic role codes.
   if (!codes.length) codes = [...ROLE_CODES];
-  return { codes, models, ownership };
+  const tf = titleField(mapping);
+  return { codes, models, ownership, ...(tf != null ? { titleField: tf } : {}) };
 }
 
 // ---- after the bridge answer ---------------------------------------------------------------------------------------

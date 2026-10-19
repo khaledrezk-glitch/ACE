@@ -49,6 +49,7 @@ namespace AceRevitMcp.Rules
             public List<string> Codes = new List<string>();
             public List<KeyValuePair<string, string>> Models = new List<KeyValuePair<string, string>>();
             public Dictionary<string, List<string>> Ownership = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            public int? TitleField;   // 0-based title token that holds the discipline (null: any token, when only one is a code)
         }
 
         /// <summary>The list's category value (or a group key) to the group key; null when unknown (never guessed).</summary>
@@ -149,6 +150,7 @@ namespace AceRevitMcp.Rules
                 foreach (var kv in models)
                     if (kv.Value is JsonValue v && v.TryGetValue<string>(out var d) && !string.IsNullOrWhiteSpace(kv.Key) && !string.IsNullOrWhiteSpace(d))
                         s.Models.Add(new KeyValuePair<string, string>(kv.Key.Trim(), d.Trim()));
+            if (scope["titleField"] is JsonValue tf && tf.TryGetValue<int>(out var field) && field >= 0) s.TitleField = field;
             if (scope["ownership"] is JsonObject own)
                 foreach (var kv in own)
                     if (kv.Value is JsonArray) s.Ownership[kv.Key.Trim()] = TextList(own, kv.Key) ?? new List<string>();
@@ -157,21 +159,31 @@ namespace AceRevitMcp.Rules
 
         /// <summary>
         /// The model's discipline: the models entry whose key is part of the title (case-insensitive; the longest key wins),
-        /// source "mapping"; else the first title token (split on - _ space .) equal to a code, source "title"; else null.
+        /// source "mapping"; else from the title tokens (split on - _ space .): with scope.titleField only that token, when it
+        /// is a code; without it the code token when exactly one distinct code appears, source "title". Two or more distinct
+        /// code tokens (e.g. a building field "PL" before the discipline field "AR") are never guessed: null, source
+        /// "ambiguous", the codes in <paramref name="candidates"/>. Else null.
         /// </summary>
-        public static string ModelDiscipline(string title, Scope scope, out string source)
+        public static string ModelDiscipline(string title, Scope scope, out string source, out List<string> candidates)
         {
             source = null;
+            candidates = null;
             title = title ?? "";
             if (scope == null) return null;
             var hit = scope.Models.Where(m => title.IndexOf(m.Key, StringComparison.OrdinalIgnoreCase) >= 0)
                 .OrderByDescending(m => m.Key.Length).Select(m => m.Value).FirstOrDefault();
             if (hit != null) { source = "mapping"; return hit; }
-            foreach (var token in title.Split(new[] { '-', '_', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries))
+            var tokens = title.Split(new[] { '-', '_', ' ', '.' }, StringSplitOptions.RemoveEmptyEntries);
+            string CodeOf(string token) => scope.Codes.FirstOrDefault(c => string.Equals(c, token, StringComparison.OrdinalIgnoreCase));
+            if (scope.TitleField.HasValue)
             {
-                var code = scope.Codes.FirstOrDefault(c => string.Equals(c, token, StringComparison.OrdinalIgnoreCase));
-                if (code != null) { source = "title"; return code; }
+                var code = scope.TitleField.Value < tokens.Length ? CodeOf(tokens[scope.TitleField.Value]) : null;
+                if (code != null) source = "title";
+                return code;
             }
+            var codes = tokens.Select(CodeOf).Where(c => c != null).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (codes.Count == 1) { source = "title"; return codes[0]; }
+            if (codes.Count > 1) { source = "ambiguous"; candidates = codes; }
             return null;
         }
 
@@ -211,7 +223,8 @@ namespace AceRevitMcp.Rules
         public static JsonObject Summary(IList<RowResult> rows, int foreign) => new JsonObject
         {
             ["rows"] = rows.Count,
-            ["complete"] = rows.Count(r => (r.Status ?? Status(r)) is "complete" or "complete-with-na"),
+            ["complete"] = rows.Count(r => (r.Status ?? Status(r)) == "complete"),
+            ["completeWithNA"] = rows.Count(r => (r.Status ?? Status(r)) == "complete-with-na"),   // NA is a placeholder, not information
             ["withBlanks"] = rows.Count(r => r.Blank > 0),
             ["missingEverywhere"] = rows.Count(r => r.Checked > 0 && r.Missing == r.Checked),
             ["notText"] = rows.Count(r => r.StorageType != null && r.StorageType != "String"),
@@ -337,6 +350,7 @@ namespace AceRevitMcp.Rules
             private readonly Document _doc;
             private readonly ParameterFillLogic.Scope _scope;
             private readonly string _discipline, _disciplineSource;
+            private readonly List<string> _disciplineCandidates;
             private readonly int _maxIds;
             private readonly IList<string> _na;
             private readonly bool _workshared;
@@ -360,7 +374,7 @@ namespace AceRevitMcp.Rules
                 _scope = scope;
                 _maxIds = maxIds;
                 try { _workshared = doc.IsWorkshared; } catch { _workshared = false; }
-                _discipline = ParameterFillLogic.ModelDiscipline(doc.Title, scope, out _disciplineSource);
+                _discipline = ParameterFillLogic.ModelDiscipline(doc.Title, scope, out _disciplineSource, out _disciplineCandidates);
                 foreach (var row in rows) _rows.Add(Check(row, true));
             }
 
@@ -370,6 +384,9 @@ namespace AceRevitMcp.Rules
                 ["active"] = active,
                 ["discipline"] = _discipline,
                 ["disciplineSource"] = _disciplineSource,
+                ["disciplineCandidates"] = _disciplineCandidates == null ? null : new JsonArray(_disciplineCandidates.Select(c => (JsonNode)c).ToArray()),
+                // Report only: rows naming disciplines are all judged in scope while the model's discipline is unknown.
+                ["disciplineUnknown"] = _discipline == null && _rows.Any(r => r.Row.Disciplines.Count > 0),
                 ["preflight"] = Preflight(),
                 ["rows"] = new JsonArray(_rows.Select(r => (JsonNode)r.Json).ToArray()),
                 ["summary"] = ParameterFillLogic.Summary(_rows.Select(r => r.Result).ToList(), _foreign.Values.Sum()),

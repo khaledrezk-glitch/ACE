@@ -826,6 +826,54 @@
           "value": 1
         }
       ]
+    },
+    {
+      "name": "Parameter plan (1.11.2): a discipline not read from the title is flagged, never guessed",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance",
+            "categories": [
+              "OST_Walls"
+            ],
+            "disciplines": [
+              "AR"
+            ],
+            "key": "r1"
+          }
+        ],
+        "scope": {
+          "codes": [
+            "AR",
+            "ST"
+          ],
+          "models": {},
+          "ownership": {},
+          "titleField": 2
+        },
+        "all_documents": false,
+        "fill": false,
+        "check_only": true,
+        "dry_run": false,
+        "max_ids": 5
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "documents[0].discipline",
+          "op": "==",
+          "value": null
+        },
+        {
+          "path": "documents[0].disciplineUnknown",
+          "op": "==",
+          "value": true
+        }
+      ]
     }
   ]
 }

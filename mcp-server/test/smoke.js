@@ -59,7 +59,8 @@ const bridge = http.createServer((req, res) => {
           return reply({ ok: true, result: { success: false, stage: "blocked", error: "Nothing was changed: 3 elements are borrowed", model: "Test",
             blocked: [{ what: "3 element(s) of TST_BORROW_X", why: "borrowed by another user", elements: 3, sampleIds: [11, 12, 13], holder: "jane", how: "ask jane to relinquish, then re-run", code: "borrowed" }] } });
         if (writePlan) writesSeen.push({ args, registers: regFiles() });
-        const doc = (model) => ({ model, discipline: args.scope?.models?.[model] ?? null, disciplineSource: args.scope?.models?.[model] ? "mapping" : null,
+        const amb = names.some((n) => n.startsWith("TST_AMB_"));
+        const doc = (model) => ({ model, discipline: amb ? null : args.scope?.models?.[model] ?? null, disciplineSource: amb ? "ambiguous" : args.scope?.models?.[model] ? "mapping" : null, ...(amb ? { disciplineCandidates: ["PL", "AR"] } : {}),
           preflight: { workshared: false, foreign: {}, aceVersion: old ? "1.9.0" : SERVER_VERSION, links: { count: 2, notLoaded: 0, names: ["TST link A", "TST link B"] } },
           rows: args.rows.map((r) => r.name.startsWith("TST_GD_") ? { ...r, checked: 2, missing: 0, blank: 0, filled: 2, na: 0, status: "guid-differs", modelGuid: "dddddddd-0000-0000-0000-00000000000d", isText: true }
             : r.name.startsWith("TST_NB_") ? { ...r, checked: 3, missing: 3, blank: 0, filled: 0, na: 0, status: "not-bound", isText: true }
@@ -361,7 +362,7 @@ assert.deepEqual(pfSent.rows, [{ name: "TST_Site", group: "project", level: "ins
 assert.deepEqual(pfSent.scope, { codes: ["AR", "ST", "ME", "EL", "PL", "FP", "ID", "LA", "CV", "BM", "PS"], models: {}, ownership: {} }, "the scope travels with the rows; without project codes the generic role codes read the discipline from the title");
 assert.match(pfCheck.content[1].text, /2 linked model\(s\) not checked \(they are links; open them as documents to check them\): TST link A, TST link B/, "linked models are never skipped silently");
 assert.ok(pfSent.check_only === true && pfSent.fill === false && pfSent.all_documents === true && pfSent.dry_run === false && pfSent.value === undefined && pfSent.max_ids === 20, "a check is read-only across the open models and needs no value");
-assert.match(pfCheck.content[1].text, /Test: 2 rows - 0 complete, 2 with blanks.*; 0 with NA, 0 out of scope/, "per-model summary text with the 1.10 counts");
+assert.match(pfCheck.content[1].text, /Test: 2 rows - 0 complete, 0 complete with NA, 2 with blanks.*; 0 with NA, 0 out of scope/, "per-model summary text with the 1.10 counts");
 assert.match(pfCheck.content[1].text, /1 row\(s\) skipped .*1 duplicate/, "skipped and duplicate rows are reported");
 const pfJson = JSON.parse(pfCheck.content[0].text);
 assert.ok(pfJson.documents[0].rows[0].key === "r1" && pfJson.documents[0].rows[0].status === "blanks" && pfJson.documents[0].rows[0].storageType === undefined, "compact JSON: key, name, status and counts per row");
@@ -383,7 +384,7 @@ const pfApplied = await call("parameter_fill", { action: "fill", rows: pfRows, v
 const pfApplySent = seen.filter((x) => x.command === "parameter_fill").at(-1).args;
 assert.ok(!pfApplied.isError && pfApplySent.fill === true && pfApplySent.dry_run === false && pfApplySent.check_only === false && pfApplySent.all_documents === false, "after the identical preview the fill applies");
 assert.equal(pfApplySent.expect_model, "Test", "the apply names the model the dry run ran in");
-assert.match(pfApplied.content[1].text, /Before the fill:\nTest: 1 rows - 0 complete, 1 with blanks[\s\S]*After the fill:\nTest: 1 rows - 0 complete, 0 with blanks.*1 with NA/, "after an apply the state after the fill is reported, the old one labelled before");
+assert.match(pfApplied.content[1].text, /Before the fill:\nTest: 1 rows - 0 complete, 0 complete with NA, 1 with blanks[\s\S]*After the fill:\nTest: 1 rows - 0 complete, 1 complete with NA, 0 with blanks.*1 with NA/, "after an apply the state after the fill is reported, the old one labelled before");
 assert.match((await call("parameter_fill", { action: "fill", rows: pfRows, value: "NA", explanation: "Fill blanks with NA" })).content[0].text, /not been previewed/, "a preview is used once");
 // --- parameter_check: requirement sources, read-only actions without Revit, the fill plan, the project mapping in the vault ---
 const pdir = path.join(tmp, "reqs");
@@ -530,6 +531,19 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(gw, /Warning: models entry 'TST-NOPE' matches no open model: Test\./);
   assert.ok(!/rule 'Tes\*'/.test(gw), "a matching glob is not reported");
   fs.writeFileSync(xMap, mapping());
+
+  // An ambiguous discipline: a warning first in the reply and the workbook; titleField reaches the scope.
+  {
+    const ambMap = path.join(xdir, "amb-mapping.json");
+    fs.writeFileSync(ambMap, JSON.stringify({ about: "ACE parameter requirement mapping. Edit freely.", categories: {}, disciplines: {}, aliases: {}, models: { titleField: 3 }, fill: { value: "NA", values: ["NA"] } }));
+    const amb = await call("parameter_check", { rows: [{ name: "TST_AMB_X", categories: "Project Information" }], mapping: ambMap, report_dir: path.join(xdir, "amb") });
+    assert.equal(fills().at(-1).args.scope.titleField, 3, "titleField (under models) reaches the scope");
+    assert.ok(!("titleField" in fills().at(-1).args.scope.models), "and is not sent as a model title");
+    assert.match(amb.content[1].text, /^Warning: Test: discipline not read from the title: candidates PL, AR; set models or titleField in the mapping\. Until then this result judges every discipline's rows/, "the warning comes first");
+    const wb = fs.readdirSync(path.join(xdir, "amb")).find((f) => f.endsWith(".xlsx"));
+    const { execFileSync } = await import("node:child_process");
+    assert.ok(wb && execFileSync("unzip", ["-p", path.join(xdir, "amb", wb), "xl/workbook.xml"]).toString().indexOf('name="Warnings"') < execFileSync("unzip", ["-p", path.join(xdir, "amb", wb), "xl/workbook.xml"]).toString().indexOf('name="Summary"'), "the workbook opens on the warnings");
+  }
 
   // Fail fast before Revit is asked: an unapproved NA policy refuses a picked fill; the default plan holds it, never silently.
   fs.writeFileSync(xMap, mapping({ fill: { value: "NA", values: ["NA"], status: "proposed" } }));

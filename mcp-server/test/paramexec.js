@@ -92,6 +92,24 @@ assert.equal(plan.bind[1].fileHash, X.sha256(plan.temp[0].bytes), "also the temp
 assert.deepEqual(plan.bind.map((b) => [b.name, b.file === "project.txt" ? "project" : path.basename(path.dirname(b.file)), b.level, b.categories.join()]), [["TST_P", "project", "instance", "OST_ProjectInformation"], ["TST_One", "t", "type", "OST_Walls"]]);
 assert.ok(plan.temp.length === 1 && plan.temp[0].lines[0].includes("TST_One") && /Add this line to the project shared parameter file/.test(plan.notes.at(-1)), "client-only: a temporary file and the note");
 assert.ok(plan.fill && plan.value === "NA" && plan.rows.map((r) => r.key).join() === "r1,r2,r3,r4", "fill rows: every blank auto-fixable row");
+{
+  // Discipline not read from the title: discipline-scoped rows are held (never written), the others still run.
+  const scopedRows = rows.map((r) => r.key === "r3" || r.key === "r2" ? { ...r, disciplines: ["AR"] } : r);
+  const ambDoc = { ...doc, discipline: null, disciplineSource: "ambiguous", disciplineCandidates: ["PL", "AR"] };
+  const amb = X.buildPlan(ambDoc, acts.filter((a) => a.run), { rows: scopedRows, bridgeRow: S.bridgeRow, index: idx, derive: { groups: [], approved: true }, value: "NA", projectFile: "project.txt", tempDir: path.join(tmp, "t"), readFile: (f) => f === "project.txt" ? Buffer.from("TST project file") : fs.readFileSync(f) });
+  assert.deepEqual(amb.rows.map((r) => r.key), ["r1", "r4"], "discipline-scoped rows are not in the plan");
+  assert.ok(amb.held.some((h) => /2 discipline-scoped row\(s\) not written/.test(h.what) && /candidates PL, AR/.test(h.why) && /titleField/.test(h.how)));
+  assert.equal(X.buildPlan({ ...doc, disciplineUnknown: true }, acts.filter((a) => a.run), { rows: scopedRows, bridgeRow: S.bridgeRow, index: idx, derive: { groups: [], approved: true }, value: "NA", projectFile: "project.txt", tempDir: path.join(tmp, "t"), readFile: (f) => f === "project.txt" ? Buffer.from("TST project file") : fs.readFileSync(f) }).rows.length, 2, "unknown discipline: the same");
+  assert.match(X.disciplineWarning(ambDoc), /^Warning: TST-AR: discipline not read from the title: candidates PL, AR; set models or titleField in the mapping\. Until then this result judges every discipline's rows/);
+  assert.match(X.disciplineWarning({ model: "M", disciplineUnknown: true }), /\(no discipline code in it\)/);
+  assert.equal(X.disciplineWarning(doc), null);
+  assert.deepEqual(S.buildScope({ titleField: 3, models: { "TST-X": "ST" } }).titleField, 3);
+  const sc = S.buildScope({ models: { titleField: "2", "TST-X": "ST" } });
+  assert.ok(sc.titleField === 2 && !("titleField" in sc.models), "titleField under models: moved to the scope");
+  assert.equal(S.buildScope({ titleField: -1 }).titleField, undefined, "an invalid titleField is not sent");
+  assert.deepEqual(X.unmatchedTitleRules({ models: { titleField: 2 } }, ["TST"]), [], "titleField is not a model title");
+  assert.match(A.summaryMarkdown({ documents: [doc] }), /\| complete \| complete with NA \|/, "complete with NA is its own column");
+}
 const noProj = X.buildPlan(doc, acts.filter((a) => a.run), { rows, bridgeRow: S.bridgeRow, index: idx, derive: { groups: [], approved: true }, value: null, valueProblem: "not approved", tempDir: tmp, readFile: fs.readFileSync });
 // Plan-only rows (an unapproved mapping part) are never filled: held with the reason, and the counts match what is sent.
 const draftRows = rows.map((r) => r.key === "r3" ? { ...r, draftMapping: true, planOnly: 'the category entry "Piles" has confidence medium and is not approved' } : r);

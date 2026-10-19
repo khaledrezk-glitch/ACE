@@ -60,6 +60,8 @@ export function xlsxBuffer(sheets) {
 
 // ---- P9: the federated summary -------------------------------------------------------------------------------------
 
+/** Column labels: complete with NA is its own state (the data is still missing), never "complete". */
+const STATUS_LABELS = { "complete-with-na": "complete with NA" };
 export const SUMMARY_STATUSES = ["complete", "complete-with-na", "blanks", "partly-bound", "not-bound", "guid-differs", "not-available", "not text", "out-of-scope", "unmapped", "no-elements"];
 
 /** Unmapped rows count against every model whose discipline their LOIN sheet names (or every model when it names none). */
@@ -93,7 +95,7 @@ export function summaryTable(result, unmapped = []) {
 const ROW_HEAD = ["model", "discipline", "name", "group", "level", "categories", "status", "checked", "missing", "blank", "na", "filled", "storage type", "bound as", "guid match", "sources", "name match", "candidate"];
 
 /** The workbook: Summary, Rows (model x requirement), Actions, Pre-flight. */
-export function summaryWorkbook(result, rows, unmapped, actions) {
+export function summaryWorkbook(result, rows, unmapped, actions, warnings = []) {
   const byKey = new Map(rows.map((r) => [r.key, r]));
   const summary = summaryTable(result, unmapped);
   const rowLines = [];
@@ -109,7 +111,9 @@ export function summaryWorkbook(result, rows, unmapped, actions) {
       Object.entries(p.foreign ?? {}).map(([k, v]) => `${k}: ${v}`).join("; ")];
   });
   return xlsxBuffer([
-    { name: "Summary", head: ["discipline", "model", "rows", ...SUMMARY_STATUSES], rows: summary.map((l) => [l.discipline, l.model, l.rows, ...SUMMARY_STATUSES.map((s) => l[s])]) },
+    // Warnings first (e.g. a discipline not read from the title), so the workbook opens on them.
+    ...(warnings.length ? [{ name: "Warnings", head: ["warning"], rows: warnings.map((w) => [w]) }] : []),
+    { name: "Summary", head: ["discipline", "model", "rows", ...SUMMARY_STATUSES.map((s) => STATUS_LABELS[s] ?? s)], rows: summary.map((l) => [l.discipline, l.model, l.rows, ...SUMMARY_STATUSES.map((s) => l[s])]) },
     { name: "Rows", head: ROW_HEAD, rows: rowLines },
     { name: "Actions", head: ["rank", "id", "what", "why", "models", "elements", "owner", "type", "blockers", "how to clear"],
       rows: actions.map((a) => [a.rank, a.id, a.what, a.why, a.impact.models ?? [], a.impact.elements ?? a.impact.rows, a.owner, a.type, a.blockers.map((b) => b.what).join("; "), a.blockers.map((b) => b.how).join("; ")]) },
@@ -343,5 +347,5 @@ export function summaryMarkdown(result, unmapped) {
   const lines = summaryTable(result, unmapped);
   if (!lines.length) return "";
   const head = ["discipline", "model", "rows", ...SUMMARY_STATUSES];
-  return [`| ${head.join(" | ")} |`, `|${head.map(() => "---").join("|")}|`, ...lines.map((l) => `| ${head.map((h) => l[h] ?? "").join(" | ")} |`)].join("\n");
+  return [`| ${head.map((h) => STATUS_LABELS[h] ?? h).join(" | ")} |`, `|${head.map(() => "---").join("|")}|`, ...lines.map((l) => `| ${head.map((h) => l[h] ?? "").join(" | ")} |`)].join("\n");
 }

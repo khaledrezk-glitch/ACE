@@ -275,6 +275,10 @@ sheet and row, checker check). Written as xlsx (the zip writer in `lib/docx.js`)
   listed in the evidence file with their status after the apply (as before when rolled back).
 - **Rolled back:** the add-in answers `rolledBack`; the server then says "would have been set; rolled back" for fill,
   derive, bind and rebind counts (`wouldSet` / `wouldDo`) in the reply and the evidence, and shows no `changed` block.
+- **Discipline from the title:** the mapping's `titleField` (top level or under `models`, a 0-based title token index)
+  goes into `scope.titleField`. An add-in answer with `disciplineSource: "ambiguous"` (+ `disciplineCandidates`) or
+  `disciplineUnknown: true` puts a warning first in the reply and the summary workbook (sheet "Warnings"), and the
+  discipline-scoped rows of that model are plan-only. `complete` never includes complete-with-NA (`completeWithNA`).
 - **Sessions:** with several Revit sessions the default is the one with a model open; several with a model and no
   `instance` / expect_model to decide: ACE lists them and asks.
 - **Rebind** (explicit-only action, for `guid-differs` once a person decides "rebind model to file"): the old values are
