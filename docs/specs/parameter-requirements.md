@@ -1,6 +1,6 @@
 # Parameter requirements: several sources, model-aware check (extends `parameter_fill`)
 
-Asked for by the owner on 19 Oct 2026 ("work on the tool to ensure it can perform the needed tasks and checks", REH IFC
+Asked for by the owner on 19 Oct 2026 ("work on the tool to ensure it can perform the needed tasks and checks", an IFC
 submission). It closes duplication **D10** in `docs/ARCHITECTURE-CONCEPT.md` (one information requirements check driven
 by the LOIN). Client files (AIS, LOIN matrix, Model Checker set, shared parameter files) stay in the project folder,
 never in this repository; tests use synthetic fixtures shaped like them.
@@ -15,7 +15,7 @@ writes (P4 impact scan, P5 binding plan, P6 derived fill, P7 missing register) f
    requirement-driven check.
 2. **Rules:** the project's own requirement documents, read where they are (AIS CSV, LOIN xlsx, Model Checker XML,
    shared parameter files), plus one editable mapping file the project keeps beside them
-   (`ace-parameter-mapping.json`: Modon category → Revit categories, LOIN sheet → disciplines, approved name aliases,
+   (`ace-parameter-mapping.json`: client category → Revit categories, LOIN sheet → disciplines, approved name aliases,
    model → discipline). ACE pre-fills it by best guess and never applies a guess silently: unmapped categories and
    spelling candidates are listed until a person writes them in.
 3. **Publishes:** the per-model result (and a CSV in `report_dir`); the compliance engine can read it later as the
@@ -36,7 +36,7 @@ writes (P4 impact scan, P5 binding plan, P6 derived fill, P7 missing register) f
 | `list` (existing) | AIS-style CSV: `parameter_name`, `categories`, `type_instance` | name, group, level |
 | `loin` | xlsx; every sheet that has a header row with `GROUP`, `CATEGORY` and a column starting `Shared` (whitespace-insensitive, any row in the first 10) | name, discipline sheet, client category |
 | `checker` | Model Checker `MCSettings` XML | for each **active** `Check` with a `Parameter` filter `HasValue` (or `Defined`): name, categories (`Category` filters, `Included`, operator And/Or; Exclude ignored for scope), level (`TypeOrInstance` "Is Element Type" Equal True → type, False → instance) |
-| `shared_parameters` | one or more Revit shared parameter files (Modon corporate set) | name → GUID, data type, file group |
+| `shared_parameters` | one or more Revit shared parameter files (the client's corporate set) | name → GUID, data type, file group |
 | `project_parameters` | the project's shared parameter file | name → GUID, data type (the one a binding must use) |
 | `mapping` | `ace-parameter-mapping.json` (path; created with best guesses when missing) | see below |
 
@@ -53,7 +53,7 @@ writes (P4 impact scan, P5 binding plan, P6 derived fill, P7 missing register) f
 mapping file. Bracketed pseudo-names (containing `[` or `]`) are skipped as "not a parameter name". Against the
 shared parameter files, each name is classified: `exact` (project file), `exact-client` (only in the client files: the
 project file lacks it), `spelling` (matches after case / space / `_` normalisation: candidate given), `prefix-drift`
-(the part after the `MOD_<code>_` prefix matches a parameter whose prefix differs, e.g. ME vs MECH: candidate given),
+(the part after the `<PREFIX>_<code>_` prefix matches a parameter whose prefix differs, e.g. ME vs MECH: candidate given),
 `unknown`. Only `exact`, `exact-client` and aliased names are checked as such; the others are still checked under the
 listed name (it may exist in a model) and their candidates are reported as defects to resolve.
 
@@ -73,7 +73,7 @@ LOIN rows have no type/instance: level `any` (instance first, then the element's
   "about": "ACE parameter requirement mapping. Edit freely; ACE never overwrites a value you set.",
   "categories": { "Walls": ["OST_Walls"], "Pumps": ["OST_MechanicalEquipment"], "Kitchen (& White Goods)": [] },
   "disciplines": { "01_ARC": ["AR"], "02_STR": ["ST"], "08_ELV": [] },
-  "aliases": { "MOD_ME_Component ID": "MOD_MECH_Component ID" },
+  "aliases": { "PRJ_ME_Component ID": "PRJ_MECH_Component ID" },
   "models": { "720001-AR": "AR" }
 }
 ```
@@ -94,7 +94,7 @@ first title token (split on `-`, `_`, space, `.`) equal to a code. Rows carrying
 model's discipline are **out of scope** (not scanned). For general `elements` rows (no categories), elements whose
 category has owners in `ownership` that do not include the model's discipline are **foreign** (e.g. MEP placeholders in
 the architectural model): not judged, counted per category in the pre-flight. Ownership comes from the LOIN sheets
-(category → the sheet's disciplines) unless the mapping file says otherwise. INFERENCE noted in the output: the REH
+(category → the sheet's disciplines) unless the mapping file says otherwise. INFERENCE noted in the output: the first project's
 model responsibility matrix has no model element authors filled in, so ownership falls back to the LOIN.
 
 ## P3. Check (add-in; server adds cross-model checks)
@@ -107,14 +107,14 @@ the client file), `definitions` (how many definitions with that name the model h
 `value` (the display value, so the server can compare twins). `status`, one of: `out-of-scope`, `unmapped`,
 `no-elements`, `not-bound`, `wrong-guid`, `partly-bound`, `blanks`, `complete-with-na`, `complete`.
 
-Server: the same name with different GUIDs across models (`guidDiffers`); Project Information twins (`MOD_GN_x` and
-`MOD_GEN_x`, same attribute after the prefix) whose values differ; per-model text summary; with `report_dir`, a CSV of
+Server: the same name with different GUIDs across models (`guidDiffers`); Project Information twins (`PRJ_GN_x` and
+`PRJ_GEN_x`, same attribute after the prefix) whose values differ; per-model text summary; with `report_dir`, a CSV of
 every model × row (status, counts, sources, defects) and a short markdown summary.
 
 ## P8. Client checker review (server only, no Revit: `action: "review_checker"`)
 
 From the checker XML (and, when given, the AIS list and the shared parameter files): parameter checks active vs parked
-in Unused / Unplaced; per category the active parameter checks; scope defects (a discipline parameter, e.g. `MOD_ST_*`
+in Unused / Unplaced; per category the active parameter checks; scope defects (a discipline parameter, e.g. `PRJ_ST_*`
 or an AIS `elements` row, checked only on `OST_ProjectInformation`); names absent from the shared parameter files and
 from the AIS; duplicated checks (same parameter + categories); checks with no category. Output: JSON + text, and with
 `report_dir` a markdown report.
@@ -123,7 +123,7 @@ from the AIS; duplicated checks (same parameter + categories); checks with no ca
 
 Request rows gain optional fields; old requests keep working:
 ```json
-{ "rows": [ { "name": "MOD_ST_Concrete Grade", "group": "elements", "level": "any",
+{ "rows": [ { "name": "PRJ_ST_Concrete Grade", "group": "elements", "level": "any",
               "categories": ["OST_StructuralColumns"], "guid": "…", "disciplines": ["ST"], "key": "r12" } ],
   "scope": { "codes": ["AR","ST"], "models": {}, "ownership": { "OST_StructuralColumns": ["ST"] } },
   "all_documents": true, "max_ids": 20 }
@@ -176,7 +176,7 @@ then the same preview gate as every native change (dry run, the same request app
 ### P6. Fill, derived values first (extends 1.9.3)
 One transaction, one undo step, in this order:
 1. **derived values** from the mapping file's `derive` rules: `{ "target": "A", "copyFrom": "B" }` (also proposed
-   automatically for Project Information twins `MOD_GN_x` / `MOD_GEN_x`: blank side takes the filled side, never
+   automatically for Project Information twins `PRJ_GN_x` / `PRJ_GEN_x`: blank side takes the filled side, never
    overwriting a value) and `{ "target": "A", "join": ["B", "C"], "separator": "" }` (all parts must have values);
 2. **the fill value** ("NA") for blank text parameters that remain.
 Type parameters are written once per type, with the number of instances each type change reaches. Skips (group, design
@@ -210,3 +210,23 @@ sheet and row, checker check). Written as xlsx (the zip writer in `lib/docx.js`)
   the fingerprint).
 - **Remembered decisions.** Aliases, category map, NA policy and derive rules live in the project's
   `ace-parameter-mapping.json` with a dated decision log, so the next cycle does not ask again.
+- **A block is never silent** (owner, 19 Oct: "yes but till to know"). Every blocked plan and every skipped element
+  group returns a plain-language reason, shown in the chat and the Companion: what was blocked, why, which models and
+  elements (counts + sample ids), who holds them where Revit knows it (`WorksharingUtils.GetWorksharingTooltipInfo`
+  owner), and what clears it, e.g. "12 elements borrowed by user X: ask them to relinquish, then re-run". Blocks and
+  skips are written to the run record, so the evidence shows them.
+
+## Workflow: four stages, not capabilities (owner, 19 Oct: "compliance check > reports and live dashboards > actions and recommendations > execution")
+
+1. **Check** (`parameter_check`, read-only): P1, P2, P3, P8.
+2. **Reports and live dashboards**: the federated summary (P9, xlsx + markdown; in 1.10.0) and, next, the Companion
+   Compliance tab / master report fed from the same result, refreshed on every re-check.
+3. **Actions and recommendations**: a ranked action list built from the findings. Each action: what, why (source row),
+   impact, owner (discipline / model / client), type (auto-fixable, needs a decision, needs another party), blockers and
+   how to clear them. Read-only; written with the summary.
+4. **Execution** (`parameter_fill`): runs the selected auto-fixable actions as one plan per model (1.11.0).
+- **Fail fast** (owner, 19 Oct: "hold it immediately so you don't waste time"). Execution starts with the cheap blocker
+  checks, before plan assembly and before the dry run: add-in / server version, source and mapping hashes, target
+  elements borrowed or updated in central, groups and design options, project shared parameter file present (for
+  bindings). A blocked model stops at once with its plain-language reason; other models carry on. Stage 1 (check) still
+  runs on a blocked model; only stages 3 and 4 are held.

@@ -1,6 +1,6 @@
 # parameter_fill: parameter completeness from a list, with an approved "NA" fill
 
-Asked for by the owner on 19 Oct 2026 (REH IFC submission readiness). First input is a client AIS parameter list
+Asked for by the owner on 19 Oct 2026 (a client IFC submission: readiness of the information requirements). First input is a client AIS parameter list
 (CSV, kept in the project files, never in this repository). Tests use synthetic rows only.
 
 ## What it answers, per open model
@@ -35,7 +35,7 @@ Unknown category values are reported back as skipped rows, not guessed.
 
 Request:
 ```json
-{ "rows": [ { "name": "MOD_GEN_City Name", "group": "project", "level": "instance" } ],
+{ "rows": [ { "name": "TST_GEN_City Name", "group": "project", "level": "instance" } ],
   "all_documents": false, "fill": false, "value": "NA", "max_ids": 20,
   "check_only": true, "dry_run": false }
 ```

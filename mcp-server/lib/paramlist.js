@@ -45,11 +45,12 @@ export function levelOf(v) {
 }
 
 /**
- * Raw rows ({ name, categories | group, type_instance | level, line? }) -> { rows: [{ name, group, level }], skipped, duplicates }.
+ * Raw rows ({ name, categories | group, type_instance | level, line? }) -> { rows: [{ name, group, level }], lines, skipped, duplicates }.
+ * lines[i] is the list line of rows[i] (when given).
  * The key is name + group (one name such as Area can be in two groups); the first row of a key wins.
  */
 export function mapRows(raw) {
-  const rows = [], skipped = [], duplicates = [], seen = new Set();
+  const rows = [], lines = [], skipped = [], duplicates = [], seen = new Set();
   for (const r of raw) {
     const name = String(r.name ?? "").trim();
     const cat = r.group ?? r.categories ?? "";
@@ -63,8 +64,9 @@ export function mapRows(raw) {
     if (seen.has(key)) { duplicates.push({ ...where, name, group }); continue; }
     seen.add(key);
     rows.push({ name, group, level });
+    lines.push(r.line);
   }
-  return { rows, skipped, duplicates };
+  return { rows, lines, skipped, duplicates };
 }
 
 /** CSV text with columns parameter_name, categories, type_instance (others ignored) -> mapRows result. */
@@ -85,8 +87,11 @@ export function summaryText(result, listInfo = {}) {
   const lines = [];
   for (const d of result?.documents ?? []) {
     const s = d.summary ?? summarise(d.rows ?? []);
-    lines.push(`${d.model}: ${s.rows} rows - ${s.complete} complete, ${s.withBlanks} with blanks, ${s.missingEverywhere} missing everywhere, ` +
-      `${s.notText} not text (cannot take NA), ${s.notInGeneral} Project Information row(s) not in General.`);
+    // 1.10 fields (requirement sources): shown only when the add-in sends them.
+    const more = [["withNA", "with NA"], ["outOfScope", "out of scope"], ["notBound", "not bound"], ["wrongGuid", "wrong GUID"], ["wrongLevel", "wrong type/instance"], ["foreign", "foreign element(s) not judged"]]
+      .filter(([k]) => s[k] != null).map(([k, t]) => `${s[k]} ${t}`).join(", ");
+    lines.push(`${d.model}${d.discipline ? ` (${d.discipline})` : ""}: ${s.rows} rows - ${s.complete} complete, ${s.withBlanks} with blanks, ${s.missingEverywhere} missing everywhere, ` +
+      `${s.notText} not text (cannot take NA), ${s.notInGeneral} Project Information row(s) not in General${more ? `; ${more}` : ""}.`);
   }
   const f = result?.fill;
   if (f) {

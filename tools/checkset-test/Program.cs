@@ -225,14 +225,14 @@ class P {
       { ""name"": ""Area"", ""group"": ""Systems, Components, Elements"", ""level"": ""Type"" },
       { ""name"": ""Area"", ""group"": ""Rooms, Areas, Spaces"", ""level"": ""Type"" },
       { ""name"": "" "", ""group"": ""project"" },
-      { ""name"": ""MOD_GEN_City Name"", ""group"": ""Project Information"" },
+      { ""name"": ""TST_GEN_City Name"", ""group"": ""Project Information"" },
       { ""name"": ""X"", ""group"": ""Doors"" },
       { ""parameter_name"": ""Y"", ""categories"": ""Levels"", ""type_instance"": ""Instance"" } ]").AsArray();
     var pfSkipped = new System.Text.Json.Nodes.JsonArray();
     var parsed = (IList)pfT.GetMethod("ParseRows", flags).Invoke(null, new object[] { pfRows, pfSkipped });
     var rowT = pfT.GetNestedType("Row", flags);
     string Rw(int i, string f) => (string)rowT.GetField(f).GetValue(parsed[i]);
-    Check(parsed.Count == 4 && Rw(0, "Group") == "rooms" && Rw(1, "Group") == "elements" && Rw(1, "Level") == "type" && Rw(2, "Name") == "MOD_GEN_City Name" && Rw(3, "Group") == "levels",
+    Check(parsed.Count == 4 && Rw(0, "Group") == "rooms" && Rw(1, "Group") == "elements" && Rw(1, "Level") == "type" && Rw(2, "Name") == "TST_GEN_City Name" && Rw(3, "Group") == "levels",
       "the key is name + group: Area in two groups is two rows; the CSV column names are accepted too");
     Check(pfSkipped.Count == 3 && ((string)pfSkipped[0]["reason"]).StartsWith("duplicate") && ((string)pfSkipped[1]["reason"]) == "no parameter name" && ((string)pfSkipped[2]["reason"]).Contains("unknown category group 'Doors'"),
       "a duplicate name + group (first wins), a nameless row and an unknown category come back as skipped rows");
@@ -249,9 +249,87 @@ class P {
     Res(4, 4, 0, 0, null, null);        // missing everywhere
     Res(3, 0, 1, 2, "Double", false);   // not text, not in General
     Res(0, 0, 0, 0, null, null);        // no elements of the group
-    var sum = (System.Text.Json.Nodes.JsonObject)pfT.GetMethod("Summary", flags).Invoke(null, new object[] { results2 });
+    var sum = (System.Text.Json.Nodes.JsonObject)pfT.GetMethod("Summary", flags).Invoke(null, new object[] { results2, 0 });
     Check((int)sum["rows"] == 5 && (int)sum["complete"] == 1 && (int)sum["withBlanks"] == 2 && (int)sum["missingEverywhere"] == 1 && (int)sum["notText"] == 1 && (int)sum["notInGeneral"] == 1 && (int)sum["noElements"] == 1,
       "summary: complete, with blanks, missing everywhere, not text, not in General, no elements");
+    Check((int)sum["withNA"] == 0 && (int)sum["outOfScope"] == 0 && (int)sum["wrongGuid"] == 0 && (int)sum["wrongLevel"] == 0 && (int)sum["foreign"] == 0 && (int)sum["notBound"] == 1,
+      "summary of an old-style check: no NA, nothing out of scope, no GUID or level defects; missing everywhere is not bound");
+
+    // ---- parameter requirements (1.10.0): NA, level any, categories, discipline scope, status rules ----
+    var naDefault = (System.Collections.Generic.IList<string>)pfT.GetMethod("NaValues", flags).Invoke(null, new object[] { null });
+    bool IsNA(string t) => (bool)pfT.GetMethod("IsNA", flags).Invoke(null, new object[] { t, naDefault });
+    Check(IsNA("NA") && IsNA(" n/a ") && IsNA("na") && IsNA("N/A") && !IsNA("") && !IsNA(null) && !IsNA("NAME") && !IsNA("N.A.") && !IsNA("-"),
+      "without na_values, NA and N/A (trimmed, any case) are declared missing; other text is not");
+    var naProject = (System.Collections.Generic.IList<string>)pfT.GetMethod("NaValues", flags).Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"["" Not Applicable "", """", ""-""]").AsArray() });
+    bool IsNAp(string t) => (bool)pfT.GetMethod("IsNA", flags).Invoke(null, new object[] { t, naProject });
+    var naEmpty = (System.Collections.Generic.IList<string>)pfT.GetMethod("NaValues", flags).Invoke(null, new object[] { new System.Text.Json.Nodes.JsonArray() });
+    Check(naProject.Count == 2 && IsNAp("not applicable") && IsNAp(" - ") && !IsNAp("NA") && !IsNAp("") && naEmpty.Count == 2 && naEmpty.Contains("N/A"),
+      "na_values from the request replace the default (trimmed, blanks dropped); an empty list keeps the default");
+    Check(Lk("Any") == "any" && Lk(" any ") == "any", "level any is accepted");
+    var reqRows = System.Text.Json.Nodes.JsonNode.Parse(@"[
+      { ""name"": ""TST_Grade"", ""group"": ""elements"", ""level"": ""any"", ""categories"": [""OST_StructuralColumns"", ""OST_Walls""], ""guid"": "" 11111111-2222-3333-4444-555555555555 "", ""disciplines"": [""ST""], ""key"": ""r1"" },
+      { ""name"": ""TST_Grade"", ""group"": ""elements"", ""categories"": [""OST_Walls"", ""OST_StructuralColumns""], ""key"": ""r2"" },
+      { ""name"": ""TST_Grade"", ""group"": ""elements"", ""categories"": [""OST_Floors""], ""key"": ""r3"" },
+      { ""name"": ""TST_Grade"", ""group"": ""elements"" },
+      { ""name"": ""TST_Grade"", ""group"": ""elements"", ""categories"": [] },
+      { ""name"": ""TST_Code"", ""group"": ""elements"", ""level"": ""both"", ""key"": ""r6"" } ]").AsArray();
+    var reqSkipped = new System.Text.Json.Nodes.JsonArray();
+    var req = (IList)pfT.GetMethod("ParseRows", flags).Invoke(null, new object[] { reqRows, reqSkipped });
+    object RF(int i, string f) => rowT.GetField(f).GetValue(req[i]);
+    Check(req.Count == 3 && (string)RF(0, "Level") == "any" && (string)RF(0, "Key") == "r1" && (string)RF(0, "Guid") == "11111111-2222-3333-4444-555555555555"
+      && ((System.Collections.Generic.List<string>)RF(0, "Categories")).Count == 2 && ((System.Collections.Generic.List<string>)RF(0, "Disciplines"))[0] == "ST"
+      && (string)RF(1, "Key") == "r3" && ((System.Collections.Generic.List<string>)RF(2, "Categories")).Count == 0,
+      "new row fields: categories, guid (trimmed), disciplines, key, level any; no categories means every element of the group");
+    Check(reqSkipped.Count == 3 && ((string)reqSkipped[0]["reason"]).StartsWith("duplicate") && (string)reqSkipped[0]["key"] == "r2"
+      && ((string)reqSkipped[1]["reason"]).StartsWith("duplicate") && ((string)reqSkipped[2]["reason"]).Contains("unknown type/instance value 'both'"),
+      "the key is name + group + sorted categories: the same categories in another order are a duplicate, other categories are not");
+    var scopeT = pfT.GetNestedType("Scope", flags);
+    var scope = pfT.GetMethod("ParseScope", flags).Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"{
+      ""codes"": [""AR"", ""ST"", ""ME""], ""models"": { ""Tower B"": ""ME"", ""Tower"": ""AR"", ""Blank"": """" },
+      ""ownership"": { ""OST_Walls"": [""AR"", ""ST""], ""OST_DuctCurves"": [""ME""], ""OST_Furniture"": [] } }").AsObject() });
+    (string, string) Disc(string title, object sc)
+    {
+      var args = new object[] { title, sc, null };
+      var d = (string)pfT.GetMethod("ModelDiscipline", flags).Invoke(null, args);
+      return (d, (string)args[2]);
+    }
+    Check(Disc("P100-XX-st_Main.rvt", scope) == ("ST", "title") && Disc("P100 ar-Main", scope) == ("AR", "title") && Disc("P100-MEP-Main", scope) == (null, null),
+      "model discipline from the first title token equal to a code (split on - _ space ., any case); a longer token is not a code");
+    Check(Disc("P100-ST-TOWER B", scope) == ("ME", "mapping") && Disc("P100-ST-Tower A", scope) == ("AR", "mapping"),
+      "a models entry whose key is part of the title wins over the title code (the longest key first)");
+    Check(Disc("Anything", Activator.CreateInstance(scopeT)) == (null, null) && Disc("P1-AR", null) == (null, null), "no scope: discipline unknown");
+    bool InScope(string[] ds, string d) => (bool)pfT.GetMethod("InScope", flags).Invoke(null, new object[] { ds, d });
+    Check(InScope(new[] { "ST" }, "st") && !InScope(new[] { "ST" }, "AR") && InScope(new string[0], "AR") && InScope(new[] { "ST" }, null),
+      "a row naming disciplines is out of scope in another discipline's model; no disciplines or an unknown model discipline: in scope");
+    bool Foreign(string cat, string d) => (bool)pfT.GetMethod("IsForeign", flags).Invoke(null, new object[] { scope, cat, d });
+    Check(Foreign("OST_DuctCurves", "AR") && !Foreign("OST_DuctCurves", "me") && !Foreign("OST_Walls", "ST") && !Foreign("OST_Furniture", "AR") && !Foreign("OST_Doors", "AR") && !Foreign("OST_DuctCurves", null),
+      "foreign: the category has owners and the model's discipline is not one of them (no owners or unknown discipline: judged)");
+    bool? Gm(string a, string b) => (bool?)pfT.GetMethod("GuidMatches", flags).Invoke(null, new object[] { a, b });
+    Check(Gm("11111111-2222-3333-4444-555555555555", "{11111111-2222-3333-4444-555555555555}") == true && Gm("11111111-2222-3333-4444-555555555555", "11111111-2222-3333-4444-555555555556") == false
+      && Gm(null, "11111111-2222-3333-4444-555555555555") == null && Gm("11111111-2222-3333-4444-555555555555", null) == null,
+      "GUID match: compared as GUIDs; null without an expected GUID or a shared definition");
+    object R(Action<object> set) { var r = Activator.CreateInstance(resT2); set(r); return r; }
+    void F(object r, string f, object v) => resT2.GetField(f).SetValue(r, v);
+    string PfStatus(object r) => (string)pfT.GetMethod("Status", flags).Invoke(null, new object[] { r });
+    var stOut = R(r => { F(r, "OutOfScope", true); F(r, "Checked", 0); });
+    var stUnm = R(r => { F(r, "Unmapped", true); });
+    var stNone = R(r => { });
+    var stNotBound = R(r => { F(r, "Checked", 5); F(r, "Missing", 5); F(r, "GuidMatch", (bool?)false); });
+    var stGuid = R(r => { F(r, "Checked", 5); F(r, "Missing", 1); F(r, "GuidMatch", (bool?)false); });
+    var stPart = R(r => { F(r, "Checked", 5); F(r, "Missing", 1); F(r, "Blank", 2); });
+    var stUnb = R(r => { F(r, "Checked", 5); F(r, "Filled", 5); F(r, "Unbound", 1); });
+    var stBlank = R(r => { F(r, "Checked", 5); F(r, "Blank", 2); F(r, "Na", 1); F(r, "Filled", 2); });
+    var stNA = R(r => { F(r, "Checked", 5); F(r, "Na", 1); F(r, "Filled", 4); F(r, "GuidMatch", (bool?)true); F(r, "WrongLevel", (bool?)true); });
+    var stDone = R(r => { F(r, "Checked", 5); F(r, "Filled", 5); });
+    Check(PfStatus(stOut) == "out-of-scope" && PfStatus(stUnm) == "unmapped" && PfStatus(stNone) == "no-elements" && PfStatus(stNotBound) == "not-bound" && PfStatus(stGuid) == "wrong-guid"
+      && PfStatus(stPart) == "partly-bound" && PfStatus(stUnb) == "partly-bound" && PfStatus(stBlank) == "blanks" && PfStatus(stNA) == "complete-with-na" && PfStatus(stDone) == "complete",
+      "status: out-of-scope, unmapped, no-elements, not-bound, wrong-guid, partly-bound (missing or unbound categories), blanks, complete-with-na, complete (first rule wins)");
+    var results3 = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(resT2));
+    foreach (var r in new[] { stOut, stUnm, stNone, stNotBound, stGuid, stPart, stUnb, stBlank, stNA, stDone }) { F(r, "Status", PfStatus(r)); results3.Add(r); }
+    var sum3 = (System.Text.Json.Nodes.JsonObject)pfT.GetMethod("Summary", flags).Invoke(null, new object[] { results3, 7 });
+    Check((int)sum3["withNA"] == 2 && (int)sum3["outOfScope"] == 1 && (int)sum3["wrongGuid"] == 2 && (int)sum3["notBound"] == 1 && (int)sum3["wrongLevel"] == 1 && (int)sum3["foreign"] == 7
+      && (int)sum3["noElements"] == 1 && (int)sum3["complete"] == 2,
+      "summary: with NA, out of scope, wrong GUID, not bound, wrong level, foreign; out-of-scope and unmapped rows are not 'no elements'; complete agrees with status (complete or complete-with-na)");
 
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }

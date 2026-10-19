@@ -96,7 +96,7 @@ namespace AceRevitMcp.Companion
             else
             {
                 // Native commands: every argument except how it is run (preview or not, from the panel, pictures).
-                var keys = args.Select(kv => kv.Key).Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name" or "explanation" or "plan" or "step")).OrderBy(k => k, StringComparer.Ordinal);
+                var keys = args.Select(kv => kv.Key).Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name" or "explanation" or "plan" or "step" or "expect_model")).OrderBy(k => k, StringComparer.Ordinal);
                 material = kind + "\n" + string.Join("\n", keys.Select(k => $"{k}={part(k)}"));
             }
             return Util.Compat.Sha256Hex(material);

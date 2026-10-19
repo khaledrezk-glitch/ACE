@@ -601,6 +601,102 @@
           "value": 1
         }
       ]
+    },
+    {
+      "name": "Parameter requirements check: categories, discipline scope, key echo, NA counts (read-only)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "any",
+            "categories": [
+              "OST_Walls"
+            ],
+            "key": "r1"
+          },
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance",
+            "categories": [
+              "OST_StructuralColumns"
+            ],
+            "disciplines": [
+              "ZZ"
+            ],
+            "key": "r2"
+          },
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance",
+            "key": "r3"
+          }
+        ],
+        "scope": {
+          "codes": [
+            "AR",
+            "ZZ"
+          ],
+          "models": {
+            "Snowdon": "AR"
+          },
+          "ownership": {
+            "OST_StructuralColumns": [
+              "ZZ"
+            ]
+          }
+        },
+        "all_documents": false,
+        "fill": false,
+        "value": "NA",
+        "max_ids": 5,
+        "check_only": true,
+        "dry_run": false
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "documents[0].discipline",
+          "op": "==",
+          "value": "AR"
+        },
+        {
+          "path": "documents[0].disciplineSource",
+          "op": "==",
+          "value": "mapping"
+        },
+        {
+          "path": "documents[0].rows[key=r1].categories",
+          "op": "contains",
+          "value": "OST_Walls"
+        },
+        {
+          "path": "documents[0].rows[key=r2].status",
+          "op": "==",
+          "value": "out-of-scope"
+        },
+        {
+          "path": "documents[0].rows[key=r3].na",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].rows[key=r3].value",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].preflight",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].summary.outOfScope",
+          "op": ">=",
+          "value": 1
+        }
+      ]
     }
   ]
 }

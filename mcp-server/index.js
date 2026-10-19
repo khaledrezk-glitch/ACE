@@ -11,10 +11,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
+import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
 import * as Report from "./lib/report.js";
 import * as ParamList from "./lib/paramlist.js";
+import * as ParamSources from "./lib/paramsources.js";
+import * as ParamActions from "./lib/paramactions.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
@@ -752,49 +754,235 @@ tool("assign_worksets", {
   return text(result);
 });
 
-tool("parameter_fill", {
-  title: "Parameter completeness from a list",
-  description: "Check a parameter list (CSV with parameter_name, categories, type_instance, or rows inline) against the model: per row missing / blank / filled, storage type, binding, Project Information group. action check (default, read-only; all_documents: every open model). action fill: sets value (default \"NA\") on blank text parameters of the active model, with the usual dry_run preview and confirmation, ONE undo step. Details: revit_guide workflows.",
+// Parameter requirements: one merged list from the client's sources (AIS CSV, LOIN workbook, Model Checker XML, shared
+// parameter files), read through the project's mapping (kept in the vault, edited by people), checked per open model.
+// parameter_check only reads (its fill_plan counts without a transaction); parameter_fill writes, after its own dry run.
+const sourceInputs = {
+  list: z.string().optional().describe("AIS-style CSV (parameter_name, categories, type_instance)"),
+  rows: z.array(z.object({ name: z.string(), categories: z.string().describe("e.g. \"Project Information\", \"Levels\" or a group key"), type_instance: z.string().optional() })).max(5000).optional(),
+  loin: z.string().optional().describe("LOIN workbook (.xlsx)"),
+  checker: z.string().optional().describe("Model Checker settings XML"),
+  shared_parameters: z.array(z.string()).max(50).optional().describe("Client shared parameter files"),
+  project_parameters: z.string().optional().describe("The project's shared parameter file"),
+  mapping: z.string().optional().describe("Project mapping (.json); default: the vault's rules/parameter-mapping.json"),
+  vault: z.string().optional().describe("Project folder or its ACE Vault (default: the open model's)"),
+  create_mapping: z.boolean().optional().describe("Write a draft mapping with best guesses when none exists"),
+  report_dir: z.string().optional().describe("Folder for the reports (xlsx, CSV, markdown)"),
+  all_documents: z.boolean().optional(),
+  max_ids: z.number().int().min(0).max(500).optional().describe("Element ids returned per row (default 20)"),
+};
+
+const MAPPING_NAMES = [path.join("rules", "parameter-mapping.json"), ParamSources.MAPPING_FILE];
+
+/** The project mapping: the one given, else the vault's (given or the open model's); with create_mapping, where to write a draft. */
+async function mappingFile(a) {
+  if (a.mapping) return a.mapping;
+  let dir = a.vault ? Vault.vaultDir(a.vault) : null;
+  if (!dir) { try { dir = (await vaultFolder()).dir; } catch { dir = null; } }
+  const found = dir && MAPPING_NAMES.map((n) => path.join(dir, n)).find((f) => fs.existsSync(f));
+  if (found) return found;
+  if (!a.create_mapping) return undefined;
+  if (dir) { fs.mkdirSync(path.join(dir, "rules"), { recursive: true }); return path.join(dir, MAPPING_NAMES[0]); }
+  if (a.loin) return path.join(path.dirname(a.loin), ParamSources.MAPPING_FILE);
+  throw new RevitError("create_mapping needs a place for the file: give vault, mapping (a .json path) or loin.");
+}
+
+async function paramSources(a) {
+  if (a.list && a.rows) throw new RevitError("Give either 'list' or 'rows', not both.");
+  let src;
+  try { src = ParamSources.loadSources({ ...a, mapping: await mappingFile(a) }); } catch (err) { throw err instanceof RevitError ? err : new RevitError(err.message); }
+  if (!Object.keys(src.info.sources).length) throw new RevitError("Give at least one source: list (or rows), loin or checker (or a mapping whose sources name them).");
+  if (!src.rows.length && !src.unmappedRows.length && src.listInfo.skipped.length) {
+    const why = {};
+    for (const k of src.listInfo.skipped) why[k.reason] = (why[k.reason] ?? 0) + 1;
+    throw new RevitError(`No usable rows in the list (${src.listInfo.skipped.length} skipped: ${Object.entries(why).map(([r, n]) => `${n} ${r}`).join(", ")}).`);
+  }
+  return src;
+}
+
+function sourceNotes(src) {
+  const m = src.mapping;
+  const notes = [...src.info.notes];
+  if (m?.created) notes.push(`Draft mapping written with best guesses: ${m.file}. A person checks it and removes "draft": until then its categories never drive a fill.`);
+  else if (m && (m.added.categories.length || m.added.disciplines.length)) notes.push(`Mapping ${m.file}: ${m.added.categories.length} new categor(ies) and ${m.added.disciplines.length} sheet(s) added unmapped.`);
+  if (m?.mapping?.draft) notes.push("The mapping is a draft (not approved): its category guesses are unconfirmed.");
+  return notes;
+}
+
+/** The fill: value from the project's NA policy (mapping) or the value argument; never a built-in default. */
+function fillRequest(src, a) {
+  const policy = src.naPolicy;
+  if (policy.value && a.value && a.value !== policy.value)
+    throw new RevitError(`The project mapping's NA policy says "${policy.value}"; value "${a.value}" differs. Change the policy in the mapping or leave value out.`);
+  const value = policy.value ?? a.value;
+  if (!value) throw new RevitError(policy.pending ? `The project mapping's NA policy ("${policy.pending}") is not approved yet: approve it in the mapping (or pass value).`
+    : "No fill value: set the NA policy in the project mapping (fill.value / naPolicy.value) or pass value.");
+  const confirmed = src.rows.filter((r) => !r.draftMapping);
+  return {
+    req: { rows: confirmed.map(ParamSources.bridgeRow), scope: src.scope, all_documents: false, fill: true, value, na_values: policy.values.length ? policy.values : [value], max_ids: a.max_ids ?? 20 },
+    draftOnly: src.rows.length - confirmed.length,
+  };
+}
+// The gate key: rows, scope, value and the bytes of every source file read (a changed source or mapping blocks the apply).
+const fillKey = (src, req) => fingerprint("parameter_fill", { rows: req.rows, scope: req.scope, value: req.value, na: req.na_values, files: src.hash });
+const fillPreviewModel = new Map();   // gate key -> the model the dry run ran in (sent as expect_model with the apply)
+
+const PROBLEM = new Set(["blanks", "not-bound", "partly-bound", "wrong-guid", "no-elements"]);
+function compactRow(x) {
+  const out = { key: x.key, name: x.name, status: x.status, checked: x.checked, blank: x.blank, na: x.na, missing: x.missing, filled: x.filled };
+  if (PROBLEM.has(x.status)) for (const [k, v] of Object.entries(x)) if (/Ids$/.test(k) && Array.isArray(v) && v.length) out[k] = v;
+  return out;
+}
+
+/**
+ * Bridge answer -> reply: prose summary (with the top actions) and compact JSON; the full table goes to report files
+ * (xlsx, CSV, markdown, actions) when report_dir is given or the result is large. After an apply the add-in's `after`
+ * block (the state after the fill) drives statuses, actions and reports; the pre-fill state is labelled "before".
+ */
+function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0 } = {}) {
+  // The add-in's after block: { summary, rows: [{ key, name, status, blank, na, filled }] } for the active model (the
+  // touched rows re-scanned); merged into a copy of that model's rows. A documents array is accepted as is.
+  const afterBlock = result?.after;
+  let afterDocs = Array.isArray(afterBlock) ? afterBlock : afterBlock?.documents;
+  if (!afterDocs && afterBlock?.rows && result?.documents?.length) {
+    const byKey = new Map(afterBlock.rows.map((r) => [r.key ?? r.name, r]));
+    afterDocs = result.documents.map((d, i) => i > 0 ? d : {
+      ...d, summary: afterBlock.summary ?? d.summary,
+      rows: (d.rows ?? []).map((r) => { const n = byKey.get(r.key ?? r.name); return n ? { ...r, ...n } : r; }),
+    });
+  }
+  const view = afterDocs ? { ...result, documents: afterDocs } : result;
+  const cross = ParamSources.crossModel(view);
+  const defects = { ...src.defects, ...cross };
+  const docs = view?.documents ?? [];
+  const cells = src.rows.length * Math.max(1, docs.length);
+  const large = cells > 200;
+  const review = src.checker ? ParamSources.reviewChecker(src.checker, { ais: src.ais, index: src.index, codes: src.scope.codes }) : null;
+  const actions = ParamActions.buildActions({ result: view, rows: src.rows, unmappedRows: src.unmappedRows, defects, review, derive: src.mapping?.mapping?.derive });
+  const top = actions.slice(0, 10).map(ParamActions.actionLine);
+  const summary = [
+    afterDocs ? `Before the fill:\n${ParamList.summaryText({ documents: result.documents })}\nAfter the fill:` : "",
+    ParamList.summaryText(view, { ...src.listInfo, dryRun: dryRun || plan }),
+    draftOnly ? `${draftOnly} row(s) left out of the fill: their categories come only from a draft (unconfirmed) mapping. They are still checked.` : "",
+    ParamSources.defectsText(defects), ...sourceNotes(src),
+    top.length ? `Actions (top ${top.length} of ${actions.length}, read-only):\n${top.join("\n")}` : "",
+  ].filter(Boolean).join("\n");
+  let reports;
+  if (a.report_dir || large) {
+    reports = ParamSources.writeReports(a.report_dir ?? path.join(REPORTS_DIR, "parameter-check"), {
+      "parameter-summary.xlsx": ParamActions.summaryWorkbook(view, src.rows, src.unmappedRows, actions),
+      "parameter-check.csv": ParamSources.checkCsv(view, src.rows, src.unmappedRows),
+      "parameter-check.md": `# Parameter requirements check\n\n${localDate(new Date(), { time: true })}\n\n${ParamActions.summaryMarkdown(view, src.unmappedRows)}\n\n${summary.split("\n").map((l) => `- ${l}`).join("\n")}\n`,
+      "actions.md": ParamActions.actionsMarkdown(actions),
+    });
+  }
+  const f = result?.fill;
+  const reasons = {};
+  for (const k of f?.skipped ?? []) reasons[k.reason] = (reasons[k.reason] ?? 0) + 1;
+  const body = {
+    success: result?.success, model: result?.model, dryRun: result?.dryRun, checkOnly: result?.checkOnly, stage: result?.stage, error: result?.error,
+    fill: f ? { set: f.set, value: f.value, skipped: f.skippedCount ?? f.skipped?.length ?? 0, reasons } : undefined,
+    changed: result?.changed, wouldChange: result?.wouldChange,
+    documents: docs.map(({ rows, ...d }) => ({ ...d, rows: large ? undefined : (rows ?? []).map(compactRow), rowsInReport: large ? rows?.length ?? 0 : undefined })),
+    skippedRows: result?.skippedRows?.length || undefined,
+    defectCounts: Object.fromEntries(Object.entries(defects).filter(([, v]) => v?.length).map(([k, v]) => [k, v.length])),
+    actions: actions.length, list: { skipped: src.listInfo.skipped.length, duplicates: src.listInfo.duplicates.length },
+    sources: src.info.sources, mapping: src.mapping?.file, reports,
+  };
+  const out = text(body);
+  out.content.push({ type: "text", text: summary + (large ? `\nThe full table (${cells} model x row cells) is in the report files, not shown here: ${reports.join(", ")}` : reports ? `\nReport: ${reports.join(", ")}` : "") });
+  if (fill && dryRun && result?.success) out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Show the user what would be filled and ask for confirmation; then repeat the identical parameter_fill call without dry_run." });
+  if (plan) out.content.push({ type: "text", text: "FILL PLAN (read-only, no transaction): counts of what a fill would set. To fill: parameter_fill action fill with dry_run: true, then the identical call after the user confirms." });
+  return out;
+}
+
+async function paramCheck(src, a) {
+  const req = { rows: src.bridgeRows, scope: src.scope, all_documents: !!a.all_documents, fill: false, max_ids: a.max_ids ?? 20 };
+  if (src.naPolicy.values.length) req.na_values = src.naPolicy.values;
+  if (!req.rows.length) throw new RevitError(`No checkable rows (${src.unmappedRows.length} unmapped LOIN row(s); map their categories in the project mapping).`);
+  return paramAnswer(src, await callRevit("parameter_fill", { ...req, check_only: true, dry_run: false }, 900), a);
+}
+
+async function paramFillPlan(src, a) {
+  if (a.all_documents) throw new RevitError("The fill plan is for the active model only; leave out all_documents.");
+  const { req, draftOnly } = fillRequest(src, a);
+  if (!req.rows.length) throw new RevitError(`No rows to fill (${draftOnly} row(s) come only from a draft mapping).`);
+  // check_only + fill: the add-in counts what the fill would set, without a transaction (nothing is borrowed or changed).
+  return paramAnswer(src, await callRevit("parameter_fill", { ...req, check_only: true, dry_run: false }, 900), a, { plan: true, draftOnly });
+}
+
+async function paramFill(src, a, { dry_run, explanation, plan, step }) {
+  const { req, draftOnly } = fillRequest(src, a);
+  if (!req.rows.length) throw new RevitError(`No rows to fill (${draftOnly} row(s) come only from a draft mapping: confirm it first).`);
+  requireExplanation(dry_run, explanation);
+  const key = fillKey(src, req);
+  const expect = dry_run ? undefined : fillPreviewModel.get(key);
+  const result = await gated(key,
+    { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
+    () => callRevit("parameter_fill", { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step, ...(expect ? { expect_model: expect } : {}) }, 900), (r) => r?.success === true);
+  if (dry_run && result?.success) fillPreviewModel.set(key, result.model ?? result.documents?.[0]?.model);
+  if (!dry_run) fillPreviewModel.delete(key);
+  if (result?.alreadyApplied) return text(result);
+  if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
+  if (!dry_run && result?.success) briefCache.clear();
+  journal({ title: `${dry_run ? "Preview" : "Change"}: fill blank parameters with "${req.value}"`, explanation, outcome: outcomeOf(result, dry_run), details: result?.fill });
+  return paramAnswer(src, result, a, { dryRun: !!dry_run, fill: true, draftOnly });
+}
+
+tool("parameter_check", {
+  title: "Parameter requirements check (read-only)",
+  description: "Checks the client's information requirements (AIS list, LOIN, Model Checker XML, shared parameter files, read through the project mapping in the vault) per open model; actions requirements and review_checker need no Revit; fill_plan counts what a fill would set. Details: revit_guide workflows.",
   inputSchema: {
-    action: z.enum(["check", "fill"]).optional(),
-    list: z.string().optional().describe("Path of the CSV parameter list"),
-    rows: z.array(z.object({ name: z.string(), categories: z.string().describe("e.g. \"Project Information\", \"Levels\" or a group key"), type_instance: z.string().optional() })).max(5000).optional(),
-    all_documents: z.boolean().optional(),
-    value: z.string().max(100).optional(),
-    max_ids: z.number().int().min(0).max(500).optional().describe("Element ids returned per row (default 20)"),
+    action: z.enum(["check", "requirements", "review_checker"]).optional(),
+    ...sourceInputs,
+    fill_plan: z.boolean().optional().describe("Count what a fill would set (active model, no transaction)"),
+    value: z.string().max(100).optional().describe("fill_plan: the fill value when the mapping has no NA policy"),
+  },
+  annotations: readOnly,
+}, async ({ action, fill_plan, ...a }) => {
+  const src = await paramSources(a);
+  if (action === "review_checker") {
+    if (!src.checker) throw new RevitError("review_checker needs 'checker' (the Model Checker XML).");
+    const rv = ParamSources.reviewChecker(src.checker, { ais: src.ais, index: src.index, codes: src.scope.codes });
+    const reports = a.report_dir ? ParamSources.writeReports(a.report_dir, { "checker-review.md": ParamSources.reviewMarkdown(rv) }) : undefined;
+    const out = text({ ...rv, reports });
+    out.content.push({ type: "text", text: ParamSources.reviewText(rv) + (reports ? `\nReport: ${reports.join(", ")}` : "") });
+    return out;
+  }
+  if (action === "requirements") {
+    const large = src.rows.length > 200;
+    const summary = [ParamSources.requirementsText(src.rows, src.info), `${src.unmappedRows.length} LOIN row(s) unmapped (not checked).`, ParamSources.defectsText(src.defects), ...sourceNotes(src)].filter(Boolean).join("\n");
+    let reports;
+    if (a.report_dir || large) reports = ParamSources.writeReports(a.report_dir ?? path.join(REPORTS_DIR, "parameter-check"), {
+      "parameter-requirements.csv": ParamSources.requirementsCsv(src.rows, src.unmappedRows),
+      "parameter-requirements.md": `# Parameter requirements\n\n${summary.split("\n").map((l) => `- ${l}`).join("\n")}\n`,
+    });
+    const out = text({ rows: large ? undefined : src.rows, rowCount: src.rows.length, unmapped: src.unmappedRows.length,
+      defectCounts: Object.fromEntries(Object.entries(src.defects).filter(([, v]) => v?.length).map(([k, v]) => [k, v.length])), scope: src.scope, mapping: src.mapping?.file, reports });
+    out.content.push({ type: "text", text: summary + (large ? `\nThe full table (${src.rows.length} rows) is in the report files, not shown here: ${reports.join(", ")}` : reports ? `\nReport: ${reports.join(", ")}` : "") });
+    return out;
+  }
+  if (fill_plan) return paramFillPlan(src, a);
+  return paramCheck(src, a);
+});
+
+tool("parameter_fill", {
+  title: "Fill blank required parameters",
+  description: "Sets the project's NA value (mapping NA policy, or value) on blank text parameters of the active model for the rows of the given sources (same inputs as parameter_check), ONE undo step: dry_run: true first, then the identical call after confirmation; a changed source file or another active model blocks the apply. Rows mapped only by a draft mapping are never filled.",
+  inputSchema: {
+    action: z.enum(["check", "fill"]).optional().describe("check: same as parameter_check (kept for old callers)"),
+    ...sourceInputs,
+    value: z.string().max(100).optional().describe("Only when the mapping has no NA policy"),
     dry_run: z.boolean().optional(),
     explanation: z.string().max(600).optional(),
     plan: z.array(z.string().max(120)).max(15).optional(), step: z.number().int().min(1).optional(),
   },
   annotations: writes,
-}, async ({ action, list, rows, all_documents, value, max_ids, dry_run, explanation, plan, step }) => {
-  if (!list === !rows) throw new RevitError("Give either 'list' (path of the CSV) or 'rows'.");
-  let mapped;
-  if (list) {
-    if (!fs.existsSync(list)) throw new RevitError(`Parameter list not found: ${list}`);
-    try { mapped = ParamList.rowsFromCsv(fs.readFileSync(list, "utf8")); } catch (err) { throw new RevitError(err.message); }
-  } else mapped = ParamList.mapRows(rows);
-  if (!mapped.rows.length) throw new RevitError(`No usable rows in the list (${mapped.skipped.length} skipped: unknown category or type).`);
-  const fill = action === "fill";
-  if (fill && all_documents) throw new RevitError("fill works on the active model only; leave out all_documents.");
-  const req = { rows: mapped.rows, all_documents: !!all_documents && !fill, fill, value: value ?? "NA", max_ids: max_ids ?? 20 };
-  const listInfo = { skipped: mapped.skipped, duplicates: mapped.duplicates };
-  const answer = (result) => {
-    const out = text({ ...result, list: listInfo });
-    out.content.push({ type: "text", text: ParamList.summaryText(result, { ...listInfo, dryRun: !!dry_run }) });
-    if (fill && dry_run && result?.success) out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Show the user what would be filled and ask for confirmation." });
-    return out;
-  };
-  if (!fill) return answer(await callRevit("parameter_fill", { ...req, check_only: true, dry_run: false }, 900));
-  requireExplanation(dry_run, explanation);
-  const result = await gated(fingerprint("parameter_fill", req),
-    { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    () => callRevit("parameter_fill", { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step }, 900), (r) => r?.success === true);
-  if (result?.alreadyApplied) return text(result);
-  if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
-  if (!dry_run && result?.success) briefCache.clear();
-  journal({ title: `${dry_run ? "Preview" : "Change"}: fill blank parameters with "${req.value}"`, explanation, outcome: outcomeOf(result, dry_run), details: result?.fill });
-  return answer(result);
+}, async ({ action, dry_run, explanation, plan, step, ...a }) => {
+  const src = await paramSources(a);
+  if (action !== "fill") return paramCheck(src, a);
+  if (a.all_documents) throw new RevitError("fill works on the active model only; leave out all_documents.");
+  return paramFill(src, a, { dry_run, explanation, plan, step });
 });
 
 tool("presentation_standard", {

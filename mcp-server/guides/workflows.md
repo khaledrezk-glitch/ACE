@@ -37,16 +37,31 @@ for "put things on the right worksets", "workset check", "set up worksets" use a
 With a rules file in place, model_dashboard also reports "Elements on the wrong workset (BEP)" (the same rules), so
 the check runs every time the model is checked, not only when asked.
 
-## Parameter list completeness (AIS / LOIN lists)
+## Parameter requirements (AIS, LOIN, Model Checker, shared parameter files)
 
-For "are all the client's parameters filled", "check the parameter list", "fill the blanks with NA" use parameter_fill
-with list: the CSV path (columns parameter_name, categories, type_instance) or rows. Categories map to groups: Project
-Information, "Rooms, Areas, Spaces", Levels, "Systems, Components, Elements" (all other model elements); unknown ones
-come back as skipped. Start with a check (all_documents: true for every open model) and report per model: complete,
-with blanks, missing everywhere (the parameter is not loaded or bound: a binding job, not a fill), not text (cannot take
-"NA") and Project Information parameters not in the General group (ACE never moves a group; tell the user). Fill only
-when the user asks: action fill, dry_run first, then the identical call after confirmation. Only blank text parameters
-get the value; read-only and borrowed elements are skipped and listed.
+For "are all the client's parameters filled", "check the parameter list / LOIN", "fill the blanks" use parameter_check
+(read-only) and give every source the user has at once: list (AIS CSV: parameter_name, categories, type_instance) or
+rows, loin (xlsx), checker (Model Checker XML), shared_parameters (client files), project_parameters (the project's
+file, whose GUIDs a binding must use). They merge into one table (name + group, + categories for elements). action
+requirements shows the merged table and its defects without Revit; review_checker reviews the client's checker itself
+(active vs parked checks, discipline parameters checked only on Project Information, unknown names, duplicates). The
+default action checks every open model (all_documents: true): per model and row the status (complete,
+complete-with-na, blanks, not-bound, partly-bound, wrong-guid, out-of-scope, no-elements), GUID differences across
+models and Project Information twins with different values, and a ranked action list (top 10 in the reply). With
+report_dir (or a large result) the reports go to files (summary xlsx, CSV, markdown, actions); give the user the paths.
+
+Everything project-specific lives in the project mapping in the vault (`rules/parameter-mapping.json`, found from the
+open model, or `vault` / `mapping`): client category -> Revit categories, LOIN sheet -> disciplines, approved name
+aliases, model -> discipline, LOIN column names (loinTable) and the NA policy (the fill value and the texts that mean
+"declared missing"). Without one, only the generic checks run and the reply says what is missing. create_mapping: true
+writes a draft with best guesses for a person to confirm; a draft never drives a fill. Report unmapped categories and
+spelling / prefix-drift candidates as decisions for the user; never treat a guess as confirmed.
+
+Fill only when the user asks. parameter_check fill_plan: true counts what a fill would set (read-only). To fill:
+parameter_fill action fill with dry_run: true, show what would be set, then the identical call after confirmation (one
+undo step, in the same model; a changed source file needs a new dry run). The value is the mapping's NA policy, or
+`value` when the project has none. Only blank text parameters get it; read-only, borrowed, grouped and design-option
+elements are skipped and listed. NA is a declared value, counted apart from filled.
 
 ## Requirements vault and audits
 

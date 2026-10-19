@@ -288,7 +288,9 @@ function mark(r, doc, problem, found = true) {
 
 // ---- index.html: the browsable vault (decided 14 Oct) ---------------------------------------------------------------
 
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+/** HTML / XML text: the five specials escaped, control characters XML 1.0 forbids removed. */
+export const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]))
+  .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
 
 export function writeIndex(v) {
   const docs = v.register.documents, recs = v.reqs.records;

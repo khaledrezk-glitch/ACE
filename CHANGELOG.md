@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.10.0 (19 Oct 2026)
+- **Parameter requirements from several sources:** new read-only tool `parameter_check` merges the AIS CSV (`list`),
+  the LOIN workbook (`loin`), the client's Model Checker XML (`checker`, active HasValue / Defined checks only) and the
+  shared parameter files (`shared_parameters`, `project_parameters`) into one requirement table, through the project
+  mapping (below). Names are
+  classified (exact, client-only, spelling or prefix-drift candidate, unknown); unmapped categories, candidates, typo
+  twins and GUID conflicts are reported, never guessed. Actions: `check` (per model: status per row, NA counted apart,
+  discipline scope; GUID differences across models and Project Information twins with different values),
+  `requirements` and `review_checker` (no Revit). Large results go to `report_dir` as CSV + markdown; the reply stays compact (summary, per-row status, defect counts).
+- **Project specifics live in the vault:** the mapping (client category -> Revit categories, LOIN sheet -> disciplines,
+  aliases, LOIN column names, NA policy) is read from the vault's `rules/parameter-mapping.json` (or `vault` /
+  `mapping`); without one only the generic checks run and the reply says what is missing. `create_mapping: true` writes
+  a draft with best guesses; a draft never drives a fill. ACE extends only a mapping in its own shape, writes it
+  atomically and never rewrites a file it cannot read. No built-in fill value: the NA policy or `value`.
+- **Model-aware pre-flight on every check:** Revit / ACE version, workshared and central, worksets, links (not loaded),
+  phases, design options, groups, and for the blank values: how many sit in groups, design options or elements borrowed
+  by someone (named). Each model's discipline comes from the mapping or its title; rows of other disciplines are out of
+  scope, and elements of categories owned by other disciplines are counted as foreign, not judged. Faster scan on large
+  models (one collector per category, parameters read by definition / GUID, type lookups cached).
+- **Fill:** `parameter_check fill_plan: true` counts what a fill would set without a transaction; `parameter_fill`
+  needs its own dry run, in the same model (`expect_model`), and the bytes of every source file are part of the
+  preview: a changed file needs a new dry run. After an apply the reply and reports show the state after the fill.
+- **Federated summary and actions:** whenever a check writes reports (`report_dir`, or a large result), ACE also writes
+  `parameter-summary_<date>.xlsx` (sheets Summary: discipline x model x status, Rows: model x requirement with sources,
+  Actions, Pre-flight) and `actions_<date>.md`: a ranked, read-only action list (submission blockers first, then blanks
+  by element count, decisions, client file defects), each with why, impact, owner, type and how to clear its blockers.
+  The reply shows the top 10.
+
 ## 1.9.3 (19 Oct 2026)
 - **Parameter list check and NA fill:** new tool `parameter_fill` reads a client parameter list (CSV: parameter_name, categories, type_instance; or rows) and reports per open model which parameters are complete, blank, missing everywhere, not text or (Project Information) not in General. `action: "fill"` sets "NA" (or `value`) on blank text parameters of the active model, previewed first, one undo step.
 - Compliance shows a decided project decision (kind "note", status "decided") beside the requirement's status, met included, so the result names the reading it rests on (e.g. "DEC-0002 (decided: 25 mm in force)"). Open notes stay hidden; deviations work as before.

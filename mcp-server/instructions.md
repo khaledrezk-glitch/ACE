@@ -87,7 +87,10 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   derive_structure_from_arc. Marks, tags, sheets: renumber_doors, then tag_untagged, then sheets_for_levels.
 - Drawing standard (text height by scale, one annotation type per kind and size): presentation_standard (check_only
   first). The user can set the types and sizes in ACE > Deliver > Presentation Standard.
-- Client parameter list (CSV: is every parameter there and filled; fill blanks with "NA"): parameter_fill (check first).
+- Client information requirements (AIS CSV, LOIN xlsx, Model Checker XML, shared parameter files): parameter_check
+  (read-only). Project specifics (category mapping, aliases, disciplines, NA policy) come from the project mapping in
+  the vault, edited by people: report unmapped categories and name candidates, never resolve them yourself. Fill only
+  when asked: parameter_fill with dry_run: true, show the result, then the identical call after confirmation.
 
 Read-only questions (counts, checks, reports, pictures) need no preview or confirmation: just do them.
 Code that touches files, other programs or the network, or that saves, closes or syncs models, is

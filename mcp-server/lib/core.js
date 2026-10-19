@@ -132,9 +132,11 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
 }
 
 /** Today's date (or the given time's) in local time, YYYY-MM-DD: journal and report files follow the user's day, not UTC. */
-export function localDate(d = new Date()) {
+/** YYYY-MM-DD in local time; with time: true, YYYY-MM-DD_HHMMSS (file name stamps). */
+export function localDate(d = new Date(), { time = false } = {}) {
   const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return time ? `${day}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}` : day;
 }
 
 /**

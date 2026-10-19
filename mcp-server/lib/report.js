@@ -7,6 +7,11 @@ import path from "node:path";
 import { docx } from "./docx.js";
 import { locationOf } from "./vault.js";
 
+/** One CSV cell: quoted when it holds a quote, comma, semicolon or line break; a list is joined with "|". */
+export const csvCell = (c) => { const s = Array.isArray(c) ? c.join("|") : String(c ?? ""); return /[",;\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+/** Rows (the first is the header) -> CSV text with a byte order mark, so Excel reads UTF-8. */
+export const toCsv = (rows) => "\ufeff" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+
 const AUDITS = "04 Audits";
 const ORDER = { "not-met": 0, partly: 1, met: 2, "not-checkable": 3, "not evaluated": 4 };
 const SEV = { error: 0, warning: 1, info: 2 };
@@ -168,8 +173,7 @@ ${rows.map((r, i) => `<tr>${matrix[i].map((c, j) => `<td>${j === 5 ? badge(r.sta
     { h: 1, text: "Contradictions" }, { p: "Not part of this report yet: comparing documents with each other and with ACE's settings is planned (backlog V3).", muted: true },
   ], { title: `Master audit report ${model} ${rev}`, font: brand.font ?? "Poppins", accent });
 
-  const csvCell = (c) => /[",\n;]/.test(String(c ?? "")) ? `"${String(c).replace(/"/g, '""')}"` : String(c ?? "");
-  const csv = "﻿" + [actHead, ...actRows].map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+  const csv = toCsv([actHead, ...actRows]);
 
   const sidecar = {
     schema: "ace.audit/1", model, rev, date: day, by, run: meta.id, score: meta.score ?? null,

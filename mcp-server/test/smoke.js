@@ -44,9 +44,12 @@ const bridge = http.createServer((req, res) => {
       case "assign_worksets":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, transaction: args.check_only ? undefined : args.dry_run ? "RolledBack" : "Committed", rules: `${args.rules_name} (${args.rules_source}), ${args.rules?.length} rules`, firstRule: args.rules?.[0]?.workset } });
       case "parameter_fill":
-        return reply({ ok: true, result: { success: true, dryRun: !!args.dry_run, echo: args,
-          documents: [{ model: "Test", rows: args.rows.map((r) => ({ ...r, checked: 2, missing: 0, blank: 1, filled: 1, storageType: "String", isText: true })),
-            summary: { rows: args.rows.length, complete: 0, withBlanks: args.rows.length, missingEverywhere: 0, notText: 0, notInGeneral: 0 } }],
+        if (args.expect_model && args.expect_model !== "Test") return reply({ ok: true, result: { success: false, stage: "wrong_model", error: `The preview ran in ${args.expect_model}; the active model is Test.` } });
+        return reply({ ok: true, result: { success: true, model: "Test", dryRun: !!args.dry_run, checkOnly: !!args.check_only || undefined, echo: args,
+          ...(args.fill && !args.dry_run && !args.check_only ? { after: { rows: args.rows.map((r) => ({ key: r.key, name: r.name, blank: 0, filled: 1, na: 1, status: "complete-with-na" })), summary: { rows: args.rows.length, complete: 0, withBlanks: 0, missingEverywhere: 0, notText: 0, notInGeneral: 0, withNA: args.rows.length } } } : {}),
+          documents: [{ model: "Test", discipline: args.scope?.models?.Test ?? null, disciplineSource: args.scope?.models?.Test ? "mapping" : null, preflight: { workshared: false, foreign: {} },
+            rows: args.rows.map((r) => ({ ...r, checked: 2, missing: 0, blank: 1, filled: 1, na: 0, onType: 0, storageType: "String", isText: true, status: "blanks", modelGuid: r.guid ?? null, value: r.group === "project" ? "x" : undefined })),
+            summary: { rows: args.rows.length, complete: 0, withBlanks: args.rows.length, missingEverywhere: 0, notText: 0, notInGeneral: 0, withNA: 0, outOfScope: 0, wrongGuid: 0, notBound: 0, wrongLevel: 0, foreign: 0 } }],
           ...(args.fill ? { fill: { set: 2, skipped: [{ id: 9, name: "x", reason: "read-only" }] }, [args.dry_run ? "wouldChange" : "changed"]: { added: 0, modified: 2, deleted: 0 } } : {}) } });
       case "presentation_standard":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
@@ -90,7 +93,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -308,28 +311,102 @@ assert.ok(wsBlocked.isError || /not been previewed/.test(wsBlocked.content[0].te
 await call("assign_worksets", { dry_run: true, explanation: "preview for the test" });
 const wsApplied = (await call("assign_worksets", { explanation: "move to BEP worksets" })).content[0].text;
 assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
-// --- parameter_fill: a check is free, a fill needs the identical preview ---
+// --- parameter_fill: a check is free, a fill needs its own identical dry run in the same model ---
 const plist = path.join(tmp, "params.csv");
-fs.writeFileSync(plist, "\uFEFFparameter_name,categories,type_instance\r\nTST_Site,Project Information,Instance\r\nTST_Area,\"Rooms, Areas, Spaces\",Type\r\nTST_Area,\"Rooms, Areas, Spaces\",Type\r\nTST_X,Furniture,Instance\r\n");
+fs.writeFileSync(plist, "﻿parameter_name,categories,type_instance\r\nTST_Site,Project Information,Instance\r\nTST_Area,\"Rooms, Areas, Spaces\",Type\r\nTST_Area,\"Rooms, Areas, Spaces\",Type\r\nTST_X,Furniture,Instance\r\n");
 const pfCheck = await call("parameter_fill", { list: plist, all_documents: true });
 const pfSent = seen.filter((x) => x.command === "parameter_fill").at(-1).args;
-assert.deepEqual(pfSent.rows, [{ name: "TST_Site", group: "project", level: "instance" }, { name: "TST_Area", group: "rooms", level: "type" }], "CSV rows mapped, duplicate dropped, unknown category skipped");
-assert.ok(pfSent.check_only === true && pfSent.fill === false && pfSent.all_documents === true && pfSent.dry_run === false && pfSent.value === "NA" && pfSent.max_ids === 20, "a check is read-only across the open models");
-assert.match(pfCheck.content[1].text, /Test: 2 rows - 0 complete, 2 with blanks/, "per-model summary text");
+assert.deepEqual(pfSent.rows, [{ name: "TST_Site", group: "project", level: "instance", key: "r1" }, { name: "TST_Area", group: "rooms", level: "type", key: "r2" }], "CSV rows mapped, duplicate dropped, unknown category skipped");
+assert.deepEqual(pfSent.scope, { codes: [], models: {}, ownership: {} }, "the scope travels with the rows");
+assert.ok(pfSent.check_only === true && pfSent.fill === false && pfSent.all_documents === true && pfSent.dry_run === false && pfSent.value === undefined && pfSent.max_ids === 20, "a check is read-only across the open models and needs no value");
+assert.match(pfCheck.content[1].text, /Test: 2 rows - 0 complete, 2 with blanks.*; 0 with NA, 0 out of scope/, "per-model summary text with the 1.10 counts");
 assert.match(pfCheck.content[1].text, /1 row\(s\) skipped .*1 duplicate/, "skipped and duplicate rows are reported");
+const pfJson = JSON.parse(pfCheck.content[0].text);
+assert.ok(pfJson.documents[0].rows[0].key === "r1" && pfJson.documents[0].rows[0].status === "blanks" && pfJson.documents[0].rows[0].storageType === undefined, "compact JSON: key, name, status and counts per row");
 assert.equal((await call("parameter_fill", { list: path.join(tmp, "nope.csv") })).isError, true);
-assert.equal((await call("parameter_fill", { action: "fill", rows: [{ name: "A", categories: "Levels" }], all_documents: true, dry_run: true, explanation: "x" })).isError, true, "fill is the active model only");
+const allSkipped = await call("parameter_check", { rows: [{ name: "A", categories: "Furniture" }, { name: "", categories: "Levels" }] });
+assert.ok(allSkipped.isError && /No usable rows in the list \(2 skipped: 1 unknown category, 1 no parameter name\)/.test(allSkipped.content[0].text), "all rows skipped: the reasons are given");
+assert.equal((await call("parameter_fill", { action: "fill", rows: [{ name: "A", categories: "Levels" }], all_documents: true, dry_run: true, value: "NA", explanation: "x" })).isError, true, "fill is the active model only");
 const pfRows = [{ name: "TST_Site", categories: "Project Information" }];
-const pfBlocked = await call("parameter_fill", { action: "fill", rows: pfRows, explanation: "Fill blanks with NA" });
+assert.match((await call("parameter_fill", { action: "fill", rows: pfRows, dry_run: true, explanation: "Fill blanks" })).content[0].text, /No fill value: set the NA policy/, "no built-in fill value");
+const pfBlocked = await call("parameter_fill", { action: "fill", rows: pfRows, value: "NA", explanation: "Fill blanks with NA" });
 assert.ok(pfBlocked.isError && /not been previewed/.test(pfBlocked.content[0].text), "a fill needs a preview first");
-const pfPrev = await call("parameter_fill", { action: "fill", rows: pfRows, dry_run: true, explanation: "Fill blanks with NA" });
+const pfPrev = await call("parameter_fill", { action: "fill", rows: pfRows, value: "NA", dry_run: true, explanation: "Fill blanks with NA" });
+assert.deepEqual(seen.at(-1).args.na_values, ["NA"], "the declared-missing texts travel with the fill");
 assert.match(pfPrev.content[1].text, /Fill: 2 value\(s\) would be set, 1 skipped \(1 read-only\)/);
 assert.match(pfPrev.content[2].text, /PREVIEW ONLY/);
 assert.match((await call("parameter_fill", { action: "fill", rows: pfRows, value: "N/A", explanation: "Fill blanks with N/A" })).content[0].text, /not been previewed/, "another value needs its own preview");
-const pfApplied = await call("parameter_fill", { action: "fill", rows: pfRows, explanation: "Fill blanks with NA" });
+const pfApplied = await call("parameter_fill", { action: "fill", rows: pfRows, value: "NA", explanation: "Fill blanks with NA" });
 const pfApplySent = seen.filter((x) => x.command === "parameter_fill").at(-1).args;
 assert.ok(!pfApplied.isError && pfApplySent.fill === true && pfApplySent.dry_run === false && pfApplySent.check_only === false && pfApplySent.all_documents === false, "after the identical preview the fill applies");
-assert.match((await call("parameter_fill", { action: "fill", rows: pfRows, explanation: "Fill blanks with NA" })).content[0].text, /not been previewed/, "a preview is used once");
+assert.equal(pfApplySent.expect_model, "Test", "the apply names the model the dry run ran in");
+assert.match(pfApplied.content[1].text, /Before the fill:\nTest: 1 rows - 0 complete, 1 with blanks[\s\S]*After the fill:\nTest: 1 rows - 0 complete, 0 with blanks.*1 with NA/, "after an apply the state after the fill is reported, the old one labelled before");
+assert.match((await call("parameter_fill", { action: "fill", rows: pfRows, value: "NA", explanation: "Fill blanks with NA" })).content[0].text, /not been previewed/, "a preview is used once");
+// --- parameter_check: requirement sources, read-only actions without Revit, the fill plan, the project mapping in the vault ---
+const pdir = path.join(tmp, "reqs");
+fs.mkdirSync(pdir);
+const pAis = path.join(pdir, "ais.csv"), pChecker = path.join(pdir, "checker.xml"), pSp = path.join(pdir, "client.txt"), pProj = path.join(pdir, "project.txt");
+fs.writeFileSync(pAis, "parameter_name,categories,type_instance\r\nTST_PI_Site Name,Project Information,Instance\r\nTST_EL_Asset,\"Systems, Components, Elements\",Type\r\n");
+const pcF = (cat, prop, cond, val, op = "And") => `<Filter Operator="${op}" Category="${cat}" Property="${prop}" Condition="${cond}" Value="${val}" />`;
+fs.writeFileSync(pChecker, `<MCSettings Name="TST"><Heading HeadingText="Params" IsChecked="True"><Section SectionName="Have value" IsChecked="True">` +
+  `<Check ID="c1" CheckName="TST_PI_Site Name" IsChecked="True">${pcF("Category", "OST_ProjectInformation", "Included", "True")}${pcF("Parameter", "TST_PI_Site Name", "HasValue", "True")}</Check>` +
+  `<Check ID="c2" CheckName="TST_ST_Grade" IsChecked="True">${pcF("Category", "OST_ProjectInformation", "Included", "True")}${pcF("Parameter", "TST_ST_Grade", "HasValue", "True")}</Check>` +
+  `</Section></Heading><Heading HeadingText="&lt;--Unused--&gt;" IsChecked="True"><Section SectionName="x" IsChecked="True"><Check ID="c3" CheckName="p" IsChecked="True">${pcF("Parameter", "TST_PI_Parked", "HasValue", "True")}</Check></Section></Heading></MCSettings>`);
+fs.writeFileSync(pSp, "*GROUP\tID\tNAME\nGROUP\t1\tG\n*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\nPARAM\tc-1\tTST_PI_Site name\tTEXT\t\t1\n");
+fs.writeFileSync(pProj, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("*GROUP\tID\tNAME\r\nGROUP\t1\tG\r\n*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\r\nPARAM\tp-1\tTST_EL_Asset\tTEXT\t\t1\r\n", "utf16le")]));
+const pSources = { list: pAis, checker: pChecker, shared_parameters: [pSp], project_parameters: pProj };
+const before = seen.length;
+const req = await call("parameter_check", { action: "requirements", ...pSources, report_dir: path.join(tmp, "preq") });
+assert.ok(!req.isError, req.content[0].text);
+assert.match(req.content[1].text, /Requirements: 3 merged rows/, "AIS + checker rows merged on name + group");
+assert.match(req.content[1].text, /TST_PI_Site Name -> TST_PI_Site name \(spelling\)/, "spelling candidates are reported");
+assert.match(req.content[1].text, /No project mapping found .*generic checks only/, "no mapping: said plainly");
+assert.ok(JSON.parse(req.content[0].text).rows.find((r) => r.name === "TST_EL_Asset").guid === "p-1", "GUID from the project file");
+assert.ok(fs.readdirSync(path.join(tmp, "preq")).some((f) => /^parameter-requirements_.*\.csv$/.test(f)), "report_dir gets the CSV");
+const rvw = await call("parameter_check", { action: "review_checker", ...pSources, report_dir: path.join(tmp, "preq") });
+assert.match(rvw.content[1].text, /2 active, 1 parked/, "checker review");
+assert.match(rvw.content[1].text, /Scope defects \(1\): TST_ST_Grade/);
+assert.ok(fs.readdirSync(path.join(tmp, "preq")).some((f) => /^checker-review_.*\.md$/.test(f)));
+assert.ok(seen.slice(before).every((x) => x.command === "project_rules"), "requirements and review_checker only ask where the vault is; they never check the model");
+assert.equal((await call("parameter_check", { action: "review_checker", list: pAis })).isError, true, "review_checker needs the checker");
+const pcCheck = await call("parameter_check", { ...pSources, all_documents: true });
+const pcSent = seen.at(-1);
+assert.ok(pcSent.command === "parameter_fill" && pcSent.args.check_only === true && pcSent.args.fill === false && pcSent.args.rows.length === 3, "the check sends the merged rows");
+assert.ok(pcSent.args.rows.every((r) => r.key && !r.sources && !r.match), "server-only fields stay on the server");
+assert.match(pcCheck.content[1].text, /Test: 3 rows/);
+assert.match(pcCheck.content[1].text, /Actions \(top \d+ of \d+, read-only\):\n1\. \[/, "the reply carries the top actions");
+const pcRep = await call("parameter_check", { ...pSources, report_dir: path.join(tmp, "prep") });
+const repFiles = fs.readdirSync(path.join(tmp, "prep"));
+assert.ok(["parameter-summary_", "parameter-check_", "actions_"].every((p) => repFiles.some((f) => f.startsWith(p))) && repFiles.some((f) => f.endsWith(".xlsx")), "a check with report_dir writes the summary workbook, CSV, summary and actions");
+assert.match(pcRep.content[1].text, /Report: .*parameter-summary_.*\.xlsx/);
+// The fill plan is read-only: the add-in counts without a transaction, and it is not a preview.
+const pcPlan = await call("parameter_check", { ...pSources, fill_plan: true, value: "NA" });
+assert.ok(seen.at(-1).args.fill === true && seen.at(-1).args.check_only === true && seen.at(-1).args.dry_run === false, "fill_plan: fill counted with check_only (no transaction)");
+assert.match(pcPlan.content.at(-1).text, /FILL PLAN \(read-only/);
+assert.equal((await call("parameter_check", { ...pSources, all_documents: true, fill_plan: true, value: "NA" })).isError, true, "the fill plan is the active model only");
+assert.match((await call("parameter_fill", { action: "fill", ...pSources, value: "NA", explanation: "Fill blanks with NA" })).content[0].text, /not been previewed/, "a fill plan is not a preview");
+await call("parameter_fill", { action: "fill", ...pSources, value: "NA", dry_run: true, explanation: "Fill blanks with NA" });
+fs.appendFileSync(pSp, "# a comment: same rows, different bytes\n");
+assert.match((await call("parameter_fill", { action: "fill", ...pSources, value: "NA", explanation: "Fill blanks with NA" })).content[0].text, /not been previewed/, "a changed source file blocks the apply, even when the rows are the same");
+await call("parameter_fill", { action: "fill", ...pSources, value: "NA", dry_run: true, explanation: "Fill blanks with NA" });
+const pcApplied = await call("parameter_fill", { action: "fill", ...pSources, value: "NA", max_ids: 3, explanation: "Fill blanks with NA" });
+assert.ok(!pcApplied.isError && seen.at(-1).args.fill === true && seen.at(-1).args.dry_run === false && seen.at(-1).args.expect_model === "Test", "the apply after its dry run, in the same model");
+// The project mapping lives in the vault: its NA policy is the fill value; create_mapping writes a draft there.
+const pvault = path.join(tmp, "pv", "ACE Vault");
+fs.mkdirSync(path.join(pvault, "rules"), { recursive: true });
+fs.writeFileSync(path.join(pvault, "rules", "parameter-mapping.json"), JSON.stringify({ about: "ACE parameter requirement mapping. Edit freely.", categories: {}, disciplines: {}, aliases: {}, models: {}, fill: { value: "N/A", values: ["NA"] } }));
+await call("parameter_check", { list: pAis, vault: pvault, fill_plan: true });
+assert.ok(seen.at(-1).args.value === "N/A" && seen.at(-1).args.na_values.join() === "NA,N/A", "the vault's mapping gives the fill value and the NA texts");
+assert.match((await call("parameter_check", { list: pAis, vault: pvault, fill_plan: true, value: "XX" })).content[0].text, /NA policy says "N\/A"/, "a value against the policy is refused");
+const pvault2 = path.join(tmp, "pv2", "ACE Vault");
+fs.mkdirSync(pvault2, { recursive: true });
+assert.match((await call("parameter_check", { action: "requirements", list: pAis, vault: pvault2, create_mapping: true })).content[1].text, /Draft mapping written/);
+assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-mapping.json"), "utf8")).draft, true, "create_mapping writes a draft into the vault's rules folder");
+// A large check goes to report files; the reply stays small.
+const bigRows = Array.from({ length: 210 }, (_, i) => ({ name: `TST_P${i}`, categories: "Levels" }));
+const pBig = await call("parameter_check", { rows: bigRows, report_dir: path.join(tmp, "pbig") });
+assert.match(pBig.content[1].text, /full table \(210 model x row cells\) is in the report files/);
+assert.ok(!JSON.parse(pBig.content[0].text).documents[0].rows && JSON.parse(pBig.content[0].text).documents[0].rowsInReport === 210, "rows left out of the reply");
 // The requirements vault: writing needs consent once per vault, then the folder is trusted.
 const vtmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-smoke-vault-"));
 const vNo = await call("vault", { action: "init", folder: vtmp, project: "Smoke" });
