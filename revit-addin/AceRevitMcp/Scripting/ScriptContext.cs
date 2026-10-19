@@ -116,14 +116,17 @@ namespace AceRevitMcp.Scripting
         /// Whether the element can be changed now. In a workshared model it cannot when someone else owns it, or when it
         /// was changed in the central model since your last Reload Latest (Revit would refuse the whole transaction).
         /// </summary>
-        public bool CanEdit(Element e, out string reason)
+        public bool CanEdit(Element e, out string reason) => CanEdit(Doc, e, out reason);
+
+        /// <summary>The same check for native commands (no script context).</summary>
+        internal static bool CanEdit(Document doc, Element e, out string reason)
         {
             reason = null;
             if (e == null) { reason = "not found"; return false; }
-            if (!Doc.IsWorkshared) return true;
-            var status = WorksharingUtils.GetCheckoutStatus(Doc, e.Id, out var owner);
+            if (!doc.IsWorkshared) return true;
+            var status = WorksharingUtils.GetCheckoutStatus(doc, e.Id, out var owner);
             if (status == CheckoutStatus.OwnedByOtherUser) { reason = $"in use by {owner}"; return false; }
-            var updates = WorksharingUtils.GetModelUpdatesStatus(Doc, e.Id);
+            var updates = WorksharingUtils.GetModelUpdatesStatus(doc, e.Id);
             if (updates == ModelUpdatesStatus.UpdatedInCentral || updates == ModelUpdatesStatus.DeletedInCentral)
             { reason = "changed in the central model since your last Reload Latest"; return false; }
             return true;

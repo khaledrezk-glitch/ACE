@@ -43,6 +43,11 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: args.summary ? { success: true, dryRun: !!args.dry_run, after: args.summary } : { model: "Test", summary: null } });
       case "assign_worksets":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, transaction: args.check_only ? undefined : args.dry_run ? "RolledBack" : "Committed", rules: `${args.rules_name} (${args.rules_source}), ${args.rules?.length} rules`, firstRule: args.rules?.[0]?.workset } });
+      case "parameter_fill":
+        return reply({ ok: true, result: { success: true, dryRun: !!args.dry_run, echo: args,
+          documents: [{ model: "Test", rows: args.rows.map((r) => ({ ...r, checked: 2, missing: 0, blank: 1, filled: 1, storageType: "String", isText: true })),
+            summary: { rows: args.rows.length, complete: 0, withBlanks: args.rows.length, missingEverywhere: 0, notText: 0, notInGeneral: 0 } }],
+          ...(args.fill ? { fill: { set: 2, skipped: [{ id: 9, name: "x", reason: "read-only" }] }, [args.dry_run ? "wouldChange" : "changed"]: { added: 0, modified: 2, deleted: 0 } } : {}) } });
       case "presentation_standard":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
       case "set_parameters":
@@ -85,7 +90,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -303,6 +308,28 @@ assert.ok(wsBlocked.isError || /not been previewed/.test(wsBlocked.content[0].te
 await call("assign_worksets", { dry_run: true, explanation: "preview for the test" });
 const wsApplied = (await call("assign_worksets", { explanation: "move to BEP worksets" })).content[0].text;
 assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
+// --- parameter_fill: a check is free, a fill needs the identical preview ---
+const plist = path.join(tmp, "params.csv");
+fs.writeFileSync(plist, "\uFEFFparameter_name,categories,type_instance\r\nTST_Site,Project Information,Instance\r\nTST_Area,\"Rooms, Areas, Spaces\",Type\r\nTST_Area,\"Rooms, Areas, Spaces\",Type\r\nTST_X,Furniture,Instance\r\n");
+const pfCheck = await call("parameter_fill", { list: plist, all_documents: true });
+const pfSent = seen.filter((x) => x.command === "parameter_fill").at(-1).args;
+assert.deepEqual(pfSent.rows, [{ name: "TST_Site", group: "project", level: "instance" }, { name: "TST_Area", group: "rooms", level: "type" }], "CSV rows mapped, duplicate dropped, unknown category skipped");
+assert.ok(pfSent.check_only === true && pfSent.fill === false && pfSent.all_documents === true && pfSent.dry_run === false && pfSent.value === "NA" && pfSent.max_ids === 20, "a check is read-only across the open models");
+assert.match(pfCheck.content[1].text, /Test: 2 rows - 0 complete, 2 with blanks/, "per-model summary text");
+assert.match(pfCheck.content[1].text, /1 row\(s\) skipped .*1 duplicate/, "skipped and duplicate rows are reported");
+assert.equal((await call("parameter_fill", { list: path.join(tmp, "nope.csv") })).isError, true);
+assert.equal((await call("parameter_fill", { action: "fill", rows: [{ name: "A", categories: "Levels" }], all_documents: true, dry_run: true, explanation: "x" })).isError, true, "fill is the active model only");
+const pfRows = [{ name: "TST_Site", categories: "Project Information" }];
+const pfBlocked = await call("parameter_fill", { action: "fill", rows: pfRows, explanation: "Fill blanks with NA" });
+assert.ok(pfBlocked.isError && /not been previewed/.test(pfBlocked.content[0].text), "a fill needs a preview first");
+const pfPrev = await call("parameter_fill", { action: "fill", rows: pfRows, dry_run: true, explanation: "Fill blanks with NA" });
+assert.match(pfPrev.content[1].text, /Fill: 2 value\(s\) would be set, 1 skipped \(1 read-only\)/);
+assert.match(pfPrev.content[2].text, /PREVIEW ONLY/);
+assert.match((await call("parameter_fill", { action: "fill", rows: pfRows, value: "N/A", explanation: "Fill blanks with N/A" })).content[0].text, /not been previewed/, "another value needs its own preview");
+const pfApplied = await call("parameter_fill", { action: "fill", rows: pfRows, explanation: "Fill blanks with NA" });
+const pfApplySent = seen.filter((x) => x.command === "parameter_fill").at(-1).args;
+assert.ok(!pfApplied.isError && pfApplySent.fill === true && pfApplySent.dry_run === false && pfApplySent.check_only === false && pfApplySent.all_documents === false, "after the identical preview the fill applies");
+assert.match((await call("parameter_fill", { action: "fill", rows: pfRows, explanation: "Fill blanks with NA" })).content[0].text, /not been previewed/, "a preview is used once");
 // The requirements vault: writing needs consent once per vault, then the folder is trusted.
 const vtmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-smoke-vault-"));
 const vNo = await call("vault", { action: "init", folder: vtmp, project: "Smoke" });

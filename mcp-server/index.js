@@ -14,6 +14,7 @@ import path from "node:path";
 import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
 import * as Report from "./lib/report.js";
+import * as ParamList from "./lib/paramlist.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
@@ -749,6 +750,51 @@ tool("assign_worksets", {
   if (!dry_run && result?.success) briefCache.clear();
   journal({ title: `${dry_run ? "Preview" : "Change"}: assign worksets per the BEP`, explanation, outcome: outcomeOf(result, dry_run), details: result?.byWorkset });
   return text(result);
+});
+
+tool("parameter_fill", {
+  title: "Parameter completeness from a list",
+  description: "Check a parameter list (CSV with parameter_name, categories, type_instance, or rows inline) against the model: per row missing / blank / filled, storage type, binding, Project Information group. action check (default, read-only; all_documents: every open model). action fill: sets value (default \"NA\") on blank text parameters of the active model, with the usual dry_run preview and confirmation, ONE undo step. Details: revit_guide workflows.",
+  inputSchema: {
+    action: z.enum(["check", "fill"]).optional(),
+    list: z.string().optional().describe("Path of the CSV parameter list"),
+    rows: z.array(z.object({ name: z.string(), categories: z.string().describe("e.g. \"Project Information\", \"Levels\" or a group key"), type_instance: z.string().optional() })).max(5000).optional(),
+    all_documents: z.boolean().optional(),
+    value: z.string().max(100).optional(),
+    max_ids: z.number().int().min(0).max(500).optional().describe("Element ids returned per row (default 20)"),
+    dry_run: z.boolean().optional(),
+    explanation: z.string().max(600).optional(),
+    plan: z.array(z.string().max(120)).max(15).optional(), step: z.number().int().min(1).optional(),
+  },
+  annotations: writes,
+}, async ({ action, list, rows, all_documents, value, max_ids, dry_run, explanation, plan, step }) => {
+  if (!list === !rows) throw new RevitError("Give either 'list' (path of the CSV) or 'rows'.");
+  let mapped;
+  if (list) {
+    if (!fs.existsSync(list)) throw new RevitError(`Parameter list not found: ${list}`);
+    try { mapped = ParamList.rowsFromCsv(fs.readFileSync(list, "utf8")); } catch (err) { throw new RevitError(err.message); }
+  } else mapped = ParamList.mapRows(rows);
+  if (!mapped.rows.length) throw new RevitError(`No usable rows in the list (${mapped.skipped.length} skipped: unknown category or type).`);
+  const fill = action === "fill";
+  if (fill && all_documents) throw new RevitError("fill works on the active model only; leave out all_documents.");
+  const req = { rows: mapped.rows, all_documents: !!all_documents && !fill, fill, value: value ?? "NA", max_ids: max_ids ?? 20 };
+  const listInfo = { skipped: mapped.skipped, duplicates: mapped.duplicates };
+  const answer = (result) => {
+    const out = text({ ...result, list: listInfo });
+    out.content.push({ type: "text", text: ParamList.summaryText(result, { ...listInfo, dryRun: !!dry_run }) });
+    if (fill && dry_run && result?.success) out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Show the user what would be filled and ask for confirmation." });
+    return out;
+  };
+  if (!fill) return answer(await callRevit("parameter_fill", { ...req, check_only: true, dry_run: false }, 900));
+  requireExplanation(dry_run, explanation);
+  const result = await gated(fingerprint("parameter_fill", req),
+    { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
+    () => callRevit("parameter_fill", { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step }, 900), (r) => r?.success === true);
+  if (result?.alreadyApplied) return text(result);
+  if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
+  if (!dry_run && result?.success) briefCache.clear();
+  journal({ title: `${dry_run ? "Preview" : "Change"}: fill blank parameters with "${req.value}"`, explanation, outcome: outcomeOf(result, dry_run), details: result?.fill });
+  return answer(result);
 });
 
 tool("presentation_standard", {

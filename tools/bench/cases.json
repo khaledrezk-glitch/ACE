@@ -543,6 +543,64 @@
           "op": "exists"
         }
       ]
+    },
+    {
+      "name": "Parameter list check (built-in parameters per group, read-only)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance"
+          },
+          {
+            "name": "Elevation",
+            "group": "levels",
+            "level": "instance"
+          },
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance"
+          }
+        ],
+        "all_documents": false,
+        "fill": false,
+        "value": "NA",
+        "max_ids": 5,
+        "check_only": true,
+        "dry_run": false
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "documents[0].summary.rows",
+          "op": "==",
+          "value": 3
+        },
+        {
+          "path": "documents[0].rows[name=Project Name].origin",
+          "op": "==",
+          "value": "built-in"
+        },
+        {
+          "path": "documents[0].rows[name=Elevation].missing",
+          "op": "==",
+          "value": 0
+        },
+        {
+          "path": "documents[0].rows[name=Elevation].isText",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "documents[0].rows[name=Comments].checked",
+          "op": ">=",
+          "value": 1
+        }
+      ]
     }
   ]
 }

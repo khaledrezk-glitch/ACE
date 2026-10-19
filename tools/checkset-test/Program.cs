@@ -209,6 +209,50 @@ class P {
     Check(SizeStatus(280, "warn").StartsWith("met|") && SizeStatus(280, "warn").Contains("280 MB"), "a 280 MB model under a 300 MB limit is met (review noted), not 280 failing items");
     Check(SizeStatus(320, "fail").StartsWith("not-met|"), "a model over the size limit is not met");
 
+    // ---- parameter_fill (completeness from a parameter list): groups, type/instance, blank rules, row de-duplication, summary ----
+    var pfT = a.GetType("AceRevitMcp.Rules.ParameterFillLogic");
+    string Gk(string v) => (string)pfT.GetMethod("GroupKey", flags).Invoke(null, new object[] { v });
+    string Lk(string v) => (string)pfT.GetMethod("LevelKey", flags).Invoke(null, new object[] { v });
+    bool Blank(bool isText, bool hasValue, string text) => (bool)pfT.GetMethod("IsBlank", flags).Invoke(null, new object[] { isText, hasValue, text });
+    Check(Gk("Project Information") == "project" && Gk("Rooms, Areas, Spaces") == "rooms" && Gk("  levels ") == "levels" && Gk("Systems,  Components, Elements") == "elements" && Gk("elements") == "elements",
+      "list category values (and group keys) map to project / rooms / levels / elements");
+    Check(Gk("Doors") == null && Gk("") == null && Gk(null) == null, "an unknown category value is not guessed");
+    Check(Lk("Type") == "type" && Lk("Instance") == "instance" && Lk("") == "instance" && Lk(null) == "instance" && Lk("both") == null, "Type reads the type; Instance or blank the element; anything else is unknown");
+    Check(Blank(true, true, "") && Blank(true, true, "   ") && Blank(true, false, null) && !Blank(true, true, "NA"), "text: empty or whitespace is blank, NA is filled");
+    Check(Blank(false, false, null) && !Blank(false, true, null), "numbers, Yes/No, ids: blank only without a value (0 counts as filled)");
+    var pfRows = System.Text.Json.Nodes.JsonNode.Parse(@"[
+      { ""name"": ""Area"", ""group"": ""rooms"" },
+      { ""name"": ""Area"", ""group"": ""Systems, Components, Elements"", ""level"": ""Type"" },
+      { ""name"": ""Area"", ""group"": ""Rooms, Areas, Spaces"", ""level"": ""Type"" },
+      { ""name"": "" "", ""group"": ""project"" },
+      { ""name"": ""MOD_GEN_City Name"", ""group"": ""Project Information"" },
+      { ""name"": ""X"", ""group"": ""Doors"" },
+      { ""parameter_name"": ""Y"", ""categories"": ""Levels"", ""type_instance"": ""Instance"" } ]").AsArray();
+    var pfSkipped = new System.Text.Json.Nodes.JsonArray();
+    var parsed = (IList)pfT.GetMethod("ParseRows", flags).Invoke(null, new object[] { pfRows, pfSkipped });
+    var rowT = pfT.GetNestedType("Row", flags);
+    string Rw(int i, string f) => (string)rowT.GetField(f).GetValue(parsed[i]);
+    Check(parsed.Count == 4 && Rw(0, "Group") == "rooms" && Rw(1, "Group") == "elements" && Rw(1, "Level") == "type" && Rw(2, "Name") == "MOD_GEN_City Name" && Rw(3, "Group") == "levels",
+      "the key is name + group: Area in two groups is two rows; the CSV column names are accepted too");
+    Check(pfSkipped.Count == 3 && ((string)pfSkipped[0]["reason"]).StartsWith("duplicate") && ((string)pfSkipped[1]["reason"]) == "no parameter name" && ((string)pfSkipped[2]["reason"]).Contains("unknown category group 'Doors'"),
+      "a duplicate name + group (first wins), a nameless row and an unknown category come back as skipped rows");
+    var resT2 = pfT.GetNestedType("RowResult", flags);
+    var results2 = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(resT2));
+    void Res(int chk, int miss, int blank, int filled, string st, bool? gen)
+    {
+      var r = Activator.CreateInstance(resT2);
+      resT2.GetField("Checked").SetValue(r, chk); resT2.GetField("Missing").SetValue(r, miss); resT2.GetField("Blank").SetValue(r, blank);
+      resT2.GetField("Filled").SetValue(r, filled); resT2.GetField("StorageType").SetValue(r, st); resT2.GetField("InGeneral").SetValue(r, gen); results2.Add(r);
+    }
+    Res(1, 0, 0, 1, "String", true);    // complete
+    Res(10, 2, 3, 5, "String", null);   // blanks (and some missing)
+    Res(4, 4, 0, 0, null, null);        // missing everywhere
+    Res(3, 0, 1, 2, "Double", false);   // not text, not in General
+    Res(0, 0, 0, 0, null, null);        // no elements of the group
+    var sum = (System.Text.Json.Nodes.JsonObject)pfT.GetMethod("Summary", flags).Invoke(null, new object[] { results2 });
+    Check((int)sum["rows"] == 5 && (int)sum["complete"] == 1 && (int)sum["withBlanks"] == 2 && (int)sum["missingEverywhere"] == 1 && (int)sum["notText"] == 1 && (int)sum["notInGeneral"] == 1 && (int)sum["noElements"] == 1,
+      "summary: complete, with blanks, missing everywhere, not text, not in General, no elements");
+
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("check set test passed");

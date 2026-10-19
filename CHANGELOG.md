@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased
+## 1.9.3 (19 Oct 2026)
+- **Parameter list check and NA fill:** new tool `parameter_fill` reads a client parameter list (CSV: parameter_name, categories, type_instance; or rows) and reports per open model which parameters are complete, blank, missing everywhere, not text or (Project Information) not in General. `action: "fill"` sets "NA" (or `value`) on blank text parameters of the active model, previewed first, one undo step.
 - Compliance shows a decided project decision (kind "note", status "decided") beside the requirement's status, met included, so the result names the reading it rests on (e.g. "DEC-0002 (decided: 25 mm in force)"). Open notes stay hidden; deviations work as before.
 - `check_setup` on Revit 2024 lists C# scripts as "not available yet" (info) instead of a failed Revit session with a wrong fix.
 

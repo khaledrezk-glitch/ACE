@@ -37,6 +37,17 @@ for "put things on the right worksets", "workset check", "set up worksets" use a
 With a rules file in place, model_dashboard also reports "Elements on the wrong workset (BEP)" (the same rules), so
 the check runs every time the model is checked, not only when asked.
 
+## Parameter list completeness (AIS / LOIN lists)
+
+For "are all the client's parameters filled", "check the parameter list", "fill the blanks with NA" use parameter_fill
+with list: the CSV path (columns parameter_name, categories, type_instance) or rows. Categories map to groups: Project
+Information, "Rooms, Areas, Spaces", Levels, "Systems, Components, Elements" (all other model elements); unknown ones
+come back as skipped. Start with a check (all_documents: true for every open model) and report per model: complete,
+with blanks, missing everywhere (the parameter is not loaded or bound: a binding job, not a fill), not text (cannot take
+"NA") and Project Information parameters not in the General group (ACE never moves a group; tell the user). Fill only
+when the user asks: action fill, dry_run first, then the identical call after confirmation. Only blank text parameters
+get the value; read-only and borrowed elements are skipped and listed.
+
 ## Requirements vault and audits
 
 The project's client documents (EIR, BEP, LOIN, MIDP, client comments) live in its vault (`vault`). Start with
