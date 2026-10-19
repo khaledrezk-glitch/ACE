@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.11.0 (19 Oct 2026)
+- **Add-in: one plan per model, verified before it is kept:** `parameter_fill` takes `bind`, `rebind`, `derive`
+  (copyFrom, join, or a literal `value` written only into truly blank targets), the fill, `impact` and `register` as one
+  write plan in one transaction group (bindings > rebinds > regenerate > derive > NA last; type values written once).
+  Before commit every planned write is read back; any mismatch rolls the whole group back (`verify`, transaction
+  "VerifyFailed"). Bindings come from a shared parameter file only (hash checked, the file setting restored and read
+  back; untouched in check_only), unknown group types are refused, and borrowed or locked elements block the plan with
+  who holds them and how to clear it. Impact scan: schedules, view filters, and tag / title block labels (families open
+  in the editor are skipped and named). Register of every blank id; `whitespaceOnly` counted.
+- **Several Revit sessions:** each add-in listens on the first free port of 48884-48893 and writes
+  `%APPDATA%\ACE-RevitMCP\instances\<pid>.json` (machine, models; family documents left out).
+- **Execution stage (`parameter_fill action fill`):** runs the ready auto-fixable actions of the active model (or
+  `actions: [ids]` from the action list) as ONE plan, ONE approval, ONE undo step: bindings (from the project shared
+  parameter file, or a temporary file holding exactly the client's line, with "add this line to the project file"; never
+  a new GUID; never for built-ins), derived values from the mapping's approved derive rules (ACE shape, or the project
+  shape's twins and string formulas that parse to a join; others are reported "rule not machine-readable"), then the
+  approved NA value. The gate key covers rows, bindings, derive rules, value and the source file bytes; the apply sends
+  `expect_model` and every write plan `expect_version`. With `all_documents` the other models' plans are listed read-only.
+- **Fail fast, never silent:** an unapproved NA policy or derive section, a missing project shared parameter file, a
+  changed source file (named), another add-in version and borrowed elements stop the plan before Revit writes anything,
+  each with what, why and how to clear it. Held parts of the default plan and every skip are listed in the reply.
+- **Impact (P4) in the dry run:** schedules (has-value filters), view filters, labels on sheets (inferred), IFC property
+  sets (`ifc_property_sets`) and the client checks that flip, with the caveat that "NA" passes a HasValue check.
+- **Missing register and evidence (P7):** `missing-register-<model>-<stamp>.csv/.md` before every fill (report_dir, else
+  the trusted vault's `04 Audits/<model>/parameters`, else the reports folder); `evidence-<model>-<stamp>.md` after an
+  apply (missing before, bound, derived, NA written, skipped, still blank, not bound, self-check, blocks); a
+  `fill-run-*.json` run record with the blocks and skips. A failed self-check is reported as rolled back.
+- **Actions:** every action has a stable id; auto-fixable ones carry what the execution stage runs and whether it is ready.
+  New: built-in parameters not available on some categories (information action, never a binding; the AIS `origin`
+  column is read), LOIN sheets without a discipline scope, names a client file defines several times with different
+  GUIDs (all GUIDs accepted in the check: `guids` on the bridge row).
+- **Discipline scope:** generic role codes (AR, ST, ME, EL, PL, FP, ID, LA, CV, BM, PS) read the discipline from the model
+  title when the mapping names none; `groupDisciplines` scopes AIS and checker rows per group ("*" = every model).
+- **Checker review:** scope defects of parked checks are reported too (flagged). A check of all open models says how many
+  linked models were not checked.
+- **Write-path hardening:** one Revit session is pinned per call; every preview records its session (machine, pid,
+  port) and an apply that would reach another session is refused. The dry run also names its model. Rows whose scope or
+  categories rest on an unapproved mapping part (an entry with confidence other than high, an unapproved section) are
+  plan-only: checked, held with the reason, never written. An unknown add-in version blocks. Audit files never overwrite
+  each other and model names are safe in paths; an untrusted vault is said. Every binding carries `fileHash`.
+- **GUID differs, not wrong (DEC-0004):** status `guid-differs` (1.10 `wrong-guid` still read): a decision with two
+  options, and an explicit-only `rebind` action that replaces the definition keeping the values (shows what is dropped).
+- **Mapping:** an approved `nameAliases.spellingRule` turns case / space-only differences into aliases;
+  `derive.projectInformationValues` sets literal Project Information values per model title glob (most specific wins).
+  `test_force_verify_mismatch` (acceptance tests only) forces the apply's self-check to fail (the dry run passes, so the
+  gate allows the apply), which rolls the whole plan back.
+- **Several Revit sessions:** the server reads the add-in's instance files (live pid + /health), picks the session by
+  model (`expect_model`, or `revit_status instance`), else the only one, else the most recent with a note naming the
+  others; `revit_status` and `check_setup` list them. Older add-ins: /health on ports 48884-48893, then config.port.
+
 ## 1.10.0 (19 Oct 2026)
 - **Parameter requirements from several sources:** new read-only tool `parameter_check` merges the AIS CSV (`list`),
   the LOIN workbook (`loin`), the client's Model Checker XML (`checker`, active HasValue / Defined checks only) and the

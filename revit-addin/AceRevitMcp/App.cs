@@ -40,6 +40,7 @@ namespace AceRevitMcp
                 application.ControlledApplication.DocumentChanged += ChangeTracker.OnDocumentChanged;
                 Tracking.ChangeTracking.Attach(application);
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
+                InstanceRegistry.Attach(application);
                 Server.Start();
                 CreateRibbon(application);
                 Scripting.CodeRunner.WarmUp();
@@ -59,6 +60,7 @@ namespace AceRevitMcp
             application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged;
             try { Tracking.ChangeTracking.Detach(); } catch { }
             try { Companion.CompanionPane.Unregister(application); } catch { }
+            try { InstanceRegistry.Detach(); } catch { }
             Server?.Dispose();
             return Result.Succeeded;
         }

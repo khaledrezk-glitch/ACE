@@ -697,6 +697,101 @@
           "value": 1
         }
       ]
+    },
+    {
+      "name": "Parameter plan (1.11): register and impact on the read-only check",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance",
+            "categories": [
+              "OST_Walls"
+            ],
+            "key": "r1"
+          },
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance",
+            "key": "r2"
+          }
+        ],
+        "all_documents": false,
+        "fill": false,
+        "check_only": true,
+        "dry_run": false,
+        "register": true,
+        "impact": true,
+        "max_ids": 5
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "documents[0].register",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].impact",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].preflight.aceVersion",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Parameter plan (1.11): another server version is refused before any write",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance",
+            "categories": [
+              "OST_Walls"
+            ],
+            "key": "r1"
+          },
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance",
+            "key": "r2"
+          }
+        ],
+        "all_documents": false,
+        "fill": true,
+        "value": "NA",
+        "check_only": false,
+        "dry_run": true,
+        "expect_version": "0.0.1",
+        "max_ids": 5
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "stage",
+          "op": "==",
+          "value": "blocked"
+        },
+        {
+          "path": "blocked[0].code",
+          "op": "==",
+          "value": "version"
+        }
+      ]
     }
   ]
 }

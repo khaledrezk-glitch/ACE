@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -27,6 +28,9 @@ namespace AceRevitMcp.Bridge
         private readonly RequestDispatcher _dispatcher;
         private readonly string _revitVersion;
         private HttpListener _listener;
+        /// <summary>The configured port and the next ones: a second Revit session takes the next free port.</summary>
+        public const int PortRange = 10;
+        private int _port;
 
         public BridgeServer(AceConfig config, RequestDispatcher dispatcher, string revitVersion)
         {
@@ -36,35 +40,55 @@ namespace AceRevitMcp.Bridge
         }
 
         public bool IsRunning => _listener?.IsListening == true;
-        public string Url => $"http://localhost:{_config.Port}/";
+        /// <summary>The port this session listens on (the configured one until it has started).</summary>
+        public int Port => _port > 0 ? _port : _config.Port;
+        public string Url => $"http://localhost:{Port}/";
         public string LastError { get; private set; }
 
         public void Start()
         {
             if (IsRunning) return;
-            try
+            var first = _config.Port;
+            var last = Math.Min(65535, first + PortRange - 1);
+            var errors = new System.Collections.Generic.List<string>();
+            for (var port = first; port <= last; port++)
             {
-                _listener = new HttpListener();
-                // "localhost" (not 127.0.0.1 or +) is the only prefix Windows lets a non-admin user bind.
-                _listener.Prefixes.Add(Url);
-                _listener.Start();
-                LastError = null;
-                Log.Info($"Bridge listening on {Url}");
-                _ = Task.Run(AcceptLoop);
+                var url = $"http://localhost:{port}/";
+                try
+                {
+                    var listener = new HttpListener();
+                    // "localhost" (not 127.0.0.1 or +) is the only prefix Windows lets a non-admin user bind.
+                    listener.Prefixes.Add(url);
+                    listener.Start();
+                    _listener = listener;
+                    _port = port;
+                    LastError = null;
+                    Log.Info(port == first
+                        ? $"Bridge listening on {url} (pid {InstanceRegistry.ProcessId})"
+                        : $"Bridge listening on {url} (pid {InstanceRegistry.ProcessId}): port {first} is taken (another Revit session?), so this session took port {port}.");
+                    InstanceRegistry.Register(port, _revitVersion);
+                    _ = Task.Run(AcceptLoop);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"{port}: {ex.Message}");
+                    Log.Warn($"Bridge: port {port} not available ({ex.Message}){(port < last ? ", trying the next one" : "")}.");
+                }
             }
-            catch (Exception ex)
-            {
-                LastError = ex.Message;
-                Log.Error($"Could not start the bridge on {Url}: {ex.Message}. " +
-                          $"If another program uses port {_config.Port}, change \"port\" in {AceConfig.FilePath}.");
-                _listener = null;
-            }
+            _listener = null;
+            _port = 0;
+            LastError = $"No free port in {first}-{last}: " + errors.LastOrDefault();
+            Log.Error($"Could not start the bridge on any port {first}-{last} ({errors.LastOrDefault()}). " +
+                      $"Close a Revit session, or change \"port\" in {AceConfig.FilePath}.");
         }
 
         public void Stop()
         {
             try { _listener?.Stop(); _listener?.Close(); } catch { }
             _listener = null;
+            _port = 0;
+            InstanceRegistry.Unregister();
             Log.Info("Bridge stopped");
         }
 
@@ -95,6 +119,8 @@ namespace AceRevitMcp.Bridge
                         ["ok"] = true,
                         ["service"] = "ace-revit-mcp",
                         ["revitVersion"] = _revitVersion,
+                        ["port"] = Port,
+                        ["pid"] = InstanceRegistry.ProcessId,
                         ["busy"] = RequestDispatcher.Busy is { } b ? $"{b.Command} since {b.Since:HH:mm:ss}" : null,
                     });
                     return;

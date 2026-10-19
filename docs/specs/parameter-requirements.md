@@ -105,7 +105,7 @@ binding: `unboundCategories` (row categories the binding does not cover), `wrong
 type, or the reverse); GUID: `modelGuid`, `guidMatch` (against the row's expected GUID from the project file, else
 the client file), `definitions` (how many definitions with that name the model has); Project Information rows:
 `value` (the display value, so the server can compare twins). `status`, one of: `out-of-scope`, `unmapped`,
-`no-elements`, `not-bound`, `wrong-guid`, `partly-bound`, `blanks`, `complete-with-na`, `complete`.
+`no-elements`, `not-bound`, `guid-differs` (1.10: `wrong-guid`; DEC-0004: a decision, never "wrong"), `partly-bound`, `blanks`, `complete-with-na`, `complete`.
 
 Server: the same name with different GUIDs across models (`guidDiffers`); Project Information twins (`PRJ_GN_x` and
 `PRJ_GEN_x`, same attribute after the prefix) whose values differ; per-model text summary; with `report_dir`, a CSV of
@@ -237,10 +237,13 @@ sheet and row, checker check). Written as xlsx (the zip writer in `lib/docx.js`)
 ```json
 { "rows": [...], "scope": {...}, "na_values": ["NA"], "value": "NA",
   "fill": true,
-  "derive": [ { "target": "A", "copyFrom": "B" }, { "target": "C", "join": ["D", "E"], "separator": "-" } ],
+  "derive": [ { "target": "A", "copyFrom": "B" }, { "target": "C", "join": ["D", "E"], "separator": "-" },
+              { "target": "Building Name", "value": "<literal>" } ],
   "bind": [ { "name": "P", "guid": "…", "dataType": "TEXT", "group": "project", "level": "instance",
               "categories": ["OST_ProjectInformation"], "file": "<shared parameter file path>", "groupTypeId": "General" } ],
+  "rebind": [ { "name": "P", "oldGuid": "…", "guid": "…", "file": "…", "fileHash": "<sha256>" } ],
   "impact": true, "register": true, "expect_model": "<title>", "expect_version": "1.11.0",
+  "test_force_verify_mismatch": false,
   "check_only": false, "dry_run": true }
 ```
 - **Order inside the one transaction group** (one undo step): blockers first (fail fast, before any write: version
@@ -262,3 +265,13 @@ sheet and row, checker check). Written as xlsx (the zip writer in `lib/docx.js`)
 - `impact: true` and `register: true` also work with `check_only` (no transaction) so `parameter_check` can show them.
 - `EditFamily` for the label scan runs only outside a transaction (check_only path, or before the group starts), is
   cached per family, and closes each family document without saving.
+- **Literal derive** (`value`): written only into truly blank targets (never over NA or text). The server builds these
+  from the mapping's `derive.projectInformationValues` (`{ "<model title glob>" | "*": { "<parameter>": "<value>" } }`,
+  most specific match wins).
+- **Rebind** (explicit-only action, for `guid-differs` once a person decides "rebind model to file"): the old values are
+  read, the old definition deleted, the new one bound from the file, the values written back and verified; what the old
+  definition drops (schedule fields, filter rules, labels) is shown in the dry run (`rebound`).
+- **`test_force_verify_mismatch`** (acceptance test W10 only): the apply's self-check gets one forced mismatch, so the
+  whole group rolls back; the dry run is not forced, so the preview gate lets the apply run.
+- **Spelling rule:** an approved `nameAliases.spellingRule` makes a case / space-only difference to a client or project
+  shared parameter file name an approved alias (the file's spelling is the target).

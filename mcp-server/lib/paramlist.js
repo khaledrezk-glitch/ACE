@@ -63,7 +63,8 @@ export function mapRows(raw) {
     const key = `${name}\0${group}`;
     if (seen.has(key)) { duplicates.push({ ...where, name, group }); continue; }
     seen.add(key);
-    rows.push({ name, group, level });
+    // The list's own origin column ("Built-In"): a Revit built-in parameter is never bound.
+    rows.push(/^built[\s_-]?in$/i.test(String(r.origin ?? "").trim()) ? { name, group, level, origin: "built-in" } : { name, group, level });
     lines.push(r.line);
   }
   return { rows, lines, skipped, duplicates };
@@ -75,11 +76,11 @@ export function rowsFromCsv(csvText) {
   if (!head) throw new Error("The parameter list is empty.");
   const cols = head.map((h) => norm(h).replace(/[\s-]+/g, "_"));
   const at = (n) => cols.indexOf(n);
-  const [iName, iCat, iLevel] = [at("parameter_name"), at("categories"), at("type_instance")];
+  const [iName, iCat, iLevel, iOrigin] = [at("parameter_name"), at("categories"), at("type_instance"), at("origin")];
   if (iName < 0 || iCat < 0) {
     throw new Error(`The parameter list needs the columns parameter_name and categories (found: ${head.join(", ")}).`);
   }
-  return mapRows(body.map((f, k) => ({ line: k + 2, name: f[iName], categories: f[iCat], type_instance: iLevel < 0 ? "" : f[iLevel] })));
+  return mapRows(body.map((f, k) => ({ line: k + 2, name: f[iName], categories: f[iCat], type_instance: iLevel < 0 ? "" : f[iLevel], origin: iOrigin < 0 ? undefined : f[iOrigin] })));
 }
 
 /** One line per model (and one for the fill) from the bridge answer. */
@@ -88,7 +89,7 @@ export function summaryText(result, listInfo = {}) {
   for (const d of result?.documents ?? []) {
     const s = d.summary ?? summarise(d.rows ?? []);
     // 1.10 fields (requirement sources): shown only when the add-in sends them.
-    const more = [["withNA", "with NA"], ["outOfScope", "out of scope"], ["notBound", "not bound"], ["wrongGuid", "wrong GUID"], ["wrongLevel", "wrong type/instance"], ["foreign", "foreign element(s) not judged"]]
+    const more = [["withNA", "with NA"], ["outOfScope", "out of scope"], ["notBound", "not bound"], ["notAvailable", "built-in not available on some elements"], ["guidDiffers", "GUID differs from the files"], ["wrongGuid", "GUID differs from the files"], ["wrongLevel", "wrong type/instance"], ["foreign", "foreign element(s) not judged"]]
       .filter(([k]) => s[k] != null).map(([k, t]) => `${s[k]} ${t}`).join(", ");
     lines.push(`${d.model}${d.discipline ? ` (${d.discipline})` : ""}: ${s.rows} rows - ${s.complete} complete, ${s.withBlanks} with blanks, ${s.missingEverywhere} missing everywhere, ` +
       `${s.notText} not text (cannot take NA), ${s.notInGeneral} Project Information row(s) not in General${more ? `; ${more}` : ""}.`);

@@ -22,7 +22,13 @@ namespace AceRevitMcp.Commands
         /// When the change depends on rules read from a file (not in the request): their fingerprint. It becomes part of the
         /// change's identity, so an apply after the rules changed is refused: the preview showed other rules.
         /// </param>
-        public static JsonObject Run(UIApplication app, JsonObject args, string kind, string title, Func<Document, bool, JsonObject> body, string rules = null)
+        /// <param name="verify">
+        /// Optional self-check, called after the transaction committed and before the group is kept (apply) or rolled
+        /// back (dry run), with the document and the body's result (it may add to it). False rolls the whole group back
+        /// and the call fails: nothing is changed. Not called for check_only.
+        /// </param>
+        public static JsonObject Run(UIApplication app, JsonObject args, string kind, string title, Func<Document, bool, JsonObject> body, string rules = null,
+            Func<Document, JsonObject, bool> verify = null)
         {
             var doc = Args.RequireDoc(app);
             if (rules != null)
@@ -54,6 +60,7 @@ namespace AceRevitMcp.Commands
 
             JsonObject result;
             string status = null;
+            var verifyFailed = false;
             var recording = ChangeTracker.Begin(title);
             using (var guard = new ModelGuard(app))
             using (var group = new TransactionGroup(doc, title))
@@ -68,6 +75,13 @@ namespace AceRevitMcp.Commands
                     var committed = t.Commit();
                     recording.CaptureNames(doc);
                     if (committed != TransactionStatus.Committed) { group.RollBack(); status = committed.ToString(); }
+                    else if (verify != null && !Verified(verify, doc, result))
+                    {
+                        verifyFailed = true;
+                        group.RollBack();
+                        status = "VerifyFailed";
+                        recording.CaptureNames(doc);
+                    }
                     else if (dryRun) { status = group.RollBack().ToString(); recording.CaptureNames(doc); }
                     else { status = group.Assimilate().ToString(); kept = status == nameof(TransactionStatus.Committed); }
                 }
@@ -86,7 +100,8 @@ namespace AceRevitMcp.Commands
                 if (guard.Warnings.Count > 0) result["revitWarnings"] = new JsonArray(guard.Warnings.Distinct().Take(20).Select(w => (JsonNode)w).ToArray());
                 if (guard.Errors.Count > 0) result["revitErrors"] = new JsonArray(guard.Errors.Distinct().Take(20).Select(w => (JsonNode)w).ToArray());
                 if (guard.Dialogs.Count > 0) result["dialogs"] = new JsonArray(guard.Dialogs.Take(10).Select(w => (JsonNode)w).ToArray());
-                result["note"] = !ok ? "Revit rolled the change back (see revitErrors). Nothing was changed."
+                result["note"] = verifyFailed ? "The self-check after the writes found planned writes that did not show (see verify): the whole change was rolled back. Nothing was changed."
+                    : !ok ? "Revit rolled the change back (see revitErrors). Nothing was changed."
                     : dryRun ? "Preview only: the model is unchanged. Apply it from the Apply card in the ACE panel, or confirm to Claude."
                     : $"Applied as ONE undo step named '{title}'.";
                 var anything = (summary?["modified"]?.ToString() ?? "0") + (summary?["added"]?.ToString() ?? "0") + (summary?["deleted"]?.ToString() ?? "0") != "000";
@@ -95,11 +110,23 @@ namespace AceRevitMcp.Commands
                     // An Apply card in the Companion, titled for people (the title is not part of the change's identity).
                     var cardArgs = (JsonObject)args.DeepClone();
                     cardArgs["transaction_name"] = "Claude: " + title.Replace("ACE: ", "");
+                    if (kind == "parameter_fill") { cardArgs.Remove("impact"); cardArgs.Remove("register"); }   // read-only extras: an apply needs neither
                     Companion.ActivityHub.AddPending(kind, cardArgs, result, doc);
                 }
                 else if (ok && !dryRun && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
             }
             return result;
+        }
+
+        /// <summary>The self-check; an exception counts as a failed check (reported in the result's "verify").</summary>
+        private static bool Verified(Func<Document, JsonObject, bool> verify, Document doc, JsonObject result)
+        {
+            try { return verify(doc, result); }
+            catch (Exception ex)
+            {
+                result["verify"] = new JsonObject { ["ok"] = false, ["error"] = ex.Message, ["mismatches"] = new JsonArray() };
+                return false;
+            }
         }
     }
 }

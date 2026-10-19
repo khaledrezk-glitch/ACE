@@ -11,14 +11,15 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, currentCall, failure, localDate, readConfig, text } from "./lib/core.js";
+import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, localDate, pinSession, preferInstance, readConfig, sessionKey, sessionLabel, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
 import * as Report from "./lib/report.js";
 import * as ParamList from "./lib/paramlist.js";
 import * as ParamSources from "./lib/paramsources.js";
 import * as ParamActions from "./lib/paramactions.js";
+import * as ParamExec from "./lib/paramexec.js";
 import os from "node:os";
-import { fingerprint, gated, journal, outcomeOf, screenCode } from "./lib/safety.js";
+import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
 import { buildReport, runChecks } from "./lib/diagnostics.js";
@@ -46,14 +47,16 @@ function tool(name, config, handler) {
     }, 15_000);
     let result;
     let error;
+    const notes = new Set();   // e.g. which Revit session answered when several run
     try {
-      result = await currentCall.run({ signal: extra?.signal }, () => handler(args ?? {}));
+      result = await currentCall.run({ signal: extra?.signal, notes }, () => handler(args ?? {}));
     } catch (err) {
       error = err;
       result = failure(err);
     } finally {
       if (beat) clearInterval(beat);
     }
+    if (notes.size && Array.isArray(result?.content)) result.content.push({ type: "text", text: [...notes].join("\n") });
     logCall(summarize(name, args, result, Date.now() - started, error));
     return result;
   });
@@ -69,10 +72,17 @@ const benign = { readOnlyHint: false, destructiveHint: false, idempotentHint: fa
 
 tool("revit_status", {
   title: "Revit connection status",
-  description: "Check that Revit (2024 or 2025) is running and reachable, the add-in version, and which documents are open. If anything fails, call check_setup.",
-  inputSchema: {},
+  description: "Check that Revit (2024 or 2025) is running and reachable, the add-in version, and which documents are open; lists every running Revit session with ACE. instance (a model title or pid) picks the session ACE talks to. If anything fails, call check_setup.",
+  inputSchema: { instance: z.string().max(260).optional().describe("Model title or pid of the Revit session to use") },
   annotations: readOnly,
-}, async () => text(await callRevit("ping", {}, 20)));
+}, async ({ instance }) => {
+  if (instance !== undefined) preferInstance(instance || null);
+  const pick = await chooseInstance();
+  const status = await callRevit("ping", {}, 20);
+  if (!pick.list.length) return text(status);
+  return text({ ...status, session: pick.chosen ? describeInstance(pick.chosen) : undefined,
+    sessions: pick.list.map((s) => ({ pid: s.pid, port: s.port, revitVersion: s.revitVersion, aceVersion: s.aceVersion, activeDocument: s.activeDocument, openDocuments: s.openDocuments, user: s.user, chosen: s === pick.chosen })) });
+});
 
 // The brief is cached per model for a few minutes (it reads the whole model and its links).
 const briefCache = new Map();
@@ -759,7 +769,7 @@ tool("assign_worksets", {
 // parameter_check only reads (its fill_plan counts without a transaction); parameter_fill writes, after its own dry run.
 const sourceInputs = {
   list: z.string().optional().describe("AIS-style CSV (parameter_name, categories, type_instance)"),
-  rows: z.array(z.object({ name: z.string(), categories: z.string().describe("e.g. \"Project Information\", \"Levels\" or a group key"), type_instance: z.string().optional() })).max(5000).optional(),
+  rows: z.array(z.object({ name: z.string(), categories: z.string().describe("e.g. \"Project Information\", \"Levels\" or a group key"), type_instance: z.string().optional(), origin: z.string().optional() })).max(5000).optional(),
   loin: z.string().optional().describe("LOIN workbook (.xlsx)"),
   checker: z.string().optional().describe("Model Checker settings XML"),
   shared_parameters: z.array(z.string()).max(50).optional().describe("Client shared parameter files"),
@@ -809,29 +819,48 @@ function sourceNotes(src) {
   return notes;
 }
 
-/** The fill: value from the project's NA policy (mapping) or the value argument; never a built-in default. */
-function fillRequest(src, a) {
+/** The fill value: the project's approved NA policy, else `value` when the mapping has none. { value } or { value: null, why }. */
+function fillValue(src, a) {
   const policy = src.naPolicy;
   if (policy.value && a.value && a.value !== policy.value)
-    throw new RevitError(`The project mapping's NA policy says "${policy.value}"; value "${a.value}" differs. Change the policy in the mapping or leave value out.`);
-  const value = policy.value ?? a.value;
-  if (!value) throw new RevitError(policy.pending ? `The project mapping's NA policy ("${policy.pending}") is not approved yet: approve it in the mapping (or pass value).`
-    : "No fill value: set the NA policy in the project mapping (fill.value / naPolicy.value) or pass value.");
+    return { value: null, why: `The project mapping's NA policy says "${policy.value}"; value "${a.value}" differs. Change the policy in the mapping or leave value out.` };
+  const value = policy.value ?? (policy.pending ? null : a.value);
+  if (value) return { value };
+  return { value: null, why: policy.pending ? `The project mapping's NA policy ("${policy.pending}") is not approved yet: a person approves it in the mapping (status: approved).`
+    : "No fill value: set the NA policy in the project mapping (fill.value / naPolicy.value) or pass value." };
+}
+/** The fill plan's request (parameter_check fill_plan): the 1.10 count without a transaction. */
+function fillRequest(src, a) {
+  const fv = fillValue(src, a);
+  if (!fv.value) throw new RevitError(fv.why);
   const confirmed = src.rows.filter((r) => !r.draftMapping);
   return {
-    req: { rows: confirmed.map(ParamSources.bridgeRow), scope: src.scope, all_documents: false, fill: true, value, na_values: policy.values.length ? policy.values : [value], max_ids: a.max_ids ?? 20 },
+    req: { rows: confirmed.map(ParamSources.bridgeRow), scope: src.scope, all_documents: false, fill: true, value: fv.value, na_values: naValues(src, fv.value), max_ids: a.max_ids ?? 20 },
     draftOnly: src.rows.length - confirmed.length,
   };
 }
-// The gate key: rows, scope, value and the bytes of every source file read (a changed source or mapping blocks the apply).
-const fillKey = (src, req) => fingerprint("parameter_fill", { rows: req.rows, scope: req.scope, value: req.value, na: req.na_values, files: src.hash });
-const fillPreviewModel = new Map();   // gate key -> the model the dry run ran in (sent as expect_model with the apply)
+const naValues = (src, value) => src.naPolicy.values.length ? src.naPolicy.values : value ? [value] : undefined;
+/** What the execution stage needs, for the action list's ready flags. */
+function execReadiness(src, a) {
+  const fv = fillValue(src, a);
+  const d = ParamExec.deriveRules(src.mapping?.mapping);
+  return { value: fv.value, valueWhy: fv.why, deriveApproved: d.approved, deriveStatus: d.status, projectFile: src.projectFile, deriveSet: d };
+}
 
-const PROBLEM = new Set(["blanks", "not-bound", "partly-bound", "wrong-guid", "no-elements"]);
+const PROBLEM = new Set(["blanks", "not-bound", "partly-bound", "guid-differs", "no-elements", "not-available"]);
 function compactRow(x) {
   const out = { key: x.key, name: x.name, status: x.status, checked: x.checked, blank: x.blank, na: x.na, missing: x.missing, filled: x.filled };
   if (PROBLEM.has(x.status)) for (const [k, v] of Object.entries(x)) if (/Ids$/.test(k) && Array.isArray(v) && v.length) out[k] = v;
   return out;
+}
+
+/** Linked models are never checked as documents: say so (never silent). */
+function linksNote(result, a) {
+  const p = result?.documents?.[0]?.preflight;
+  const n = p?.links?.count ?? 0;
+  if (!a.all_documents || !n) return "";
+  const names = (p.links.names ?? []).slice(0, 5).join(", ");
+  return `${n} linked model(s) not checked (they are links; open them as documents to check them)${names ? `: ${names}${n > 5 ? ", ..." : ""}` : ""}.`;
 }
 
 /**
@@ -858,14 +887,17 @@ function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0 } = {})
   const cells = src.rows.length * Math.max(1, docs.length);
   const large = cells > 200;
   const review = src.checker ? ParamSources.reviewChecker(src.checker, { ais: src.ais, index: src.index, codes: src.scope.codes }) : null;
-  const actions = ParamActions.buildActions({ result: view, rows: src.rows, unmappedRows: src.unmappedRows, defects, review, derive: src.mapping?.mapping?.derive });
+  const exec = execReadiness(src, a);
+  const actions = ParamActions.buildActions({ result: view, rows: src.rows, unmappedRows: src.unmappedRows, defects, review, deriveSet: exec.deriveSet, exec });
   const top = actions.slice(0, 10).map(ParamActions.actionLine);
+  const runnable = actions.filter((x) => x.run);
   const summary = [
     afterDocs ? `Before the fill:\n${ParamList.summaryText({ documents: result.documents })}\nAfter the fill:` : "",
     ParamList.summaryText(view, { ...src.listInfo, dryRun: dryRun || plan }),
+    linksNote(result, a),
     draftOnly ? `${draftOnly} row(s) left out of the fill: their categories come only from a draft (unconfirmed) mapping. They are still checked.` : "",
     ParamSources.defectsText(defects), ...sourceNotes(src),
-    top.length ? `Actions (top ${top.length} of ${actions.length}, read-only):\n${top.join("\n")}` : "",
+    top.length ? `Actions (top ${top.length} of ${actions.length}, read-only; ${runnable.length} auto-fixable, ${runnable.filter((x) => x.ready).length} ready for parameter_fill):\n${top.join("\n")}` : "",
   ].filter(Boolean).join("\n");
   let reports;
   if (a.report_dir || large) {
@@ -883,15 +915,16 @@ function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0 } = {})
     success: result?.success, model: result?.model, dryRun: result?.dryRun, checkOnly: result?.checkOnly, stage: result?.stage, error: result?.error,
     fill: f ? { set: f.set, value: f.value, skipped: f.skippedCount ?? f.skipped?.length ?? 0, reasons } : undefined,
     changed: result?.changed, wouldChange: result?.wouldChange,
-    documents: docs.map(({ rows, ...d }) => ({ ...d, rows: large ? undefined : (rows ?? []).map(compactRow), rowsInReport: large ? rows?.length ?? 0 : undefined })),
+    documents: docs.map(({ rows, register, impact, ...d }) => ({ ...d, rows: large ? undefined : (rows ?? []).map(compactRow), rowsInReport: large ? rows?.length ?? 0 : undefined })),
     skippedRows: result?.skippedRows?.length || undefined,
     defectCounts: Object.fromEntries(Object.entries(defects).filter(([, v]) => v?.length).map(([k, v]) => [k, v.length])),
-    actions: actions.length, list: { skipped: src.listInfo.skipped.length, duplicates: src.listInfo.duplicates.length },
+    actions: actions.length, actionIds: runnable.length && !large ? runnable.slice(0, 50).map((x) => ({ id: x.id, ready: x.ready })) : undefined,
+    list: { skipped: src.listInfo.skipped.length, duplicates: src.listInfo.duplicates.length },
     sources: src.info.sources, mapping: src.mapping?.file, reports,
   };
   const out = text(body);
   out.content.push({ type: "text", text: summary + (large ? `\nThe full table (${cells} model x row cells) is in the report files, not shown here: ${reports.join(", ")}` : reports ? `\nReport: ${reports.join(", ")}` : "") });
-  if (fill && dryRun && result?.success) out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Show the user what would be filled and ask for confirmation; then repeat the identical parameter_fill call without dry_run." });
+  if (fill && dryRun && result?.success) out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Show the user the plan below and ask for confirmation; then repeat the identical parameter_fill call without dry_run (ONE approval, ONE undo step for this model)." });
   if (plan) out.content.push({ type: "text", text: "FILL PLAN (read-only, no transaction): counts of what a fill would set. To fill: parameter_fill action fill with dry_run: true, then the identical call after the user confirms." });
   return out;
 }
@@ -900,7 +933,7 @@ async function paramCheck(src, a) {
   const req = { rows: src.bridgeRows, scope: src.scope, all_documents: !!a.all_documents, fill: false, max_ids: a.max_ids ?? 20 };
   if (src.naPolicy.values.length) req.na_values = src.naPolicy.values;
   if (!req.rows.length) throw new RevitError(`No checkable rows (${src.unmappedRows.length} unmapped LOIN row(s); map their categories in the project mapping).`);
-  return paramAnswer(src, await callRevit("parameter_fill", { ...req, check_only: true, dry_run: false }, 900), a);
+  return paramAnswer(src, ParamSources.normaliseAnswer(await callRevit("parameter_fill", { ...req, check_only: true, dry_run: false }, 900)), a);
 }
 
 async function paramFillPlan(src, a) {
@@ -908,30 +941,237 @@ async function paramFillPlan(src, a) {
   const { req, draftOnly } = fillRequest(src, a);
   if (!req.rows.length) throw new RevitError(`No rows to fill (${draftOnly} row(s) come only from a draft mapping).`);
   // check_only + fill: the add-in counts what the fill would set, without a transaction (nothing is borrowed or changed).
-  return paramAnswer(src, await callRevit("parameter_fill", { ...req, check_only: true, dry_run: false }, 900), a, { plan: true, draftOnly });
+  return paramAnswer(src, ParamSources.normaliseAnswer(await callRevit("parameter_fill", { ...req, check_only: true, dry_run: false }, 900)), a, { plan: true, draftOnly });
 }
 
-async function paramFill(src, a, { dry_run, explanation, plan, step }) {
-  const { req, draftOnly } = fillRequest(src, a);
-  if (!req.rows.length) throw new RevitError(`No rows to fill (${draftOnly} row(s) come only from a draft mapping: confirm it first).`);
+// ---- stage 4: execution (one plan per model) ------------------------------------------------------------------------
+
+const execState = new Map();   // request key -> { key (gate), hash, files, model } of its last successful dry run
+const sameVersion = (a, b) => String(a).split(".").slice(0, 3).map(Number).join(".") === String(b).split(".").slice(0, 3).map(Number).join(".");
+
+/** A refusal in plain words: what, why, how to clear; never silent. */
+function blockedReply(blocks, lead, extra = {}) {
+  const lines = blocks.map((b) => `- ${ParamExec.blockLine(b)}`);
+  return { isError: true, content: [{ type: "text", text: `${lead}\n${lines.join("\n")}` }, { type: "text", text: JSON.stringify({ success: false, stage: "blocked", blocked: blocks, ...extra }) }] };
+}
+
+/**
+ * Where the register, evidence and run record go: report_dir, else the trusted vault's 04 Audits/<model>/parameters, else
+ * the reports folder (with a note when a vault was found but is not trusted). -> { dir, note }
+ */
+async function auditFolder(a, model) {
+  if (a.report_dir) return { dir: a.report_dir };
+  let dir = a.vault ? Vault.vaultDir(a.vault) : null;
+  if (!dir) { try { dir = (await vaultFolder()).dir; } catch { dir = null; } }
+  const fallback = path.join(REPORTS_DIR, "parameter-fill");
+  if (dir && fs.existsSync(dir)) {
+    if (Vault.trusted(path.dirname(CONFIG_PATH), dir)) return { dir: path.join(dir, "04 Audits", ParamExec.safeName(model), "parameters") };
+    return { dir: fallback, note: `vault not trusted: files written to ${fallback} (ACE writes into ${dir} once the user allows it: vault with consent: true).` };
+  }
+  return { dir: fallback };
+}
+/** Writes a new file (never over another: a counter is added to the stem when the name is taken). */
+function writeOut(dir, name, content) {
+  fs.mkdirSync(dir, { recursive: true });
+  const ext = path.extname(name), stem = name.slice(0, name.length - ext.length);
+  let f = path.join(dir, name);
+  for (let i = 2; fs.existsSync(f); i++) f = path.join(dir, `${stem}-${i}${ext}`);
+  fs.writeFileSync(f, content);
+  return f;
+}
+
+/** The request's identity (what the user asked for), apart from the words for people and the preview switch. */
+const requestKey = (a) => {
+  const { report_dir, ifc_property_sets, max_ids, ...rest } = a;
+  return fingerprint("parameter_fill.request", rest);
+};
+
+async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
   requireExplanation(dry_run, explanation);
-  const key = fillKey(src, req);
-  const expect = dry_run ? undefined : fillPreviewModel.get(key);
+  const fv = fillValue(src, a);
+  const deriveSet = ParamExec.deriveRules(src.mapping?.mapping);
+  const asked = a.actions?.length ? new Set(a.actions) : null;
+  const reqKey = requestKey(a);
+  // Fail fast, before Revit is asked: approvals and files the picked actions need, and the source files since the dry run.
+  const early = [];
+  if (asked) {
+    const kinds = new Set([...asked].map(ParamExec.kindOf));
+    if (kinds.has("fill") && !fv.value) early.push({ what: "the NA fill", why: fv.why, how: "approve the NA policy (or pass value when the mapping has none), or leave the fill actions out" });
+    if (kinds.has("derive") && !deriveSet.approved) early.push({ what: "the derive rules", why: `the mapping's derive section is not approved (${deriveSet.status ?? (deriveSet.present ? "draft mapping" : "no derive section")})`, how: "a person approves them in the mapping (status: approved), or leave the derive actions out" });
+    if ((kinds.has("bind") || kinds.has("rebind")) && !src.projectFile) early.push({ what: "the bindings", why: "no project shared parameter file was given: ACE binds only from it (or the client's exact line)", how: "give project_parameters (or sources.projectSharedParameters in the mapping), or leave the bind actions out" });
+  }
+  const prev = dry_run ? null : execState.get(reqKey);
+  if (prev && prev.hash !== src.hash) {
+    const changed = Object.keys({ ...prev.files, ...src.fileHashes }).filter((f) => prev.files[f] !== src.fileHashes[f]);
+    early.push({ what: "the apply", why: `the source files changed since the dry run (${changed.map((f) => path.basename(f)).join(", ") || "the source list"}): this exact change has not been previewed`, how: "run the dry run again, show the user the new plan, then apply" });
+  }
+  // An apply needs its successful dry run, in the same Revit session: checked before anything is read or written.
+  if (!dry_run && !early.length) {
+    if (!prev) requirePreview(`none:${reqKey}`);
+    requirePreview(prev.key);
+  }
+  const session = await pinSession();
+  if (!dry_run && prev && previews.get(prev.key)?.session !== sessionKey(session))
+    early.push({ what: "the apply", why: `the preview was made in Revit session ${previews.get(prev.key)?.label}, this call would go to ${sessionLabel(session)}`, how: "preview again in the session to change" });
+  if (early.length) {
+    journal({ title: "Blocked: parameter plan", explanation, outcome: "BLOCKED before Revit was asked - nothing changed", details: { blocked: early } });
+    return blockedReply(early, "Blocked before Revit was asked; nothing changed:");
+  }
+
+  // The model as it is now (read-only): statuses for the plan, the pre-flight, and the register of every blank value.
+  const allDocs = !!a.all_documents && !!dry_run;
+  const check = ParamSources.normaliseAnswer(await callRevit("parameter_fill", { rows: src.bridgeRows, scope: src.scope, all_documents: allDocs, fill: false, check_only: true, dry_run: false,
+    register: true, max_ids: a.max_ids ?? 20, ...(naValues(src, fv.value) ? { na_values: naValues(src, fv.value) } : {}) }, 900));
+  const docs = check?.documents ?? [];
+  const active = docs[0];
+  if (!active) throw new RevitError("Revit answered without a model: open the model to fill and run again.");
+  const model = active.model;
+  const { dir, note: dirNote } = await auditFolder(a, model);
+  const stamp = localDate(new Date(), { time: true });
+  const register = active.register ?? check.register ?? [];
+  // P7: the register of genuinely blank values, written before any fill (dry run and apply).
+  const registerFile = writeOut(dir, `${ParamExec.fileStem("missing-register", model, stamp)}.csv`, ParamExec.registerCsv(model, register));
+  writeOut(dir, `${ParamExec.fileStem("missing-register", model, stamp)}.md`, ParamExec.registerMarkdown(model, register, { dryRun: dry_run }));
+  const record = (o) => writeOut(dir, `${ParamExec.fileStem("fill-run", model, stamp)}.json`, JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, registerFile, ...o }, null, 1));
+
+  const version = active.preflight?.aceVersion ?? check.aceVersion;
+  if (!version || !sameVersion(version, VERSION)) {
+    const b = [{ what: "the whole plan", why: version ? `the ACE server is ${VERSION}, the add-in in Revit is ${version}` : `the add-in did not report its version (older than ${VERSION}?): install ${VERSION}`,
+      how: "install one ACE version for both (build a package with build-package.ps1, run install.ps1, restart Revit)" }];
+    record({ outcome: "blocked", blocked: b });
+    return blockedReply(b, `Blocked in ${model}; nothing changed:`, { model, registerFile });
+  }
+
+  // Actions -> the selection -> one plan per model.
+  const view = { ...check, documents: docs };
+  const exec = { value: fv.value, valueWhy: fv.why, deriveApproved: deriveSet.approved, deriveStatus: deriveSet.status, projectFile: src.projectFile };
+  const review = src.checker ? ParamSources.reviewChecker(src.checker, { ais: src.ais, index: src.index, codes: src.scope.codes }) : null;
+  const actions = ParamActions.buildActions({ result: view, rows: src.rows, unmappedRows: src.unmappedRows, defects: { ...src.defects, ...ParamSources.crossModel(view) }, review, deriveSet, exec });
+  const held = [];
+  let selected;
+  if (asked) {
+    const byId = new Map(actions.map((x) => [x.id, x]));
+    const bad = [...asked].filter((id) => !byId.get(id)?.run).map((id) => byId.has(id)
+      ? { what: `action ${id}`, why: `it is not auto-fixable (${byId.get(id).type}): ${byId.get(id).what}`, how: "do it by hand or decide it first; leave it out of actions" }
+      : { what: `action ${id}`, why: "no such action in the current check (the model or the sources changed?)", how: "run parameter_check again and pick from its action ids" });
+    const notReady = [...asked].map((id) => byId.get(id)).filter((x) => x?.run && !x.ready)
+      .map((x) => ({ what: `action ${x.id}`, why: x.blockers.map((b) => b.what).join("; "), how: x.blockers.map((b) => b.how).join("; ") }));
+    if (bad.length || notReady.length) { record({ outcome: "blocked", blocked: [...bad, ...notReady] }); return blockedReply([...bad, ...notReady], "Blocked; nothing changed:", { model, registerFile }); }
+    selected = [...asked].map((id) => byId.get(id));
+  } else {
+    selected = actions.filter((x) => x.run && x.ready && !x.explicitOnly);   // a rebind runs only when picked
+    for (const x of actions.filter((x) => x.run && !x.ready && !x.explicitOnly && (!x.run.models?.length || x.run.models.includes(model))))
+      held.push({ what: `action ${x.id} (${x.what})`, why: x.blockers.map((b) => b.what).join("; "), how: x.blockers.map((b) => b.how).join("; ") });
+  }
+  const tempDir = path.join(REPORTS_DIR, "parameter-fill", "shared-parameters");
+  const ctx = { rows: src.rows, bridgeRow: ParamSources.bridgeRow, index: src.index, derive: deriveSet, value: fv.value, valueProblem: fv.why,
+    projectFile: src.projectFile, tempDir, readFile: (f) => fs.readFileSync(f) };
+  const plans = docs.map((d) => ParamExec.buildPlan(d, selected, ctx));
+  const mine = plans[0];
+  held.push(...mine.held);
+  if (asked && mine.held.length) { record({ outcome: "blocked", blocked: mine.held }); return blockedReply(mine.held, `Blocked in ${model}; nothing changed:`, { model, registerFile }); }
+  const others = plans.slice(1).filter(ParamExec.hasWork).map(ParamExec.planLine);
+  if (!ParamExec.hasWork(mine)) {
+    record({ outcome: "nothing to run", held });
+    const b = held.length ? held : [{ what: "the plan", why: `no auto-fixable action applies to ${model}`, how: "run parameter_check to see the action list" }];
+    return blockedReply(b, `Nothing to run in ${model}; nothing changed:${others.length ? `\nOther models' plans (switch to the model and run the same call): ${others.join("; ")}` : ""}`, { model, registerFile });
+  }
+  // Fail fast on the pre-flight: blanks on elements others have borrowed.
+  const pf = active.preflight ?? {};
+  if ((mine.fill || mine.derive.length) && pf.blanksBorrowed > 0) {
+    const holders = Object.entries(pf.borrowedBy ?? {}).map(([u, n]) => `${u} (${n})`).join(", ");
+    const b = [{ what: `${pf.blanksBorrowed} element(s) with blanks`, why: "they are borrowed by other users", elements: pf.blanksBorrowed, holder: holders || undefined, how: "ask them to synchronise and relinquish, then run the dry run again" }];
+    record({ outcome: "blocked", blocked: b });
+    return blockedReply(b, `Blocked in ${model}; nothing changed:`, { model, registerFile });
+  }
+  // The temporary definition file: named after its content; rewritten when what is on disk is not exactly that.
+  for (const t of mine.temp) {
+    let same = false;
+    try { same = ParamExec.sha256(fs.readFileSync(t.file)) === ParamExec.sha256(t.bytes); } catch { same = false; }
+    if (!same) { fs.mkdirSync(path.dirname(t.file), { recursive: true }); fs.writeFileSync(t.file, t.bytes); }
+  }
+
+  // One gate key per plan: rows, scope, bindings, derive rules, value and the bytes of every source file.
+  const na_values = naValues(src, mine.value);
+  const req = { rows: mine.rows, scope: src.scope, all_documents: false, fill: mine.fill, ...(mine.fill ? { value: mine.value } : {}), ...(na_values ? { na_values } : {}),
+    derive: mine.derive, bind: mine.bind, ...(mine.rebind.length ? { rebind: mine.rebind } : {}), max_ids: a.max_ids ?? 20, expect_version: VERSION,
+    ...(a.test_force_verify_mismatch ? { test_force_verify_mismatch: true } : {}) };
+  const key = fingerprint("parameter_fill.plan", { model, rows: req.rows, scope: req.scope, fill: req.fill, value: req.value, na: req.na_values, derive: req.derive, bind: req.bind, rebind: req.rebind,
+    force: !!a.test_force_verify_mismatch, files: src.hash });
+  if (prev && prev.key !== key) {
+    const b = [{ what: "the apply", why: `the model changed since the dry run, so the plan is different now (${ParamExec.planLine(mine)}): this exact change has not been previewed`, how: "run the dry run again, show the user the new plan, then apply" }];
+    record({ outcome: "blocked", blocked: b });
+    return blockedReply(b, `Blocked in ${model}; nothing changed:`, { model, registerFile });
+  }
+  const expect = dry_run ? model : prev?.model;   // the dry run and the apply both name the model they are for
   const result = await gated(key,
     { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    () => callRevit("parameter_fill", { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step, ...(expect ? { expect_model: expect } : {}) }, 900), (r) => r?.success === true);
-  if (dry_run && result?.success) fillPreviewModel.set(key, result.model ?? result.documents?.[0]?.model);
-  if (!dry_run) fillPreviewModel.delete(key);
+    async () => ParamSources.normaliseAnswer(await callRevit("parameter_fill", { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step, ...(dry_run ? { impact: true } : {}), ...(expect ? { expect_model: expect } : {}) }, 900)),
+    (r) => r?.success === true);
+  if (dry_run && result?.success) execState.set(reqKey, { key, hash: src.hash, files: src.fileHashes, model: result.model ?? model });
+  if (!dry_run) execState.delete(reqKey);
   if (result?.alreadyApplied) return text(result);
   if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
-  if (!dry_run && result?.success) briefCache.clear();
-  journal({ title: `${dry_run ? "Preview" : "Change"}: fill blank parameters with "${req.value}"`, explanation, outcome: outcomeOf(result, dry_run), details: result?.fill });
-  return paramAnswer(src, result, a, { dryRun: !!dry_run, fill: true, draftOnly });
+  const blocked = result?.blocked ?? [];
+  const skips = ParamExec.skipsOf(result);
+  const v = result?.verify;
+  const rolledBack = v && v.ok === false;
+  const outcome = result?.stage === "blocked" ? "blocked" : rolledBack ? "self-check failed, rolled back" : outcomeOf(result, dry_run);
+  record({ outcome, plan: { rows: mine.rows.length, bind: mine.bind, derive: mine.derive, fill: mine.fill, value: mine.value }, held, blocked, skips, verify: v, notes: mine.notes });
+  journal({ title: `${dry_run ? "Preview" : "Change"}: parameter plan in ${model} (${ParamExec.planLine(mine)})`, explanation, outcome, details: { blocked, held, skips: skips.slice(0, 30), verify: v, fill: result?.fill?.set, derived: Array.isArray(result?.derived) ? result.derived.map((d) => ({ rule: d.text, set: d.set })) : undefined, bindings: result?.bindings && { planned: result.bindings.planned, done: result.bindings.done } } });
+  if (result?.stage === "blocked") return blockedReply(blocked.length ? blocked : [{ what: "the plan", why: result.error ?? "refused by the add-in" }], `Blocked in ${model}: ${result.error ?? "nothing changed"}`, { model, registerFile });
+  let evidence;
+  if (!dry_run) {
+    evidence = writeOut(dir, `${ParamExec.fileStem("evidence", model, stamp)}.md`, ParamExec.evidenceMarkdown({ model, when: stamp, register, result, plan: { ...mine, sources: src.rows.filter((r) => mine.rows.some((b) => b.key === r.key)).flatMap((r) => r.sources) }, blocked, held, registerFile }));
+    if (result?.success) briefCache.clear();
+  }
+
+  // The reply: the 1.10 answer, then the plan, impact, blocks and skips in plain words.
+  const out = paramAnswer(src, result, a, { dryRun: !!dry_run, fill: true });
+  const lines = [`PLAN for ${model} (${dry_run ? "dry run, rolled back" : rolledBack ? "NOT applied" : "applied as ONE undo step"}): ${ParamExec.planLine(mine)}.`];
+  const bd = result?.bindings;
+  if (bd) lines.push(`Bindings: ${bd.done ?? 0} of ${bd.planned ?? mine.bind.length} ${dry_run ? "would be made" : "made"}${(bd.items ?? []).length ? ` (${bd.items.map((i) => `${i.name}: ${i.action}`).join("; ")})` : ""}.${bd.note ? ` ${bd.note}` : ""}`);
+  const rb = result?.rebound;
+  if (mine.rebind.length) {
+    lines.push(`Rebind (explicit): ${mine.rebind.map((e) => `${e.name} ${e.oldGuid} -> ${e.guid}`).join("; ")}; the values are kept: read before, written back under the new definition and verified.`);
+    if (rb) {
+      // The add-in answers dropped as counts { schedules, viewFilters, labels }; a list is read too.
+      const dropped = Array.isArray(rb.dropped) ? rb.dropped.map((d) => typeof d === "string" ? d : ParamExec.blockLine(d))
+        : Object.entries(rb.dropped ?? {}).filter(([, n]) => n).map(([k, n]) => `${n} ${{ schedules: "schedule field(s)", viewFilters: "view filter rule(s)", labels: "label(s) (keep the old GUID)" }[k] ?? k}`);
+      lines.push(`Rebind: ${rb.done ?? 0} of ${rb.planned ?? mine.rebind.length} ${dry_run ? "would be replaced" : "replaced"}${(rb.values ?? rb.restored) != null ? `, ${rb.values ?? rb.restored} value(s) restored` : ""}.`);
+      lines.push(dropped.length ? `Dropped with the old definition (schedule fields, filter rules, labels that used it):\n${dropped.map((d) => `- ${d}`).join("\n")}` : "Nothing is dropped with the old definition.");
+      const oldImp = ParamExec.impactLines({ impact: rb.impact ?? Object.fromEntries(Object.entries(result?.impact ?? {}).filter(([k]) => k.endsWith(" (old definition)"))), value: mine.value ?? "NA" });
+      if (oldImp.length) lines.push(`The old definition is used by:\n${oldImp.map((l) => `- ${l}`).join("\n")}`);
+    }
+  }
+  for (const d of Array.isArray(result?.derived) ? result.derived : []) lines.push(`Derived ${d.text ?? d.target}: ${d.set ?? 0} value(s)${dry_run ? " would be" : ""} set.`);
+  const types = [...(result?.fill?.types ?? []), ...(Array.isArray(result?.derived) ? result.derived.flatMap((d) => d.types ?? []) : [])];
+  if (types.length) lines.push(`Type parameters: ${types.length} type(s) written once each, reaching ${types.reduce((n, t) => n + (t.instancesAffected ?? 0), 0)} instance(s) (e.g. ${types.slice(0, 3).map((t) => `${t.name}: ${t.parameter} -> ${t.instancesAffected ?? 0}`).join("; ")}).`);
+  lines.push(...mine.notes);
+  if (dry_run) {
+    const ifc = a.ifc_property_sets ? ParamExec.readIfcPropertySets(fs.readFileSync(a.ifc_property_sets)) : null;
+    const params = uniqList([...mine.rows.filter((r) => mine.fill).map((r) => r.name), ...mine.derive.map((r) => r.target)]);
+    const flips = ParamExec.checkerFlips(src.checker, params, ParamSources.checkRequirement);
+    const imp = ParamExec.impactLines({ impact: result?.impact ?? {}, ifc, flips, params, value: mine.value ?? "NA" });
+    if (imp.length) lines.push(`Impact (what the writes reach):\n${imp.map((l) => `- ${l}`).join("\n")}${mine.fill ? `\n${ParamExec.NA_CAVEAT}` : ""}`);
+  }
+  if (blocked.length) lines.push(`Blocked (held, not written):\n${blocked.map((b) => `- ${ParamExec.blockLine(b)}`).join("\n")}`);
+  if (held.length) lines.push(`Not in this plan:\n${held.map((b) => `- ${ParamExec.blockLine(b)}`).join("\n")}`);
+  if (skips.length) lines.push(`Skipped:\n${skips.slice(0, 15).map((s) => `- [${s.part}] ${ParamExec.blockLine(s)}`).join("\n")}${skips.length > 15 ? `\n- ... ${skips.length - 15} more (run record)` : ""}`);
+  if (v && !v.ok && a.test_force_verify_mismatch) lines.push("Self-check FAILED (forced by test flag) - rolled back, nothing changed.");
+  else if (v) lines.push(v.ok ? `Self-check: ok (${v.checked ?? "every"} planned write(s) read back).`
+    : `Self-check FAILED: ${v.mismatchCount ?? v.mismatches?.length} mismatch(es); the whole plan was rolled back, nothing changed. ${(v.mismatches ?? []).slice(0, 5).map((m) => `${m.name ?? m.key}${m.id != null ? ` #${m.id}` : ""}: expected ${JSON.stringify(m.expected)}, found ${JSON.stringify(m.actual)}`).join("; ")}`);
+  if (others.length) lines.push(`Other open models (read-only plans; switch to the model and run the same call, one approval each): ${others.join("; ")}`);
+  lines.push(`Missing register: ${registerFile}${evidence ? `\nEvidence: ${evidence}` : ""}${dirNote ? `\n${dirNote}` : ""}`);
+  out.content.push({ type: "text", text: lines.join("\n") });
+  if (rolledBack) out.isError = true;
+  return out;
 }
+const uniqList = (l) => [...new Set(l)];
 
 tool("parameter_check", {
   title: "Parameter requirements check (read-only)",
-  description: "Checks the client's information requirements (AIS list, LOIN, Model Checker XML, shared parameter files, read through the project mapping in the vault) per open model; actions requirements and review_checker need no Revit; fill_plan counts what a fill would set. Details: revit_guide workflows.",
+  description: "Checks the client's information requirements (AIS list, LOIN, Model Checker XML, shared parameter files, read through the project mapping in the vault) per open model, with a ranked action list (stable ids; auto-fixable ones run with parameter_fill); actions requirements and review_checker need no Revit; fill_plan counts what a fill would set. Details: revit_guide workflows.",
   inputSchema: {
     action: z.enum(["check", "requirements", "review_checker"]).optional(),
     ...sourceInputs,
@@ -967,11 +1207,14 @@ tool("parameter_check", {
 });
 
 tool("parameter_fill", {
-  title: "Fill blank required parameters",
-  description: "Sets the project's NA value (mapping NA policy, or value) on blank text parameters of the active model for the rows of the given sources (same inputs as parameter_check), ONE undo step: dry_run: true first, then the identical call after confirmation; a changed source file or another active model blocks the apply. Rows mapped only by a draft mapping are never filled.",
+  title: "Run the parameter plan (bind, derive, fill)",
+  description: "Execution stage: runs parameter_check's auto-fixable actions (default: every ready one; actions: [ids]) on the active model as ONE plan, ONE undo step: bindings, derived values, then the approved NA value. dry_run: true first (impact, missing register), then the identical call (self-checked, evidence written). Same source inputs as parameter_check; details: revit_guide workflows.",
   inputSchema: {
     action: z.enum(["check", "fill"]).optional().describe("check: same as parameter_check (kept for old callers)"),
     ...sourceInputs,
+    actions: z.array(z.string().max(40)).max(300).optional().describe("Action ids to run (default: every ready auto-fixable one)"),
+    ifc_property_sets: z.string().optional().describe("IFC export user-defined property set file (.txt): impact"),
+    test_force_verify_mismatch: z.boolean().optional().describe("Acceptance tests only: the add-in fails its self-check on purpose and rolls back"),
     value: z.string().max(100).optional().describe("Only when the mapping has no NA policy"),
     dry_run: z.boolean().optional(),
     explanation: z.string().max(600).optional(),
@@ -979,10 +1222,10 @@ tool("parameter_fill", {
   },
   annotations: writes,
 }, async ({ action, dry_run, explanation, plan, step, ...a }) => {
+  if (a.ifc_property_sets && !fs.existsSync(a.ifc_property_sets)) throw new RevitError(`File not found: ${a.ifc_property_sets}`);
   const src = await paramSources(a);
   if (action !== "fill") return paramCheck(src, a);
-  if (a.all_documents) throw new RevitError("fill works on the active model only; leave out all_documents.");
-  return paramFill(src, a, { dry_run, explanation, plan, step });
+  return paramExecute(src, a, { dry_run, explanation, plan, step });
 });
 
 tool("presentation_standard", {

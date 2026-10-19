@@ -10,6 +10,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-smoke-"));
+const SERVER_VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+const writesSeen = [];   // write plans the fake add-in received, with the missing registers already on disk at that moment
+const regDir = path.join(tmp, "exec");
+const regFiles = () => { try { return fs.readdirSync(regDir).filter((f) => f.startsWith("missing-register-")); } catch { return []; } };
 const token = "test-token";
 const seen = [];
 
@@ -43,14 +47,44 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: args.summary ? { success: true, dryRun: !!args.dry_run, after: args.summary } : { model: "Test", summary: null } });
       case "assign_worksets":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, transaction: args.check_only ? undefined : args.dry_run ? "RolledBack" : "Committed", rules: `${args.rules_name} (${args.rules_source}), ${args.rules?.length} rules`, firstRule: args.rules?.[0]?.workset } });
-      case "parameter_fill":
+      case "parameter_fill": {
         if (args.expect_model && args.expect_model !== "Test") return reply({ ok: true, result: { success: false, stage: "wrong_model", error: `The preview ran in ${args.expect_model}; the active model is Test.` } });
-        return reply({ ok: true, result: { success: true, model: "Test", dryRun: !!args.dry_run, checkOnly: !!args.check_only || undefined, echo: args,
-          ...(args.fill && !args.dry_run && !args.check_only ? { after: { rows: args.rows.map((r) => ({ key: r.key, name: r.name, blank: 0, filled: 1, na: 1, status: "complete-with-na" })), summary: { rows: args.rows.length, complete: 0, withBlanks: 0, missingEverywhere: 0, notText: 0, notInGeneral: 0, withNA: args.rows.length } } } : {}),
-          documents: [{ model: "Test", discipline: args.scope?.models?.Test ?? null, disciplineSource: args.scope?.models?.Test ? "mapping" : null, preflight: { workshared: false, foreign: {} },
-            rows: args.rows.map((r) => ({ ...r, checked: 2, missing: 0, blank: 1, filled: 1, na: 0, onType: 0, storageType: "String", isText: true, status: "blanks", modelGuid: r.guid ?? null, value: r.group === "project" ? "x" : undefined })),
-            summary: { rows: args.rows.length, complete: 0, withBlanks: args.rows.length, missingEverywhere: 0, notText: 0, notInGeneral: 0, withNA: 0, outOfScope: 0, wrongGuid: 0, notBound: 0, wrongLevel: 0, foreign: 0 } }],
-          ...(args.fill ? { fill: { set: 2, skipped: [{ id: 9, name: "x", reason: "read-only" }] }, [args.dry_run ? "wouldChange" : "changed"]: { added: 0, modified: 2, deleted: 0 } } : {}) } });
+        const names = (args.rows ?? []).map((r) => r.name);
+        const old = names.some((n) => n.startsWith("TST_OLDADDIN"));
+        const writePlan = !args.check_only && (args.fill || args.derive?.length || args.bind?.length || args.rebind?.length);
+        // The 1.11 contract: a write plan refuses a version mismatch and borrowed targets before any write.
+        if (writePlan && args.expect_version && args.expect_version !== (old ? "1.9.0" : SERVER_VERSION))
+          return reply({ ok: true, result: { success: false, stage: "blocked", error: "Nothing was changed: version", blocked: [{ what: "the whole plan", why: "version", elements: 0, how: "update" }], model: "Test" } });
+        if (writePlan && names.some((n) => n.startsWith("TST_BORROW")))
+          return reply({ ok: true, result: { success: false, stage: "blocked", error: "Nothing was changed: 3 elements are borrowed", model: "Test",
+            blocked: [{ what: "3 element(s) of TST_BORROW_X", why: "borrowed by another user", elements: 3, sampleIds: [11, 12, 13], holder: "jane", how: "ask jane to relinquish, then re-run", code: "borrowed" }] } });
+        if (writePlan) writesSeen.push({ args, registers: regFiles() });
+        const doc = (model) => ({ model, discipline: args.scope?.models?.[model] ?? null, disciplineSource: args.scope?.models?.[model] ? "mapping" : null,
+          preflight: { workshared: false, foreign: {}, aceVersion: old ? "1.9.0" : SERVER_VERSION, links: { count: 2, notLoaded: 0, names: ["TST link A", "TST link B"] } },
+          rows: args.rows.map((r) => r.name.startsWith("TST_GD_") ? { ...r, checked: 2, missing: 0, blank: 0, filled: 2, na: 0, status: "guid-differs", modelGuid: "dddddddd-0000-0000-0000-00000000000d", isText: true }
+            : r.name.startsWith("TST_NB_") ? { ...r, checked: 3, missing: 3, blank: 0, filled: 0, na: 0, status: "not-bound", isText: true }
+            : r.name.startsWith("TST_BI_") ? { ...r, checked: 6, missing: 4, blank: 0, filled: 2, na: 0, status: "not-available", origin: "built-in", notAvailableCategories: ["Furniture"], isText: true }
+            : { ...r, checked: 2, missing: 0, blank: 1, filled: 1, na: 0, onType: 0, storageType: "String", isText: true, status: "blanks", modelGuid: r.guid ?? null, value: r.group === "project" ? "x" : undefined }),
+          ...(args.register ? { register: args.rows.filter((r) => !r.name.startsWith("TST_NB_")).map((r) => ({ key: r.key, name: r.name, category: "OST_Walls", categoryName: "Walls", level: "instance", count: 1, ids: [101] })) } : {}),
+          summary: { rows: args.rows.length, complete: 0, withBlanks: args.rows.length, missingEverywhere: 0, notText: 0, notInGeneral: 0, withNA: 0, outOfScope: 0, wrongGuid: 0, notBound: 0, wrongLevel: 0, foreign: 0 } });
+        const docs = [doc("Test"), ...(args.all_documents && names.some((n) => n.startsWith("TST_M_")) ? [doc("Test-STR")] : [])];
+        const mismatch = writePlan && !args.dry_run && (names.some((n) => n.startsWith("TST_VERIFY")) || args.test_force_verify_mismatch);   // assumed: the flag fails the apply's self-check, not the dry run's
+        return reply({ ok: true, result: { success: !mismatch, model: "Test", dryRun: !!args.dry_run, checkOnly: !!args.check_only || undefined, echo: args,
+          ...(args.fill && !args.dry_run && !args.check_only && !mismatch ? { after: { rows: args.rows.map((r) => ({ key: r.key, name: r.name, blank: 0, filled: 1, na: 1, status: "complete-with-na" })), summary: { rows: args.rows.length, complete: 0, withBlanks: 0, missingEverywhere: 0, notText: 0, notInGeneral: 0, withNA: args.rows.length } } } : {}),
+          documents: docs,
+          ...(writePlan ? {
+            transaction: mismatch ? "VerifyFailed" : args.dry_run ? "RolledBack" : "Committed",
+            bindings: { planned: args.bind?.length ?? 0, done: args.bind?.length ?? 0, skipped: [], items: (args.bind ?? []).map((b) => ({ name: b.name, guid: b.guid, action: "bind", level: b.level, categories: b.categories, file: b.file })), note: null },
+            ...(args.rebind?.length ? { rebound: { planned: args.rebind.length, done: args.rebind.length, restored: 2, items: args.rebind.map((e) => ({ name: e.name, oldGuid: e.oldGuid, guid: e.guid })),
+              dropped: [{ what: "schedule field TST_GD_Code in TST schedule", why: "it belongs to the old definition", how: "add the field again after the rebind" }],
+              impact: { [args.rebind[0].name]: { schedules: [{ name: "TST schedule", filters: [] }], viewFilters: [], labels: [] } } } } : {}),
+            derived: (args.derive ?? []).map((r) => ({ rule: r, text: `${r.target} = ${r.value != null ? `"${r.value}"` : r.copyFrom ?? r.join.join(" + ")}`, target: r.target, set: 1, skipped: [], types: [] })),
+            verify: mismatch ? { ok: false, checked: 2, mismatchCount: 1, mismatches: [{ kind: "value", key: "r1", name: names[0], id: 101, expected: "NA", actual: "", why: "not written" }] } : { ok: true, checked: 2, mismatchCount: 0, mismatches: [] },
+            ...(args.impact ? { impact: { [names[0]]: { guid: null, schedules: [{ name: "TST schedule", id: 5, filters: [{ type: "HasValue", value: null }] }], viewFilters: ["TST filter"], labels: [{ family: "TST title block", kind: "titleblock", sheets: 41, instances: 41 }], inferred: true, notes: [] } } } : {}),
+            aceVersion: SERVER_VERSION,
+          } : {}),
+          ...(args.fill ? { fill: { set: 2, skipped: [{ id: 9, name: "x", reason: "read-only" }], types: writePlan ? [{ id: 7, name: "TST type", parameter: names[0], instancesAffected: 12 }] : undefined }, [args.dry_run ? "wouldChange" : "changed"]: { added: 0, modified: 2, deleted: 0 } } : {}) } });
+      }
       case "presentation_standard":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
       case "set_parameters":
@@ -317,7 +351,8 @@ fs.writeFileSync(plist, "﻿parameter_name,categories,type_instance\r\nTST_Site,
 const pfCheck = await call("parameter_fill", { list: plist, all_documents: true });
 const pfSent = seen.filter((x) => x.command === "parameter_fill").at(-1).args;
 assert.deepEqual(pfSent.rows, [{ name: "TST_Site", group: "project", level: "instance", key: "r1" }, { name: "TST_Area", group: "rooms", level: "type", key: "r2" }], "CSV rows mapped, duplicate dropped, unknown category skipped");
-assert.deepEqual(pfSent.scope, { codes: [], models: {}, ownership: {} }, "the scope travels with the rows");
+assert.deepEqual(pfSent.scope, { codes: ["AR", "ST", "ME", "EL", "PL", "FP", "ID", "LA", "CV", "BM", "PS"], models: {}, ownership: {} }, "the scope travels with the rows; without project codes the generic role codes read the discipline from the title");
+assert.match(pfCheck.content[1].text, /2 linked model\(s\) not checked \(they are links; open them as documents to check them\): TST link A, TST link B/, "linked models are never skipped silently");
 assert.ok(pfSent.check_only === true && pfSent.fill === false && pfSent.all_documents === true && pfSent.dry_run === false && pfSent.value === undefined && pfSent.max_ids === 20, "a check is read-only across the open models and needs no value");
 assert.match(pfCheck.content[1].text, /Test: 2 rows - 0 complete, 2 with blanks.*; 0 with NA, 0 out of scope/, "per-model summary text with the 1.10 counts");
 assert.match(pfCheck.content[1].text, /1 row\(s\) skipped .*1 duplicate/, "skipped and duplicate rows are reported");
@@ -326,7 +361,8 @@ assert.ok(pfJson.documents[0].rows[0].key === "r1" && pfJson.documents[0].rows[0
 assert.equal((await call("parameter_fill", { list: path.join(tmp, "nope.csv") })).isError, true);
 const allSkipped = await call("parameter_check", { rows: [{ name: "A", categories: "Furniture" }, { name: "", categories: "Levels" }] });
 assert.ok(allSkipped.isError && /No usable rows in the list \(2 skipped: 1 unknown category, 1 no parameter name\)/.test(allSkipped.content[0].text), "all rows skipped: the reasons are given");
-assert.equal((await call("parameter_fill", { action: "fill", rows: [{ name: "A", categories: "Levels" }], all_documents: true, dry_run: true, value: "NA", explanation: "x" })).isError, true, "fill is the active model only");
+assert.ok(!(await call("parameter_fill", { action: "fill", rows: [{ name: "A", categories: "Levels" }], all_documents: true, dry_run: true, value: "NA", explanation: "x" })).isError, "all_documents: the active model's plan runs, the others are listed");
+assert.equal(seen.filter((x) => x.command === "parameter_fill").at(-1).args.all_documents, false, "a write plan is always the active model only");
 const pfRows = [{ name: "TST_Site", categories: "Project Information" }];
 assert.match((await call("parameter_fill", { action: "fill", rows: pfRows, dry_run: true, explanation: "Fill blanks" })).content[0].text, /No fill value: set the NA policy/, "no built-in fill value");
 const pfBlocked = await call("parameter_fill", { action: "fill", rows: pfRows, value: "NA", explanation: "Fill blanks with NA" });
@@ -365,7 +401,7 @@ assert.ok(JSON.parse(req.content[0].text).rows.find((r) => r.name === "TST_EL_As
 assert.ok(fs.readdirSync(path.join(tmp, "preq")).some((f) => /^parameter-requirements_.*\.csv$/.test(f)), "report_dir gets the CSV");
 const rvw = await call("parameter_check", { action: "review_checker", ...pSources, report_dir: path.join(tmp, "preq") });
 assert.match(rvw.content[1].text, /2 active, 1 parked/, "checker review");
-assert.match(rvw.content[1].text, /Scope defects \(1\): TST_ST_Grade/);
+assert.match(rvw.content[1].text, /Scope defects \(1: 1 in active checks, 0 in parked checks\): TST_ST_Grade/);
 assert.ok(fs.readdirSync(path.join(tmp, "preq")).some((f) => /^checker-review_.*\.md$/.test(f)));
 assert.ok(seen.slice(before).every((x) => x.command === "project_rules"), "requirements and review_checker only ask where the vault is; they never check the model");
 assert.equal((await call("parameter_check", { action: "review_checker", list: pAis })).isError, true, "review_checker needs the checker");
@@ -374,7 +410,7 @@ const pcSent = seen.at(-1);
 assert.ok(pcSent.command === "parameter_fill" && pcSent.args.check_only === true && pcSent.args.fill === false && pcSent.args.rows.length === 3, "the check sends the merged rows");
 assert.ok(pcSent.args.rows.every((r) => r.key && !r.sources && !r.match), "server-only fields stay on the server");
 assert.match(pcCheck.content[1].text, /Test: 3 rows/);
-assert.match(pcCheck.content[1].text, /Actions \(top \d+ of \d+, read-only\):\n1\. \[/, "the reply carries the top actions");
+assert.match(pcCheck.content[1].text, /Actions \(top \d+ of \d+, read-only; \d+ auto-fixable, \d+ ready for parameter_fill\):\n1\. \[fill-[0-9a-f]{8}; auto-fixable/, "the reply carries the top actions");
 const pcRep = await call("parameter_check", { ...pSources, report_dir: path.join(tmp, "prep") });
 const repFiles = fs.readdirSync(path.join(tmp, "prep"));
 assert.ok(["parameter-summary_", "parameter-check_", "actions_"].every((p) => repFiles.some((f) => f.startsWith(p))) && repFiles.some((f) => f.endsWith(".xlsx")), "a check with report_dir writes the summary workbook, CSV, summary and actions");
@@ -402,6 +438,142 @@ const pvault2 = path.join(tmp, "pv2", "ACE Vault");
 fs.mkdirSync(pvault2, { recursive: true });
 assert.match((await call("parameter_check", { action: "requirements", list: pAis, vault: pvault2, create_mapping: true })).content[1].text, /Draft mapping written/);
 assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-mapping.json"), "utf8")).draft, true, "create_mapping writes a draft into the vault's rules folder");
+// --- 1.11 execution stage: one plan per model (bind, derive, fill), fail fast, register before, evidence after ---
+{
+  const xdir = path.join(tmp, "xsrc");
+  fs.mkdirSync(xdir);
+  const G1 = "aaaaaaaa-0000-0000-0000-000000000001", G2 = "bbbbbbbb-0000-0000-0000-000000000002";
+  const xProj = path.join(xdir, "project.txt"), xClient = path.join(xdir, "client.txt"), xList = path.join(xdir, "ais.csv"), xMap = path.join(xdir, "mapping.json");
+  const head = "# This is a Revit shared parameter file.\r\n*META\tVERSION\tMINVERSION\r\nMETA\t2\t1\r\n*GROUP\tID\tNAME\r\n";
+  fs.writeFileSync(xProj, `${head}GROUP\t1\tTST\r\n*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\tVISIBLE\tDESCRIPTION\tUSERMODIFIABLE\r\nPARAM\t${G1}\tTST_NB_Proj\tTEXT\t\t1\t1\t\t1\r\n`);
+  const clientLine = `PARAM\t${G2}\tTST_NB_Client\tTEXT\t\t7\t1\tfrom the client\t1`;
+  fs.writeFileSync(xClient, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`${head}GROUP\t7\tClient group\r\nGROUP\t8\tOther\r\n*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\tVISIBLE\tDESCRIPTION\tUSERMODIFIABLE\r\n${clientLine}\r\nPARAM\tcccccccc-0000-0000-0000-000000000003\tTST_Other\tTEXT\t\t8\t1\t\t1\r\n`, "utf16le")]));
+  fs.writeFileSync(xList, "parameter_name,categories,type_instance,origin\r\nTST_NB_Proj,Project Information,Instance,Custom\r\nTST_NB_Client,Project Information,Instance,Custom\r\nTST_F_Code,Project Information,Instance,Custom\r\nTST_F_Name,Project Information,Instance,Custom\r\nTST_BI_Mark,\"Systems, Components, Elements\",Type,Built-In\r\n");
+  const mapping = (o = {}) => JSON.stringify({ about: "ACE parameter requirement mapping. Edit freely.", categories: {}, disciplines: {}, aliases: {}, models: {}, fill: { value: "NA", values: ["NA"] }, derive: [{ target: "TST_F_Code", copyFrom: "TST_F_Name" }], ...o });
+  fs.writeFileSync(xMap, mapping());
+  const xs = { list: xList, project_parameters: xProj, shared_parameters: [xClient], mapping: xMap, report_dir: regDir };
+  const fills = () => seen.filter((x) => x.command === "parameter_fill");
+
+  // The action list marks what the execution stage can run, with stable ids.
+  const chk = JSON.parse((await call("parameter_check", xs)).content[0].text);
+  const ids = chk.actionIds.map((x) => x.id);
+  assert.ok(ids.some((i) => i.startsWith("bind-")) && ids.some((i) => i.startsWith("fill-")) && ids.some((i) => i.startsWith("derive-")) && chk.actionIds.every((x) => x.ready), "bind, derive and fill actions are auto-fixable and ready");
+  assert.deepEqual(JSON.parse((await call("parameter_check", xs)).content[0].text).actionIds, chk.actionIds, "action ids are stable between checks");
+  const chkText = (await call("parameter_check", xs)).content[1].text;
+  assert.match(chkText, /TST_BI_Mark is a built-in parameter, not available on categories Furniture \(4 element\(s\)\): exclude those categories/, "built-ins get an information action, never a binding");
+  assert.ok(!/Extend the binding of TST_BI_Mark|Bind .*TST_BI_Mark/.test(chkText), "no binding is proposed for a built-in");
+
+  // Dry run: the check (with the register) first, then ONE write plan with the version, impact and no expect_model.
+  const n0 = fills().length;
+  const dry = await call("parameter_fill", { action: "fill", ...xs, dry_run: true, explanation: "Bind, derive and fill the project parameters" });
+  assert.ok(!dry.isError, dry.content.map((c) => c.text).join("\n"));
+  const [ck, wr] = fills().slice(n0);
+  assert.ok(ck.args.check_only === true && ck.args.register === true && !ck.args.bind, "the plan starts with a read-only check that asks for the register");
+  assert.ok(wr.args.dry_run === true && wr.args.impact === true && wr.args.expect_version === SERVER_VERSION && wr.args.expect_model === "Test", "the dry run carries the server version, the model the check saw, and asks for the impact");
+  assert.ok(writesSeen.at(-1).registers.some((f) => /^missing-register-Test-.*\.csv$/.test(f)), "the missing register is on disk before the fill call is sent");
+  const pb = wr.args.bind.find((b) => b.name === "TST_NB_Proj"), cb = wr.args.bind.find((b) => b.name === "TST_NB_Client");
+  assert.ok(pb.file === xProj && pb.guid === G1 && pb.groupTypeId === "General" && pb.categories.join() === "OST_ProjectInformation", "a project-file definition binds from the project file");
+  assert.ok(cb.guid === G2 && cb.file !== xClient && cb.file.includes("shared-parameters"), "a client-only definition binds from a temporary file");
+  const tmpText = fs.readFileSync(cb.file).subarray(2).toString("utf16le");
+  assert.ok(tmpText.includes(clientLine) && !tmpText.includes("TST_Other") && tmpText.includes("GROUP\t7\tClient group") && !tmpText.includes("GROUP\t8"), "the temporary file holds exactly the client's line (and its group), same encoding");
+  assert.deepEqual(wr.args.derive, [{ target: "TST_F_Code", copyFrom: "TST_F_Name" }], "derive rules from the mapping");
+  assert.ok(wr.args.fill === true && wr.args.value === "NA" && !wr.args.rows.some((r) => r.name === "TST_BI_Mark"), "fill with the approved NA policy; the built-in row is not in the plan");
+  const dryText = dry.content.map((c) => c.text).join("\n");
+  assert.match(dryText, /PLAN for Test \(dry run, rolled back\): Test: bind 2, derive 1 rule\(s\), fill "NA"/);
+  assert.match(dryText, /Add this line to the project shared parameter file:\n.*TST_NB_Client/, "the reply says which client line to add to the project file");
+  assert.match(dryText, /label in TST title block \(titleblock\) will print NA on 41 sheet\(s\) \(inferred\)/, "impact in plain words");
+  assert.match(dryText, /1 schedule\(s\) \(1 with a has-value filter/);
+  assert.match(dryText, /"NA" passes a HasValue check/, "the NA caveat");
+  assert.match(dryText, /Type parameters: 1 type\(s\) written once each, reaching 12 instance\(s\)/, "type writes with the instances they reach");
+  assert.match(dryText, /Missing register: .*missing-register-Test-.*\.csv/);
+  assert.ok(fs.readdirSync(regDir).some((f) => /^missing-register-Test-.*\.md$/.test(f)), "register summary");
+  assert.ok(fs.readdirSync(regDir).some((f) => /^fill-run-Test-.*\.json$/.test(f)), "run record");
+
+  // One gate per plan: another selection is another plan; the identical call applies with expect_model; once.
+  assert.match((await call("parameter_fill", { action: "fill", ...xs, actions: [ids.find((i) => i.startsWith("fill-"))], explanation: "Fill only" })).content[0].text, /not been previewed/, "a different selection needs its own dry run");
+  const app = await call("parameter_fill", { action: "fill", ...xs, explanation: "Bind, derive and fill the project parameters" });
+  assert.ok(!app.isError, app.content.map((c) => c.text).join("\n"));
+  const wa = fills().at(-1).args;
+  assert.ok(wa.dry_run === false && wa.expect_model === "Test" && wa.expect_version === SERVER_VERSION && !wa.impact && JSON.stringify(wa.bind) === JSON.stringify(wr.args.bind), "the apply sends the same plan, in the model the dry run ran in");
+  const ev = fs.readdirSync(regDir).find((f) => /^evidence-Test-.*\.md$/.test(f));
+  assert.ok(ev, "evidence after the applied fill");
+  const evText = fs.readFileSync(path.join(regDir, ev), "utf8");
+  assert.ok(/missing before \(blank values\) \| 3/.test(evText) && /bound \| 2 of 2/.test(evText) && /"NA" written \| 2/.test(evText) && /self-check \| ok/.test(evText), "evidence: missing before, bound, NA written, self-check");
+  assert.match(app.content.map((c) => c.text).join("\n"), /Evidence: .*evidence-Test-/);
+  assert.match((await call("parameter_fill", { action: "fill", ...xs, explanation: "Bind, derive and fill the project parameters" })).content[0].text, /not been previewed/, "a preview is used once");
+
+  // Fail fast before Revit is asked: an unapproved NA policy refuses a picked fill; the default plan holds it, never silently.
+  fs.writeFileSync(xMap, mapping({ fill: { value: "NA", values: ["NA"], status: "proposed" } }));
+  const n1 = seen.length;
+  const na = await call("parameter_fill", { action: "fill", ...xs, actions: [ids.find((i) => i.startsWith("fill-"))], dry_run: true, explanation: "Fill" });
+  assert.ok(na.isError && /Blocked before Revit was asked/.test(na.content[0].text) && /NA policy \("NA"\) is not approved/.test(na.content[0].text), "unapproved NA policy refused with the reason");
+  assert.ok(seen.slice(n1).every((x) => x.command !== "parameter_fill"), "refused before any bridge call");
+  const held = await call("parameter_fill", { action: "fill", ...xs, dry_run: true, explanation: "Run what is ready" });
+  assert.ok(!fills().at(-1).args.check_only && fills().at(-1).args.fill === false && fills().at(-1).args.bind.length === 2, "the default plan runs what is ready");
+  assert.match(held.content.at(-1).text, /Not in this plan:\n- action fill-[0-9a-f]{8} .*no approved fill value/, "the held fill is listed with its reason");
+  fs.writeFileSync(xMap, mapping());
+
+  // A changed source file blocks the apply, with the file named.
+  await call("parameter_fill", { action: "fill", ...xs, dry_run: true, explanation: "Again" });
+  fs.appendFileSync(xList, "TST_F_Name,Project Information,Instance,Custom\r\n");
+  const changed = await call("parameter_fill", { action: "fill", ...xs, explanation: "Again" });
+  assert.ok(changed.isError && /source files changed since the dry run \(ais\.csv\)/.test(changed.content[0].text), "the changed file is named");
+
+  // Version mismatch: refused on the server from the pre-flight, before the write plan.
+  const n2 = writesSeen.length;
+  const old = await call("parameter_fill", { action: "fill", rows: [{ name: "TST_OLDADDIN_X", categories: "Project Information" }], value: "NA", report_dir: regDir, dry_run: true, explanation: "Fill" });
+  assert.ok(old.isError && /the ACE server is .*, the add-in in Revit is 1\.9\.0/.test(old.content[0].text) && /build-package\.ps1/.test(old.content[0].text), "version mismatch refused in plain words");
+  assert.equal(writesSeen.length, n2, "no write plan reaches the add-in");
+
+  // Borrowed targets: the add-in's block is shown with who holds them and what clears it.
+  const bor = await call("parameter_fill", { action: "fill", rows: [{ name: "TST_BORROW_X", categories: "Project Information" }], value: "NA", report_dir: regDir, dry_run: true, explanation: "Fill" });
+  assert.ok(bor.isError && /3 element\(s\) of TST_BORROW_X: borrowed by another user \(3 element\(s\), e\.g\. 11, 12, 13\); held by jane\. How to clear: ask jane/.test(bor.content[0].text), "a block is never silent");
+
+  // Self-check mismatch: the add-in rolls the whole plan back; the reply and the evidence say so.
+  const vr = [{ name: "TST_VERIFY_X", categories: "Project Information" }];
+  await call("parameter_fill", { action: "fill", rows: vr, value: "NA", report_dir: regDir, dry_run: true, explanation: "Fill" });
+  const vm = await call("parameter_fill", { action: "fill", rows: vr, value: "NA", report_dir: regDir, explanation: "Fill" });
+  assert.ok(vm.isError && /Self-check FAILED: 1 mismatch\(es\); the whole plan was rolled back, nothing changed\. TST_VERIFY_X #101: expected "NA", found ""/.test(vm.content.at(-1).text), "verify mismatch reported as rolled back");
+  assert.ok(fs.readdirSync(regDir).filter((f) => f.startsWith("evidence-")).some((f) => /FAILED: 1 mismatch/.test(fs.readFileSync(path.join(regDir, f), "utf8"))), "the evidence records the failed self-check");
+
+  // All open models: the active model's plan runs; the others are listed as read-only plans.
+  const multi = await call("parameter_fill", { action: "fill", rows: [{ name: "TST_M_A", categories: "Project Information" }], value: "NA", report_dir: regDir, all_documents: true, dry_run: true, explanation: "Fill" });
+  assert.match(multi.content.at(-1).text, /Other open models \(read-only plans; switch to the model and run the same call, one approval each\): Test-STR: fill "NA"/);
+  assert.equal(fills().at(-1).args.all_documents, false, "only the active model is written");
+
+  // The acceptance-test flag: the add-in fails its self-check on purpose; part of the gate key; said plainly.
+  const tf = { action: "fill", rows: [{ name: "TST_TF_X", categories: "Project Information" }], value: "NA", report_dir: regDir, explanation: "Fill" };
+  await call("parameter_fill", { ...tf, dry_run: true, test_force_verify_mismatch: true });
+  assert.equal(fills().at(-1).args.test_force_verify_mismatch, true, "the flag reaches the bridge on the dry run");
+  assert.match((await call("parameter_fill", tf)).content[0].text, /not been previewed/, "the flag is part of the gate key");
+  const forced = await call("parameter_fill", { ...tf, test_force_verify_mismatch: true });
+  assert.ok(forced.isError && fills().at(-1).args.test_force_verify_mismatch === true && /Self-check FAILED \(forced by test flag\) - rolled back, nothing changed/.test(forced.content.at(-1).text));
+
+  // guid-differs (DEC-0004): a decision, and an explicit-only rebind that keeps the values.
+  fs.appendFileSync(xProj, `PARAM\teeeeeeee-0000-0000-0000-00000000000e\tTST_GD_Code\tTEXT\t\t1\t1\t\t1\r\n`);
+  fs.writeFileSync(xList, "parameter_name,categories,type_instance\r\nTST_GD_Code,Project Information,Instance\r\n");
+  const gd = JSON.parse((await call("parameter_check", xs)).content[0].text);
+  const gdText = (await call("parameter_check", xs)).content[1].text;
+  assert.match(gdText, /TST_GD_Code: the model's GUID differs from project\.txt; confirm which is current \(options: rebind the model to the file \(explicit rebind action (rebind-[0-9a-f]{8})\) \| update the vault file from the model/);
+  assert.ok(!/wrong GUID|fails exports/.test(gdText), "never called wrong");
+  const rbId = gdText.match(/explicit rebind action (rebind-[0-9a-f]{8})/)[1];
+  assert.ok(gd.actionIds.some((x) => x.id === rbId), "listed among the runnable ids");
+  const noRebind = await call("parameter_fill", { action: "fill", ...xs, dry_run: true, explanation: "Default plan" });
+  assert.ok(noRebind.isError && /Nothing to run/.test(noRebind.content[0].text), "a rebind is never in the default plan");
+  const rbDry = await call("parameter_fill", { action: "fill", ...xs, actions: [rbId], dry_run: true, explanation: "Rebind to the project file" });
+  const rbSent = fills().at(-1).args;
+  assert.deepEqual(rbSent.rebind.map((e) => [e.name, e.oldGuid, e.guid, e.file === xProj, /^[0-9a-f]{64}$/.test(e.fileHash)]), [["TST_GD_Code", "dddddddd-0000-0000-0000-00000000000d", "eeeeeeee-0000-0000-0000-00000000000e", true, true]]);
+  const rbText = rbDry.content.at(-1).text;
+  assert.match(rbText, /Rebind \(explicit\): TST_GD_Code dddddddd.* -> eeeeeeee.*; the values are kept: read before, written back under the new definition and verified/);
+  assert.match(rbText, /Dropped with the old definition .*:\n- schedule field TST_GD_Code in TST schedule/);
+  assert.match(rbText, /The old definition is used by:\n- TST_GD_Code: 1 schedule\(s\)/);
+  assert.ok(!(await call("parameter_fill", { action: "fill", ...xs, actions: [rbId], explanation: "Rebind to the project file" })).isError, "applied after its own dry run");
+  const vu = path.join(tmp, "vu", "ACE Vault");
+  fs.mkdirSync(vu, { recursive: true });
+  const { report_dir: _rd, ...noDir } = xs;
+  const untrusted = await call("parameter_fill", { action: "fill", ...noDir, vault: vu, actions: [rbId], dry_run: true, explanation: "Rebind" });
+  assert.match(untrusted.content.at(-1).text, /vault not trusted: files written to .*parameter-fill/, "an untrusted vault is said, the files go to the reports folder");
+}
 // A large check goes to report files; the reply stays small.
 const bigRows = Array.from({ length: 210 }, (_, i) => ({ name: `TST_P${i}`, categories: "Levels" }));
 const pBig = await call("parameter_check", { rows: bigRows, report_dir: path.join(tmp, "pbig") });

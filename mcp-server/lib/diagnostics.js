@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   APPDATA, CONFIG_PATH, LOG_DIR, REPORTS_DIR, VERSION, ROOT,
-  callRevit, health, readConfig, teamScriptsDir, teamReportsDir,
+  callRevit, chooseInstance, describeInstance, health, readConfig, teamScriptsDir, teamReportsDir,
 } from "./core.js";
 import { readCalls } from "./telemetry.js";
 import { listScripts } from "./scripts.js";
@@ -66,6 +66,8 @@ export async function runChecks({ deep = true } = {}) {
     }
   }
 
+  const sessions = await chooseInstance().catch(() => ({ list: [] }));
+  if (sessions.list.length > 1) checks.push(check("Revit sessions", "info", `${sessions.list.length} running: ${sessions.list.map(describeInstance).join("; ")}. ACE uses ${describeInstance(sessions.chosen)} unless revit_status instance picks another.`));
   const h = await health();
   if (!h.ok) {
     checks.push(check("Revit connection", "fail", `No answer from the add-in (${h.error}).`,

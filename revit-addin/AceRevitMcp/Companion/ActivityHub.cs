@@ -95,8 +95,12 @@ namespace AceRevitMcp.Companion
             else if (kind == "execute_code") material = $"{kind}\n{part("code")}\n{(args["mode"]?.ToString() ?? "auto")}\n{part("inputs")}";
             else
             {
-                // Native commands: every argument except how it is run (preview or not, from the panel, pictures).
-                var keys = args.Select(kv => kv.Key).Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name" or "explanation" or "plan" or "step" or "expect_model")).OrderBy(k => k, StringComparer.Ordinal);
+                // Native commands: every argument except how it is run (preview or not, from the panel, pictures, the
+                // model and version guards); parameter_fill also leaves out its read-only extras (impact scan, register).
+                var keys = args.Select(kv => kv.Key)
+                    .Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name" or "explanation" or "plan" or "step" or "expect_model" or "expect_version"))
+                    .Where(k => kind != "parameter_fill" || k is not ("impact" or "register"))
+                    .OrderBy(k => k, StringComparer.Ordinal);
                 material = kind + "\n" + string.Join("\n", keys.Select(k => $"{k}={part(k)}"));
             }
             return Util.Compat.Sha256Hex(material);

@@ -21,7 +21,8 @@ namespace AceRevitMcp.Rules
             public string Group;   // project | rooms | levels | elements
             public string Level;   // instance | type | any (instance first, then the element's type)
             public List<string> Categories = new List<string>();    // Revit OST_ names as sent (empty: every element of the group)
-            public string Guid;                                       // expected GUID (null: not checked)
+            public string Guid;                                       // expected GUID (null: not checked); the first of Guids
+            public List<string> Guids = new List<string>();          // every accepted GUID (guid + guids: a client file may list one name with several)
             public List<string> Disciplines = new List<string>();   // discipline codes the row applies to (empty: every model)
             public string Key;                                        // the caller's row key, echoed
         }
@@ -30,6 +31,7 @@ namespace AceRevitMcp.Rules
         {
             public string Group;
             public int Checked, Missing, Blank, Filled, Na, OnType;
+            public int WhitespaceOnly;   // blank text that holds only spaces (still blank; counted so the plan can say it)
             public string StorageType;   // null when no element has the parameter
             public bool? InGeneral;      // Project Information rows only
             public bool OutOfScope;      // the row's disciplines exclude the model's discipline: not scanned
@@ -37,6 +39,7 @@ namespace AceRevitMcp.Rules
             public bool? GuidMatch;      // null: no expected GUID or no shared definition
             public int Unbound;          // row categories the binding does not cover
             public bool? WrongLevel;     // bound as type for an instance row, or the reverse
+            public bool BuiltIn;         // a Revit built-in parameter: elements without it cannot get it by a binding
             public string Status;
         }
 
@@ -119,11 +122,16 @@ namespace AceRevitMcp.Rules
                     : !seen.Add(name + "\n" + group + "\n" + string.Join("|", sorted)) ? "duplicate of an earlier row (same name, group and categories)"
                     : null;
                 if (reason != null) { skipped?.Add(new JsonObject { ["name"] = name, ["group"] = groupText, ["key"] = Text(o, "key"), ["reason"] = reason }); continue; }
-                var guid = Text(o, "guid")?.Trim();
+                var guids = new List<string>();
+                var one = Text(o, "guid")?.Trim();
+                if (!string.IsNullOrEmpty(one)) guids.Add(one);
+                foreach (var g in TextList(o, "guids") ?? new List<string>())
+                    if (!guids.Contains(g, StringComparer.OrdinalIgnoreCase)) guids.Add(g);
                 list.Add(new Row
                 {
                     Name = name, Group = group, Level = level, Categories = cats,
-                    Guid = string.IsNullOrEmpty(guid) ? null : guid,
+                    Guid = guids.Count > 0 ? guids[0] : null,
+                    Guids = guids,
                     Disciplines = TextList(o, "disciplines") ?? new List<string>(),
                     Key = Text(o, "key"),
                 });
@@ -181,8 +189,9 @@ namespace AceRevitMcp.Rules
         }
 
         /// <summary>
-        /// The row's status, first rule that applies: out-of-scope, unmapped, no-elements, not-bound (no checked element has
-        /// it), wrong-guid, partly-bound (some elements lack it, or the binding misses row categories), blanks,
+        /// The row's status, first rule that applies: out-of-scope, unmapped, no-elements, not-available (a built-in
+        /// parameter some checked elements do not have: no binding can add it), not-bound (no checked element has it),
+        /// guid-differs (the model's GUID differs from the expected one), partly-bound (some elements lack it, or the binding misses row categories), blanks,
         /// complete-with-na, complete.
         /// </summary>
         public static string Status(RowResult r)
@@ -190,8 +199,9 @@ namespace AceRevitMcp.Rules
             if (r.OutOfScope) return "out-of-scope";
             if (r.Unmapped) return "unmapped";
             if (r.Checked == 0) return "no-elements";
+            if (r.BuiltIn && r.Missing > 0) return "not-available";
             if (r.Missing == r.Checked) return "not-bound";
-            if (r.GuidMatch == false) return "wrong-guid";
+            if (r.GuidMatch == false) return "guid-differs";
             if (r.Missing > 0 || r.Unbound > 0) return "partly-bound";
             if (r.Blank > 0) return "blanks";
             if (r.Na > 0) return "complete-with-na";
@@ -209,11 +219,25 @@ namespace AceRevitMcp.Rules
             ["noElements"] = rows.Count(r => r.Checked == 0 && !r.OutOfScope && !r.Unmapped),
             ["withNA"] = rows.Count(r => r.Na > 0),
             ["outOfScope"] = rows.Count(r => r.OutOfScope),
-            ["wrongGuid"] = rows.Count(r => r.GuidMatch == false),
+            ["guidDiffers"] = rows.Count(r => r.GuidMatch == false),
             ["notBound"] = rows.Count(r => (r.Status ?? Status(r)) == "not-bound"),
             ["wrongLevel"] = rows.Count(r => r.WrongLevel == true),
             ["foreign"] = foreign,
+            ["notAvailable"] = rows.Count(r => (r.Status ?? Status(r)) == "not-available"),
         };
+
+        /// <summary>Any of the expected GUIDs matches the model's: null when there is none or the model has no GUID.</summary>
+        public static bool? GuidMatchesAny(IList<string> expected, string model)
+        {
+            bool? result = null;
+            foreach (var e in expected ?? new List<string>())
+            {
+                var m = GuidMatches(e, model);
+                if (m == true) return true;
+                if (m == false) result = false;
+            }
+            return result;
+        }
 
         /// <summary>Expected vs model GUID: null when either is missing; GUID text compared as GUIDs when both parse.</summary>
         public static bool? GuidMatches(string expected, string model)
@@ -238,21 +262,24 @@ namespace AceRevitMcp.Rules
 
     /// <summary>
     /// Bridge "parameter_fill": { rows: [{ name, group, level, categories?, guid?, disciplines?, key? }], scope?: { codes,
-    /// models, ownership }, na_values (["NA", "N/A"]), all_documents, fill, value ("NA"), expect_model, max_ids (20), check_only, dry_run }. Without
-    /// fill a read-only check of the active model (or every open project model; links excluded), with a pre-flight of each
-    /// model. With fill a native change on the active model (preview, then ONE undo step) that writes the value into blank
-    /// TEXT parameters of the listed rows, skipping read-only parameters, elements in groups or design options and
-    /// elements that cannot be edited now; it answers the state before and (after) the writes.
+    /// models, ownership }, na_values (["NA", "N/A"]), all_documents, fill, value ("NA"), derive, bind, impact, register,
+    /// block_on_borrowed (true), expect_model, expect_version, max_ids (20), check_only, dry_run }. Without fill, derive or
+    /// bind a read-only check of the active model (or every open project model; links excluded), with a pre-flight of each
+    /// model (and, when asked, the impact scan and the missing register per model). With any of them one plan on the
+    /// active model (ParameterFill.RunPlan): blockers first, then bindings, derived values and the fill value, as a native
+    /// change (preview, then ONE undo step) with a self-check before it is kept.
     /// </summary>
-    internal static class ParameterFill
+    internal static partial class ParameterFill
     {
         private static readonly BuiltInCategory[] RoomCats = { BuiltInCategory.OST_Rooms, BuiltInCategory.OST_Areas, BuiltInCategory.OST_MEPSpaces };
 
         public static JsonNode Run(UIApplication app, JsonObject args)
         {
-            var fill = Args.Bool(args, "fill");
+            // A write: the NA fill, derive rules or bindings (one plan, ONE undo step); anything else reads only.
+            var write = Args.Bool(args, "fill") || (args["derive"] as JsonArray)?.Count > 0 || (args["bind"] as JsonArray)?.Count > 0
+                || (args["rebind"] as JsonArray)?.Count > 0;
             var expect = Args.Str(args, "expect_model");
-            if (fill && expect != null)
+            if (write && expect != null)
             {
                 var activeTitle = Args.RequireDoc(app).Title;
                 if (!string.Equals(expect, activeTitle, StringComparison.Ordinal))
@@ -265,40 +292,34 @@ namespace AceRevitMcp.Rules
             var scope = ParameterFillLogic.ParseScope(args["scope"] as JsonObject);
             var na = ParameterFillLogic.NaValues(args["na_values"] as JsonArray);
 
-            if (!fill)
+            if (!write)
             {
                 var active = Args.RequireDoc(app);
                 var docs = new List<Document> { active };
                 if (Args.Bool(args, "all_documents"))
                     docs.AddRange(app.Application.Documents.Cast<Document>().Where(d => !d.Equals(active) && !d.IsLinked && !d.IsFamilyDocument));
+                var withImpact = Args.Bool(args, "impact");
+                var withRegister = Args.Bool(args, "register");
+                JsonNode Doc(Document d)
+                {
+                    var scan = new Scan(d, rows, maxIds, scope, na);
+                    var report = scan.Report(d.Equals(active));
+                    if (withImpact) report["impact"] = ParameterImpact.Scan(d, scan.ImpactTargets(null, null));
+                    if (withRegister) report["register"] = scan.Register();
+                    return report;
+                }
                 return new JsonObject
                 {
-                    ["documents"] = new JsonArray(docs.Select(d => (JsonNode)new Scan(d, rows, maxIds, scope, na).Report(d.Equals(active))).ToArray()),
+                    ["documents"] = new JsonArray(docs.Select(Doc).ToArray()),
                     ["skippedRows"] = skippedRows,
                 };
             }
 
-            if (Args.Bool(args, "all_documents")) throw new CommandException("fill works on the active model only: leave all_documents out (or false).");
-            var value = Args.Str(args, "value") ?? "NA";
-            if (string.IsNullOrWhiteSpace(value)) throw new CommandException("value must not be empty (it is what blank text parameters are filled with, e.g. \"NA\").");
-            return NativeChange.Run(app, args, "parameter_fill", $"ACE: fill blank parameters with '{value}'", (doc, plan) =>
-            {
-                var scan = new Scan(doc, rows, maxIds, scope, na);
-                var report = scan.Report(true);   // the state before the fill
-                var result = new JsonObject
-                {
-                    ["model"] = doc.Title,
-                    ["modelPath"] = doc.PathName,
-                    ["documents"] = new JsonArray(report),
-                    ["skippedRows"] = skippedRows.DeepClone(),
-                };
-                result["fill"] = scan.Fill(value, plan);
-                return result;
-            });
+            return RunPlan(app, args, rows, skippedRows, maxIds, scope, na);
         }
 
         /// <summary>One model's answer for every row (elements per category, types and worksharing states read once).</summary>
-        private sealed class Scan
+        private sealed partial class Scan
         {
             private sealed class Entry
             {
@@ -306,6 +327,11 @@ namespace AceRevitMcp.Rules
                 public ParameterFillLogic.RowResult Result;
                 public JsonObject Json;
                 public List<Parameter> Blanks;
+                public List<Parameter> NaParams;                   // text equal to an NA value (declared missing): derive may replace it
+                public List<Element> MissingElems;                 // every checked element without the parameter
+                public Dictionary<long, int> TypeInstances;        // type id -> instances that read the row's value from it
+                public HashSet<long> ParamIds;                     // the parameter's element ids (or built-in id) in this model
+                public Guid? SharedGuid;
             }
 
             private readonly Document _doc;
@@ -321,7 +347,7 @@ namespace AceRevitMcp.Rules
             private readonly Dictionary<string, Parameter> _typeParams = new Dictionary<string, Parameter>(StringComparer.Ordinal);
             private readonly Dictionary<BuiltInCategory, bool> _foreignCat = new Dictionary<BuiltInCategory, bool>();
             private readonly SortedDictionary<string, int> _foreign = new SortedDictionary<string, int>(StringComparer.Ordinal);
-            private readonly Dictionary<long, (bool Ok, string Why, string Owner)> _edit = new Dictionary<long, (bool, string, string)>();
+            private readonly Dictionary<long, (bool Ok, string Why, string Owner, string Code)> _edit = new Dictionary<long, (bool, string, string, string)>();
             private Dictionary<string, List<(InternalDefinition Def, ElementBinding Binding)>> _bindings;
             private readonly Dictionary<long, Element> _blankHolders = new Dictionary<long, Element>();
             private readonly HashSet<long> _scanned = new HashSet<long>();
@@ -354,6 +380,9 @@ namespace AceRevitMcp.Rules
             {
                 var res = new ParameterFillLogic.RowResult { Group = row.Group };
                 var blanks = new List<Parameter>();
+                var missingElems = new List<Element>();
+                var naParams = new List<Parameter>();
+                var typeInstances = new Dictionary<long, int>();
                 var blankIds = new JsonArray();
                 var missingIds = new JsonArray();
                 var json = new JsonObject { ["key"] = row.Key, ["name"] = row.Name, ["group"] = row.Group, ["level"] = row.Level };
@@ -385,6 +414,8 @@ namespace AceRevitMcp.Rules
                 if (!res.OutOfScope && !res.Unmapped)
                 {
                     var targets = bics.Count > 0 ? CategoryTargets(bics, row.Level, row.Disciplines.Count == 0) : Targets(row.Group, row.Level);
+                    if (row.Level == "type")
+                        foreach (var kv in InstancesPerType(bics.Count > 0 ? CategoryTargets(bics, "instance", row.Disciplines.Count == 0) : Instances(row.Group))) typeInstances[kv.Key] = kv.Value;
                     var typesSeen = new HashSet<long>();
                     foreach (var e in targets)
                     {
@@ -397,6 +428,7 @@ namespace AceRevitMcp.Rules
                             if (tp != null)
                             {
                                 instancesAffected++;
+                                typeInstances[tid.Value] = typeInstances.TryGetValue(tid.Value, out var ti) ? ti + 1 : 1;
                                 if (!typesSeen.Add(tid.Value)) continue;   // the type's value is counted once
                                 res.OnType++;
                                 p = tp;
@@ -406,6 +438,7 @@ namespace AceRevitMcp.Rules
                         if (p == null)
                         {
                             res.Missing++;
+                            missingElems.Add(e);
                             if (missingIds.Count < _maxIds) missingIds.Add(e.Id.Value);
                             continue;
                         }
@@ -416,11 +449,12 @@ namespace AceRevitMcp.Rules
                         {
                             var holder = p.Element ?? e;   // the type when the value comes from the type
                             res.Blank++;
+                            if (isText && !string.IsNullOrEmpty(text)) res.WhitespaceOnly++;
                             blanks.Add(p);
                             if (record) _blankHolders[holder.Id.Value] = holder;
                             if (blankIds.Count < _maxIds) blankIds.Add(holder.Id.Value);
                         }
-                        else if (isText && ParameterFillLogic.IsNA(text, _na)) res.Na++;
+                        else if (isText && ParameterFillLogic.IsNA(text, _na)) { res.Na++; naParams.Add(p); }
                         else res.Filled++;
                     }
                 }
@@ -435,6 +469,11 @@ namespace AceRevitMcp.Rules
                 }
                 else if (def != null) origin = sharedGuid.HasValue ? "shared" : "project";
                 json["origin"] = origin;
+                res.BuiltIn = origin == "built-in";
+                json["notAvailableCategories"] = res.BuiltIn && missingElems.Count > 0
+                    ? new JsonArray(missingElems.Select(m => { try { return m.Category?.Name; } catch { return null; } })
+                        .Where(n => n != null).Distinct().OrderBy(n => n, StringComparer.Ordinal).Take(20).Select(n => (JsonNode)n).ToArray())
+                    : null;
                 JsonArray unbound = null;
                 if (origin == "built-in") { json["bound"] = null; json["boundAs"] = null; }
                 else
@@ -460,9 +499,10 @@ namespace AceRevitMcp.Rules
                     else if (sharedGuid.HasValue) modelGuid = sharedGuid.Value.ToString();
                 }
                 catch { modelGuid = null; }
-                res.GuidMatch = ParameterFillLogic.GuidMatches(row.Guid, modelGuid);
+                res.GuidMatch = ParameterFillLogic.GuidMatchesAny(row.Guids, modelGuid);
                 json["modelGuid"] = modelGuid;
                 json["guidMatch"] = res.GuidMatch;
+                json["guidNote"] = res.GuidMatch == false ? "differs from the expected GUID in the requirement source; confirm which is current" : null;
                 json["definitions"] = Bindings().TryGetValue(row.Name, out var defs) ? defs.Count : 0;
 
                 res.StorageType = first?.StorageType.ToString();
@@ -488,81 +528,29 @@ namespace AceRevitMcp.Rules
                 json["checked"] = res.Checked;
                 json["missing"] = res.Missing;
                 json["blank"] = res.Blank;
+                json["whitespaceOnly"] = res.WhitespaceOnly;
                 json["filled"] = res.Filled;
                 json["na"] = res.Na;
                 json["onType"] = res.OnType;
                 json["instancesAffected"] = instancesAffected;
                 json["blankIds"] = blankIds;
                 json["missingIds"] = missingIds;
-                return new Entry { Row = row, Result = res, Json = json, Blanks = blanks };
-            }
-
-            /// <summary>
-            /// Writes the value into the blank text parameters (plan: count only) and, after real writes (dry run or apply,
-            /// inside the transaction), re-scans the touched rows: "after" is the end state. Reports what it left and why.
-            /// </summary>
-            public JsonObject Fill(string value, bool plan)
-            {
-                var set = 0;
-                var skipped = new JsonArray();
-                var skippedCount = 0;
-                var done = new HashSet<string>();
-                var touched = new List<Entry>();
-                void Skip(JsonNode id, string name, string reason)
+                var paramIds = new HashSet<long>();
+                if (def != null) paramIds.Add(def.Id.Value);
+                Guid? guid = sharedGuid;
+                try
                 {
-                    skippedCount++;
-                    if (skipped.Count < 500) skipped.Add(new JsonObject { ["id"] = id, ["name"] = name, ["reason"] = reason });
+                    if (first != null) { paramIds.Add(first.Id.Value); if (guid == null && first.IsShared) guid = first.GUID; }
                 }
-                foreach (var entry in _rows)
+                catch { /* ids are best effort, for the impact scan */ }
+                if (guid == null && System.Guid.TryParse(row.Guid ?? "", out var rg)) guid = rg;
+                foreach (var g in row.Guids.Select(t => System.Guid.TryParse(t, out var x) ? x : (Guid?)null).Where(x => x.HasValue).Concat(new[] { guid }).Where(x => x.HasValue).Distinct())
+                    try { if (SharedParameterElement.Lookup(_doc, g.Value) is SharedParameterElement spe2) paramIds.Add(spe2.Id.Value); } catch { /* none */ }
+                return new Entry
                 {
-                    var (row, res, blanks) = (entry.Row, entry.Result, entry.Blanks);
-                    if (blanks.Count == 0) continue;
-                    if (res.StorageType != "String")
-                    {
-                        // A number, length, area, Yes/No or date stored as a number cannot hold text.
-                        Skip(null, row.Name, $"not a text parameter ({res.StorageType}): '{value}' cannot be stored ({blanks.Count} blank)");
-                        continue;
-                    }
-                    var setBefore = set;
-                    foreach (var p in blanks)
-                    {
-                        var e = p.Element;
-                        if (p.StorageType != StorageType.String) { Skip(e.Id.Value, row.Name, $"not a text parameter here ({p.StorageType})"); continue; }
-                        if (!done.Add(e.Id.Value + "\n" + p.Id.Value)) continue;   // the same parameter through a type shared by two rows
-                        if (p.IsReadOnly) { Skip(e.Id.Value, row.Name, "read-only"); continue; }
-                        if (InGroup(e)) { Skip(e.Id.Value, row.Name, "in a group"); continue; }
-                        if (InDesignOption(e)) { Skip(e.Id.Value, row.Name, "in a design option"); continue; }
-                        var state = EditState(e);
-                        if (!state.Ok) { Skip(e.Id.Value, row.Name, state.Why); continue; }
-                        if (plan) { set++; continue; }
-                        if (p.Set(value)) set++;
-                        else Skip(e.Id.Value, row.Name, "Revit refused the value");
-                    }
-                    if (set > setBefore) touched.Add(entry);
-                }
-                var result = new JsonObject { ["set"] = set, ["value"] = value, ["skipped"] = skipped, ["skippedCount"] = skippedCount };
-                if (plan) { result["after"] = null; return result; }
-
-                // A row is re-read when a write touched it, or shares a written parameter with one that was (a type).
-                var now = touched.ToDictionary(t => t, t => Check(t.Row, false));
-                foreach (var entry in _rows)
-                    if (!now.ContainsKey(entry) && entry.Blanks.Count > 0 && entry.Result.StorageType == "String") now[entry] = Check(entry.Row, false);
-                var afterRows = new JsonArray();
-                foreach (var entry in _rows)
-                {
-                    if (!now.TryGetValue(entry, out var a)) continue;
-                    afterRows.Add(new JsonObject
-                    {
-                        ["key"] = entry.Row.Key, ["name"] = entry.Row.Name, ["status"] = a.Result.Status,
-                        ["blank"] = a.Result.Blank, ["na"] = a.Result.Na, ["filled"] = a.Result.Filled,
-                    });
-                }
-                result["after"] = new JsonObject
-                {
-                    ["summary"] = ParameterFillLogic.Summary(_rows.Select(r => now.TryGetValue(r, out var a) ? a.Result : r.Result).ToList(), _foreign.Values.Sum()),
-                    ["rows"] = afterRows,
+                    Row = row, Result = res, Json = json, Blanks = blanks, NaParams = naParams, MissingElems = missingElems,
+                    TypeInstances = typeInstances, ParamIds = paramIds, SharedGuid = guid,
                 };
-                return result;
             }
 
             // ---- pre-flight (read-only; each piece guarded so it never fails the check) -----------------------
@@ -631,12 +619,12 @@ namespace AceRevitMcp.Rules
             /// Whether the element can be edited now (as ScriptContext.CanEdit), read once per element and shared by the
             /// pre-flight and the fill. Owner: who has it borrowed, where Revit knows it.
             /// </summary>
-            private (bool Ok, string Why, string Owner) EditState(Element e)
+            private (bool Ok, string Why, string Owner, string Code) EditState(Element e)
             {
-                if (!_workshared) return (true, null, null);
+                if (!_workshared) return (true, null, null, null);
                 var id = e.Id.Value;
                 if (_edit.TryGetValue(id, out var known)) return known;
-                (bool, string, string) state;
+                (bool, string, string, string) state;
                 try
                 {
                     var status = WorksharingUtils.GetCheckoutStatus(_doc, e.Id, out var owner);
@@ -644,17 +632,17 @@ namespace AceRevitMcp.Rules
                     {
                         if (string.IsNullOrWhiteSpace(owner)) { try { owner = WorksharingUtils.GetWorksharingTooltipInfo(_doc, e.Id).Owner; } catch { owner = null; } }
                         owner = string.IsNullOrWhiteSpace(owner) ? "another user" : owner.Trim();
-                        state = (false, "borrowed by " + owner, owner);
+                        state = (false, "borrowed by " + owner, owner, "borrowed");
                     }
                     else
                     {
                         var updates = WorksharingUtils.GetModelUpdatesStatus(_doc, e.Id);
                         state = updates == ModelUpdatesStatus.UpdatedInCentral || updates == ModelUpdatesStatus.DeletedInCentral
-                            ? (false, "changed in the central model since your last Reload Latest", null)
-                            : (true, null, null);
+                            ? (false, "changed in the central model since your last Reload Latest", null, "central")
+                            : (true, null, null, null);
                     }
                 }
-                catch (Exception ex) { state = (false, "worksharing state unreadable: " + ex.Message, null); }
+                catch (Exception ex) { state = (false, "worksharing state unreadable: " + ex.Message, null, "unreadable"); }
                 _edit[id] = state;
                 return state;
             }
@@ -814,12 +802,6 @@ namespace AceRevitMcp.Rules
                 if (bics.Count > 0) { foreach (var x in l) if (bics.Any(b => Binds(x.Item2, b))) return x; }
                 else foreach (var x in l) if (GroupCategories(x.Item2, group).Count > 0) return x;
                 return l[0];
-            }
-
-            private static bool Binds(ElementBinding b, BuiltInCategory bic)
-            {
-                foreach (Category c in b.Categories) if (c.BuiltInCategory == bic) return true;
-                return false;
             }
 
             private static List<string> GroupCategories(ElementBinding b, string group)

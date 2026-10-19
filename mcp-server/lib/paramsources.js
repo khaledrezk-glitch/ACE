@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { attr, readXlsx } from "./docs.js";
-import { mapRows, rowsFromCsv } from "./paramlist.js";
+import { groupOf, mapRows, rowsFromCsv } from "./paramlist.js";
 import { toCsv } from "./report.js";
 import { localDate } from "./core.js";
 
@@ -266,20 +266,28 @@ export function extendMapping(existing, { categories = [], sheets = [] } = {}) {
  * never used to pass a name (the decision rule), and a mapping that is not approved is reported as unconfirmed.
  * A mapping already in ACE's own shape comes back unchanged (aliases a person wrote there count as approved).
  */
-const approved = (s) => /^approved\b/i.test(String(s ?? "").trim());
+export const approved = (s) => /^approved\b/i.test(String(s ?? "").trim());
 export function normaliseMapping(raw) {
   if (!raw || typeof raw !== "object") return raw;
   if (!raw.loinCategories && !raw.nameAliases) return raw;
+  const plainMap = (o) => Object.fromEntries(Object.entries(o ?? {}).filter(([k]) => k !== "status" && !k.startsWith("_")));
   const m = { about: raw._about ?? raw.about, foreign: true, draft: !approved(raw.status), status: raw.status ?? null,
-    categories: { ...(raw.categories ?? {}) }, sheetCategories: {}, filters: [], disciplines: { ...(raw.disciplines ?? {}) },
-    aliases: {}, proposedAliases: {}, prefixMap: {}, models: { ...(raw.models ?? {}) }, ownership: { ...(raw.ownership ?? {}) },
+    categories: { ...(raw.categories ?? {}) }, sheetCategories: {}, categoryMeta: {}, filters: [], disciplines: plainMap(raw.disciplines),
+    sectionStatus: Object.fromEntries(["loinCategories", "disciplines", "groupDisciplines", "models", "ownership", "categories"]
+      .filter((k) => raw[k] && typeof raw[k] === "object" && raw[k].status != null).map((k) => [k, raw[k].status])),
+    groupDisciplines: raw.groupDisciplines ? plainMap(raw.groupDisciplines) : null,
+    aliases: {}, proposedAliases: {}, prefixMap: {}, models: plainMap(raw.models), ownership: plainMap(raw.ownership),
     derive: raw.derive ?? null, naPolicy: raw.naPolicy ?? null, sources: raw.sources ?? null };
   for (const [sheet, cats] of Object.entries(raw.loinCategories ?? {})) {
     if (!cats || typeof cats !== "object") continue;
     m.sheetCategories[sheet] = {};
+    m.categoryMeta[sheet] = {};
     for (const [label, v] of Object.entries(cats)) {
+      if (label === "status" || label.startsWith("_")) continue;
       const bic = listOf(Array.isArray(v) || typeof v === "string" ? v : v?.bic);
-      m.sheetCategories[sheet][label.replace(/\s+/g, " ").trim()] = bic;
+      const key = label.replace(/\s+/g, " ").trim();
+      m.sheetCategories[sheet][key] = bic;
+      if (v && typeof v === "object" && !Array.isArray(v)) m.categoryMeta[sheet][key] = { status: v.status ?? null, confidence: v.confidence ?? null };
       if (v?.filter) m.filters.push({ sheet, category: label, filter: v.filter, confidence: v.confidence ?? null });
     }
   }
@@ -288,6 +296,8 @@ export function normaliseMapping(raw) {
   for (const k of ["explicit", "typoDuplicates"]) for (const [from, to] of Object.entries(na[k] ?? {})) if (to) into[from] = String(to);
   for (const [from, to] of Object.entries(na.prefixMap ?? {})) if (to) m.prefixMap[from] = String(to);
   m.prefixApproved = approved(na.status);
+  // An approved spelling rule: case / whitespace-only differences resolve to the shared parameter file's spelling.
+  if (approved(na.status) && typeof na.spellingRule === "string" && na.spellingRule.trim()) m.spellingRule = na.spellingRule.trim();
   m.notes = [];
   const auth = raw.nameAuthority;
   if (auth && approved(auth.status)) {
@@ -322,7 +332,12 @@ export function paramIndex(files = []) {
     for (const p of f.params) {
       const entry = { ...p, file: f.file, kind: f.kind };
       const own = idx[f.kind === "project" ? "project" : "client"];
-      if (!own.has(p.name)) own.set(p.name, entry);
+      const first = own.get(p.name);
+      if (!first) own.set(p.name, entry);
+      else if (first.file === f.file && p.guid && !(first.guids ?? [first.guid]).includes(p.guid)) {
+        // One file listing a name several times with different GUIDs (e.g. one per category): every GUID is accepted.
+        first.guids = [...(first.guids ?? [first.guid]), p.guid];
+      }
       if (!guids.has(p.name)) guids.set(p.name, new Map());
       guids.get(p.name).set(p.guid, [...(guids.get(p.name).get(p.guid) ?? []), path.basename(f.file ?? "")]);
       const n = normName(p.name);
@@ -336,7 +351,12 @@ export function paramIndex(files = []) {
       }
     }
   }
-  for (const [name, g] of guids) if (g.size > 1) idx.conflicts.push({ name, guids: Object.fromEntries([...g].map(([k, v]) => [k, v.join(", ")])) });
+  idx.duplicateGuids = [];
+  for (const own of [idx.project, idx.client]) for (const e of own.values())
+    if (e.guids?.length > 1) idx.duplicateGuids.push({ name: e.name, file: path.basename(e.file ?? ""), kind: e.kind, guids: e.guids });
+  // Between files only: a name repeated with other GUIDs inside one file is reported as duplicateGuids instead.
+  for (const [name, g] of guids) if (g.size > 1 && new Set([...g.values()].flat()).size > 1)
+    idx.conflicts.push({ name, guids: Object.fromEntries([...g].map(([k, v]) => [k, v.join(", ")])) });
   return idx;
 }
 
@@ -345,7 +365,8 @@ export function paramIndex(files = []) {
 const lookup = (idx, name) => idx.authority === "client" ? idx.client.get(name) ?? idx.project.get(name) : idx.project.get(name) ?? idx.client.get(name);
 const expected = (idx, name, match) => {
   const p = lookup(idx, name), other = idx.authority === "client" ? idx.project.get(name) : idx.client.get(name);
-  const out = { match, name, guid: p.guid, dataType: p.dataType };
+  const out = { match, name, guid: p.guid, dataType: p.dataType, defFile: path.basename(p.file ?? "") || undefined };
+  if (p.guids?.length > 1) out.guids = p.guids;
   if (other && other.guid && p.guid && other.guid.toLowerCase() !== p.guid.toLowerCase()) out.otherGuid = other.guid;
   return out;
 };
@@ -368,6 +389,9 @@ export function classifyName(name, idx, aliases = {}) {
   if (idx.project.has(name)) return expected(idx, name, "exact");
   if (idx.client.has(name)) return expected(idx, name, "exact-client");
   const spelled = (idx.norm.get(normName(name)) ?? []).filter((n) => n !== name);
+  const caseSpace = (n) => String(n).toLowerCase().replace(/\s+/g, " ").trim();
+  const ruled = aliases?.spellingRule ? spelled.filter((n) => caseSpace(n) === caseSpace(name)) : [];
+  if (ruled.length === 1) return { ...expected(idx, ruled[0], "alias"), aliasOf: name, rule: "spelling" };
   if (spelled.length) return { match: "spelling", name, candidate: spelled[0], candidates: spelled.length > 1 ? spelled : undefined };
   const pm = PREFIX.exec(name);
   if (pm) {
@@ -434,8 +458,19 @@ export const srcText = (s) => s.ais != null ? `AIS line ${s.ais}` : s.loin != nu
 export function mergeSources({ ais = [], loin = [], checker = [], mapping = null, index = null } = {}) {
   const aliases = mapping?.foreign ? mapping : mapping?.aliases ?? {};
   const raw = [];
-  for (const r of ais) raw.push({ name: r.name, group: r.group, level: r.level, categories: [], source: { ais: r.line ?? "row" } });
-  for (const r of checker) raw.push({ ...r, categories: [...(r.categories ?? [])] });
+  const byGroup = groupScope(mapping);
+  // AIS and checker rows take their discipline scope from the mapping's groupDisciplines (none or "*" = every model).
+  const scoped = (r) => {
+    const d = byGroup[r.group];
+    if (d?.length) {
+      r.source.disciplines = d;
+      if (!sectionApproved(mapping, "groupDisciplines")) Object.assign(r.source, { draftMapping: true, planOnly: "the group -> discipline scope (groupDisciplines) in the mapping is not approved" });
+    }
+    return r;
+  };
+  for (const r of ais) raw.push({ name: r.name, group: r.group, level: r.level, categories: [], ...(r.origin ? { origin: r.origin } : {}), source: { ais: r.line ?? "row" } });
+  raw.forEach(scoped);
+  for (const r of checker) raw.push(scoped({ ...r, categories: [...(r.categories ?? [])], source: { ...r.source } }));
   const unmapped = new Map(), pseudo = [], unmappedRows = [], noScope = new Set();
   for (const r of loin) {
     if (!r.name) continue;
@@ -444,7 +479,8 @@ export function mergeSources({ ais = [], loin = [], checker = [], mapping = null
     const cats = listOf(perSheet && Object.hasOwn(perSheet, label) ? perSheet[label] : mapping?.categories?.[label]);
     const disc = listOf(mapping?.disciplines?.[r.sheet]);
     if (mapping && !disc.length) noScope.add(r.sheet);
-    const source = { loin: `${r.sheet}!${r.row}`, category: label, disciplines: disc, ...(mapping?.draft ? { draftMapping: true } : {}) };
+    const why = categoryHold(mapping, r.sheet, label) ?? (disc.length && !sectionApproved(mapping, "disciplines") ? "the LOIN sheet -> discipline scope in the mapping is not approved" : null);
+    const source = { loin: `${r.sheet}!${r.row}`, category: label, disciplines: disc, ...(why ? { draftMapping: true, planOnly: why } : {}) };
     if (/[[\]]/.test(r.name)) { pseudo.push({ name: r.name, ...source }); continue; }
     if (!cats.length) {
       const u = unmapped.get(label) ?? { category: label, rows: 0, sheets: new Set(), names: new Set() };
@@ -466,22 +502,27 @@ export function mergeSources({ ais = [], loin = [], checker = [], mapping = null
     let m = byKey.get(key);
     if (!m) {
       m = { name, group: r.group, level: r.level, categories: r.group === "elements" ? cats : [], disciplines: new Set(), allModels: false, sources: [], match: cls.match };
-      for (const k of ["guid", "dataType", "candidate", "aliasOf", "otherGuid"]) if (cls[k]) m[k] = cls[k];
+      for (const k of ["guid", "guids", "dataType", "candidate", "aliasOf", "otherGuid", "defFile"]) if (cls[k]) m[k] = cls[k];
+      if (r.origin) m.origin = r.origin;
       byKey.set(key, m);
-    } else if (r.level !== m.level) {
+    } else if (r.origin && !m.origin) m.origin = r.origin;
+    if (m.level !== r.level && m.sources.length) {
       if (m.level === "any") m.level = r.level;
       else if (r.level !== "any") levelConflicts.push({ name, group: r.group, kept: m.level, other: r.level, source: srcText(r.source) });
     }
     m.sources.push(r.source);
-    if (r.source.loin != null && r.source.disciplines.length) r.source.disciplines.forEach((d) => m.disciplines.add(d));
+    if (r.source.disciplines?.length) r.source.disciplines.forEach((d) => m.disciplines.add(d));
     else m.allModels = true;
   }
   const rows = [...byKey.values()].map((m, i) => {
     const { disciplines, allModels, ...rest } = m;
     const out = { ...rest, key: `r${i + 1}` };
     // A row only an unconfirmed (draft) mapping put on its categories is checked but never filled.
-    if (out.sources.every((s) => s.draftMapping)) out.draftMapping = true;
     if (!allModels && disciplines.size) out.disciplines = [...disciplines].sort();
+    // Rows whose scope or categories rest on an unapproved part of the mapping are plan-only: checked, never written.
+    if (out.sources.every((s) => s.draftMapping)) { out.draftMapping = true; out.planOnly = out.sources.find((s) => s.planOnly)?.planOnly ?? "its categories come only from a draft (unconfirmed) mapping"; }
+    else if (out.disciplines && Object.keys(mapping?.models ?? {}).length && !sectionApproved(mapping, "models")) { out.draftMapping = true; out.planOnly = "the model -> discipline map in the mapping is not approved"; }
+    else if (out.group === "elements" && !out.categories.length && Object.keys(mapping?.ownership ?? {}).length && !sectionApproved(mapping, "ownership")) { out.draftMapping = true; out.planOnly = "the category ownership in the mapping is not approved"; }
     if (!out.categories.length) delete out.categories;
     return out;
   });
@@ -495,6 +536,7 @@ export function mergeSources({ ais = [], loin = [], checker = [], mapping = null
     unknownNames: [...classes].filter(([, c]) => c.match === "unknown").map(([n]) => n),
     levelConflicts,
     guidConflicts: index?.conflicts ?? [],
+    duplicateGuids: index?.duplicateGuids ?? [],   // one client file defines a name several times with different GUIDs
     nearDuplicates: index ? nearDuplicates(index) : [],
     categoryFilters: mapping?.filters?.length ? mapping.filters : undefined,   // type / name filters the check does not apply yet
     sheetsWithoutDisciplines: [...noScope],   // LOIN sheets whose rows apply to every model until the mapping names disciplines
@@ -502,14 +544,64 @@ export function mergeSources({ ais = [], loin = [], checker = [], mapping = null
   return { rows, bridgeRows, unmappedRows, defects };
 }
 
+/** A mapping section is approved by its own status, else by the mapping's (a draft mapping approves nothing). */
+export function sectionApproved(mapping, name) {
+  const st = mapping?.sectionStatus?.[name] ?? (mapping?.[name] && typeof mapping[name] === "object" ? mapping[name].status : undefined);
+  return st != null ? approved(st) : !mapping?.draft;
+}
+/**
+ * Why rows of one LOIN category entry are plan-only, or null: the entry's own status decides; an entry with a confidence
+ * other than "high" waits for its approval (a pile category mapped to columns would write pile data on every column);
+ * else the category section's (or the mapping's) status.
+ */
+export function categoryHold(mapping, sheet, label) {
+  if (!mapping) return null;
+  const meta = mapping.categoryMeta?.[sheet]?.[label];
+  if (meta?.status != null) return approved(meta.status) ? null : `the category entry "${label}" is not approved (${meta.status})`;
+  if (meta?.confidence && String(meta.confidence).toLowerCase() !== "high") return `the category entry "${label}" has confidence ${meta.confidence} and is not approved`;
+  return sectionApproved(mapping, mapping.sheetCategories ? "loinCategories" : "categories") ? null : "its categories come only from a draft (unconfirmed) mapping";
+}
+
+/** 1.10 add-ins say "wrong-guid" / wrongGuid; since 1.11 the status is "guid-differs" (the files may be the stale side). */
+export function normaliseAnswer(result) {
+  for (const d of result?.documents ?? []) {
+    for (const r of d.rows ?? []) if (r.status === "wrong-guid") r.status = "guid-differs";
+    if (d.summary && d.summary.wrongGuid != null && d.summary.guidDiffers == null) { d.summary.guidDiffers = d.summary.wrongGuid; delete d.summary.wrongGuid; }
+  }
+  for (const r of result?.after?.rows ?? []) if (r.status === "wrong-guid") r.status = "guid-differs";
+  return result;
+}
+
+/**
+ * The mapping's groupDisciplines: { "<list group label or key>": ["ST"] | "*" } -> { project | rooms | levels | elements:
+ * codes }; "*" (or no entry) = every model.
+ */
+export function groupScope(mapping) {
+  const out = {};
+  for (const [k, v] of Object.entries(mapping?.groupDisciplines ?? {})) {
+    if (k === "status" || k.startsWith("_")) continue;
+    const g = groupOf(k);
+    const codes = listOf(v);
+    if (g && codes.length && !codes.includes("*")) out[g] = codes;
+  }
+  return out;
+}
+
 /** The fields the add-in reads (server-only ones stay here). */
 export function bridgeRow(r) {
   const b = { name: r.name, group: r.group, level: r.level, key: r.key };
   if (r.categories?.length) b.categories = r.categories;
   if (r.guid) b.guid = r.guid;
+  if (r.guids?.length > 1) b.guids = r.guids;
   if (r.disciplines?.length) b.disciplines = r.disciplines;
   return b;
 }
+
+/**
+ * Generic discipline (role) codes as they appear in ISO 19650 style file names (e.g. "PRJ-ORG-ZZ-ST-..."): used to read
+ * a model's discipline from its title when the project mapping names none. Generic, never project data.
+ */
+export const ROLE_CODES = ["AR", "ST", "ME", "EL", "PL", "FP", "ID", "LA", "CV", "BM", "PS"];
 
 /** scope for the bridge: discipline codes, model -> discipline, category -> owning disciplines (LOIN sheets unless the mapping says otherwise). */
 export function buildScope(mapping, rows = []) {
@@ -523,7 +615,9 @@ export function buildScope(mapping, rows = []) {
     }
   }
   for (const [c, v] of Object.entries(mapping?.ownership ?? {})) ownership[c] = listOf(v);
-  const codes = uniq([...Object.values(mapping?.disciplines ?? {}).flatMap(listOf), ...Object.values(models).flatMap(listOf), ...Object.values(ownership).flat()]).sort();
+  let codes = uniq([...Object.values(mapping?.disciplines ?? {}).flatMap(listOf), ...Object.values(groupScope(mapping)).flat(), ...Object.values(models).flatMap(listOf), ...Object.values(ownership).flat()]).sort();
+  // Without project codes the model's discipline still comes from its title, through the generic role codes.
+  if (!codes.length) codes = [...ROLE_CODES];
   return { codes, models, ownership };
 }
 
@@ -580,6 +674,7 @@ export function defectsText(d = {}) {
   if (d.pseudoNames?.length) lines.push(`Not parameter names (bracketed, skipped): ${d.pseudoNames.length}`);
   if (d.unknownNames?.length) lines.push(`Not in the shared parameter files (built-in or missing): ${d.unknownNames.length}: ${few(d.unknownNames)}`);
   if (d.nearDuplicates?.length) lines.push(`Near-duplicate names in the shared parameter files (typo twins?): ${few(d.nearDuplicates.map(([a, b]) => `${a} / ${b}`))}`);
+  if (d.duplicateGuids?.length) lines.push(`Names a client file defines several times with different GUIDs (every GUID is accepted): ${few(d.duplicateGuids.map((x) => `${x.name} x${x.guids.length} (${x.file})`))}`);
   if (d.guidConflicts?.length) lines.push(`Same name, different GUIDs in the shared parameter files: ${few(d.guidConflicts.map((c) => c.name))}`);
   if (d.levelConflicts?.length) lines.push(`Type/instance disagreements between sources: ${few(d.levelConflicts.map((c) => `${c.name} (${c.kept} vs ${c.other})`))}`);
   if (d.guidDiffers?.length) lines.push(`Different GUIDs across models: ${few(d.guidDiffers.map((g) => g.name))}`);
@@ -612,12 +707,19 @@ export function reviewChecker(checker, { ais = [], index = null, codes = [] } = 
   const aisNames = new Set(ais.map((r) => r.name));
   const discCodes = new Set([...GENERIC_CODES, ...codes].map((c) => c.toUpperCase()));
   const scopeDefects = [], unknown = [], noCategory = [], dup = new Map();
-  for (const { c, r } of active) {
-    if (!r.categories.length) noCategory.push({ check: c.name, params: r.params });
+  const scopeOf = (c, r) => {
     for (const p of r.params) {
       const code = PREFIX.exec(p)?.[2]?.toUpperCase();
       if (r.categories.length && r.categories.every((x) => x === "OST_ProjectInformation") && (aisElements.has(p) || (code && discCodes.has(code))))
-        scopeDefects.push({ check: c.name, param: p, reason: aisElements.has(p) ? "an element parameter in the AIS, checked only on Project Information" : `a ${code} discipline parameter checked only on Project Information` });
+        scopeDefects.push({ check: c.name, param: p, parked: !c.active || undefined, reason: aisElements.has(p) ? "an element parameter in the AIS, checked only on Project Information" : `a ${code} discipline parameter checked only on Project Information` });
+    }
+  };
+  // Parked checks too: they run as soon as someone moves them out of Unused / Unplaced.
+  for (const { c, r } of parked) scopeOf(c, r);
+  for (const { c, r } of active) {
+    scopeOf(c, r);
+    if (!r.categories.length) noCategory.push({ check: c.name, params: r.params });
+    for (const p of r.params) {
       if ((index?.files || ais.length) && !(index && lookup(index, p)) && !aisNames.has(p)) unknown.push(p);
       const k = `${p}\0${[...r.categories].sort().join("|")}\0${r.level}`;
       dup.set(k, [...(dup.get(k) ?? []), c.name]);
@@ -641,7 +743,10 @@ export function reviewText(rv) {
     `Active parameter checks per category: ${Object.entries(rv.perCategory).map(([k, v]) => `${k} ${v.count}`).join(", ") || "none"}.`,
   ];
   if (rv.parkedOnlyParameters.length) lines.push(`Parameters checked only in parked checks (not run): ${rv.parkedOnlyParameters.length}.`);
-  if (rv.scopeDefects.length) lines.push(`Scope defects (${rv.scopeDefects.length}): ${few(rv.scopeDefects.map((d) => `${d.param}: ${d.reason}`), 5)}`);
+  if (rv.scopeDefects.length) {
+    const parked = rv.scopeDefects.filter((d) => d.parked).length;
+    lines.push(`Scope defects (${rv.scopeDefects.length}: ${rv.scopeDefects.length - parked} in active checks, ${parked} in parked checks): ${few(rv.scopeDefects.map((d) => `${d.param}${d.parked ? " (parked)" : ""}: ${d.reason}`), 5)}`);
+  }
   if (rv.unknownNames.length) lines.push(`Names in neither the shared parameter files nor the AIS (${rv.unknownNames.length}): ${few(rv.unknownNames)}`);
   if (rv.duplicates.length) lines.push(`Duplicated checks (${rv.duplicates.length}): ${few(rv.duplicates.map((d) => `${d.param} x${d.checks.length}`))}`);
   if (rv.noCategory.length) lines.push(`Parameter checks with no category (${rv.noCategory.length}): ${few(rv.noCategory.map((d) => d.check))}`);
@@ -652,7 +757,7 @@ export function reviewMarkdown(rv) {
   const out = [`# Model Checker review: ${rv.checker ?? ""}`, "", reviewText(rv).split("\n").map((l) => `- ${l}`).join("\n"), "", "## Active parameter checks per category", ""];
   for (const [k, v] of Object.entries(rv.perCategory)) out.push(`- **${k}** (${v.count}): ${v.params.join(", ")}`);
   const section = (title, items) => { if (items.length) out.push("", `## ${title}`, "", ...items.map((i) => `- ${i}`)); };
-  section("Scope defects", rv.scopeDefects.map((d) => `${d.param} (${d.check}): ${d.reason}`));
+  section("Scope defects", rv.scopeDefects.map((d) => `${d.param} (${d.check}${d.parked ? ", parked" : ""}): ${d.reason}`));
   section("Names in neither the shared parameter files nor the AIS", rv.unknownNames);
   section("Duplicated checks", rv.duplicates.map((d) => `${d.param} [${d.categories || "no category"}]: ${d.checks.join("; ")}`));
   section("Parameter checks with no category", rv.noCategory.map((d) => `${d.check}: ${d.params.join(", ")}`));
@@ -829,7 +934,8 @@ export function loadSources(args) {
   }
   const merged = mergeSources({ ais, loin: loinRows, checker: chRows, mapping: map, index });
   const files = read.map(([f]) => f);
-  return { ...merged, scope: buildScope(map, merged.rows), mapping: mapInfo, naPolicy: naPolicy(map), listInfo, info, files, hash: read.length ? hashBytes(read) : null, checker: checkerData, ais, index };
+  const fileHashes = Object.fromEntries(read.map(([f, b]) => [f, hashBytes([[f, b]])]));
+  return { ...merged, scope: buildScope(map, merged.rows), mapping: mapInfo, naPolicy: naPolicy(map), listInfo, info, files, fileHashes, hash: read.length ? hashBytes(read) : null, checker: checkerData, ais, index, projectFile: project_parameters };
 }
 
 /** The project's NA policy from the mapping: naPolicy (project shape) or fill (ACE shape) { value, values }; nulls when unset. */

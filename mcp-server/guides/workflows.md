@@ -51,17 +51,27 @@ models and Project Information twins with different values, and a ranked action 
 report_dir (or a large result) the reports go to files (summary xlsx, CSV, markdown, actions); give the user the paths.
 
 Everything project-specific lives in the project mapping in the vault (`rules/parameter-mapping.json`, found from the
-open model, or `vault` / `mapping`): client category -> Revit categories, LOIN sheet -> disciplines, approved name
+open model, or `vault` / `mapping`): client category -> Revit categories, LOIN sheet -> disciplines (`disciplines`), AIS / checker group ->
+disciplines (`groupDisciplines`, "*" = every model), approved name
 aliases, model -> discipline, LOIN column names (loinTable) and the NA policy (the fill value and the texts that mean
 "declared missing"). Without one, only the generic checks run and the reply says what is missing. create_mapping: true
 writes a draft with best guesses for a person to confirm; a draft never drives a fill. Report unmapped categories and
 spelling / prefix-drift candidates as decisions for the user; never treat a guess as confirmed.
 
-Fill only when the user asks. parameter_check fill_plan: true counts what a fill would set (read-only). To fill:
-parameter_fill action fill with dry_run: true, show what would be set, then the identical call after confirmation (one
-undo step, in the same model; a changed source file needs a new dry run). The value is the mapping's NA policy, or
-`value` when the project has none. Only blank text parameters get it; read-only, borrowed, grouped and design-option
-elements are skipped and listed. NA is a declared value, counted apart from filled.
+Four stages: 1 check (parameter_check, read-only), 2 reports (report_dir: summary xlsx, CSV, markdown), 3 actions (the
+ranked list: each has a stable id, a type and its blockers; auto-fixable ones say whether they are ready), 4 execution
+(parameter_fill action fill), only when the user asks. Execution runs the ready auto-fixable actions of the active model
+(or `actions: [ids]`) as ONE plan, ONE approval, ONE undo step: bindings (definitions only from the project shared
+parameter file, or a temporary file with exactly the client's line: tell the user to add that line to the project file),
+derived values (the mapping's approved derive rules and listed twins; never overwriting a value), then the approved NA
+value on the blanks that remain. dry_run: true first: it writes the missing register (blank values before the fill),
+shows the impact (schedules, view filters, labels on sheets, IFC property sets with ifc_property_sets, client checks that
+flip: "NA" passes a HasValue check without the data), then the identical call applies; the add-in reads every write back
+and rolls the whole plan back on any mismatch. The apply writes the evidence file. With all_documents: true the other
+models' plans are listed read-only: the user switches to each model and repeats the call (one approval per model).
+Blocks are never silent: an unapproved NA policy or derive section, a missing project shared parameter file, a changed
+source file, another ACE version, borrowed elements: say what, why and how to clear it, as the reply gives it.
+parameter_check fill_plan: true still counts what a plain NA fill would set (read-only).
 
 ## Requirements vault and audits
 

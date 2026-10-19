@@ -8,6 +8,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import * as S from "../lib/paramsources.js";
 import * as A from "../lib/paramactions.js";
+import * as X from "../lib/paramexec.js";
 import { readXlsx, unzip } from "../lib/docs.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-paramsources-"));
@@ -189,7 +190,7 @@ const client = { file: "client.txt", kind: "client", params: [
 ] };
 const idx = S.paramIndex([proj, client]);
 assert.deepEqual(idx.conflicts, [{ name: "TST_AR_Fire Rating", guids: { "g-proj": "project.txt", "g-client": "client.txt" } }], "same name, different GUIDs");
-assert.deepEqual(S.classifyName("TST_AR_Fire Rating", idx), { match: "exact", name: "TST_AR_Fire Rating", guid: "g-proj", dataType: "TEXT", otherGuid: "g-client" }, "the project file's GUID wins");
+assert.deepEqual(S.classifyName("TST_AR_Fire Rating", idx), { match: "exact", name: "TST_AR_Fire Rating", guid: "g-proj", dataType: "TEXT", defFile: "project.txt", otherGuid: "g-client" }, "the project file's GUID wins");
 assert.equal(S.classifyName("TST_AR_Room Use", idx).match, "exact-client");
 assert.deepEqual(S.classifyName("TST_AR_Fire rating", idx), { match: "spelling", name: "TST_AR_Fire rating", candidate: "TST_AR_Fire Rating", candidates: undefined });
 assert.equal(S.classifyName("tst_ar_fire_rating", idx).match, "spelling", "case, space and _ normalised");
@@ -321,8 +322,12 @@ const checkAnswer = { documents: [
 const allDefects = { ...merged.defects, twins: [{ model: "X-ARC", a: "TST_PI_A", b: "TST_PIX_A", valueA: "1", valueB: "2" }] };
 const actions = A.buildActions({ result: checkAnswer, rows: merged.rows, unmappedRows: merged.unmappedRows, defects: allDefects, review: rv });
 assert.deepEqual(actions.map((a) => a.rank), actions.map((_, i) => i + 1));
-assert.match(actions[0].what, /^(Bind 1 parameter\(s\) to project as instance parameters in X-ARC: TST_PI_Site Name|Replace 1 parameter definition\(s\) with the wrong GUID \(project\) in X-ARC: TST_ST_Grade)$/, "submission blockers on rows the client checker tests come first");
-assert.ok(actions.slice(0, 2).every((a) => /checker tests 1 of them/.test(a.why)));
+assert.match(actions[0].what, /^(Bind 1 parameter\(s\) to project as instance parameters in X-ARC: TST_PI_Site Name|TST_ST_Grade: the model's GUID differs from .*; confirm which is current)$/, "submission blockers on rows the client checker tests come first");
+assert.ok(actions.slice(0, 2).every((a) => /checker/.test(a.why)));
+const differs = actions.find((a) => /TST_ST_Grade: the model's GUID differs/.test(a.what));
+assert.ok(differs.type === "needs a decision" && !/wrong|fails exports/.test(JSON.stringify(differs)) && /explicit rebind action rebind-[0-9a-f]{8}/.test(differs.options[0]) && /update the vault file from the model/.test(differs.options[1]), "DEC-0004: a differing GUID is a decision with both options, never called wrong");
+const rebindAct = actions.find((a) => a.id === differs.options[0].match(/rebind-[0-9a-f]{8}/)[0]);
+assert.ok(rebindAct.explicitOnly && rebindAct.run.kind === "rebind" && rebindAct.type === "needs a decision", "the rebind is explicit-only");
 // Binding problems: one action per model x group x level, names inside (first 10 + count), checker-tested ones first.
 const many = { documents: [{ model: "M", discipline: "AR", rows: [
   ...Array.from({ length: 12 }, (_, i) => ({ key: `u${i}`, name: `TST_U${i}`, group: "project", level: "instance", status: "not-bound", checked: 1 })),
@@ -333,12 +338,12 @@ const many = { documents: [{ model: "M", discipline: "AR", rows: [
 const manyRows = [...many.documents[0].rows.map((x) => ({ key: x.key, name: x.name, group: x.group, level: x.level, sources: [{ ais: 1 }] }))];
 manyRows.find((r) => r.key === "t1").sources.push({ checker: "c", id: "1" });
 const grouped = A.buildActions({ result: many, rows: manyRows });
-assert.equal(grouped.length, 3, "13 unbound + 2 wrong-GUID rows -> 3 actions");
+assert.equal(grouped.length, 6, "13 unbound rows -> 2 actions; 2 differing GUIDs -> a decision and an explicit rebind each");
 assert.match(grouped[0].what, /^Bind 1 parameter\(s\) to rooms .* in M: TST_T1$/, "the group with checker-tested parameters ranks first");
 assert.match(grouped[1].what, /^Bind 12 parameter\(s\) to project as instance parameters in M: TST_U0; .*TST_U9; \.\.\. 2 more$/, "first 10 names + count");
 assert.equal(grouped[1].impact.rows, 12);
 assert.equal(grouped[1].impact.elements, 12, "element counts add up over the grouped parameters");
-assert.match(grouped[2].what, /^Replace 2 parameter definition\(s\) with the wrong GUID \(project\) in M: TST_W1; TST_W2$/);
+assert.deepEqual(grouped.filter((a) => /GUID differs/.test(a.what)).map((a) => a.what.split(":")[0]).sort(), ["TST_W1", "TST_W2"]);
 const fillWall = actions.findIndex((a) => /Fill 60 blank/.test(a.what)), fillRoom = actions.findIndex((a) => /Fill 12 blank/.test(a.what));
 assert.ok(fillWall > 1 && fillWall < fillRoom, "blanks after the blockers, the most elements first");
 assert.equal(actions[fillWall].type, "auto-fixable");
@@ -349,8 +354,11 @@ const nonText = actions.find((a) => /not text, so "NA" cannot be written/.test(a
 assert.equal(nonText.type, "needs a decision", "non-text NA policy is a decision");
 const twin = actions.find((a) => /Make TST_PI_A and TST_PIX_A agree/.test(a.what));
 assert.equal(twin.type, "needs a decision", "a twin pair the mapping does not list in derive is a decision");
-const derivedTwin = A.buildActions({ result: checkAnswer, rows: merged.rows, defects: allDefects, derive: [{ target: "TST_PIX_A", from: "TST_PI_A" }] }).find((a) => /Make TST_PI_A/.test(a.what));
-assert.equal(derivedTwin.type, "auto-fixable", "listed in derive: auto-fixable");
+const twinSet = X.deriveRules({ derive: { twins: { pairs: [["TST_PI_A", "TST_PIX_A"]] }, status: "approved" } });
+const oneBlank = { ...allDefects, twins: [{ model: "X-ARC", a: "TST_PI_A", b: "TST_PIX_A", valueA: "1", valueB: "" }] };
+const derivedTwin = A.buildActions({ result: checkAnswer, rows: merged.rows, defects: oneBlank, deriveSet: twinSet }).find((a) => /Make TST_PI_A/.test(a.what));
+assert.ok(derivedTwin.type === "auto-fixable" && derivedTwin.id === twinSet.groups[0].id && derivedTwin.run.kind === "derive", "listed in derive, one side blank: auto-fixable, its id is the rule's");
+assert.equal(A.buildActions({ result: checkAnswer, rows: merged.rows, defects: allDefects, deriveSet: twinSet }).find((a) => /Make TST_PI_A/.test(a.what)).type, "needs a decision", "both filled and different: ACE never overwrites, a person decides");
 const unk = S.crossModel({ documents: [{ model: "M", rows: [{ name: "TST_X", unknownCategories: ["OST_Wals"] }] }] }).unknownCategories;
 assert.deepEqual(unk, [{ category: "OST_Wals", models: ["M"], names: ["TST_X"] }]);
 assert.match(S.defectsText({ unknownCategories: unk }), /OST_Wals \(1 row/);
@@ -362,12 +370,14 @@ const spell = actions.find((a) => /TST_AR_Fire rating/.test(a.what));
 assert.ok(spell.owner === "client" && actions.indexOf(spell) > actions.indexOf(mapAct), "client defects come last");
 assert.ok(actions.some((a) => a.owner === "client" && /only on Project Information/.test(a.what)), "checker scope defects from the review");
 assert.ok(actions.some((a) => /Typo twins/.test(a.what) && a.type === "needs another party"));
-assert.match(A.actionLine(actions[fillWall]), /^\d+\. \[auto-fixable; AR\] Fill 60 blank/);
+assert.match(A.actionLine(actions[fillWall]), /^\d+\. \[fill-[0-9a-f]{8}; auto-fixable; AR\] Fill 60 blank/);
+assert.equal(new Set(actions.map((a) => a.id)).size, actions.length, "every action has its own id");
+assert.deepEqual(A.buildActions({ result: checkAnswer, rows: merged.rows, unmappedRows: merged.unmappedRows, defects: allDefects, review: rv }).map((a) => a.id), actions.map((a) => a.id), "ids are stable");
 assert.match(A.actionsMarkdown(actions), /- Blocker: 3 element\(s\) with blanks in X-ARC are borrowed by other users\. How to clear: ask them/);
 
 assert.equal(A.summaryTable({ documents: [{ model: "M", rows: [{ status: "unmapped" }] }] }, [{ sources: [] }])[0].unmapped, 2, "the add-in's unmapped rows plus the server's");
 const table = A.summaryTable(checkAnswer, merged.unmappedRows);
-assert.deepEqual(table.map((l) => [l.model, l.rows, l.blanks, l["not-bound"], l["wrong-guid"], l["not text"], l.unmapped, l["complete-with-na"], l["out-of-scope"]]),
+assert.deepEqual(table.map((l) => [l.model, l.rows, l.blanks, l["not-bound"], l["guid-differs"], l["not text"], l.unmapped, l["complete-with-na"], l["out-of-scope"]]),
   [["X-ARC", 5, 3, 1, 1, 1, 1, 0, 0], ["X-STR", 2, 0, 0, 0, 0, 0, 1, 1], ["All models", 7, 3, 1, 1, 1, 1, 1, 1]], "unmapped rows count where their sheet's discipline is");
 assert.match(A.summaryMarkdown(checkAnswer, merged.unmappedRows), /\| AR \| X-ARC \| 5 \| 0 \| 0 \| 3 \|/);
 const book = A.summaryWorkbook(checkAnswer, merged.rows, merged.unmappedRows, actions);

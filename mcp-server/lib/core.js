@@ -67,17 +67,139 @@ export function readConfig() {
 export const teamScriptsDir = () => process.env.ACE_TEAM_SCRIPTS || readConfig()?.teamScriptsDir || null;
 export const teamReportsDir = () => process.env.ACE_TEAM_REPORTS || readConfig()?.teamReportsDir || null;
 
-export function bridgeUrl(cfg = readConfig()) {
-  return process.env.ACE_REVIT_URL || `http://localhost:${cfg?.port || 48884}`;
+export const INSTANCES_DIR = process.env.ACE_REVIT_INSTANCES || path.join(DATA_DIR, "instances");
+/** The ports the add-in tries, in order: config.port and the nine after it. */
+export const portsFrom = (base) => Array.from({ length: 10 }, (_, i) => (Number(base) || 48884) + i);
+
+/** ACE_REVIT_URL (override), else the chosen Revit session's port, else config.port. */
+export function bridgeUrl(cfg = readConfig(), port = undefined) {
+  return process.env.ACE_REVIT_URL || `http://localhost:${port || cfg?.port || 48884}`;
+}
+
+async function healthAt(base, timeoutMs) {
+  try {
+    const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    return await r.json();
+  } catch (err) {
+    const name = err?.name ?? "";
+    return { ok: false, timeout: name === "TimeoutError" || name === "AbortError", error: err?.cause?.code || name || String(err) };
+  }
 }
 
 export async function health(timeoutMs = 4000) {
-  try {
-    const r = await fetch(`${bridgeUrl()}/health`, { signal: AbortSignal.timeout(timeoutMs) });
-    return await r.json();
-  } catch (err) {
-    return { ok: false, error: err?.cause?.code || err?.name || String(err) };
+  const s = process.env.ACE_REVIT_URL ? null : (await chooseInstance().catch(() => null))?.chosen;
+  return healthAt(bridgeUrl(readConfig(), s?.port), timeoutMs);
+}
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err?.code === "EPERM"; } };
+
+/**
+ * The running Revit sessions with the ACE add-in -> { list, notes }. Each add-in writes instances/<pid>.json { port, pid,
+ * machine, revitVersion, aceVersion, started, updated, activeDocument, openDocuments, user }; a file counts when /health on
+ * its port answers the same pid. A file is deleted only when it is ours to judge (name <pid>.json, written on this
+ * machine) and provably stale (the pid does not run here, or /health answers another pid); a slow answer only skips it
+ * for this call. No live file (an older add-in): /health on config.port and the nine ports after it.
+ */
+export async function listInstances({ timeoutMs = 1500 } = {}) {
+  const notes = [];
+  let files = [];
+  if (fs.existsSync(INSTANCES_DIR)) {
+    if (!fs.statSync(INSTANCES_DIR).isDirectory()) notes.push(`${INSTANCES_DIR} is not a folder: Revit sessions are found by their ports only.`);
+    else { try { files = fs.readdirSync(INSTANCES_DIR).filter((f) => /^\d+\.json$/.test(f)); } catch (err) { notes.push(`Cannot read ${INSTANCES_DIR}: ${err.message}`); } }
   }
+  const found = [];
+  await Promise.all(files.map(async (f) => {
+    const file = path.join(INSTANCES_DIR, f);
+    let info;
+    try { info = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch { return; }
+    if (!info?.port || !info?.pid) return;
+    const local = info.machine != null && String(info.machine).toLowerCase() === os.hostname().toLowerCase();
+    const remove = () => { if (local && f === `${Number(info.pid)}.json`) { try { fs.unlinkSync(file); } catch { /* removed meanwhile */ } } };
+    if (local && !alive(info.pid)) return remove();
+    const h = await healthAt(`http://localhost:${info.port}`, timeoutMs);
+    if (h?.timeout) { notes.push(`Revit session pid ${info.pid} (port ${info.port}) did not answer in time; skipped for now.`); return; }
+    if (h?.ok && (h.pid == null || Number(h.pid) === Number(info.pid))) { found.push({ ...info, source: "file" }); return; }
+    if (h?.ok) remove();   // another process answers on that port: the file is stale
+  }));
+  if (!found.length) {
+    await Promise.all(portsFrom(readConfig()?.port).map(async (port) => {
+      const h = await healthAt(`http://localhost:${port}`, 600);
+      if (h?.ok && h.service === "ace-revit-mcp") found.push({ port, pid: h.pid ?? null, revitVersion: h.revitVersion, machine: os.hostname(), source: "probe" });
+    }));
+  }
+  return { list: found.sort((a, b) => String(b.updated ?? "").localeCompare(String(a.updated ?? "")) || a.port - b.port), notes };
+}
+
+let preferred = null;   // a model title, pid or port the user chose (revit_status instance), kept for this server process
+export const preferInstance = (hint) => { preferred = hint ? String(hint) : null; };
+
+const title = (d) => String(d ?? "").trim().toLowerCase().replace(/\.rvt$/, "");
+/**
+ * Sessions matching a hint: pid or port, else an exact model title (active document first, then any open one). Only
+ * with substring: true a part of a title matches (a fallback, reported with a note; never for expect_model).
+ */
+export function matchInstances(list, hint, { substring = false } = {}) {
+  if (!hint) return [];
+  const h = title(hint);
+  const byId = list.filter((s) => String(s.pid) === h || String(s.port) === h);
+  if (byId.length) return byId;
+  const active = list.filter((s) => title(s.activeDocument) === h);
+  if (active.length) return active;
+  const open = list.filter((s) => (s.openDocuments ?? []).some((d) => title(d) === h));
+  if (open.length || !substring) return open;
+  return list.filter((s) => [s.activeDocument, ...(s.openDocuments ?? [])].some((d) => d && title(d).includes(h)));
+}
+
+/** Pure choice: hint match, else the only session, else the most recently updated with a note naming the others. */
+export function pickInstance(list, hint, { exact = false } = {}) {
+  if (!list.length) return { chosen: null, list, note: null };
+  let m = matchInstances(list, hint);
+  let note = null;
+  if (!m.length && hint && !exact) {
+    m = matchInstances(list, hint, { substring: true });
+    if (m.length) note = `No Revit session has a model titled exactly "${hint}"; using ${describeInstance(m[0])}, whose model title contains it.`;
+  }
+  if (m.length) return { chosen: m[0], list, note };
+  if (list.length === 1) return { chosen: list[0], list, note: hint ? `No Revit session has "${hint}" open; using the only one (${describeInstance(list[0])}).` : null };
+  const [chosen, ...others] = list;
+  return { chosen, list, note: `${list.length} Revit sessions are running; using ${describeInstance(chosen)}${hint ? ` (none has "${hint}" open)` : ""}. Others: ${others.map(describeInstance).join("; ")}. To use another: revit_status with instance (its model title or pid).` };
+}
+export const describeInstance = (s) => s ? `Revit ${s.revitVersion ?? "?"} pid ${s.pid ?? "?"} port ${s.port}${s.activeDocument ? `, active "${s.activeDocument}"` : ""}${s.user ? `, ${s.user}` : ""}` : "the configured Revit";
+
+let cached = null;
+/** The session for a call (listing cached for 5 s). With ACE_REVIT_URL set there is no choice to make. */
+export async function chooseInstance(hint = undefined, { exact = false } = {}) {
+  if (process.env.ACE_REVIT_URL) return { chosen: null, list: [], note: null };
+  let listNotes = [];
+  try {
+    if (!cached || Date.now() - cached.at > 5000) { const r = await listInstances(); cached = { at: Date.now(), list: r.list, notes: r.notes }; }
+    listNotes = cached.notes ?? [];
+  } catch (err) {
+    return { chosen: null, list: [], note: `Could not list the Revit sessions (${err.message}); using config.json's port.` };
+  }
+  const pick = pickInstance(cached.list, hint ?? preferred, { exact: exact && hint != null });
+  const note = [...listNotes, pick.note].filter(Boolean).join("\n") || null;
+  return { ...pick, note };
+}
+
+/** A session's identity for the preview gate (machine, pid, port); the URL override or config port when none is chosen. */
+export const sessionKey = (s) => s ? `${s.machine ?? os.hostname()}|${s.pid ?? "?"}|${s.port}` : `url|${bridgeUrl()}`;
+export const sessionLabel = (s) => s ? `${s.pid ?? "?"} (${s.activeDocument ?? "no model"}, port ${s.port})` : bridgeUrl();
+
+/** The session this tool call uses: the pinned one, else chosen now (a hint is matched exactly when exact). */
+export async function resolveSession(hint = undefined, { exact = false } = {}) {
+  const store = currentCall.getStore();
+  if (store && Object.hasOwn(store, "pinned")) return store.pinned;
+  const pick = await chooseInstance(hint, { exact });
+  if (pick.note) store?.notes?.add(pick.note);
+  return pick.chosen;
+}
+/** Pins one session for the rest of this tool call (check, dry run and apply go to the same Revit). */
+export async function pinSession(hint = undefined, opts = {}) {
+  const s = await resolveSession(hint, opts);
+  const store = currentCall.getStore();
+  if (store) store.pinned = s;
+  return s;
 }
 
 export async function callRevit(command, args = {}, timeoutSeconds = 120, signal = undefined) {
@@ -87,7 +209,8 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
       `Cannot find ${CONFIG_PATH}. Start Revit (2024 or 2025) once with the ACE add-in installed (run install.ps1), then try again.`,
     );
   }
-  const base = bridgeUrl(cfg);
+  const chosen = await resolveSession(args?.expect_model, { exact: true });
+  const base = bridgeUrl(cfg, chosen?.port);
   let response;
   const clientSignal = signal ?? currentCall.getStore()?.signal;
   const requestId = randomUUID();   // a cancel reaches exactly this request in Revit

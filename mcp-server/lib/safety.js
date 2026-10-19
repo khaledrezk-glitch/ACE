@@ -2,11 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { JOURNAL_DIR, RevitError, localDate } from "./core.js";
+import { JOURNAL_DIR, RevitError, localDate, pinSession, sessionKey, sessionLabel } from "./core.js";
 
 export const PREVIEW_VALID_MS = 60 * 60 * 1000;
 
-export const previews = new Map(); // change fingerprint -> time of successful dry run
+export const previews = new Map(); // change fingerprint -> { at, session, label } of its successful dry run
 
 function stable(value) {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
@@ -25,13 +25,18 @@ export const fingerprint = (kind, payload) => createHash("sha256").update(kind +
  * a fresh preview, which shows the model as it now is.
  */
 export async function gated(key, { apply, explanation, why }, send, ok) {
+  // One Revit session per call: the preview and the apply must reach the same Revit (machine, pid, port).
+  const session = await pinSession();
   if (!apply) {
     const result = await send();
-    if (ok(result)) previews.set(key, Date.now());
+    if (ok(result)) previews.set(key, { at: Date.now(), session: sessionKey(session), label: sessionLabel(session) });
     return result;
   }
   requirePreview(key);
   if (!explanation) throw new RevitError(why);
+  const p = previews.get(key);
+  if (p.session !== sessionKey(session))
+    throw new RevitError(`Blocked for safety: the preview was made in Revit session ${p.label}, this call would go to ${sessionLabel(session)}: preview again in the session to change.`);
   previews.delete(key);
   try {
     return await send();
@@ -44,7 +49,7 @@ export async function gated(key, { apply, explanation, why }, send, ok) {
 }
 
 export function requirePreview(key) {
-  const at = previews.get(key);
+  const at = previews.get(key)?.at;
   if (!at || Date.now() - at > PREVIEW_VALID_MS) {
     throw new RevitError(
       "Blocked for safety: this exact change has not been previewed. Run the same call with dry_run: true, " +

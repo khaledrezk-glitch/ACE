@@ -252,7 +252,7 @@ class P {
     var sum = (System.Text.Json.Nodes.JsonObject)pfT.GetMethod("Summary", flags).Invoke(null, new object[] { results2, 0 });
     Check((int)sum["rows"] == 5 && (int)sum["complete"] == 1 && (int)sum["withBlanks"] == 2 && (int)sum["missingEverywhere"] == 1 && (int)sum["notText"] == 1 && (int)sum["notInGeneral"] == 1 && (int)sum["noElements"] == 1,
       "summary: complete, with blanks, missing everywhere, not text, not in General, no elements");
-    Check((int)sum["withNA"] == 0 && (int)sum["outOfScope"] == 0 && (int)sum["wrongGuid"] == 0 && (int)sum["wrongLevel"] == 0 && (int)sum["foreign"] == 0 && (int)sum["notBound"] == 1,
+    Check((int)sum["withNA"] == 0 && (int)sum["outOfScope"] == 0 && (int)sum["guidDiffers"] == 0 && (int)sum["wrongLevel"] == 0 && (int)sum["foreign"] == 0 && (int)sum["notBound"] == 1,
       "summary of an old-style check: no NA, nothing out of scope, no GUID or level defects; missing everywhere is not bound");
 
     // ---- parameter requirements (1.10.0): NA, level any, categories, discipline scope, status rules ----
@@ -308,6 +308,16 @@ class P {
     Check(Gm("11111111-2222-3333-4444-555555555555", "{11111111-2222-3333-4444-555555555555}") == true && Gm("11111111-2222-3333-4444-555555555555", "11111111-2222-3333-4444-555555555556") == false
       && Gm(null, "11111111-2222-3333-4444-555555555555") == null && Gm("11111111-2222-3333-4444-555555555555", null) == null,
       "GUID match: compared as GUIDs; null without an expected GUID or a shared definition");
+    var multi = (IList)pfT.GetMethod("ParseRows", flags).Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"[
+      { ""name"": ""TST_Grade"", ""group"": ""elements"", ""guid"": ""11111111-2222-3333-4444-555555555555"", ""guids"": [""11111111-2222-3333-4444-555555555555"", ""aaaaaaaa-2222-3333-4444-555555555555""] },
+      { ""name"": ""TST_Code"", ""group"": ""elements"", ""guids"": [""bbbbbbbb-2222-3333-4444-555555555555""] } ]").AsArray(), new System.Text.Json.Nodes.JsonArray() });
+    var mg = (System.Collections.Generic.List<string>)rowT.GetField("Guids").GetValue(multi[0]);
+    bool? Gany(object row, string model) => (bool?)pfT.GetMethod("GuidMatchesAny", flags).Invoke(null, new object[] { rowT.GetField("Guids").GetValue(row), model });
+    Check(mg.Count == 2 && (string)rowT.GetField("Guid").GetValue(multi[1]) == "bbbbbbbb-2222-3333-4444-555555555555"
+      && Gany(multi[0], "AAAAAAAA-2222-3333-4444-555555555555") == true && Gany(multi[0], "11111111-2222-3333-4444-555555555555") == true
+      && Gany(multi[0], "cccccccc-2222-3333-4444-555555555555") == false && Gany(multi[0], null) == null && Gany(reqParsedNoGuid(), "cccccccc-2222-3333-4444-555555555555") == null,
+      "guids: one name with several client GUIDs matches when the model's GUID is any of them (guid and guids merged, duplicates once)");
+    object reqParsedNoGuid() => req[1];
     object R(Action<object> set) { var r = Activator.CreateInstance(resT2); set(r); return r; }
     void F(object r, string f, object v) => resT2.GetField(f).SetValue(r, v);
     string PfStatus(object r) => (string)pfT.GetMethod("Status", flags).Invoke(null, new object[] { r });
@@ -321,15 +331,204 @@ class P {
     var stBlank = R(r => { F(r, "Checked", 5); F(r, "Blank", 2); F(r, "Na", 1); F(r, "Filled", 2); });
     var stNA = R(r => { F(r, "Checked", 5); F(r, "Na", 1); F(r, "Filled", 4); F(r, "GuidMatch", (bool?)true); F(r, "WrongLevel", (bool?)true); });
     var stDone = R(r => { F(r, "Checked", 5); F(r, "Filled", 5); });
-    Check(PfStatus(stOut) == "out-of-scope" && PfStatus(stUnm) == "unmapped" && PfStatus(stNone) == "no-elements" && PfStatus(stNotBound) == "not-bound" && PfStatus(stGuid) == "wrong-guid"
+    Check(PfStatus(stOut) == "out-of-scope" && PfStatus(stUnm) == "unmapped" && PfStatus(stNone) == "no-elements" && PfStatus(stNotBound) == "not-bound" && PfStatus(stGuid) == "guid-differs"
       && PfStatus(stPart) == "partly-bound" && PfStatus(stUnb) == "partly-bound" && PfStatus(stBlank) == "blanks" && PfStatus(stNA) == "complete-with-na" && PfStatus(stDone) == "complete",
-      "status: out-of-scope, unmapped, no-elements, not-bound, wrong-guid, partly-bound (missing or unbound categories), blanks, complete-with-na, complete (first rule wins)");
+      "status: out-of-scope, unmapped, no-elements, not-bound, guid-differs, partly-bound (missing or unbound categories), blanks, complete-with-na, complete (first rule wins)");
+    var stBuiltPart = R(r => { F(r, "BuiltIn", true); F(r, "Checked", 5); F(r, "Missing", 2); F(r, "Blank", 1); F(r, "Filled", 2); });
+    var stBuiltDone = R(r => { F(r, "BuiltIn", true); F(r, "Checked", 5); F(r, "Filled", 5); });
+    var stBuiltOut = R(r => { F(r, "BuiltIn", true); F(r, "OutOfScope", true); F(r, "Checked", 0); F(r, "Missing", 0); });
+    Check(PfStatus(stBuiltPart) == "not-available" && PfStatus(stBuiltDone) == "complete" && PfStatus(stBuiltOut) == "out-of-scope",
+      "a built-in parameter some checked elements lack is not-available (before not-bound / partly-bound); on every element it is judged as usual");
+    var resultsB = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(resT2));
+    foreach (var r in new[] { stBuiltPart, stBuiltDone, stPart }) { F(r, "Status", PfStatus(r)); resultsB.Add(r); }
+    var sumB = (System.Text.Json.Nodes.JsonObject)pfT.GetMethod("Summary", flags).Invoke(null, new object[] { resultsB, 0 });
+    Check((int)sumB["notAvailable"] == 1 && (int)sumB["notBound"] == 0, "summary: notAvailable counts built-in rows some elements lack; they are not counted as not bound");
     var results3 = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(resT2));
     foreach (var r in new[] { stOut, stUnm, stNone, stNotBound, stGuid, stPart, stUnb, stBlank, stNA, stDone }) { F(r, "Status", PfStatus(r)); results3.Add(r); }
     var sum3 = (System.Text.Json.Nodes.JsonObject)pfT.GetMethod("Summary", flags).Invoke(null, new object[] { results3, 7 });
-    Check((int)sum3["withNA"] == 2 && (int)sum3["outOfScope"] == 1 && (int)sum3["wrongGuid"] == 2 && (int)sum3["notBound"] == 1 && (int)sum3["wrongLevel"] == 1 && (int)sum3["foreign"] == 7
+    Check((int)sum3["withNA"] == 2 && (int)sum3["outOfScope"] == 1 && (int)sum3["guidDiffers"] == 2 && (int)sum3["notBound"] == 1 && (int)sum3["wrongLevel"] == 1 && (int)sum3["foreign"] == 7
       && (int)sum3["noElements"] == 1 && (int)sum3["complete"] == 2,
-      "summary: with NA, out of scope, wrong GUID, not bound, wrong level, foreign; out-of-scope and unmapped rows are not 'no elements'; complete agrees with status (complete or complete-with-na)");
+      "summary: with NA, out of scope, GUID differs, not bound, wrong level, foreign; out-of-scope and unmapped rows are not 'no elements'; complete agrees with status (complete or complete-with-na)");
+
+    // ---- parameter plan (1.11.0): derive rules, bind entries, version, plain-language reasons, self-check, impact ----
+    var ppT = a.GetType("AceRevitMcp.Rules.ParameterPlanLogic");
+    System.Text.Json.Nodes.JsonArray JA(string json) => System.Text.Json.Nodes.JsonNode.Parse(json).AsArray();
+    var dProblems = new System.Text.Json.Nodes.JsonArray();
+    var dRules = (IList)ppT.GetMethod("ParseDerive", flags).Invoke(null, new object[] { JA(@"[
+      { ""target"": ""TST_GEN_Site Name"", ""copyFrom"": ""TST_GN_Site Name"" },
+      { ""target"": ""TST_Code"", ""join"": [""TST_Zone"", ""TST_Level"", ""TST_Number""], ""separator"": ""-"" },
+      { ""copyFrom"": ""TST_A"" },
+      { ""target"": ""TST_B"", ""copyFrom"": ""TST_A"", ""join"": [""TST_C""] },
+      { ""target"": ""TST_B"" },
+      { ""target"": ""TST_B"", ""join"": [] },
+      { ""target"": ""TST_B"", ""join"": [""TST_B"", ""TST_C""] } ]"), dProblems });
+    var drT = ppT.GetNestedType("DeriveRule", flags);
+    Check(dRules.Count == 2 && (string)drT.GetField("CopyFrom").GetValue(dRules[0]) == "TST_GN_Site Name" && (string)drT.GetField("Separator").GetValue(dRules[1]) == "-"
+      && (string)drT.GetField("Text").GetValue(dRules[1]) == "TST_Code = TST_Zone + '-' + TST_Level + '-' + TST_Number",
+      "derive rules: copyFrom and join with a separator are read, with a text for people");
+    Check(dProblems.Count == 5 && ((string)dProblems[0]["reason"]) == "no target parameter" && ((string)dProblems[1]["reason"]).StartsWith("both")
+      && ((string)dProblems[2]["reason"]).StartsWith("neither") && ((string)dProblems[3]["reason"]).StartsWith("join needs") && ((string)dProblems[4]["reason"]).Contains("its own sources"),
+      "derive rules that cannot be used come back with their reason (no target, both, neither, empty join, target among its sources)");
+    var naList = new System.Collections.Generic.List<string> { "NA", "N/A" };
+    (string, string, string) Derive(object rule, System.Collections.Generic.Dictionary<string, string> vals)
+    {
+      var ps = new object[] { rule, (Func<string, string>)(n => vals.TryGetValue(n, out var v) ? v : null), naList, null, null };
+      var v = (string)ppT.GetMethod("DeriveValue", flags).Invoke(null, ps);
+      return (v, (string)ps[3], (string)ps[4]);
+    }
+    var dv = new System.Collections.Generic.Dictionary<string, string> { ["TST_GN_Site Name"] = "TST Site", ["TST_Zone"] = "Z1", ["TST_Level"] = "L02", ["TST_Number"] = "" };
+    Check(Derive(dRules[0], dv) == ("TST Site", null, null), "copyFrom: the source's value");
+    Check(Derive(dRules[1], dv) == (null, "source-blank", "TST_Number"), "join: a blank part means no value (the part is named)");
+    dv["TST_Number"] = "007";
+    Check(Derive(dRules[1], dv) == ("Z1-L02-007", null, null), "join: all parts, in order, with the separator");
+    dv["TST_Level"] = " n/a ";
+    Check(Derive(dRules[1], dv) == (null, "source-na", "TST_Level"), "join: a part declared missing (NA) is not a value");
+    dv.Remove("TST_Zone");
+    Check(Derive(dRules[1], dv) == (null, "source-missing", "TST_Zone"), "join: a part the element does not have is reported");
+
+    var litProblems = new System.Text.Json.Nodes.JsonArray();
+    var lit = (IList)ppT.GetMethod("ParseDerive", flags).Invoke(null, new object[] { JA(@"[
+      { ""target"": ""TST_Project Status"", ""value"": ""TST Stage 3"" },
+      { ""target"": ""TST_A"", ""value"": ""x"", ""copyFrom"": ""TST_B"" },
+      { ""target"": ""TST_A"", ""value"": ""  "" } ]"), litProblems });
+    Check(lit.Count == 1 && (string)drT.GetField("Value").GetValue(lit[0]) == "TST Stage 3" && (string)drT.GetField("Text").GetValue(lit[0]) == "TST_Project Status = 'TST Stage 3'"
+      && Derive(lit[0], new System.Collections.Generic.Dictionary<string, string>()) == ("TST Stage 3", null, null)
+      && litProblems.Count == 2 && ((string)litProblems[0]["reason"]).StartsWith("more than one") && ((string)litProblems[1]["reason"]).Contains("non-empty"),
+      "derive literal { target, value }: the text itself, no source needed; value with copyFrom/join or an empty value is refused");
+    var bProblems = new System.Text.Json.Nodes.JsonArray();
+    var bEntries = (IList)ppT.GetMethod("ParseBind", flags).Invoke(null, new object[] { JA(@"[
+      { ""name"": ""TST_GEN_Site Name"", ""guid"": ""aaaaaaaa-1111-2222-3333-444444444444"", ""dataType"": ""TEXT"", ""group"": ""project"", ""level"": ""instance"", ""file"": ""C:/TST/shared.txt"" },
+      { ""name"": ""TST_ST_Grade"", ""guid"": ""bbbbbbbb-1111-2222-3333-444444444444"", ""group"": ""elements"", ""level"": ""any"", ""categories"": [""OST_Walls"", ""OST_Walls"", ""OST_Floors""], ""file"": ""C:/TST/shared.txt"", ""groupTypeId"": ""IdentityData"" },
+      { ""name"": ""TST_NoGuid"", ""group"": ""project"", ""file"": ""C:/TST/shared.txt"" },
+      { ""name"": ""TST_NoFile"", ""guid"": ""cccccccc-1111-2222-3333-444444444444"", ""group"": ""project"" },
+      { ""name"": ""TST_NoCats"", ""guid"": ""dddddddd-1111-2222-3333-444444444444"", ""group"": ""elements"", ""file"": ""C:/TST/shared.txt"" },
+      { ""name"": ""TST_Again"", ""guid"": ""AAAAAAAA-1111-2222-3333-444444444444"", ""group"": ""project"", ""file"": ""C:/TST/shared.txt"" } ]"), bProblems });
+    var beT = ppT.GetNestedType("BindEntry", flags);
+    object BE(int i, string f) => beT.GetField(f).GetValue(bEntries[i]);
+    Check(bEntries.Count == 2 && ((System.Collections.Generic.List<string>)BE(0, "Categories")).Single() == "OST_ProjectInformation" && (string)BE(0, "Level") == "instance"
+      && (string)BE(1, "Level") == "instance" && ((System.Collections.Generic.List<string>)BE(1, "Categories")).Count == 2 && (string)BE(1, "GroupTypeId") == "IdentityData"
+      && (Guid)BE(0, "Guid") == Guid.Parse("aaaaaaaa-1111-2222-3333-444444444444"),
+      "bind entries: Project Information defaults to OST_ProjectInformation, level any binds as instance, categories de-duplicated, group kept");
+    Check(bProblems.Count == 4 && ((string)bProblems[0]["reason"]).Contains("never creates a GUID") && ((string)bProblems[1]["reason"]).Contains("only from a file")
+      && ((string)bProblems[2]["reason"]).StartsWith("no categories") && ((string)bProblems[3]["reason"]).StartsWith("duplicate"),
+      "bind entries without a GUID, without a file, without categories, or with a GUID already listed are refused with the reason");
+
+    bool Ver(string e, string v) => (bool)ppT.GetMethod("VersionMatches", flags).Invoke(null, new object[] { e, v });
+    Check(Ver("1.11.0", "1.11.0") && Ver(" v1.11.0 ", "1.11.0") && Ver("1.11.0.0", "1.11.0") && !Ver("1.10.0", "1.11.0") && !Ver("1.11.1", "1.11.0") && !Ver("1.11.0", null),
+      "version: the same major.minor.patch matches (a leading v or a fourth part ignored); any other version does not");
+
+    (string, string) Explain(string code, string holder, string detail) => ((string, string))ppT.GetMethod("Explain", flags).Invoke(null, new object[] { code, holder, detail });
+    var exB = Explain("borrowed", "TST_User", null); var exC = Explain("central", null, null); var exAnon = Explain("borrowed", null, null);
+    Check(exB.Item1 == "borrowed by TST_User" && exB.Item2.Contains("Ask TST_User") && exB.Item2.Contains("relinquish") && exAnon.Item1 == "borrowed by another user"
+      && exC.Item2.Contains("Reload Latest") && Explain("source-blank", null, "TST_Zone").Item2.Contains("Fill 'TST_Zone' first") && Explain("version", null, null).Item2.Contains("same ACE version"),
+      "block reasons in plain language: who holds the elements and what clears it (borrowed, central, blank source, version)");
+    var codes = new[] { "borrowed", "central", "unreadable", "group", "option", "readonly", "nottext", "refused", "source-missing", "source-blank", "source-na", "derived-earlier", "no-target",
+      "version", "other-guid", "guid-other-name", "not-in-file", "file", "datatype", "wrong-level", "category", "bind-entry", "derive-rule", "bind-failed", "built-in",
+      "file-changed", "group-type", "rebind-entry", "old-missing", "rebind-level", "rebind-datatype", "rebind-held" };
+    Check(codes.All(c => { var x = Explain(c, "TST_User", "TST detail"); return !string.IsNullOrWhiteSpace(x.Item1) && !string.IsNullOrWhiteSpace(x.Item2); }),
+      "every block and skip code has a why and a how (never silent)");
+
+    var skT = ppT.GetNestedType("Skip", flags);
+    var skList = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(skT));
+    void Sk(string name, string code, string holder, long id)
+    {
+      var s = Activator.CreateInstance(skT);
+      skT.GetField("Name").SetValue(s, name); skT.GetField("Code").SetValue(s, code); skT.GetField("Holder").SetValue(s, holder); skT.GetField("Id").SetValue(s, id); skList.Add(s);
+    }
+    Sk("TST_Code", "borrowed", "TST_User", 11); Sk("TST_Code", "borrowed", "TST_User", 12); Sk("TST_Code", "borrowed", "TST_User", 13);
+    Sk("TST_Code", "group", null, 14); Sk("TST_Code", "borrowed", "TST_Other", 15);
+    var grouped = (System.Text.Json.Nodes.JsonArray)ppT.GetMethod("Group", flags).Invoke(null, new object[] { skList, "to write held", 2 });
+    Check(grouped.Count == 3 && (string)grouped[0]["what"] == "TST_Code: 3 elements to write held" && (int)grouped[0]["elements"] == 3 && grouped[0]["sampleIds"].AsArray().Count == 2
+      && (string)grouped[0]["holder"] == "TST_User" && ((string)grouped[0]["how"]).Contains("Ask TST_User") && grouped[1]["what"] != null && grouped.Any(g => (string)g["holder"] == null && ((string)g["why"]).Contains("model group"))
+      && grouped.All(g => g["why"] != null && g["how"] != null && g["sampleIds"] != null && g.AsObject().ContainsKey("holder")),
+      "skips grouped per parameter, reason and holder, largest first: { what, why, elements, sampleIds (max_ids), holder, how }");
+
+    var exT = ppT.GetNestedType("Expectation", flags);
+    var exList = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(exT));
+    object Ex(string kind, long id, string expected, string actual, bool found = true)
+    {
+      var x = Activator.CreateInstance(exT);
+      exT.GetField("Kind").SetValue(x, kind); exT.GetField("Key").SetValue(x, "r1"); exT.GetField("Name").SetValue(x, "TST_Code"); exT.GetField("Id").SetValue(x, id);
+      exT.GetField("Expected").SetValue(x, expected); exT.GetField("Actual").SetValue(x, actual); exT.GetField("Found").SetValue(x, found); exList.Add(x); return x;
+    }
+    System.Text.Json.Nodes.JsonObject Verify() => (System.Text.Json.Nodes.JsonObject)ppT.GetMethod("Verify", flags).Invoke(null, new object[] { exList, 50 });
+    Ex("fill", 21, "NA", "NA"); Ex("derived", 22, "Z1-L02-007", "Z1-L02-007"); Ex("binding", 0, "instance: OST_Floors, OST_Walls", "instance: OST_Floors, OST_Walls");
+    var vOk = Verify();
+    Check((bool)vOk["ok"] && (int)vOk["checked"] == 3 && vOk["mismatches"].AsArray().Count == 0, "self-check: every planned write shows -> ok");
+    Ex("fill", 23, "NA", ""); Ex("binding", 0, "instance: OST_Floors, OST_Walls", "instance: OST_Walls"); Ex("fill", 24, "NA", null, false); Ex("fill", 25, "na", "NA");
+    var vBad = Verify();
+    var mm = vBad["mismatches"].AsArray();
+    Check(!(bool)vBad["ok"] && (int)vBad["mismatchCount"] == 4 && (long)mm[0]["id"] == 23 && mm[1]["id"] == null && ((string)mm[2]["why"]).Contains("could not be read") && (string)mm[3]["actual"] == "NA",
+      "self-check: a value that did not stick, a category not bound, a parameter gone and a case change are each a mismatch");
+
+    // The acceptance test's forced mismatch rolls back like a real one.
+    exList.Clear();
+    Ex("fill", 21, "NA", "NA");
+    exList.Add(ppT.GetMethod("ForcedMismatch", flags).Invoke(null, null));
+    var vForced = Verify();
+    Check(!(bool)vForced["ok"] && (int)vForced["mismatchCount"] == 1 && (string)vForced["mismatches"][0]["kind"] == "forced"
+      && (string)vForced["mismatches"][0]["why"] == "forced by test_force_verify_mismatch (acceptance test)",
+      "self-check: test_force_verify_mismatch adds one forced mismatch (kind forced), so the group is rolled back");
+    Check(Explain("source-blank", null, "TST_Zone").Item2.Contains("blank or NA"), "derive skip text: a later run derives into targets that are blank or NA");
+
+    // Shared parameter files read without Revit (look-only plans never touch the shared parameter file setting), and the preview hash.
+    var spfText = "# This is a Revit shared parameter file.\r\n*META\tVERSION\tMINVERSION\r\nMETA\t2\t1\r\n*GROUP\tID\tNAME\r\nGROUP\t1\tTST\r\n"
+      + "*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\tVISIBLE\tDESCRIPTION\tUSERMODIFIABLE\tHIDEWHENNOVALUE\r\n"
+      + "PARAM\taaaaaaaa-1111-2222-3333-444444444444\tTST_GEN_Site Name\tTEXT\t\t1\t1\t\t1\t0\r\n"
+      + "PARAM\tbbbbbbbb-1111-2222-3333-444444444444\tTST_ST_Length\tLENGTH\t\t1\t1\t\t1\t0\r\n";
+    var spfReordered = "*PARAM\tNAME\tDATATYPE\tGUID\nPARAM\tTST_Code\tTEXT\tcccccccc-1111-2222-3333-444444444444\nPARAM\tTST_Bad\tTEXT\tnot-a-guid\n";
+    var spfT = ppT.GetNestedType("SharedParam", flags);
+    IList Spf(byte[] b) => (IList)ppT.GetMethod("ReadSharedParameterFile", flags).Invoke(null, new object[] { b });
+    string SpfField(object x, string f) => spfT.GetField(f).GetValue(x)?.ToString();
+    var utf16 = new byte[] { 0xFF, 0xFE }.Concat(System.Text.Encoding.Unicode.GetBytes(spfText)).ToArray();
+    var utf16NoBom = System.Text.Encoding.Unicode.GetBytes(spfText);
+    var utf8 = new byte[] { 0xEF, 0xBB, 0xBF }.Concat(System.Text.Encoding.UTF8.GetBytes(spfText)).ToArray();
+    var re = Spf(System.Text.Encoding.UTF8.GetBytes(spfReordered));
+    Check(Spf(utf16).Count == 2 && Spf(utf16NoBom).Count == 2 && Spf(utf8).Count == 2 && SpfField(Spf(utf16)[1], "DataType") == "LENGTH" && SpfField(Spf(utf8)[0], "Name") == "TST_GEN_Site Name",
+      "shared parameter file: UTF-16 with or without BOM and UTF-8 with BOM read alike");
+    Check(re.Count == 1 && SpfField(re[0], "Name") == "TST_Code" && SpfField(re[0], "Guid") == "cccccccc-1111-2222-3333-444444444444",
+      "shared parameter file: columns by the *PARAM header (any order); a line without a valid GUID is left out");
+    var hash = (string)ppT.GetMethod("FileHash", flags).Invoke(null, new object[] { utf8 });
+    bool HashOk(string e, byte[] b) => (bool)ppT.GetMethod("HashMatches", flags).Invoke(null, new object[] { e, b });
+    Check(hash.Length == 64 && hash == hash.ToLowerInvariant() && HashOk(hash.ToUpperInvariant(), utf8) && !HashOk(hash, utf16) && HashOk(null, utf16),
+      "file hash: sha256 hex (any case); another file differs; no hash sent means not checked");
+
+    // Rebind entries (explicit only).
+    var rbProblems = new System.Text.Json.Nodes.JsonArray();
+    var rb = (IList)ppT.GetMethod("ParseRebind", flags).Invoke(null, new object[] { JA(@"[
+      { ""name"": ""TST_Code"", ""oldGuid"": ""dddddddd-1111-2222-3333-444444444444"", ""guid"": ""cccccccc-1111-2222-3333-444444444444"", ""file"": ""C:/TST/shared.txt"", ""fileHash"": ""ab"", ""categories"": [""OST_Doors""] },
+      { ""name"": ""TST_Same"", ""oldGuid"": ""cccccccc-1111-2222-3333-444444444444"", ""guid"": ""cccccccc-1111-2222-3333-444444444444"", ""file"": ""C:/TST/shared.txt"" },
+      { ""name"": ""TST_NoOld"", ""guid"": ""cccccccc-1111-2222-3333-444444444444"", ""file"": ""C:/TST/shared.txt"" },
+      { ""name"": ""TST_NoFile"", ""oldGuid"": ""eeeeeeee-1111-2222-3333-444444444444"", ""guid"": ""cccccccc-1111-2222-3333-444444444444"" },
+      { ""name"": ""TST_Level"", ""oldGuid"": ""ffffffff-1111-2222-3333-444444444444"", ""guid"": ""cccccccc-1111-2222-3333-444444444444"", ""file"": ""C:/TST/shared.txt"", ""level"": ""both"" } ]"), rbProblems });
+    var rbT = ppT.GetNestedType("RebindEntry", flags);
+    Check(rb.Count == 1 && (string)rbT.GetField("FileHash").GetValue(rb[0]) == "ab" && rbT.GetField("Level").GetValue(rb[0]) == null
+      && ((System.Collections.Generic.List<string>)rbT.GetField("Categories").GetValue(rb[0])).Single() == "OST_Doors",
+      "rebind entries: old and new GUID, file, hash, extra categories; no level keeps the old binding's level");
+    Check(rbProblems.Count == 4 && ((string)rbProblems[0]["reason"]).Contains("same") && ((string)rbProblems[1]["reason"]).Contains("oldGuid")
+      && ((string)rbProblems[2]["reason"]).Contains("only from a file") && ((string)rbProblems[3]["reason"]).Contains("unknown level"),
+      "rebind entries refused with the reason: same GUIDs, no old GUID, no file, unknown level");
+
+    int Sheets(long[] views, System.Collections.Generic.Dictionary<long, System.Collections.Generic.List<long>> map, long[] sheets) =>
+      (int)ppT.GetMethod("SheetsShowing", flags).Invoke(null, new object[] { views, map, new System.Collections.Generic.HashSet<long>(sheets) });
+    var vmap = new System.Collections.Generic.Dictionary<long, System.Collections.Generic.List<long>> { [200] = new System.Collections.Generic.List<long> { 100, 101 }, [201] = new System.Collections.Generic.List<long> { 101 } };
+    Check(Sheets(new long[] { 100, 100, 102 }, vmap, new long[] { 100, 101, 102 }) == 2 && Sheets(new long[] { 200, 201, 300 }, vmap, new long[] { 100, 101 }) == 2
+      && Sheets(new long[] { 100, 200 }, vmap, new long[] { 100, 101 }) == 2 && Sheets(new long[0], vmap, new long[] { 100 }) == 0,
+      "impact: title blocks count their sheet, tags the sheets their view is placed on, each sheet once; views on no sheet count nothing");
+    bool Proxy(Guid? g, string n) => (bool)ppT.GetMethod("LabelProxy", flags).Invoke(null, new object[] { new System.Collections.Generic.HashSet<Guid> { Guid.Parse("aaaaaaaa-1111-2222-3333-444444444444") }, new System.Collections.Generic.HashSet<string> { "TST_Sheet Title" }, g, n });
+    Check(Proxy(Guid.Parse("aaaaaaaa-1111-2222-3333-444444444444"), "TST_Other") && Proxy(null, "TST_Sheet Title") && !Proxy(Guid.Parse("bbbbbbbb-1111-2222-3333-444444444444"), "TST_Other") && !Proxy(null, "tst_sheet title"),
+      "label proxy: the family holds the shared GUID, or a parameter of that exact name");
+
+    // The preview and the apply match only when the plan is identical; the model / version guards and read-only extras do not count.
+    var hubT = a.GetType("AceRevitMcp.Companion.ActivityHub");
+    string Fp(string json) => (string)hubT.GetMethod("Fingerprint", flags).Invoke(null, new object[] { "parameter_fill", System.Text.Json.Nodes.JsonNode.Parse(json).AsObject() });
+    var basePlan = @"""rows"": [{ ""name"": ""TST_Code"", ""group"": ""elements"" }], ""fill"": true, ""value"": ""NA"", ""derive"": [{ ""target"": ""TST_Code"", ""copyFrom"": ""TST_A"" }]";
+    var fp0 = Fp("{" + basePlan + "}");
+    Check(fp0 == Fp("{" + basePlan + @", ""dry_run"": true, ""expect_model"": ""TST-AR"", ""expect_version"": ""1.11.0"", ""impact"": true, ""register"": true }"),
+      "fingerprint: dry_run, expect_model, expect_version, impact and register do not change the plan's identity");
+    Check(fp0 != Fp("{" + basePlan.Replace(@"""NA""", @"""N/A""") + "}") && fp0 != Fp("{" + basePlan.Replace("TST_A", "TST_B") + "}")
+      && fp0 != Fp("{" + basePlan + @", ""bind"": [{ ""name"": ""TST_Code"" }] }") && fp0 != Fp("{" + basePlan.Replace("TST_Code\", \"group", "TST_Other\", \"group") + "}"),
+      "fingerprint: another value, derive rule, binding or row is another plan");
 
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }
