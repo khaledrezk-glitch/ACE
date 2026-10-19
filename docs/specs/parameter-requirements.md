@@ -194,3 +194,19 @@ skipped, still blank, not bound. That file is what a QA/QC checklist item points
 From a check of all open models: discipline × model × status counts (complete, complete with NA, blanks, not bound,
 wrong GUID, not text, out of scope, unmapped) and one row per model × requirement with its sources (AIS line, LOIN
 sheet and row, checker check). Written as xlsx (the zip writer in `lib/docx.js`) and markdown in `report_dir`.
+
+## Fewer approvals per cycle (owner, 19 Oct 2026: "reducing the number of approvals per cycle also by doing some checks by ur self")
+
+- **Read-only needs no approval.** `parameter_check` (annotations readOnly) holds every read-only action: check,
+  requirements, review_checker, impact, summary. `parameter_fill` is the write tool.
+- **One approval per cycle.** `parameter_check` with `plan` runs the change as a dry run (always rolled back) and
+  records it under the fingerprint the `parameter_fill` gate checks, so the only prompt is the Apply. Bind (P5) and fill
+  (P6, derived then NA) for a model are one plan, one transaction group, ONE undo step. For all open models: one
+  approval, one undo step per model (Revit keeps undo per document).
+- **Self-verification inside the change.** After the writes and before `Assimilate`, the add-in re-runs the P3 check on
+  the touched rows and compares with the plan; any divergence rolls the whole group back and reports the mismatch.
+- **Block, not ask.** The apply is refused when target elements are borrowed by others or updated in central, the
+  add-in and server versions differ, or the source files / mapping file changed since the dry run (their hashes are in
+  the fingerprint).
+- **Remembered decisions.** Aliases, category map, NA policy and derive rules live in the project's
+  `ace-parameter-mapping.json` with a dated decision log, so the next cycle does not ask again.
