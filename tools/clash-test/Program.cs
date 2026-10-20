@@ -898,6 +898,73 @@ class P {
       && IV("IFC-SG") == null && IV("IFC 9") == null && IV("") == null,
       "IFC version: the exporter's display names map to the enum; an unknown name (or one this Revit lacks) is refused");
 
+    // 1.14.5 DWFx true size: title block size -> paper format; the page sizes read back from a synthetic DWFx (XPS zip).
+    string? PF(double w, double h) { var r = VM("PaperFormatFor").Invoke(null, new object[] { w, h, 2.0 }); if (r == null) return null; var t = r.GetType(); return (string)t.GetField("Item1")!.GetValue(r)! + ((bool)t.GetField("Item2")!.GetValue(r)! ? " P" : " L"); }
+    Check(PF(841, 594) == "ISO_A1 L" && PF(594, 841) == "ISO_A1 P" && PF(842.5, 593) == "ISO_A1 L" && PF(1189, 841) == "ISO_A0 L" && PF(279.4, 215.9) == "ANSI_A L"
+      && PF(914.4, 609.6) == "ARCH_D L" && PF(431.8, 279.4) == "ANSI_B L" && PF(1000, 707) == "ISO_B1 L" && PF(845, 594) == null && PF(700, 500) == null && PF(0, 0) == null,
+      "DWFx paper: a title block size maps to the nearest ISO / ANSI / ARCH format within 2 mm, with its orientation; no fit = null");
+    // A synthetic DWFx: pages in parts 1..n; fdocOrder (1-based part numbers) lists them in a FixedDocument, in that order.
+    byte[] Dwfx((double W, double H)[] pagesIn, int[]? fdocOrder = null, bool paper = true)
+    {
+      var inv = System.Globalization.CultureInfo.InvariantCulture;
+      using var ms = new MemoryStream();
+      using (var z = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, true))
+      {
+        void Put(string n, string x) { using var w = new StreamWriter(z.CreateEntry(n).Open()); w.Write(x); }
+        Put("[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>");
+        for (var i = 0; i < pagesIn.Length; i++)
+          Put($"dwf/documents/1/pages/{i + 1}.fpage", $"<FixedPage xmlns=\"http://schemas.microsoft.com/xps/2005/06\" Width=\"{(pagesIn[i].W / 25.4 * 96).ToString(inv)}\" Height=\"{(pagesIn[i].H / 25.4 * 96).ToString(inv)}\" xml:lang=\"en-US\"/>");
+        if (fdocOrder != null)
+          Put("dwf/documents/1/doc.fdoc", "<FixedDocument xmlns=\"http://schemas.microsoft.com/xps/2005/06\">" + string.Concat(fdocOrder.Select(n => $"<PageContent Source=\"pages/{n}.fpage\"/>")) + "</FixedDocument>");
+        if (paper) Put("dwf/documents/1/descriptor.xml", "<ePlot:Section xmlns:ePlot=\"DWF-ePlot:7.0\"><ePlot:Paper units=\"mm\" width=\"279.4\" height=\"215.9\"/></ePlot:Section>");
+      }
+      return ms.ToArray();
+    }
+    (IList Pages, IList Papers) Read(byte[] b) { var r = VM("DwfxPages").Invoke(null, new object[] { new MemoryStream(b) })!; var t = r.GetType(); return ((IList)t.GetField("Item1")!.GetValue(r)!, (IList)t.GetField("Item2")!.GetValue(r)!); }
+    double PgW(object p) => (double)p.GetType().GetField("Item2")!.GetValue(p)!;
+    double PgH(object p) => (double)p.GetType().GetField("Item3")!.GetValue(p)!;
+    // PageCheck: (sheets, pages, papers, defaultPaper) -> per-sheet ok flags, problems, warnings.
+    (List<bool> Ok, List<string> Problems, List<string> Warnings) PC((string, double, double)[] sheetsIn, (IList Pages, IList Papers) r, bool def)
+    {
+      var res = VM("PageCheck").Invoke(null, new object[] { sheetsIn.ToList(), r.Pages, r.Papers, def, 2.0 })!; var t = res.GetType();
+      var rows = (IList)t.GetField("Item1")!.GetValue(res)!;
+      return (rows.Cast<object>().Select(x => (bool)x.GetType().GetField("Item3")!.GetValue(x)!).ToList(), (List<string>)t.GetField("Item2")!.GetValue(res)!, (List<string>)t.GetField("Item3")!.GetValue(res)!);
+    }
+    var a1L = ("A-101", 841.0, 594.0); var a1L2 = ("A-102", 841.0, 594.0); var a1L3 = ("A-103", 841.0, 594.0);
+    var letter = Read(Dwfx(new[] { (279.4, 215.9), (279.4, 215.9) }));
+    var badLetter = PC(new[] { a1L, a1L2 }, letter, false);
+    var a1ok = PC(new[] { a1L, a1L2 }, Read(Dwfx(new[] { (841.0, 594.0), (841.0, 594.0) }, paper: false)), false);
+    Check(letter.Pages.Count == 2 && Math.Abs(PgW(letter.Pages[0]!) - 279.4) < 0.01 && Math.Abs(PgH(letter.Pages[0]!) - 215.9) < 0.01 && letter.Papers.Count == 1
+      && badLetter.Ok.All(x => !x) && badLetter.Problems.Count == 3 && badLetter.Problems[0].Contains("279.4 x 215.9") && badLetter.Problems[2].StartsWith("ePlot paper 279.4 x 215.9") && a1ok.Ok.All(x => x) && a1ok.Problems.Count == 0,
+      "DWFx self-check: FixedPage sizes (1/96 in) and ePlot paper read from the package; US Letter pages for A1 sheets fail, A1 pages pass");
+    // 3: orientation: an A1 portrait page for an A1 landscape title block fails.
+    var turned = PC(new[] { a1L, a1L2 }, Read(Dwfx(new[] { (841.0, 594.0), (594.0, 841.0) }, paper: false)), false);
+    Check(turned.Ok.SequenceEqual(new[] { true, false }) && turned.Problems.Count == 1 && turned.Problems[0].StartsWith("sheet A-102"),
+      "DWFx self-check: a page in the other orientation than its title block fails (only that sheet)");
+    // 4: page i against sheet i in reading order (the FixedDocument's order, else natural part order); a count mismatch fails all.
+    var ordered = Read(Dwfx(new[] { (594.0, 420.0), (841.0, 594.0), (841.0, 594.0) }, new[] { 2, 3, 1 }, paper: false));
+    var byOrder = PC(new[] { a1L, a1L2, ("A-103", 594.0, 420.0) }, ordered, false);
+    var manyPages = Read(Dwfx(Enumerable.Range(0, 11).Select(i => i == 9 ? (594.0, 420.0) : (841.0, 594.0)).ToArray(), paper: false));
+    var natural = PC(Enumerable.Range(0, 11).Select(i => ($"S{i + 1}", 841.0, 594.0)).ToArray(), manyPages, false);
+    var fewer = PC(new[] { a1L, a1L2, a1L3 }, Read(Dwfx(new[] { (841.0, 594.0), (841.0, 594.0) }, paper: false)), false);
+    Check(byOrder.Ok.All(x => x) && natural.Ok.Count(x => !x) == 1 && !natural.Ok[9] && fewer.Ok.All(x => !x) && fewer.Problems.SequenceEqual(new[] { "page count 2 for 3 sheets" }),
+      "DWFx self-check: page i is compared with sheet i (FixedDocument order, else 2 before 10), so only the wrong sheet is flagged; page count N for M sheets fails the group");
+    // 2: a Default-paper group (allow_paper_fallback) is not failed on size: it is reported as scaled.
+    var deflt = PC(new[] { ("A-900", 900.0, 600.0), ("A-901", 0.0, 0.0) }, letter, true);
+    Check(deflt.Ok.All(x => x) && deflt.Problems.Count == 0 && deflt.Warnings.Single().StartsWith("scaled onto 279.4 x 215.9 mm"),
+      "DWFx self-check: Default paper is reported as scaled, not failed (sizes unreadable or unfit)");
+    // 1: one file per paper group, names unique in the run; a Default group carries its size.
+    List<string> GF(string stem, string single, params (string, bool, double, double)[] g) => (List<string>)VM("DwfxGroupFiles").Invoke(null, new object[] { stem, single, g.ToList() })!;
+    var gf = GF("TST", "TST.dwfx", ("ISO_A1", false, 841, 594), ("ISO_A1", true, 594, 841), ("Default", false, 900, 600), ("Default", false, 1000, 700), ("Default", false, 900.2, 600.3));
+    Check(GF("TST", "TST.dwfx", ("ISO_A1", false, 841, 594)).SequenceEqual(new[] { "TST.dwfx" })
+      && gf.SequenceEqual(new[] { "TST - ISO A1.dwfx", "TST - ISO A1 portrait.dwfx", "TST - Default 900x600.dwfx", "TST - Default 1000x700.dwfx", "TST - Default 900x600 2.dwfx" }),
+      $"DWFx files: one per paper group, unique names; Default groups named by size ({string.Join(" | ", gf)})");
+    object ShChk(string[] r, string[] e) => VM("SheetCheck").Invoke(null, new object[] { r.ToList(), e.ToList() })!;
+    var sc = ShChk(new[] { "A-101", "a-102", "A-103" }, new[] { "A-101", "A-102", "A-900" });
+    List<string> ScF(object o, string f) => (List<string>)o.GetType().GetField(f)!.GetValue(o)!;
+    Check(ScF(sc, "Item1").SequenceEqual(new[] { "A-101", "a-102" }) && ScF(sc, "Item2").SequenceEqual(new[] { "A-103" }) && ScF(sc, "Item3").SequenceEqual(new[] { "A-900" }),
+      "DWFx sheet check: asked vs exported gives matched, missing and extra");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

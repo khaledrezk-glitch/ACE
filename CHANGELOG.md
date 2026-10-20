@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.14.6 (20 Oct 2026)
+- Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
+- **DWFx on true paper size:** each sheet's paper format (ISO A/B, ANSI, ARCH) and orientation come from its title block
+  size; same-size sheets are exported together, mixed sizes give one combined file per size. A sheet that fits no format
+  blocks the export unless `dwfx.allow_paper_fallback` (Revit's default paper, scaled, said so).
+- **DWFx self-check:** every page (FixedPage and ePlot paper) is compared with its title block, size and orientation;
+  a failed file is kept as `<name>-FAILED.dwfx` (never replacing an older one) and the target is not written.
+  `sheetCheck` compares the sheets asked for with the sheets in the files; the reply states both checks.
+- register_update: a PC without Excel is reported as "Excel is not installed" without the COM error text.
+
 ## 1.14.5 (20 Oct 2026)
 - MCP server only (`install.cmd -SkipAddin`).
 - **register_update output opens in Excel (third cause):** carried table styles used the `xr9:` prefix without its

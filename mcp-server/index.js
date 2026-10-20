@@ -1604,7 +1604,8 @@ tool("export_deliverables", {
     ifc: z.object({ view: z.string().max(200).optional(), setup: z.string().max(200).optional(), config: z.string().optional().describe("IFC settings .json"), file: z.string().max(200).optional() }).optional(),
     dwfx: z.object({ sheets: z.array(z.string().max(50)).max(2000).optional(), sheet_set: z.string().max(200).optional(), file: z.string().max(200).optional(),
       same_as_folder: z.string().optional().describe("the sheets whose .dwg / .pdf are in this folder"), allow_unmatched: z.boolean().optional(),
-      combined: z.boolean().optional(), name: z.string().max(200).optional(), paper: z.enum(["sheet"]).optional().describe("each sheet's own paper size") }).optional(),
+      combined: z.boolean().optional(), name: z.string().max(200).optional(), paper: z.enum(["sheet"]).optional().describe("each sheet's own paper size"),
+      allow_paper_fallback: z.boolean().optional().describe("sheets whose title block fits no ISO / ANSI / ARCH paper are exported on Revit's default paper (scaled) instead of blocking") }).optional(),
     list_ifc_setups: z.boolean().optional().describe("read-only: the IFC setups in the model and the vault"),
     vault: z.string().optional(), report_dir: z.string().optional(),
     timeout_seconds: z.number().int().min(30).max(7200).optional(),
@@ -1671,17 +1672,24 @@ tool("export_deliverables", {
     // ifc.setup: the setup saved in the model first (the add-in), then the vault's (sent as config, marked config_from: vault).
     ...(a.ifc ? { ifc: { ...(a.ifc.view ? { view: a.ifc.view } : {}), ...(ifc.setup ? { setup: ifc.setup } : {}), ...(ifc.config ? { config: ifc.config, ...(a.ifc.config ? {} : { config_from: "vault" }) } : {}), file: names.ifc } } : {}),
     ...(a.dwfx ? { dwfx: { ...(dwfxSheets ? { sheets: dwfxSheets } : {}), ...(a.dwfx.sheet_set && !a.dwfx.same_as_folder ? { sheet_set: a.dwfx.sheet_set } : {}), file: names.dwfx,
-      ...(a.dwfx.combined != null ? { combined: a.dwfx.combined } : {}), ...(a.dwfx.paper ? { paper: a.dwfx.paper } : {}) } } : {}) };
+      ...(a.dwfx.combined != null ? { combined: a.dwfx.combined } : {}), ...(a.dwfx.paper ? { paper: a.dwfx.paper } : {}), ...(a.dwfx.allow_paper_fallback ? { allow_paper_fallback: true } : {}) } } : {}) };
   const r = await callRevit("export_deliverables", req, timeout_seconds ?? 3600);
   const out = text(r);
   const blocked = Deliverables.blocksOf(r).length > 0;
   const lines = [Deliverables.resultText(r, { mode: check_only ? "check" : "export", outDir: a.out_dir, names, notes })];
   if (check_only) lines.push(blocked ? "Clear the blocks above before exporting." : "Ready: the same call without check_only exports.");
   else {
+    // DWFx self-checks from the add-in: sheets asked vs sheets in the files, and each page against its title block size.
+    const sc = r?.sheetCheck, short = (xs) => `${xs.slice(0, 20).join(", ")}${xs.length > 20 ? ` (+${xs.length - 20})` : ""}`;
+    if (sc) lines.push(`DWFx sheets: ${sc.matched?.length ?? 0} of ${sc.requested} in the files${sc.missing?.length ? `; missing: ${short(sc.missing)}` : ""}${sc.extra?.length ? `; not asked for: ${short(sc.extra)}` : ""}.`);
+    for (const f of (r?.files ?? []).filter((x) => Array.isArray(x.pageCheck))) {
+      const bad = f.pageCheck.filter((p) => !p.ok);
+      lines.push(bad.length ? `DWFx paper size FAILED for ${bad.length} sheet(s) (${short(bad.map((p) => p.number))})${f.failedFile ? `; kept as ${f.failedFile}` : ""}.` : `DWFx paper size checked: ${f.pageCheck.length} page(s) match their title blocks${f.paper ? ` (${f.paper})` : ""}.`);
+    }
     const { dir, note } = await auditFolder(a, r?.model ?? model, { sub: "exports", reports: "exports" });
     const stamp = localDate(new Date(), { time: true });
     const outcome = blocked ? "blocked, nothing exported" : r?.success ? `${(r?.files ?? []).length} file(s) exported` : "export incomplete";
-    const runFile = writeOut(dir, `${ParamExec.fileStem("export-run", r?.model ?? model, stamp)}.json`, JSON.stringify({ at: stamp, model: r?.model ?? model, request: req, outcome, preflight: r?.preflight, blocked: r?.blocked, files: r?.files, notes: [...notes, ...(r?.notes ?? [])] }, null, 1));
+    const runFile = writeOut(dir, `${ParamExec.fileStem("export-run", r?.model ?? model, stamp)}.json`, JSON.stringify({ at: stamp, model: r?.model ?? model, request: req, outcome, preflight: r?.preflight, blocked: r?.blocked, files: r?.files, sheetCheck: r?.sheetCheck, notes: [...notes, ...(r?.notes ?? [])] }, null, 1));
     journal({ title: `Export deliverables from ${r?.model ?? model}: ${formats.join(", ")}`, outcome, details: { files: (r?.files ?? []).map((f) => ({ file: f.file, bytes: f.bytes, warnings: f.warnings })), blocked: r?.blocked } });
     lines.push(`Run record: ${runFile}${note ? `\n${note}` : ""}`);
   }
