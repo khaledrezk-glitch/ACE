@@ -82,20 +82,54 @@ foreach ($year in $RevitYears) {
     $AddinDirs += $AddinDir
     # Revit 2024 has no script compiler yet (it runs on .NET 8 only), so it is not required there.
     $needsCompiler = $year -ne '2024'
-    $yearOk = (Test-Path $Manifest) -and (Test-Path (Join-Path $AddinDir 'AceRevitMcp.dll')) -and ((-not $needsCompiler) -or (Test-Path (Join-Path $AddinDir 'Compiler\AceRevitMcp.Compiler.dll')))
+    # Two layouts: the ACE loader (AceRevitMcp.Loader.dll in the manifest, current.json naming payload\<version>-<hash>),
+    # or the older one (AceRevitMcp.dll directly in the folder, needs a Revit restart for every build).
+    $CurrentFile = Join-Path $AddinDir 'current.json'
+    $LoaderDll = Join-Path $AddinDir 'AceRevitMcp.Loader.dll'
+    $current = $null
+    if (Test-Path $CurrentFile) { try { $current = Get-Content $CurrentFile -Raw | ConvertFrom-Json } catch { $current = $null } }
+    $PayloadDir = $AddinDir
+    if ($current -and $current.path) { $PayloadDir = Join-Path $AddinDir ([string]$current.path) }
+    $PayloadDll = Join-Path $PayloadDir 'AceRevitMcp.dll'
+    $expectedTarget = $PayloadDll
+    if ($current) { $expectedTarget = $LoaderDll }
+    $yearOk = (Test-Path $Manifest) -and (Test-Path $PayloadDll) -and ((-not $current) -or (Test-Path $LoaderDll)) -and ((-not $needsCompiler) -or (Test-Path (Join-Path $PayloadDir 'Compiler\AceRevitMcp.Compiler.dll')))
     if ($yearOk) {
         $addinOk = $true
-        $ver = (Get-Item (Join-Path $AddinDir 'AceRevitMcp.dll')).VersionInfo.FileVersion
+        $ver = (Get-Item $PayloadDll).VersionInfo.FileVersion
         $manifestText = Get-Content $Manifest -Raw
-        if ($manifestText -notmatch [regex]::Escape((Join-Path $AddinDir 'AceRevitMcp.dll'))) {
-            Add-Result 'FAIL' "Add-in manifest ($year)" "Points to the wrong file: $Manifest" 'Reinstall the add-in.' 'addin'
+        if ($manifestText -notmatch [regex]::Escape($expectedTarget)) {
+            Add-Result 'FAIL' "Add-in manifest ($year)" "Points to the wrong file: $Manifest (expected $expectedTarget)" 'Reinstall the add-in.' 'addin'
+        } elseif ($current) {
+            $loaderVer = (Get-Item $LoaderDll).VersionInfo.FileVersion
+            $hashOk = ((Get-FileHash $PayloadDll -Algorithm SHA256).Hash -eq ([string]$current.sha256).ToUpperInvariant())
+            if (-not $hashOk) { Add-Result 'FAIL' "Revit $year add-in" "ACE $($current.version) in $PayloadDir does not match the sha256 in current.json: the loader will refuse it" 'Reinstall the add-in.' 'addin' }
+            else { Add-Result 'OK' "Revit $year add-in" "ACE loader $loaderVer, ACE $($current.version) in $PayloadDir$(if ($current.previous) { " (fallback: $($current.previous.version))" })$(if (-not $needsCompiler) { ' (C# scripts not available on 2024 yet)' })" }
         } else {
-            Add-Result 'OK' "Revit $year add-in" "v$ver in $AddinDir$(if (-not $needsCompiler) { ' (C# scripts not available on 2024 yet)' })"
+            Add-Result 'OK' "Revit $year add-in" "v$ver in $AddinDir (without the ACE loader: every update needs a Revit restart)$(if (-not $needsCompiler) { ' (C# scripts not available on 2024 yet)' })"
         }
         $blocked = Get-ChildItem $AddinDir -Recurse -File | Where-Object { Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue }
         if ($blocked) { Add-Result 'FAIL' "Blocked files ($year)" "$($blocked.Count) add-in file(s) are marked as downloaded from the internet; Revit may refuse to load them." 'Unblock them.' 'unblock' }
+        # What the running Revit of this year has loaded (its instance file): a newer build installed = a reload is pending.
+        if ($current) {
+            Get-ChildItem (Join-Path $DataDir 'instances') -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+                $inst = $null
+                try { $inst = Get-Content $_.FullName -Raw | ConvertFrom-Json } catch { $inst = $null }
+                if ($inst -and ([string]$inst.revitVersion).StartsWith($year) -and (Get-Process -Id $inst.pid -ErrorAction SilentlyContinue)) {
+                    if (-not $inst.loaderVersion) {
+                        Add-Result 'WARN' "Revit $year session (pid $($inst.pid))" "Runs ACE $($inst.aceVersion) without the loader" 'Restart Revit once; after that new builds load without a restart.'
+                    } elseif ($inst.loaderVersion -ne (($loaderVer.Split('.')[0..2]) -join '.')) {
+                        Add-Result 'WARN' "Revit $year session (pid $($inst.pid))" "Runs ACE loader $($inst.loaderVersion), $loaderVer is installed" 'Restart Revit to use the new loader.'
+                    } elseif ($inst.aceVersion -ne $current.version) {
+                        Add-Result 'WARN' "Reload pending ($year, pid $($inst.pid))" "Revit runs ACE $($inst.aceVersion), ACE $($current.version) is installed" "Ask Claude to reload ACE (reload_addin), or close all models: ACE then loads it by itself. No restart needed."
+                    } else {
+                        Add-Result 'OK' "Revit $year session (pid $($inst.pid))" "Runs the installed ACE $($inst.aceVersion) (loader $($inst.loaderVersion))"
+                    }
+                }
+            }
+        }
     } else {
-        Add-Result 'FAIL' "Revit $year add-in" "Not installed (or incomplete) in $AddinDir" 'Install the add-in (needs Revit closed).' 'addin'
+        Add-Result 'FAIL' "Revit $year add-in" "Not installed (or incomplete) in $AddinDir" 'Install the add-in (Revit may stay open).' 'addin'
     }
     $others = Get-ChildItem $AddinRoot -Filter *.addin -ErrorAction SilentlyContinue | Where-Object Name -ne 'AceRevitMcp.addin' | ForEach-Object Name
     if ($others) { Add-Result 'INFO' "Other Revit $year add-ins" ($others -join ', ') }
@@ -246,7 +280,8 @@ if ($Fix -and $fixes.Count -gt 0) {
     if ($fixes -contains 'addin' -or $fixes -contains 'mcp') {
         if (-not $src) {
             Write-Host "  The install package was not found. Open the ACE-RevitMCP package folder and run install.cmd." -ForegroundColor Yellow
-        } elseif ($fixes -contains 'addin' -and (Get-Process -Name Revit -ErrorAction SilentlyContinue)) {
+        } elseif ($fixes -contains 'addin' -and (Get-Process -Name Revit -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $src 'revit-addin\AceRevitMcp.Loader')) -and -not (Get-ChildItem (Join-Path $src 'bin\addin') -Recurse -Filter 'AceRevitMcp.Loader.dll' -ErrorAction SilentlyContinue)) {
+            # A package without the ACE loader replaces files Revit has in use.
             Write-Host "  The add-in needs reinstalling but Revit is open. Save your work, close Revit, and run doctor -Fix again." -ForegroundColor Yellow
             & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $src 'install.ps1') -NonInteractive -SkipAddin
         } elseif ($fixes -contains 'addin') {

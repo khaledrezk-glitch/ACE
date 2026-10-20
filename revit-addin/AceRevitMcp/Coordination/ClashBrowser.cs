@@ -64,6 +64,14 @@ namespace AceRevitMcp.Coordination
         private List<(string Name, string Label)> _models = new List<(string, string)>();
         private bool _busy, _loading;
 
+        /// <summary>Closes the browser if it is open (payload Stop: a newer ACE build is taking over).</summary>
+        internal static void CloseOpen()
+        {
+            var w = _open;
+            _open = null;
+            w?.Close();
+        }
+
         /// <summary>Opens (or brings back) the browser. Call in a Revit API context: the model list is read here.</summary>
         internal static void ShowFor(UIApplication app)
         {

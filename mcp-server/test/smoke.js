@@ -17,9 +17,11 @@ const regFiles = () => { try { return fs.readdirSync(regDir).filter((f) => f.sta
 const token = "test-token";
 const seen = [];
 let fakeOpened = null;   // workset_plan paths: the model open_model opened last (facts answer for it)
+// The ACE loader's view in /health (reload_addin): a swap is reported there once the new build listens.
+const fakeLoader = { loaderVersion: "1.0.0", payloadVersion: "1.13.3", previous: null, pending: true, pendingVersion: "1.13.4", lastReload: { at: "startup", ok: true, why: "ACE 1.13.3 loaded" } };
 
 const bridge = http.createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/health") { res.setHeader("Content-Type", "application/json"); return res.end(JSON.stringify({ ok: true, service: "ace-revit-mcp", revitVersion: "2025" })); }
+  if (req.method === "GET" && req.url === "/health") { res.setHeader("Content-Type", "application/json"); return res.end(JSON.stringify({ ok: true, service: "ace-revit-mcp", revitVersion: "2025", loader: fakeLoader })); }
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
@@ -312,6 +314,14 @@ const bridge = http.createServer((req, res) => {
           openDocuments: args.close_previous && !model.includes("KEEP") ? [model] : ["Test", model] } });
       }
       case "close_model": return reply({ ok: true, result: { model: args.model, closed: true } });
+      case "reload_addin": {
+        const base = { loaderVersion: fakeLoader.loaderVersion, payloadVersion: fakeLoader.payloadVersion, previous: fakeLoader.previous };
+        if (!fakeLoader.pending && !args.force) return reply({ ok: true, result: { ...base, ok: true, scheduled: false, why: `ACE ${fakeLoader.payloadVersion} is already the installed build (force reloads it anyway).` } });
+        // The swap happens later (Revit idle), after this answer: /health then shows it.
+        setTimeout(() => Object.assign(fakeLoader, { previous: fakeLoader.payloadVersion, payloadVersion: "1.13.4", pending: false,
+          lastReload: { at: `swap ${seen.length}`, ok: true, loaderVersion: "1.0.0", payloadVersion: "1.13.4", previous: fakeLoader.payloadVersion, direction: "upgrade", why: `ACE ${fakeLoader.payloadVersion} replaced by 1.13.4` } }), 120);
+        return reply({ ok: true, result: { ...base, ok: true, scheduled: true, candidate: "1.13.4", why: "ACE 1.13.4 will be loaded in a moment" } });
+      }
       case "coordination_report": {
         if (!args.interference) return reply({ ok: true, result: { htmlReport: "C:/x/Model - Coordination.html", excelList: "C:/x/Model - Coordination.csv", issues: 7, withPictures: 7 } });
         // The interference rows: one per clash, grouped by issue; test "MULTI" answers for two open models.
@@ -355,7 +365,7 @@ fs.writeFileSync(path.join(tmp, "config.json"), JSON.stringify({ port, token }))
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [fileURLToPath(new URL("../index.js", import.meta.url))],   // a URL pathname is /D:/... on Windows
-  env: { ...process.env, ACE_REVIT_CONFIG: path.join(tmp, "config.json"), ACE_REVIT_URL: `http://127.0.0.1:${port}`, ACE_REVIT_SCRIPTS: path.join(tmp, "scripts"), ACE_REVIT_JOURNAL: path.join(tmp, "journal"), ACE_REVIT_LOGS: path.join(tmp, "logs"), ACE_REVIT_REPORTS: path.join(tmp, "reports"), ACE_TEAM_SCRIPTS: path.join(tmp, "team"), ACE_TEAM_REPORTS: path.join(tmp, "team-reports"), ACE_REVIT_LESSONS: path.join(tmp, "lessons"), ACE_TEAM_LESSONS: path.join(tmp, "team-lessons") },
+  env: { ...process.env, ACE_REVIT_CONFIG: path.join(tmp, "config.json"), ACE_REVIT_URL: `http://127.0.0.1:${port}`, ACE_REVIT_SCRIPTS: path.join(tmp, "scripts"), ACE_REVIT_JOURNAL: path.join(tmp, "journal"), ACE_REVIT_LOGS: path.join(tmp, "logs"), ACE_REVIT_REPORTS: path.join(tmp, "reports"), ACE_TEAM_SCRIPTS: path.join(tmp, "team"), ACE_TEAM_REPORTS: path.join(tmp, "team-reports"), ACE_REVIT_LESSONS: path.join(tmp, "lessons"), ACE_TEAM_LESSONS: path.join(tmp, "team-lessons"), ACE_RELOAD_POLL_MS: "40", ACE_RELOAD_WAIT_MS: "5000" },
 });
 const client = new Client({ name: "smoke", version: "1.0.0" });
 await client.connect(transport);
@@ -364,7 +374,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "register_update", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "register_update", "reload_addin", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -1869,6 +1879,21 @@ for (const risky of ["var u = \"http://x\"; File.Delete(p);", "var a = \"/*\"; F
 }
 const quick = await call("get_model_brief", { quick: true });
 assert.ok(!quick.isError, "the brief's quick mode (formerly get_model_overview) works");
+// --- reload_addin (G8): the loader swaps the build when idle; the tool waits for /health to show it, and previews made
+// before the swap no longer count (a preview proves what the build that ran it would do) ---
+{
+  const swapEdit = { code: "foreach (var w in ctx.All<Wall>()) w.LookupParameter(\"Comments\").Set(\"swap\");" };
+  await call("execute_revit_code", { ...swapEdit, dry_run: true, explanation: "preview before the reload" });
+  const r = json(await call("reload_addin"));
+  assert.ok(r.ok === true && r.payloadVersion === "1.13.4" && r.previous === "1.13.3" && r.loaderVersion === "1.0.0" && r.why, "reload_addin reports loaderVersion, payloadVersion, previous, ok, why");
+  assert.equal(seen.filter((x) => x.command === "reload_addin").length, 1, "one bridge call; the outcome is read from /health");
+  assert.ok(r.previewsCleared >= 1, "previews from before the swap are dropped");
+  assert.match((await call("execute_revit_code", { ...swapEdit, explanation: "apply after the reload" })).content[0].text, /not been previewed/, "an apply after a swap needs a new preview");
+  const same = json(await call("reload_addin"));
+  assert.ok(same.ok === true && same.scheduled === false && /already the installed build/.test(same.why), "nothing new installed: no swap, said plainly");
+  assert.equal(seen.filter((x) => x.command === "reload_addin").at(-1).args.force, false, "force is off unless asked");
+}
+
 const pc = (await call("pending_changes")).content[0].text;
 assert.match(pc, /8 m2/, "the panel's waiting cards reach Claude");
 bridge.close();
@@ -1890,7 +1915,7 @@ assert.equal(fit({ a: 1 }), '{"a":1}', "replies are compact JSON");
   const trust = rootFile("trust-ace.ps1"), inst = rootFile("install.ps1"), doc = rootFile("doctor.ps1"), pkg = rootFile("build-package.ps1");
   assert.ok(/'trust-ace\.ps1'/.test(pkg), "the package ships trust-ace.ps1");
   assert.ok(/-KeyExportPolicy NonExportable/.test(trust) && /-KeyLength 3072/.test(trust) && /CurrentUser\\My/.test(trust) && /'TrustedPublisher', 'Root'/.test(trust) && /\[switch\]\$Remove/.test(trust), "trust-ace: non-exportable RSA 3072 key, trusted per user, -Remove");
-  assert.ok(/Filter 'AceRevitMcp\*\.dll'/.test(inst) && /Sign-AceDlls \$InstallDir/.test(inst) && /Get-AuthenticodeSignature/.test(inst) && /-HashAlgorithm SHA256/.test(inst), "install signs only ACE's own DLLs, SHA256, verified");
+  assert.ok(/Filter 'AceRevitMcp\*\.dll'/.test(inst) && /Sign-AceDlls \$stage/.test(inst) && /Sign-AceDlls \$loaderStage/.test(inst) && /Get-AuthenticodeSignature/.test(inst) && /-HashAlgorithm SHA256/.test(inst), "install signs only ACE's own DLLs, SHA256, verified");
   assert.ok(/Code signing/.test(doc) && /signing\.json/.test(doc), "doctor reports the signing state");
   for (const [n, t] of Object.entries({ trust, inst, doc, pkg }))
     assert.ok(!/\?\?/.test(t.replace(/#.*$/gm, "")), `${n}: no ?? (Windows PowerShell 5.1)`);

@@ -22,6 +22,21 @@ const ADDIN_LOG = path.join(LOG_DIR, "addin.log");
 
 const check = (name, status, detail, fix) => ({ name, status, detail, ...(fix ? { fix } : {}) });
 
+/**
+ * Where ACE is installed in <Addins>\<year>\AceRevitMcp: with the ACE loader (current.json names the build in
+ * payload\<version>-<hash>) or the older flat layout (AceRevitMcp.dll directly in the folder).
+ */
+export function installedLayout(root) {
+  const loader = path.join(root, "AceRevitMcp.Loader.dll");
+  try {
+    const current = JSON.parse(fs.readFileSync(path.join(root, "current.json"), "utf8").replace(/^\uFEFF/, ""));
+    const rel = String(current.path ?? "").replace(/[\\/]+/g, path.sep);
+    return { loader, version: current.version ?? null, payloadDir: path.isAbsolute(rel) ? rel : path.join(root, rel) };
+  } catch {
+    return { loader: null, version: null, payloadDir: root };
+  }
+}
+
 export async function runChecks({ deep = true } = {}) {
   const checks = [];
   const [major] = process.versions.node.split(".").map(Number);
@@ -41,14 +56,17 @@ export async function runChecks({ deep = true } = {}) {
     const installed = REVIT_YEARS.filter((y) => fs.existsSync(path.join(addinsDir(y), "AceRevitMcp.addin")));
     for (const year of installed.length ? installed : ["2025"]) {
       const dir = addinsDir(year);
-      const dll = path.join(dir, "AceRevitMcp", "AceRevitMcp.dll");
+      const layout = installedLayout(path.join(dir, "AceRevitMcp"));
+      const dll = path.join(layout.payloadDir, "AceRevitMcp.dll");
       const required = [path.join(dir, "AceRevitMcp.addin"), dll];
-      if (year !== "2024") required.push(path.join(dir, "AceRevitMcp", "Compiler", "AceRevitMcp.Compiler.dll"));
+      if (layout.loader) required.push(layout.loader);
+      if (year !== "2024") required.push(path.join(layout.payloadDir, "Compiler", "AceRevitMcp.Compiler.dll"));
       const missing = required.filter((f) => !fs.existsSync(f));
+      const where = layout.loader ? `loader + ACE ${layout.version ?? "?"} in ${layout.payloadDir}` : path.dirname(dll);
       checks.push(
         missing.length === 0
-          ? check(`Revit ${year} add-in files`, "ok", path.dirname(dll) + (year === "2024" ? " (C# scripts are not available on Revit 2024 yet)" : ""))
-          : check(`Revit ${year} add-in files`, "fail", `Missing: ${missing.join(", ")}`, "Close Revit and run install.ps1 (or doctor.ps1 -Fix)."),
+          ? check(`Revit ${year} add-in files`, "ok", where + (year === "2024" ? " (C# scripts are not available on Revit 2024 yet)" : ""))
+          : check(`Revit ${year} add-in files`, "fail", `Missing: ${missing.join(", ")}`, "Run install.ps1 (or doctor.ps1 -Fix)."),
       );
       try {
         const others = fs.readdirSync(dir).filter((f) => f.endsWith(".addin") && f !== "AceRevitMcp.addin");
@@ -76,12 +94,15 @@ export async function runChecks({ deep = true } = {}) {
     checks.push(check("Revit connection", "ok", `Add-in listening (Revit ${h.revitVersion})`));
     try {
       const ping = await callRevit("ping", {}, 20);
-      checks.push(check("Revit session", "ok", `${ping.revit}; add-in ${ping.addinVersion ?? "(old)"}; active document: ${ping.activeDocument ?? "none"}`));
+      checks.push(check("Revit session", "ok", `${ping.revit}; add-in ${ping.addinVersion ?? "(old)"}${ping.loaderVersion ? ` (ACE loader ${ping.loaderVersion})` : ""}; active document: ${ping.activeDocument ?? "none"}`));
+      // With the ACE loader a new build loads without a restart (reload_addin); without it Revit must restart.
+      const update = ping.loaderVersion ? "Run install.ps1, then ask Claude to reload ACE (reload_addin); no Revit restart." : "Close Revit, run install.ps1, restart Revit.";
       if (!ping.addinVersion) {
-        checks.push(check("Version match", "warn", `Add-in is older than MCP server ${VERSION}.`, "Close Revit, run install.ps1, restart Revit."));
+        checks.push(check("Version match", "warn", `Add-in is older than MCP server ${VERSION}.`, update));
       } else if (!ping.addinVersion.startsWith(VERSION.split(".").slice(0, 2).join("."))) {
-        checks.push(check("Version match", "warn", `Add-in ${ping.addinVersion} vs MCP server ${VERSION}.`, "Close Revit, run install.ps1, restart Revit."));
+        checks.push(check("Version match", "warn", `Add-in ${ping.addinVersion} vs MCP server ${VERSION}.`, update));
       }
+      if (h.loader?.pending) checks.push(check("Reload pending", "warn", `ACE ${h.loader.pendingVersion} is installed, Revit runs ${h.loader.payloadVersion}.`, "Ask Claude to reload ACE (reload_addin), or close all models: ACE then reloads by itself."));
       if (!ping.activeDocument) checks.push(check("Open model", "warn", "No model is open in Revit.", "Open a model before asking Claude to work on it."));
       if (deep && String(h.revitVersion).startsWith("2024")) {
         // Not a fault: the code runner is not built for Revit 2024 yet (backlog R24 slice 2).

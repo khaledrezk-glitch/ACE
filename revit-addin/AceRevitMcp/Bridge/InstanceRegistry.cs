@@ -13,7 +13,7 @@ namespace AceRevitMcp.Bridge
 {
     /// <summary>
     /// One file per running Revit session with ACE, so the MCP server can find every session and its port:
-    /// %APPDATA%\ACE-RevitMCP\instances\&lt;pid&gt;.json { port, pid, revitVersion, aceVersion, started, updated,
+    /// %APPDATA%\ACE-RevitMCP\instances\&lt;pid&gt;.json { port, pid, revitVersion, aceVersion, loaderVersion, started, updated,
     /// activeDocument, openDocuments (project models; family documents are left out), user, machine }. Written when the bridge starts, rewritten when the active or open
     /// documents change (only then), removed when the bridge stops. A file left by a crash is stale: the server checks
     /// that the pid runs and the port answers /health with the same pid.
@@ -114,6 +114,7 @@ namespace AceRevitMcp.Bridge
                     ["pid"] = Pid,
                     ["revitVersion"] = _revitVersion,
                     ["aceVersion"] = typeof(InstanceRegistry).Assembly.GetName().Version?.ToString(3),
+                    ["loaderVersion"] = PayloadEntry.LoaderVersion,   // null when ACE was loaded directly (no loader)
                     ["started"] = Started.ToString("o"),
                     ["updated"] = DateTime.Now.ToString("o"),
                     ["activeDocument"] = _active,

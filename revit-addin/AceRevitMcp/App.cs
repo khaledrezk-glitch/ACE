@@ -10,7 +10,10 @@ using Autodesk.Revit.UI;
 
 namespace AceRevitMcp
 {
-    /// <summary>Revit add-in entry point: starts the local bridge so Claude can drive Revit.</summary>
+    /// <summary>
+    /// Revit add-in entry point when ACE is loaded directly by a plain manifest (fallback / development). Installed ACE
+    /// is started by the ACE loader through PayloadEntry instead; both run the same StartServices / StopServices.
+    /// </summary>
     public sealed class App : IExternalApplication
     {
         internal static BridgeServer Server { get; private set; }
@@ -19,16 +22,26 @@ namespace AceRevitMcp
 
         public Result OnStartup(UIControlledApplication application)
         {
-#if NETFRAMEWORK
-            // Revit 2024: serve System.Text.Json and its dependencies from ACE's folder before anything uses them.
-            Util.DependencyResolver.Register();
-#endif
-            return Start(application);
+            try
+            {
+                PayloadEntry.Start(application, null);
+                return Result.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                try { Log.Error($"Startup failed: {ex}"); } catch { }
+                return Result.Failed;
+            }
         }
 
-        // Separate so the libraries it uses are loaded only after the resolver above is in place.
-        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private Result Start(UIControlledApplication application)
+        public Result OnShutdown(UIControlledApplication application)
+        {
+            PayloadEntry.Stop();
+            return Result.Succeeded;
+        }
+
+        /// <summary>Starts the bridge, the trackers, the ribbon and the Companion (throws when ACE can't run at all).</summary>
+        internal static void StartServices(UIControlledApplication application)
         {
             try
             {
@@ -42,74 +55,88 @@ namespace AceRevitMcp
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
                 InstanceRegistry.Attach(application);
                 Server.Start();
-                CreateRibbon(application);
-                Scripting.CodeRunner.WarmUp();
-                try { Companion.CompanionPane.Register(application); }
-                catch (Exception ex) { Log.Error($"Could not register the ACE Companion panel: {ex}"); }
-                return Result.Succeeded;
             }
             catch (Exception ex)
             {
                 Log.Error($"Startup failed: {ex}");
-                return Result.Failed;
+                throw;
             }
+            // From here on a failure costs one surface, not ACE.
+            try { CreateRibbon(application); }
+            catch (Exception ex) { Log.Error($"Ribbon: {ex}"); }
+            Scripting.CodeRunner.WarmUp();
+            try { Companion.CompanionPane.Register(application); }
+            catch (Exception ex) { Log.Error($"Could not register the ACE Companion panel: {ex}"); }
+            Log.Info(PayloadEntry.Hosted
+                ? $"ACE {typeof(App).Assembly.GetName().Version?.ToString(3)} started by the ACE loader {PayloadEntry.LoaderVersion} from {PayloadEntry.Directory}"
+                : $"ACE {typeof(App).Assembly.GetName().Version?.ToString(3)} started (loaded directly from {PayloadEntry.Directory})");
         }
 
-        public Result OnShutdown(UIControlledApplication application)
+        /// <summary>
+        /// Releases everything StartServices took, in this order: the bridge (port and instance file), the request queue
+        /// and the ExternalEvent target, Revit events, the Companion content, the ribbon hooks, open ACE windows and the
+        /// script compiler. Safe after a partial start and when called twice.
+        /// </summary>
+        internal static void StopServices(UIControlledApplication application)
         {
-            application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged;
-            try { Tracking.ChangeTracking.Detach(); } catch { }
-            try { Companion.CompanionPane.Unregister(application); } catch { }
-            try { InstanceRegistry.Detach(); } catch { }
-            Server?.Dispose();
-            return Result.Succeeded;
+            void Step(string what, Action a) { try { a(); } catch (Exception ex) { Log.Warn($"Stop ({what}): {ex.Message}"); } }
+            Step("bridge", () => Server?.Dispose());
+            Server = null;
+            Step("dispatcher", () => Dispatcher?.Shutdown());
+            Dispatcher = null;
+            if (application != null) Step("document events", () => application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged);
+            Step("change tracking", Tracking.ChangeTracking.Detach);
+            if (application != null) Step("companion", () => Companion.CompanionPane.Unregister(application));
+            Step("instance registry", InstanceRegistry.Detach);
+            Step("work modes", Ribbon.WorkModes.Detach);
+            Step("clash browser", Coordination.ClashBrowser.CloseOpen);
+            Step("report windows", Dashboard.ReportWindow.CloseAll);
+            Step("script compiler", Scripting.CodeRunner.Shutdown);
+            Log.Info("ACE stopped");
         }
 
+        /// <summary>
+        /// Builds the ACE tab. After a reload (a new build in the same Revit session) the panels and buttons already exist:
+        /// RibbonSlots finds them by name and points them at the new build's commands instead of adding them again.
+        /// </summary>
         private static void CreateRibbon(UIControlledApplication application)
         {
             const string tab = "ACE";
             try { application.CreateRibbonTab(tab); } catch { /* already exists */ }
             // Working mode first: it decides which panels lead, which are dimmed and which are hidden.
-            try { Ribbon.WorkModes.CreateSelector(application.CreateRibbonPanel(tab, "Work mode")); }
+            try { Ribbon.WorkModes.CreateSelector(Ribbon.RibbonSlots.Panel(application, tab, "Work mode")); }
             catch (Exception ex) { Log.Warn($"Work mode selector: {ex.Message}"); }
-            var panel = application.CreateRibbonPanel(tab, "Claude MCP");
+            var panel = Ribbon.RibbonSlots.Panel(application, tab, "Claude MCP");
             Ribbon.WorkModes.RegisterPanel(panel);
-            var path = typeof(App).Assembly.Location;
-            var companion = new PushButtonData("AceCompanion", "Companion", path, typeof(Companion.ToggleCompanionCommand).FullName)
-            {
-                ToolTip = "Show or hide the ACE Companion panel: approve Claude's previewed changes, follow its activity, click results to select them, and copy ready-made prompts.",
-            };
-            var status = new PushButtonData("AceMcpStatus", "MCP\nStatus", path, typeof(StatusCommand).FullName)
-            {
-                ToolTip = "Show whether Claude can reach this Revit session, and restart the connection if needed.",
-            };
+            var companion = Ribbon.RibbonSlots.Button("AceCompanion", "Companion", typeof(Companion.ToggleCompanionCommand).FullName);
+            companion.ToolTip = "Show or hide the ACE Companion panel: approve Claude's previewed changes, follow its activity, click results to select them, and copy ready-made prompts.";
+            var status = Ribbon.RibbonSlots.Button("AceMcpStatus", "MCP\nStatus", typeof(StatusCommand).FullName);
+            status.ToolTip = "Show whether Claude can reach this Revit session, and restart the connection if needed.";
             try
             {
                 companion.LargeImage = Icons.Companion(32); companion.Image = Icons.Companion(16);
                 status.LargeImage = Icons.Status(32); status.Image = Icons.Status(16);
             }
             catch (Exception ex) { Log.Warn($"Ribbon icons: {ex.Message}"); }
-            Ribbon.WorkModes.RegisterButton(panel.Name, panel.AddItem(companion), (sz, dim) => Icons.Companion(sz, dim));
-            Ribbon.WorkModes.RegisterButton(panel.Name, panel.AddItem(status), (sz, dim) => Icons.Status(sz, dim));
+            Ribbon.WorkModes.RegisterButton(panel.Name, Ribbon.RibbonSlots.Add(panel, companion), (sz, dim) => Icons.Companion(sz, dim));
+            Ribbon.WorkModes.RegisterButton(panel.Name, Ribbon.RibbonSlots.Add(panel, status), (sz, dim) => Icons.Status(sz, dim));
 
             // Planned tools (roadmap): real buttons that open a card explaining what each will do.
-            try { AddPlannedTools(application, tab, panel, path); }
+            try { AddPlannedTools(application, tab, panel); }
             catch (Exception ex) { Log.Warn($"Roadmap buttons: {ex.Message}"); }
             try { Ribbon.WorkModes.Restore(); }
             catch (Exception ex) { Log.Warn($"Work mode: {ex.Message}"); }
         }
 
-        private static void AddPlannedTools(UIControlledApplication application, string tab, RibbonPanel claudePanel, string path)
+        private static void AddPlannedTools(UIControlledApplication application, string tab, RibbonPanel claudePanel)
         {
             PushButtonData Data(Ribbon.Feature f)
             {
                 var live = f.LiveCommand != null;
-                var d = new PushButtonData("AcePlanned_" + f.Key, f.Label.Replace("&&", "&"), path, f.LiveCommand ?? "AceRevitMcp.Ribbon.Planned_" + f.Key)
-                {
-                    ToolTip = live ? f.LiveSummary ?? f.Summary : f.Summary,
-                    LongDescription = live ? "Live." : $"Coming soon (Phase {f.Phase}: {Ribbon.Roadmap.Phases[f.Phase]}). Click to see what it will do" +
-                                      (f.TodayWithClaude != null ? " and what Claude can already do today." : "."),
-                };
+                var d = Ribbon.RibbonSlots.Button("AcePlanned_" + f.Key, f.Label.Replace("&&", "&"), f.LiveCommand ?? "AceRevitMcp.Ribbon.Planned_" + f.Key);
+                d.ToolTip = live ? f.LiveSummary ?? f.Summary : f.Summary;
+                d.LongDescription = live ? "Live." : $"Coming soon (Phase {f.Phase}: {Ribbon.Roadmap.Phases[f.Phase]}). Click to see what it will do" +
+                                    (f.TodayWithClaude != null ? " and what Claude can already do today." : ".");
                 try { d.LargeImage = Icons.Line(32, f.Glyph, planned: !live); d.Image = Icons.Line(16, f.Glyph, planned: !live); }
                 catch (Exception ex) { Log.Warn($"Icon {f.Key}: {ex.Message}"); }
                 return d;
@@ -119,52 +146,43 @@ namespace AceRevitMcp
             void Reg(RibbonPanel p, RibbonItem item, Func<int, bool, System.Windows.Media.ImageSource> icon) => Ribbon.WorkModes.RegisterButton(p.Name, item, icon);
             Func<int, bool, System.Windows.Media.ImageSource> Fixed(string glyph) => (sz, dim) => Icons.Line(sz, glyph, planned: false, dim: dim);
 
-            foreach (var f in Ribbon.Roadmap.Features.Where(x => x.Panel == claudePanel.Name)) Reg(claudePanel, claudePanel.AddItem(Data(f)), IconOf(f));
+            foreach (var f in Ribbon.Roadmap.Features.Where(x => x.Panel == claudePanel.Name)) Reg(claudePanel, Ribbon.RibbonSlots.Add(claudePanel, Data(f)), IconOf(f));
 
             // Live: the Insights dashboard (model health, QA, submission readiness, Claude activity, tool status).
-            var insights = application.CreateRibbonPanel(tab, "Insights");
+            var insights = Ribbon.RibbonSlots.Panel(application, tab, "Insights");
             Ribbon.WorkModes.RegisterPanel(insights);
-            var dashboard = new PushButtonData("AceDashboard", "Dashboard", path, typeof(Dashboard.DashboardCommand).FullName)
-            {
-                ToolTip = "Model insights: health score, audit findings, warnings, rooms and doors QA, parameters, submission readiness, Claude activity and the status of every ACE tool.",
-                LongDescription = "Read-only. Shown inside Revit and saved as an HTML report in Documents\\ACE Insights, ready to share.",
-            };
+            var dashboard = Ribbon.RibbonSlots.Button("AceDashboard", "Dashboard", typeof(Dashboard.DashboardCommand).FullName);
+            dashboard.ToolTip = "Model insights: health score, audit findings, warnings, rooms and doors QA, parameters, submission readiness, Claude activity and the status of every ACE tool.";
+            dashboard.LongDescription = "Read-only. Shown inside Revit and saved as an HTML report in Documents\\ACE Insights, ready to share.";
             try { dashboard.LargeImage = Icons.Line(32, Ribbon.Glyphs.Dashboard, planned: false); dashboard.Image = Icons.Line(16, Ribbon.Glyphs.Dashboard, planned: false); }
             catch (Exception ex) { Log.Warn($"Icon dashboard: {ex.Message}"); }
-            Reg(insights, insights.AddItem(dashboard), Fixed(Ribbon.Glyphs.Dashboard));
-            var changes = new PushButtonData("AceChangeTracker", "Change\nTracker", path, typeof(Tracking.ChangeTrackerCommand).FullName)
-            {
-                ToolTip = "What changed in this model and its linked models since the last snapshot: added, deleted, moved, retyped and changed elements, by category and by person.",
-                LongDescription = "Read-only. Snapshots are taken automatically when a model is opened and after saves or syncs. Report saved in Documents\\ACE Insights.",
-            };
+            Reg(insights, Ribbon.RibbonSlots.Add(insights, dashboard), Fixed(Ribbon.Glyphs.Dashboard));
+            var changes = Ribbon.RibbonSlots.Button("AceChangeTracker", "Change\nTracker", typeof(Tracking.ChangeTrackerCommand).FullName);
+            changes.ToolTip = "What changed in this model and its linked models since the last snapshot: added, deleted, moved, retyped and changed elements, by category and by person.";
+            changes.LongDescription = "Read-only. Snapshots are taken automatically when a model is opened and after saves or syncs. Report saved in Documents\\ACE Insights.";
             try { changes.LargeImage = Icons.Line(32, Ribbon.Glyphs.History, planned: false); changes.Image = Icons.Line(16, Ribbon.Glyphs.History, planned: false); }
             catch (Exception ex) { Log.Warn($"Icon change tracker: {ex.Message}"); }
-            Reg(insights, insights.AddItem(changes), Fixed(Ribbon.Glyphs.History));
+            Reg(insights, Ribbon.RibbonSlots.Add(insights, changes), Fixed(Ribbon.Glyphs.History));
 
             foreach (var name in Ribbon.Roadmap.Panels)
             {
-                var panel = application.CreateRibbonPanel(tab, name);
+                var panel = Ribbon.RibbonSlots.Panel(application, tab, name);
                 Ribbon.WorkModes.RegisterPanel(panel);
                 var features = Ribbon.Roadmap.Features.Where(x => x.Panel == name).ToList();
-                foreach (var f in features.Where(x => x.Large)) Reg(panel, panel.AddItem(Data(f)), IconOf(f));
+                foreach (var f in features.Where(x => x.Large)) Reg(panel, Ribbon.RibbonSlots.Add(panel, Data(f)), IconOf(f));
                 var smallF = features.Where(x => !x.Large).ToList();
                 var small = smallF.Select(Data).ToList();
-                IList<RibbonItem> stacked = null;
-                if (small.Count == 1) stacked = new List<RibbonItem> { panel.AddItem(small[0]) };
-                else if (small.Count == 2) stacked = panel.AddStackedItems(small[0], small[1]);
-                else if (small.Count >= 3) stacked = panel.AddStackedItems(small[0], small[1], small[2]);
+                var stacked = Ribbon.RibbonSlots.Stacked(panel, small);
                 if (stacked != null) for (var i = 0; i < stacked.Count && i < smallF.Count; i++) Reg(panel, stacked[i], IconOf(smallF[i]));
             }
 
-            var about = application.CreateRibbonPanel(tab, "Roadmap");
+            var about = Ribbon.RibbonSlots.Panel(application, tab, "Roadmap");
             Ribbon.WorkModes.RegisterPanel(about);
-            var roadmap = new PushButtonData("AceRoadmap", "Roadmap", path, typeof(Ribbon.RoadmapCommand).FullName)
-            {
-                ToolTip = "What ACE can do today, and the tools planned for the ACE ribbon.",
-            };
+            var roadmap = Ribbon.RibbonSlots.Button("AceRoadmap", "Roadmap", typeof(Ribbon.RoadmapCommand).FullName);
+            roadmap.ToolTip = "What ACE can do today, and the tools planned for the ACE ribbon.";
             try { roadmap.LargeImage = Icons.Line(32, Ribbon.Glyphs.Map, planned: false); roadmap.Image = Icons.Line(16, Ribbon.Glyphs.Map, planned: false); }
             catch (Exception ex) { Log.Warn($"Icon roadmap: {ex.Message}"); }
-            Reg(about, about.AddItem(roadmap), Fixed(Ribbon.Glyphs.Map));
+            Reg(about, Ribbon.RibbonSlots.Add(about, roadmap), Fixed(Ribbon.Glyphs.Map));
         }
     }
 

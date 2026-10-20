@@ -19,6 +19,7 @@ namespace AceRevitMcp.Commands
             {
                 ["revit"] = $"{app.Application.VersionName} ({app.Application.VersionBuild})",
                 ["addinVersion"] = typeof(ModelCommands).Assembly.GetName().Version?.ToString(),
+                ["loaderVersion"] = PayloadEntry.LoaderVersion,
                 ["user"] = app.Application.Username,
                 ["language"] = app.Application.Language.ToString(),
                 ["activeDocument"] = doc?.Title,

@@ -92,6 +92,18 @@ namespace AceRevitMcp.Companion
             Render();
         }
 
+        /// <summary>
+        /// Stops the clock and leaves the ACE events (payload Stop): a running DispatcherTimer or a static event would keep
+        /// this build alive and keep rendering after a newer build took over the pane.
+        /// </summary>
+        internal void Shutdown()
+        {
+            _clock.Stop();
+            ActivityHub.Changed -= QueueRender;
+            Ribbon.WorkModes.Changed -= QueueRender;
+            StatusStore.Changed -= QueueRender;
+        }
+
         private UIElement BuildHeader()
         {
             var header = new StackPanel { Margin = new Thickness(10, 10, 10, 8) };

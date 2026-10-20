@@ -86,6 +86,9 @@ async function healthAt(base, timeoutMs) {
   }
 }
 
+/** /health of the Revit session on that port (the configured one when port is empty). */
+export const healthAtPort = (port, timeoutMs = 2000) => healthAt(bridgeUrl(readConfig(), port), timeoutMs);
+
 export async function health(timeoutMs = 4000) {
   const s = process.env.ACE_REVIT_URL ? null : (await chooseInstance().catch(() => null))?.chosen;
   return healthAt(bridgeUrl(readConfig(), s?.port), timeoutMs);

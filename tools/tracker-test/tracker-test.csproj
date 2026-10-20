@@ -9,4 +9,8 @@
     <!-- Build the add-in first (Release); only its plain C# change-comparison code is exercised. -->
     <Reference Include="AceRevitMcp"><HintPath>../../revit-addin/AceRevitMcp/bin/Release/net8.0-windows/AceRevitMcp.dll</HintPath></Reference>
   </ItemGroup>
+  <ItemGroup>
+    <!-- The ACE loader's payload selection is plain C# (no Revit): compiled in directly, so no loader build is needed. -->
+    <Compile Include="../../revit-addin/AceRevitMcp.Loader/PayloadSelection.cs" Link="PayloadSelection.cs" />
+  </ItemGroup>
 </Project>

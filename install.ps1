@@ -121,19 +121,17 @@ Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue | Unblock
 # ------------------------------------------------------------------------------------------------
 if (-not $SkipAddin) {
 Step "Checking Revit $RevitLabel"
-$existingDll = @($RevitYears | Where-Object { Test-Path (Join-Path $env:APPDATA "Autodesk\Revit\Addins\$_\AceRevitMcp\AceRevitMcp.dll") })
-if (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
-    if ($existingDll.Count -gt 0) {
-        # Upgrade: Revit has the old add-in loaded and its files are locked.
-        while (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) {
-            if ($NonInteractive) { throw "Revit is running and has the current add-in loaded. Close Revit, then re-run the installer." }
-            Warn "Revit is running. Save your work and close Revit so the add-in files can be updated."
-            Read-Host "    Press Enter once Revit is closed"
-        }
-    } else {
-        Warn "Revit is running. That's fine for a first install - restart Revit afterwards to load the add-in."
-    }
+# Revit may stay open: the ACE loader (the only DLL in the .addin manifest) loads each ACE build from its own folder
+# (payload\<version>-<hash>), so an install never replaces a file Revit has in use. Only a new loader needs a restart.
+$RevitProcs = @(Get-Process -Name 'Revit' -ErrorAction SilentlyContinue)
+$RunningYears = @()
+foreach ($p in $RevitProcs) {
+    $exe = $null
+    try { $exe = $p.Path } catch { $exe = $null }
+    if ($exe -and ($exe -match 'Revit (\d{4})')) { $RunningYears += $Matches[1] } else { $RunningYears += $RevitYears }
 }
+$RunningYears = @($RunningYears | Select-Object -Unique)
+if ($RevitProcs.Count) { Write-Host "    Revit $($RunningYears -join ' and ') is running: that's fine, ACE is installed next to the copy in use." }
 foreach ($year in $RevitYears) {
     $revitExe = Join-Path $env:ProgramFiles "Autodesk\Revit $year\Revit.exe"
     if (Test-Path $revitExe) { Ok "Revit $year found$(if ($year -eq '2024') { ' (C# scripts are not available on 2024 yet; all other tools work)' })" }
@@ -195,28 +193,141 @@ if (-not $SkipAddin) {
 Step "Building and installing the Revit add-in"
 $template = Join-Path $Root 'revit-addin\AceRevitMcp.addin.template'
 if (-not (Test-Path $template)) { $template = Join-Path $Root 'bin\AceRevitMcp.addin.template' }
+# Layout per Revit year in %APPDATA%\Autodesk\Revit\Addins\<year>\AceRevitMcp:
+#   AceRevitMcp.Loader.dll       the ACE loader, named in AceRevitMcp.addin; replaced only when its version changes
+#   current.json                 { version, path, sha256, previous } : the build the loader loads, and the fallback
+#   payload\<version>-<hash>\    one folder per ACE build (AceRevitMcp.dll, Compiler\, Revit 2024 dependencies)
+function Get-BuildHash($dir) {
+    $all = (Get-ChildItem $dir -Recurse -File -Filter 'AceRevitMcp*.dll' | Sort-Object FullName | ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join ''
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return (([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($all)))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+}
+function Test-SigningOn {
+    $f = Join-Path $env:APPDATA 'ACE-RevitMCP\signing.json'
+    if (-not (Test-Path $f)) { return $false }
+    try { $s = Get-Content $f -Raw | ConvertFrom-Json; return [bool]($s.enabled -and $s.thumbprint) } catch { return $false }
+}
+$RestartYears = @()
+$ReloadYears = @()
 foreach ($year in $RevitYears) {
-    $AddinRoot  = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$year"
-    $InstallDir = Join-Path $AddinRoot 'AceRevitMcp'
-    if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-
-    if ($Prebuilt) {
-        $src = Get-PrebuiltDir $year
-        Get-ChildItem $src | Where-Object { $_.Name -notin '2024', '2025' } | Copy-Item -Destination $InstallDir -Recurse -Force
-    } else {
-        & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp\AceRevitMcp.csproj') -c Release -f $Frameworks[$year] -o $InstallDir --nologo -v quiet
-        if ($LASTEXITCODE -ne 0) { throw "Building the add-in for Revit $year failed (see errors above)." }
-        if ($year -ne '2024') {   # the script compiler runs on .NET 8 only (Revit 2025)
-            & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Compiler\AceRevitMcp.Compiler.csproj') -c Release -o (Join-Path $InstallDir 'Compiler') --nologo -v quiet
-            if ($LASTEXITCODE -ne 0) { throw "Building the script compiler failed (see errors above)." }
+    $AddinRoot    = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$year"
+    $InstallDir   = Join-Path $AddinRoot 'AceRevitMcp'
+    $ManifestFile = Join-Path $AddinRoot 'AceRevitMcp.addin'
+    $PayloadRoot  = Join-Path $InstallDir 'payload'
+    $CurrentFile  = Join-Path $InstallDir 'current.json'
+    $LoaderDll    = Join-Path $InstallDir 'AceRevitMcp.Loader.dll'
+    $running = $RunningYears -contains $year
+    $tag = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $stage = Join-Path $PayloadRoot ".staging-$tag"
+    $loaderStage = Join-Path $InstallDir ".loader-$tag"
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    New-Item -ItemType Directory -Force -Path $loaderStage | Out-Null
+    try {
+        if ($Prebuilt) {
+            $src = Get-PrebuiltDir $year
+            Get-ChildItem $src | Where-Object { $_.Name -notin '2024', '2025', 'loader' } | Copy-Item -Destination $stage -Recurse -Force
+            $loaderSrc = Join-Path $src 'loader'
+            if (-not (Test-Path (Join-Path $loaderSrc 'AceRevitMcp.Loader.dll'))) { throw "This package has no ACE loader for Revit $year (bin\addin\$year\loader). Use a package built with ACE 1.14 or later." }
+            Copy-Item (Join-Path $loaderSrc '*') -Destination $loaderStage -Recurse -Force
+        } else {
+            & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp\AceRevitMcp.csproj') -c Release -f $Frameworks[$year] -o $stage --nologo -v quiet
+            if ($LASTEXITCODE -ne 0) { throw "Building the add-in for Revit $year failed (see errors above)." }
+            if ($year -ne '2024') {   # the script compiler runs on .NET 8 only (Revit 2025)
+                & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Compiler\AceRevitMcp.Compiler.csproj') -c Release -o (Join-Path $stage 'Compiler') --nologo -v quiet
+                if ($LASTEXITCODE -ne 0) { throw "Building the script compiler failed (see errors above)." }
+            }
+            & $Dotnet publish (Join-Path $Root 'revit-addin\AceRevitMcp.Loader\AceRevitMcp.Loader.csproj') -c Release -f $Frameworks[$year] -o $loaderStage --nologo -v quiet
+            if ($LASTEXITCODE -ne 0) { throw "Building the ACE loader for Revit $year failed (see errors above)." }
         }
+        Get-ChildItem $stage, $loaderStage -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+
+        # The payload: signed first (signing changes the file), then hashed, then moved into its own folder.
+        Sign-AceDlls $stage
+        $payloadDll = Join-Path $stage 'AceRevitMcp.dll'
+        $sha = (Get-FileHash $payloadDll -Algorithm SHA256).Hash.ToLowerInvariant()
+        $ver = (((Get-Item $payloadDll).VersionInfo.FileVersion).Split('.')[0..2]) -join '.'
+        $folder = "$ver-" + (Get-BuildHash $stage).Substring(0, 8)
+        $dest = Join-Path $PayloadRoot $folder
+        if (Test-Path (Join-Path $dest 'AceRevitMcp.dll')) {
+            # The identical build is there already (it may be the one Revit runs): keep it.
+            $sha = (Get-FileHash (Join-Path $dest 'AceRevitMcp.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+        } else {
+            if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }   # an incomplete earlier copy
+            Move-Item $stage $dest
+        }
+
+        $old = $null
+        if (Test-Path $CurrentFile) { try { $old = Get-Content $CurrentFile -Raw | ConvertFrom-Json } catch { $old = $null } }
+        $switch = $true
+        if (Test-SigningOn) {
+            $bad = @(Get-ChildItem $dest -Recurse -File -Filter 'AceRevitMcp*.dll' | Where-Object { (Get-AuthenticodeSignature -FilePath $_.FullName).Status -ne 'Valid' })
+            if ($bad.Count -and $old -and $old.path) {
+                Warn "Signing is on but $($bad[0].Name) is not validly signed: Revit $year keeps ACE $($old.version) (the loader would refuse this build)."
+                $switch = $false
+            }
+        }
+        if ($switch) {
+            $entry = [ordered]@{ version = $ver; path = "payload\$folder"; sha256 = $sha }
+            if ($old -and $old.path -and $old.path -ne $entry.path) { $entry.previous = [ordered]@{ version = $old.version; path = $old.path; sha256 = $old.sha256 } }
+            elseif ($old -and $old.previous) { $entry.previous = $old.previous }
+            $tmp = "$CurrentFile.tmp"
+            Write-Utf8NoBom $tmp ([PSCustomObject]$entry | ConvertTo-Json -Depth 4)
+            Move-Item $tmp $CurrentFile -Force
+            Ok "ACE $ver for Revit $year installed to $dest"
+        }
+
+        # The loader: replaced only when its version differs (or signing is on and the installed one is not signed).
+        $newLoader = (Get-Item (Join-Path $loaderStage 'AceRevitMcp.Loader.dll')).VersionInfo.FileVersion
+        $oldLoader = $null
+        if (Test-Path $LoaderDll) { $oldLoader = (Get-Item $LoaderDll).VersionInfo.FileVersion }
+        $replace = $oldLoader -ne $newLoader
+        if (-not $replace -and (Test-SigningOn) -and (Get-AuthenticodeSignature -FilePath $LoaderDll).Status -ne 'Valid') { $replace = $true }
+        $loaderNew = $false
+        if ($replace) {
+            Sign-AceDlls $loaderStage
+            try {
+                Get-ChildItem $loaderStage -File | Copy-Item -Destination $InstallDir -Force -ErrorAction Stop
+                $loaderNew = $true
+                Ok "ACE loader $newLoader installed$(if ($oldLoader) { " (was $oldLoader)" })"
+            } catch {
+                Warn "The ACE loader $oldLoader is in use by Revit $year and was not replaced by $newLoader. Close Revit $year and run the installer again."
+                $RestartYears += $year
+            }
+        }
+
+        $manifest = (Get-Content $template -Raw).Replace('{{ASSEMBLY_PATH}}', $LoaderDll)
+        $oldManifest = $null
+        if (Test-Path $ManifestFile) { $oldManifest = Get-Content $ManifestFile -Raw }
+        $wasDirect = $oldManifest -and ($oldManifest -notmatch 'AceRevitMcp\.Loader\.LoaderApp')
+        if ($oldManifest -ne $manifest) { Write-Utf8NoBom $ManifestFile $manifest }
+
+        if ($running) {
+            if ($loaderNew -or $wasDirect -or -not $oldManifest) { $RestartYears += $year } elseif ($switch) { $ReloadYears += $year }
+        }
+
+        # With Revit closed: the files of the layout before the loader (AceRevitMcp.dll and its folders directly in
+        # AceRevitMcp\) go, and of the builds only the current and previous stay. While Revit runs nothing is removed (it
+        # may be running any of them).
+        if (-not $running) {
+            Get-ChildItem $InstallDir -Force | Where-Object { $_.Name -notin 'payload', 'current.json' -and $_.Name -notlike 'AceRevitMcp.Loader.*' -and $_.Name -notlike '.loader-*' } |
+                ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        if (-not $running -and $switch) {
+            $keep = @($folder)
+            if ($entry.previous) { $keep += Split-Path ([string]$entry.previous.path) -Leaf }
+            Get-ChildItem $PayloadRoot -Directory -Force | Where-Object { $keep -notcontains $_.Name -and $_.Name -notlike '.staging-*' } |
+                ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    } finally {
+        Remove-Item $stage, $loaderStage -Recurse -Force -ErrorAction SilentlyContinue
+        Get-ChildItem $PayloadRoot -Directory -Force -Filter '.staging-*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
-    Get-ChildItem $InstallDir -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
-    $manifest = (Get-Content $template -Raw).Replace('{{ASSEMBLY_PATH}}', (Join-Path $InstallDir 'AceRevitMcp.dll'))
-    Write-Utf8NoBom (Join-Path $AddinRoot 'AceRevitMcp.addin') $manifest
-    Ok "Add-in for Revit $year installed to $InstallDir"
-    Sign-AceDlls $InstallDir
+}
+$RestartYears = @($RestartYears | Select-Object -Unique)
+if ($RestartYears.Count) {
+    Warn "Restart Revit $($RestartYears -join ' and ') once to load ACE: the ACE loader is new or changed. Later updates load without a restart."
+} elseif ($ReloadYears.Count) {
+    Ok "No Revit restart needed. Ask Claude to reload ACE (reload_addin), or close all models in Revit: ACE then loads the new build by itself."
 }
 
 }
@@ -320,7 +431,7 @@ if ((Resolve-Path $Root).Path.TrimEnd('\') -ne $PkgDir) {
     if (-not $Prebuilt) {
         New-Item -ItemType Directory -Force -Path (Join-Path $PkgDir 'revit-addin') | Out-Null
         Copy-Item (Join-Path $Root 'revit-addin\AceRevitMcp.addin.template') -Destination (Join-Path $PkgDir 'revit-addin') -Force
-        foreach ($proj in 'AceRevitMcp', 'AceRevitMcp.Compiler') {
+        foreach ($proj in 'AceRevitMcp', 'AceRevitMcp.Compiler', 'AceRevitMcp.Loader') {
             $target = Join-Path $PkgDir "revit-addin\$proj"
             New-Item -ItemType Directory -Force -Path $target | Out-Null
             Get-ChildItem (Join-Path $Root "revit-addin\$proj") -Recurse -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } | ForEach-Object {

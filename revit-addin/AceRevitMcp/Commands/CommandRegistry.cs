@@ -60,6 +60,7 @@ namespace AceRevitMcp.Commands
                 ["capture_method"] = CaptureMethod.Run,
                 ["view_membership_fill"] = Rules.ViewMembership.Run,
                 ["export_deliverables"] = ExportDeliverables.Run,
+                ["reload_addin"] = LoaderLink.ReloadCommand,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)
