@@ -5,7 +5,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
 import { createRequire } from "node:module";
-import { asDate, checkTables, writeWorkbook, patternUse, checkTemplate, matchDelivered, nearMatches, reportRows, reportText, resolveRegisterFile, sha, splitIds, summaryOf, templateArgs, updateRegister } from "../lib/registerupdate.js";
+import { asDate, checkTables, checkIndexes, excelOpenTest, writeWorkbook, patternUse, checkTemplate, matchDelivered, nearMatches, reportRows, reportText, resolveRegisterFile, sha, splitIds, summaryOf, templateArgs, updateRegister } from "../lib/registerupdate.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-reg-"));
 const wb = new ExcelJS.Workbook();
@@ -259,6 +259,70 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   assert.match((await checkTables(await bad.generateAsync({ type: "nodebuffer" }))).join(), /2 column\(s\), ref A3:C6 is 3 wide/);
   bad.file(tf, outXml.replace(/ref="A3:B6"/, 'ref="A3:B60"').replace(/<autoFilter ref="[^"]*"/, '<autoFilter ref="A3:B60"'));
   assert.match((await checkTables(await bad.generateAsync({ type: "nodebuffer" }))).join(), /outside the sheet's used range/);
+}
+// 1.14.4 #30: the register's tables point at dxfs (formatting overrides) in its styles.xml; exceljs writes only the dxfs of
+// the conditional formats it keeps. The register's dxfs (and custom table styles) are carried, the table's dxfIds shifted;
+// the self-check refuses any dangling dxf, cell style or shared-string index.
+{
+  const JSZip = createRequire(createRequire(import.meta.url).resolve("exceljs"))("jszip");
+  const w8 = new ExcelJS.Workbook();
+  const s8 = w8.addWorksheet("TST_REG8");
+  s8.getCell("A1").value = "TST MIDP";
+  s8.addTable({ name: "TST_Styled", ref: "A3", headerRow: true, columns: [{ name: "Doc", filterButton: true }, { name: "Stage 1", filterButton: true }],
+    rows: [["TST-DOC-001", null], ["TST-DOC-002", null], ["TST-DOC-003", null]] });
+  s8.addConditionalFormatting({ ref: "A4:A6", rules: [{ type: "expression", formulae: ["TRUE"], style: { font: { bold: true } } }] });
+  const z8 = await JSZip.loadAsync(await w8.xlsx.writeBuffer());
+  const tf8 = Object.keys(z8.files).find((f) => /^xl\/tables\/.*\.xml$/.test(f));
+  const dx = (rgb) => `<dxf><font><color rgb="${rgb}"/></font></dxf>`;
+  let st8 = await z8.file("xl/styles.xml").async("string");
+  st8 = st8.replace(/<dxfs\b[^>]*\/>|<dxfs\b[\s\S]*?<\/dxfs>/, `<dxfs count="3">${dx("FF00AA00")}${dx("FF00AA01")}${dx("FF00AA02")}</dxfs>`)
+    .replace(/<tableStyles\b[^>]*\/>|<tableStyles\b[\s\S]*?<\/tableStyles>/, '<tableStyles count="1" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"><tableStyle name="TST-style" count="1"><tableStyleElement type="headerRow" dxfId="2"/></tableStyle></tableStyles>');
+  z8.file("xl/styles.xml", st8);
+  const t8 = (await z8.file(tf8).async("string")).replace(/\sheaderRowCount="1"/, "").replace(/<table\b([^>]*)>/, '<table$1 headerRowDxfId="2" dataDxfId="1">')
+    .replace(/<tableColumn\b([^>]*?)(\/?)>/, '<tableColumn$1 dataDxfId="0"$2>').replace(/<tableStyleInfo\b[^>]*name="[^"]*"/, (m) => m.replace(/name="[^"]*"/, 'name="TST-style"'));
+  z8.file(tf8, t8);
+  const src8 = await z8.generateAsync({ type: "nodebuffer" });
+  assert.deepEqual(await checkIndexes(src8), [], "the synthetic register is consistent");
+  const { wb: out8 } = await updateRegister(src8, { header_row: 3, id_column: "Doc", stage_columns: ["Stage 1"], submission_date: "2026-10-20", label: "S8", files: ["TST-DOC-001.pdf"], force_id_column: true });
+  const w = await writeWorkbook(out8, src8);
+  assert.ok(w.restored.includes("TST_Styled") && w.dxfsCarried === 3 && w.tableStylesCarried === 1 && w.overridesDropped === 0, JSON.stringify({ ...w, buf: undefined }));
+  assert.deepEqual([...await checkTables(w.buf), ...await checkIndexes(w.buf)], [], "every referenced dxf exists after the write");
+  const zo = await JSZip.loadAsync(w.buf);
+  const so = await zo.file("xl/styles.xml").async("string"), to = await zo.file(tf8).async("string");
+  const dxfList = [...so.match(/<dxfs\b[\s\S]*?<\/dxfs>/)[0].matchAll(/<dxf>[\s\S]*?<\/dxf>/g)].map((m) => m[0]);
+  const wDxf = dxfList.length - 3;
+  assert.ok(wDxf >= 1, "exceljs kept the conditional format's own dxf first");
+  const hdr = Number(to.match(/headerRowDxfId="(\d+)"/)[1]), col = Number(to.match(/<tableColumn\b[^>]*dataDxfId="(\d+)"/)[1]);
+  assert.ok(dxfList[hdr].includes("FF00AA02") && dxfList[col].includes("FF00AA00"), "the table's dxfIds point at the register's own formats");
+  assert.match(so, new RegExp(`<tableStyle name="TST-style"[^>]*><tableStyleElement type="headerRow" dxfId="${wDxf + 2}"/>`), "the custom table style is carried, shifted");
+  const cfIds = [...(await zo.file(Object.keys(zo.files).find((f) => /^xl\/worksheets\/sheet\d+\.xml$/.test(f))).async("string")).matchAll(/<cfRule\b[^>]*dxfId="(\d+)"/g)].map((m) => Number(m[1]));
+  assert.ok(cfIds.length && cfIds.every((n) => n < wDxf && dxfList[n].includes("FF00AA00")), "the conditional format still points at its own dxf");
+  // Without the register's dxfs (the 1.14.3 file): a dangling dxf is refused by the self-check; the fallback drops overrides.
+  const dang = await JSZip.loadAsync(w.buf);
+  dang.file("xl/styles.xml", so.replace(/<dxfs\b[\s\S]*?<\/dxfs>/, '<dxfs count="0"/>'));
+  assert.match((await checkIndexes(await dang.generateAsync({ type: "nodebuffer" }))).join(), /dxfId reference\(s\) up to \d+, styles hold 0 dxf\(s\)/, "a dangling dxf fails the self-check");
+  const noDxfSrc = await JSZip.loadAsync(src8);
+  noDxfSrc.file("xl/styles.xml", st8.replace(/<dxfs\b[\s\S]*?<\/dxfs>/, '<dxfs count="0"/>'));
+  const sh8 = Object.keys(noDxfSrc.files).find((f) => /^xl\/worksheets\/sheet\d+\.xml$/.test(f));
+  noDxfSrc.file(sh8, (await noDxfSrc.file(sh8).async("string")).replace(/<conditionalFormatting\b[\s\S]*?<\/conditionalFormatting>/g, ""));
+  const { wb: out8b } = await updateRegister(await noDxfSrc.generateAsync({ type: "nodebuffer" }), { header_row: 3, id_column: "Doc", stage_columns: ["Stage 1"], submission_date: "2026-10-20", label: "S8", files: ["TST-DOC-001.pdf"], force_id_column: true });
+  const wb2 = await writeWorkbook(out8b, await noDxfSrc.generateAsync({ type: "nodebuffer" }));
+  assert.ok(wb2.overridesDropped > 0 && !(await checkIndexes(wb2.buf)).length, "fallback: overrides the written styles cannot hold are dropped, and counted");
+  // Cell style and shared-string indexes.
+  const sheetF = Object.keys(zo.files).find((f) => /^xl\/worksheets\/sheet\d+\.xml$/.test(f));
+  const sx = await zo.file(sheetF).async("string");
+  const bs = await JSZip.loadAsync(w.buf);
+  bs.file(sheetF, sx.replace(/<c r="A1"([^>]*?)(\s+s="\d+")?([^>]*)>/, '<c r="A1"$1 s="999"$3>'));
+  assert.match((await checkIndexes(await bs.generateAsync({ type: "nodebuffer" }))).join(), /cell style index\(es\) up to 999/);
+  const bv = await JSZip.loadAsync(w.buf);
+  bv.file(sheetF, sx.replace(/(<c r="A1"[^>]*t="s"[^>]*>)<v>\d+<\/v>/, "$1<v>99999</v>"));
+  assert.match((await checkIndexes(await bv.generateAsync({ type: "nodebuffer" }))).join(), /shared-string index\(es\) up to 99999/);
+  // The Excel open test: never off Windows; Excel missing = skipped; an open failure = not ok.
+  const fake = (out) => () => ({ stdout: out, status: 0 });
+  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "linux" }), { ok: true, skipped: true, why: "not on Windows" });
+  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("OK\n") }), { ok: true, skipped: false });
+  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("NOEXCEL\n") }), { ok: true, skipped: true, why: "Excel is not installed" });
+  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("FAIL: TST cannot open\n") }), { ok: false, skipped: false, why: "TST cannot open" });
 }
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("registerupdate test passed");

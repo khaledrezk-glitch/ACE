@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { spawnSync as spawnSyncDefault } from "node:child_process";
 import ExcelJS from "exceljs";
 
 // JSZip is exceljs's own zip library (resolved from exceljs, so the two always travel together).
@@ -422,21 +423,107 @@ const cellRef = (r) => { const m = /^\$?([A-Z]+)\$?(\d+)$/i.exec(String(r).trim(
 const rangeOf = (ref) => { const [a, b = a] = String(ref ?? "").split(":"); const p = cellRef(a), q = cellRef(b); return p && q ? { c1: Math.min(p.c, q.c), r1: Math.min(p.r, q.r), c2: Math.max(p.c, q.c), r2: Math.max(p.r, q.r) } : null; };
 const tableFiles = (zip) => Object.keys(zip.files).filter((f) => /^xl\/tables\/[^/]+\.xml$/i.test(f));
 
-/** The workbook as xlsx bytes, its tables restored from the source register (by table name). -> { buf, restored, stripped } */
+// Styles: a dxf ("differential format") list in styles.xml is what table, table-style and conditional-format dxfIds point
+// into. exceljs keeps only the dxfs of the conditional formats it re-creates, so the register's table XML would point at
+// dxfs that are gone (Excel refuses the file). The register's dxfs are appended after the written ones and every dxfId
+// of a restored table (and of the carried custom table styles) is shifted by the written count.
+const DXF_ATTR = /\b(\w*[dD]xfId)="(\d+)"/g;
+const blockOf = (xml, tag) => xml.match(new RegExp(`<${tag}\\b[^>]*/>|<${tag}\\b[^>]*>[\\s\\S]*?</${tag}>`))?.[0] ?? null;
+const countOf = (block, child) => block ? [...block.matchAll(new RegExp(`<${child}\\b(?=[\\s/>])`, "g"))].length : 0;
+const innerOf = (block) => block && !/\/>$/.test(block) ? block.replace(/^<[^>]*>/, "").replace(/<\/[^>]+>$/, "") : "";
+const shiftDxf = (xml, by) => by ? xml.replace(DXF_ATTR, (m, k, n) => `${k}="${Number(n) + by}"`) : xml;
+
+/** The workbook as xlsx bytes, its tables restored from the source register (by table name), their dxfs carried.
+ * -> { buf, restored, stripped, dxfsCarried, overridesDropped, tableStylesCarried } */
 export async function writeWorkbook(wb, srcBuf) {
   const out = await JSZip.loadAsync(await wb.xlsx.writeBuffer());
   const src = await JSZip.loadAsync(srcBuf);
   const byName = new Map();
   for (const f of tableFiles(src)) { const xml = await src.file(f).async("string"); const a = attrsOf(xml); byName.set(lc(a.name ?? a.displayName), xml); }
-  const restored = [], stripped = [];
+  const srcStyles = src.file("xl/styles.xml") ? await src.file("xl/styles.xml").async("string") : "";
+  let styles = out.file("xl/styles.xml") ? await out.file("xl/styles.xml").async("string") : "";
+  const writtenDxfs = countOf(blockOf(styles, "dxfs"), "dxf");
+  const srcDxfsBlock = blockOf(srcStyles, "dxfs"), srcDxfs = countOf(srcDxfsBlock, "dxf");
+  const restored = [], stripped = [], restoredFiles = [];
   for (const f of tableFiles(out)) {
     const xml = await out.file(f).async("string");
     const a = attrsOf(xml);
     const orig = byName.get(lc(a.name ?? a.displayName));
-    if (orig && attrsOf(orig).ref === a.ref) { out.file(f, orig); restored.push(a.name); continue; }
+    if (orig && attrsOf(orig).ref === a.ref) { restoredFiles.push([f, orig]); restored.push(a.name); continue; }
     if (a.headerRowCount === "0" && /<autoFilter\b/.test(xml)) { out.file(f, xml.replace(/<autoFilter\b[^>]*\/>|<autoFilter\b[\s\S]*?<\/autoFilter>/, "")); stripped.push(a.name); }
   }
-  return { buf: await out.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), restored, stripped };
+  let dxfsCarried = 0, overridesDropped = 0, tableStylesCarried = 0;
+  const needs = restoredFiles.some(([, x]) => DXF_ATTR.test(x)); DXF_ATTR.lastIndex = 0;
+  const carry = needs && srcDxfs > 0 && styles;
+  if (carry) {
+    // Append the register's dxfs after the written ones (or put the list where styles.xml expects it).
+    const total = writtenDxfs + srcDxfs, wBlock = blockOf(styles, "dxfs");
+    const merged = `<dxfs count="${total}">${innerOf(wBlock)}${innerOf(srcDxfsBlock)}</dxfs>`;
+    if (wBlock) styles = styles.replace(wBlock, merged);
+    else if (/<tableStyles\b/.test(styles)) styles = styles.replace(/<tableStyles\b/, `${merged}<tableStyles`);
+    else styles = styles.replace(/<\/cellStyles>/, `</cellStyles>${merged}`);
+    dxfsCarried = srcDxfs;
+    // The register's custom table styles (their dxfIds shifted too), when exceljs wrote none.
+    const wTs = blockOf(styles, "tableStyles"), sTs = blockOf(srcStyles, "tableStyles");
+    if (sTs && countOf(sTs, "tableStyle") > 0 && countOf(wTs, "tableStyle") === 0) {
+      const carried = shiftDxf(sTs, writtenDxfs);
+      styles = wTs ? styles.replace(wTs, carried) : styles.replace(merged, `${merged}${carried}`);
+      tableStylesCarried = countOf(sTs, "tableStyle");
+    }
+    out.file("xl/styles.xml", styles);
+  }
+  const limit = carry ? writtenDxfs + srcDxfs : writtenDxfs;
+  for (const [f, xml] of restoredFiles) {
+    let x = carry ? shiftDxf(xml, writtenDxfs) : xml;
+    // Fallback: a dxf the written styles do not hold is dropped (the table keeps its data, loses that formatting override).
+    x = x.replace(/\s(\w*[dD]xfId)="(\d+)"/g, (m, k, n) => { if (Number(n) < limit) return m; overridesDropped++; return ""; });
+    out.file(f, x);
+  }
+  return { buf: await out.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), restored, stripped, dxfsCarried, overridesDropped, tableStylesCarried };
+}
+
+/** The style and string indexes of an xlsx: every dxfId below the dxf count, every cell style below the cellXfs count,
+ * every shared-string index below the string count. -> problems (empty = ok) */
+export async function checkIndexes(buf) {
+  const zip = await JSZip.loadAsync(buf);
+  const problems = [];
+  const styles = zip.file("xl/styles.xml") ? await zip.file("xl/styles.xml").async("string") : "";
+  const dxfs = countOf(blockOf(styles, "dxfs"), "dxf"), xfs = countOf(blockOf(styles, "cellXfs"), "xf");
+  const ss = zip.file("xl/sharedStrings.xml") ? await zip.file("xl/sharedStrings.xml").async("string") : "";
+  const strings = countOf(ss, "si");
+  const parts = Object.keys(zip.files).filter((f) => /^xl\/.*\.xml$/i.test(f));
+  for (const f of parts) {
+    const xml = await zip.file(f).async("string");
+    let bad = 0, max = -1;
+    for (const m of xml.matchAll(DXF_ATTR)) { const n = Number(m[2]); if (n >= dxfs) { bad++; max = Math.max(max, n); } }
+    if (bad) problems.push(`${f}: ${bad} dxfId reference(s) up to ${max}, styles hold ${dxfs} dxf(s)`);
+    if (!/^xl\/worksheets\/[^/]+\.xml$/i.test(f)) continue;
+    let badS = 0, maxS = -1, badV = 0, maxV = -1;
+    for (const m of xml.matchAll(/<(?:c|row)\b[^>]*?\ss="(\d+)"/g)) { const n = Number(m[1]); if (n >= xfs) { badS++; maxS = Math.max(maxS, n); } }
+    for (const m of xml.matchAll(/<col\b[^>]*?\sstyle="(\d+)"/g)) { const n = Number(m[1]); if (n >= xfs) { badS++; maxS = Math.max(maxS, n); } }
+    for (const m of xml.matchAll(/<c\b[^>]*\/>|<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+      if (!m[1] || !/\st="s"/.test(m[1])) continue;
+      const v = m[2].match(/<v>(\d+)<\/v>/);
+      if (v && Number(v[1]) >= strings) { badV++; maxV = Math.max(maxV, Number(v[1])); }
+    }
+    if (badS) problems.push(`${f}: ${badS} cell style index(es) up to ${maxS}, styles hold ${xfs} cell format(s)`);
+    if (badV) problems.push(`${f}: ${badV} shared-string index(es) up to ${maxV}, the file holds ${strings} string(s)`);
+  }
+  return problems;
+}
+
+/** Opens the xlsx read-only in Excel (Windows, COM) -> { ok, skipped, why }. Never on other systems. */
+export function excelOpenTest(file, { timeoutMs = 60000, spawnSync = spawnSyncDefault, platform = process.platform } = {}) {
+  if (platform !== "win32") return { ok: true, skipped: true, why: "not on Windows" };
+  const p = String(file).replace(/'/g, "''");
+  const ps = `$ErrorActionPreference='Stop'; try { $x = New-Object -ComObject Excel.Application } catch { Write-Output 'NOEXCEL'; exit 0 }
+try { $x.DisplayAlerts = $false; $wb = $x.Workbooks.Open('${p}', 0, $true); $wb.Close($false); Write-Output 'OK' } catch { Write-Output ('FAIL: ' + $_.Exception.Message) } finally { $x.Quit(); [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($x) }`;
+  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], { encoding: "utf8", timeout: timeoutMs, windowsHide: true });
+  const outTxt = String(r.stdout ?? "").trim();
+  if (r.error) return { ok: true, skipped: true, why: `Excel open test not run (${r.error.code === "ETIMEDOUT" ? "timed out" : r.error.message})` };
+  if (/NOEXCEL/.test(outTxt)) return { ok: true, skipped: true, why: "Excel is not installed" };
+  if (/^OK/m.test(outTxt)) return { ok: true, skipped: false };
+  return { ok: false, skipped: false, why: (outTxt.match(/FAIL: (.*)/)?.[1] ?? outTxt) || `PowerShell exit ${r.status}` };
 }
 
 /** Every table of an xlsx checked: no autoFilter without a header row, ref inside the sheet's used range, as many columns

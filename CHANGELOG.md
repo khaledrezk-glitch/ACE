@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.14.4 (20 Oct 2026)
+- MCP server only (`install.cmd -SkipAddin`).
+- **register_update output opens in Excel (second cause):** the restored tables pointed at formatting overrides (dxfs)
+  that exceljs had not written. The register's dxfs and custom table styles are now carried into the output with the
+  references shifted (exceljs's own stay first). The self-check also verifies every dxf, cell style and shared-string
+  index, and on Windows the output is opened read-only in Excel (COM, 60 s; `excel_open_test: false` skips it); any
+  failure deletes the output.
+
 ## 1.14.3 (20 Oct 2026)
 - MCP server only (`install.cmd -SkipAddin`).
 - **register_update output opens in Excel again:** exceljs 4.4 reads Excel's tables as headerless (Excel omits

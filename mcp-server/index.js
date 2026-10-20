@@ -1810,10 +1810,11 @@ tool("register_update", {
     overwrite: z.boolean().optional(),
     confirm: z.boolean().optional().describe("Write the output (after the user saw the check)"),
     allow_merged: z.boolean().optional().describe("Write although the id or stage columns hold merged cells"),
+    excel_open_test: z.boolean().optional().describe("Windows: open the output read-only in Excel before reporting it written (default true)"),
     report_dir: z.string().optional().describe("Folder for the report CSV (default: the trusted vault's 04 Audits/registers, else ACE's reports folder; never beside output)"),
   },
   annotations: benign,
-}, async ({ confirm, ...a }) => {
+}, async ({ confirm, excel_open_test, ...a }) => {
   // The project's template (vault rules/register.json): the discipline's tab, header row, id column and stages; the
   // call's own arguments win. Without a template the arguments work alone.
   let fromTemplate = [], tplFile = null;
@@ -1881,14 +1882,17 @@ tool("register_update", {
   try { tables = await RegisterUpdate.writeWorkbook(res.wb, buf); } catch (e) { throw new RevitError(`The workbook could not be written: ${e.message}. Nothing was written.`); }
   fs.writeFileSync(a.output, tables.buf);
   let tableProblems;
-  try { tableProblems = await RegisterUpdate.checkTables(fs.readFileSync(a.output)); } catch (e) { tableProblems = [`the written file could not be re-read (${e.message})`]; }
+  try { const wbuf = fs.readFileSync(a.output); tableProblems = [...await RegisterUpdate.checkTables(wbuf), ...await RegisterUpdate.checkIndexes(wbuf)]; } catch (e) { tableProblems = [`the written file could not be re-read (${e.message})`]; }
+  // On Windows: Excel itself opens it (read-only) unless excel_open_test: false; a file Excel refuses is deleted too.
+  const openTest = excel_open_test === false ? { ok: true, skipped: true, why: "excel_open_test: false" } : !tableProblems.length ? RegisterUpdate.excelOpenTest(path.resolve(a.output)) : null;
+  if (openTest && !openTest.ok) tableProblems.push(`Excel could not open it (${openTest.why})`);
   if (tableProblems.length) { try { fs.unlinkSync(a.output); } catch {} throw new RevitError(`Blocked: the written workbook failed its self-check (${tableProblems.join("; ")}); it was deleted, nothing was written. Report this to the ACE team.`); }
   registerChecks.delete(key);
   let csv = null;
   try { csv = writeOut(rd.dir, `${reportStem} - report.csv`, Report.toCsv(RegisterUpdate.reportRows(r))); } catch (e) { rd.note = `the report could not be written to ${rd.dir} (${e.message}).`; }
   journal({ title: `Register update: ${r.sheet} -> ${r.label}`, outcome: `Written ${a.output}`, details: { matched: r.matched.length, notInRegister: r.deliveredNotInRegister.length, notDelivered: r.notDelivered.length, cleared: r.cleared.length } });
   const out = text({ ...RegisterUpdate.summaryOf(r, csv), output: a.output });
-  out.content.push({ type: "text", text: `${RegisterUpdate.reportText(r, { mode: "write", output: a.output, reportFile: csv })}${tables.restored.length || tables.stripped.length ? `\nTables: ${tables.restored.length} kept as in the register${tables.stripped.length ? `; ${tables.stripped.length} without a header row lost their filter (${tables.stripped.join(", ")})` : ""}; self-check ok.` : ""}\nReport: ${csv ?? "not written"} (not beside the output)${rd.note ? `\nNote: ${rd.note}` : ""}\nThe register itself was not changed.` });
+  out.content.push({ type: "text", text: `${RegisterUpdate.reportText(r, { mode: "write", output: a.output, reportFile: csv })}${tables.restored.length || tables.stripped.length ? `\nTables: ${tables.restored.length} kept as in the register${tables.dxfsCarried ? ` (their ${tables.dxfsCarried} format(s) carried${tables.tableStylesCarried ? `, ${tables.tableStylesCarried} custom table style(s)` : ""})` : ""}${tables.overridesDropped ? `; table formatting overrides dropped: ${tables.overridesDropped}` : ""}${tables.stripped.length ? `; ${tables.stripped.length} without a header row lost their filter (${tables.stripped.join(", ")})` : ""}.` : ""}\nSelf-check ok (tables, style and string indexes); Excel open test: ${openTest.skipped ? `skipped (${openTest.why})` : "opened in Excel"}.\nReport: ${csv ?? "not written"} (not beside the output)${rd.note ? `\nNote: ${rd.note}` : ""}\nThe register itself was not changed.` });
   return out;
 });
 
