@@ -39,7 +39,9 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
       case "project_rules": {
         const ex = JSON.parse(fs.readFileSync(new URL("../bep/worksets.example.json", import.meta.url), "utf8"));
-        return reply({ ok: true, result: { model: "Test", section: args.section, source: "project: C:/Projects/Test/ACE Vault/project-requirements.json", hash: "abc", rules: ex } });
+        // The worksets section carries the generic naming rule (pattern, allowed names, renames); synthetic TST_ names.
+        const naming = { pattern: "^TST_[A-Za-z]+$", allowed: ["TST_Columns", "TST_Walls", "TST_Empty", "TST_Beams", "TST_Old", "TST_Verifyfail", "TST_Drift"], rename: [{ from: "Workset1", to: "TST_Walls" }] };
+        return reply({ ok: true, result: { model: "Test", section: args.section, source: "project: C:/Projects/Test/ACE Vault/project-requirements.json", hash: "abc", rules: args.section === "worksets" ? { ...ex, naming } : ex } });
       }
       case "compliance":
         return reply({ ok: true, result: { run: { id: "r1", model: "Test" }, summary: { met: 1, "not-met": 1 }, ranNow: !!args.run, echo: args, results: [{ requirement: "REQ-EIR-0001", status: "not-met", evidence: "Doors: 3 of 40" }] } });
@@ -126,6 +128,58 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
       case "set_parameters":
         return reply({ ok: true, result: { applied: args.changes.length, failed: 0, dryRun: !!args.dry_run, results: [] } });
+      case "workset_admin": {
+        // The 1.12.5 contract: audit lists user worksets; rename / delete_empty plan (check_only), dry run, apply with expect_plan.
+        if (args.expect_model && args.expect_model !== "Test") return reply({ ok: true, result: { success: false, stage: "wrong_model", error: "wrong model" } });
+        const ws = [
+          { id: 1, name: "Shared Levels and Grids", elements: 30, byCategory: { Levels: 10, Grids: 20 }, owner: "", open: true, editable: false, isDefault: false, wrongWorkset: 0 },
+          { id: 2, name: "TST_Columns", elements: 10, byCategory: { "Structural Columns": 10 }, owner: "", open: true, editable: false, wrongWorkset: 0 },
+          { id: 3, name: "TST-COLUMNS", elements: 2, byCategory: { "Structural Columns": 2 }, owner: "jane", open: true, editable: false, wrongWorkset: 0 },
+          { id: 4, name: "TST_Walls", elements: 5, byCategory: { Walls: 4, Floors: 1 }, owner: "", open: true, editable: true, isDefault: true, wrongWorkset: 2 },
+          { id: 5, name: "TST_Empty", elements: 0, byCategory: {}, owner: "", open: true, editable: false, wrongWorkset: 0 },
+          { id: 6, name: "Workset1", elements: 3, byCategory: { Walls: 3 }, owner: "", open: false, editable: false, wrongWorkset: 3 },
+          { id: 7, name: "tst_beams", elements: 4, byCategory: { "Structural Framing": 4 }, owner: "", open: true, editable: false, wrongWorkset: 0 }];
+        if (args.action === "audit") return reply({ ok: true, result: { model: "Test", aceVersion: SERVER_VERSION, workshared: true, worksets: ws } });
+        let plan = [], blocked = [];
+        if (args.action === "rename") {
+          plan = (args.renames ?? []).map((r) => ({ id: `rename:${ws.find((w) => w.name === r.from)?.id ?? 0}`, kind: "rename", workset: r.from, from: r.from, to: r.to }));
+          blocked = (args.renames ?? []).filter((r) => r.from === "TST-COLUMNS").map((r) => ({ what: `rename ${r.from}`, why: "borrowed by another user", elements: 2, sampleIds: [31, 32], holder: "jane", code: "borrowed" }));
+        } else {
+          const names = args.worksets ?? ws.filter((w) => w.elements === 0 && w.id !== 1).map((w) => w.name);
+          for (const n of names) {
+            const w = ws.find((x) => x.name === n);
+            if (!w) { blocked.push({ what: n, why: "no such workset", code: "not-found" }); continue; }
+            if (w.elements === 0) plan.push({ id: `delete:${w.id}`, kind: "delete", workset: n, elements: 0 });
+            else if (args.move_to) plan.push({ id: `move-and-delete:${w.id}`, kind: "move-and-delete", workset: n, elements: w.elements, byCategory: w.byCategory, moveTo: args.move_to });
+            else blocked.push({ what: n, why: `it holds ${w.elements} element(s)`, elements: w.elements, sampleIds: [41], code: "not-empty" });
+          }
+        }
+        const planHash = `wh-${plan.map((p) => p.id + (p.to ?? "")).join(",")}`;
+        if (blocked.length && !args.check_only) return reply({ ok: true, result: { success: false, stage: "blocked", model: "Test", aceVersion: SERVER_VERSION, blocked, error: "Nothing was changed: blocked" } });
+        const notes = args.action === "delete_empty" && !args.worksets ? ["skipped TST_Locked: empty but borrowed by jane"] : args.dry_run ? [`would borrow ${plan.map((p) => p.workset).join(", ")}`] : [];
+        if (args.check_only) return reply({ ok: true, result: { success: true, checkOnly: true, model: "Test", aceVersion: SERVER_VERSION, planHash, plan, blocked, notes } });
+        if (args.expect_plan && (args.expect_plan !== planHash || (args.renames ?? []).some((r) => r.to === "TST_Drift")))
+          return reply({ ok: true, result: { success: false, stage: "blocked", code: "plan-changed", model: "Test", error: "plan differs", blocked: [{ what: "the plan", why: "differs", code: "plan-changed" }] } });
+        const fail = !args.dry_run && (args.renames ?? []).some((r) => r.to === "TST_Verifyfail");
+        const done = { renamed: plan.filter((p) => p.kind === "rename").length, deleted: plan.filter((p) => p.kind !== "rename").length, moved: plan.filter((p) => p.kind === "move-and-delete").reduce((n, p) => n + p.elements, 0) };
+        return reply({ ok: true, result: { success: !fail, model: "Test", aceVersion: SERVER_VERSION, planHash, plan, blocked: [], notes, rolledBack: !!args.dry_run || fail, echo: args,
+          verify: fail ? { ok: false, checked: 7, mismatches: [{ what: "Walls", before: 7, after: 6 }] } : { ok: true, checked: 7, mismatches: [] },
+          done: args.dry_run || fail ? { renamed: 0, deleted: 0, moved: 0 } : done, ...(args.dry_run || fail ? { wouldDo: done } : {}) } });
+      }
+      case "capture_method": {
+        if (args.action === "start" && args.label === "TST busy") return reply({ ok: true, result: { success: false, error: "A capture is already running: TST joins." } });
+        if (args.action === "start") return reply({ ok: true, result: { model: "Test", label: args.label, startedAt: "2026-10-20 10:00", journal: "C:/journals/journal.0001.txt", elements: 50, echo: args } });
+        if (args.action === "status") return reply({ ok: true, result: { active: true, model: "Test", label: "TST joins", startedAt: "2026-10-20 10:00", elements: 50 } });
+        const j = (id, cat, other, oc, cutter, what = "join-added") => ({ id, category: cat, type: "TST type", changes: [{ what, other, otherCategory: oc, cutter }] });
+        return reply({ ok: true, result: { model: "Test", label: "TST joins", startedAt: "2026-10-20 10:00", stoppedAt: "2026-10-20 10:30", elements: 50, journal: "C:/journals/journal.0001.txt",
+          archive: "C:/Users/x/AppData/Roaming/ACE-RevitMCP/captures/c1-TST joins.json",
+          diffs: [j(301, "Floors", 201, "Structural Columns", 301), j(201, "Structural Columns", 301, "Floors", 301), j(302, "Floors", 202, "Structural Columns", 302), j(303, "Floors", 203, "Structural Columns", 203),
+            j(205, "Walls", 206, "Floors", 205, "join-order"),
+            { id: 210, category: "Structural Framing", type: "TST BU", changes: [{ what: "extension", end: "end", before: 0, after: -83 }] },
+            { id: 211, category: "Structural Framing", type: "TST BU", changes: [{ what: "moved", before: [0, 0, 0], after: [0, 50, 0] }] }],
+          journalLines: ["' 0:< comment", 'Jrn.Command "Ribbon" , "Join Geometry , ID_JOIN_ELEMENTS_EDITOR"', 'Jrn.Command "Ribbon" , "Join Geometry , ID_JOIN_ELEMENTS_EDITOR"',
+            'Jrn.Command "Internal" , " , ID_SWITCH_JOIN_ORDER"', 'Jrn.Command "Internal" , "ID_TST_UNKNOWN_CMD"', 'Jrn.MouseMove 0 , 1 , 2'] } });
+      }
       case "open_model": {
         const model = path.basename(args.path).replace(/\.rvt$/i, "");
         const extra = model.includes("TRANS") ? { transmitted: true, transmittedCleared: !!args.clear_transmitted,
@@ -186,7 +240,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -885,6 +939,107 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(!("confirm" in seen.at(-1).args), "confirm stays on this side");
   assert.equal(json(await call("close_model", { model: "Test" })).closed, true);
   assert.equal(seen.at(-1).command, "close_model");
+}
+// --- worksets: audit (read-only table and files), rename and delete_empty through the gate ---
+{
+  const wa = () => seen.filter((x) => x.command === "workset_admin");
+  const aDir = path.join(tmp, "ws-audit");
+  const au = await call("assign_worksets", { action: "audit", out_dir: aDir });
+  assert.ok(!au.isError && wa().at(-1).args.action === "audit" && wa().at(-1).args.check_only === true);
+  const at = au.content.at(-1).text;
+  assert.match(at, /^WORKSET AUDIT Test \(read-only, nothing changed\): 7 user workset\(s\); 1 empty, 3 breaking the naming rule, 1 near-duplicate group\(s\), 2 with elements on the wrong workset\./);
+  assert.match(at, /Naming rule: pattern \^TST_\[A-Za-z\]\+\$; 7 allowed name\(s\); 1 rename\(s\)\./);
+  assert.match(at, /\nShared Levels and Grids \| 30 \| Grids 20, Levels 10 \| - \| yes \| ok \(protected\)/, "Shared Levels and Grids is exempt");
+  assert.match(at, /\nTST-COLUMNS \| 2 \| Structural Columns 2 \| jane \| yes \| naming, near-duplicate -> TST_Columns\?/);
+  assert.match(at, /\nTST_Empty \| 0 \| - \| - \| yes \| empty/);
+  assert.match(at, /\nWorkset1 \| 3 \| Walls 3 \| - \| no \| naming, wrong-workset -> TST_Walls\?/);
+  assert.match(at, /\nNear-duplicates: TST_Columns \/ TST-COLUMNS\.\n/);
+  assert.match(at, /Rename suggestions \(none applied\): tst_beams -> TST_Beams \(breaks the naming rule\)\./, "a target that exists already is not suggested");
+  const af = [...at.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
+  assert.deepEqual(af.map((f) => path.extname(f)), [".html", ".csv"]);
+  const ah = fs.readFileSync(af[0], "utf8");
+  assert.ok(/<h1>Workset Audit<\/h1>/.test(ah) && /<span class="flag">empty<\/span>/.test(ah) && ah.includes("#EF3340") && !/<script/i.test(ah));
+  assert.match(fs.readFileSync(af[1], "utf8"), /\r\nTST-COLUMNS,2,Structural Columns 2,jane,yes,no,"naming, near-duplicate",TST_Columns,TST_Columns,0,3\r\n/);
+
+  // rename: explicit; gate before Revit; a borrowed workset stops before the dry run.
+  const rx = { action: "rename", renames: [{ from: "tst_beams", to: "TST_Beams" }], explanation: "Rename to the BEP names" };
+  const n0 = wa().length;
+  assert.ok((await call("assign_worksets", rx)).isError && wa().length === n0, "no apply without its dry run, before Revit is asked");
+  const n1 = wa().length;
+  const bad = await call("assign_worksets", { ...rx, renames: [{ from: "Shared Levels and Grids", to: "TST_Grids" }, { from: "Workset1", to: "Walls Misc" }], dry_run: true });
+  assert.ok(bad.isError && /Shared Levels and Grids is never renamed/.test(bad.content[0].text) && /breaks the project's workset naming rule/.test(bad.content[0].text) && wa().length === n1, "protected and off-rule names refused before Revit is asked");
+  const bor = await call("assign_worksets", { ...rx, renames: [{ from: "TST-COLUMNS", to: "TST_Old" }], dry_run: true });
+  assert.ok(bor.isError && /stopped before the dry run/.test(bor.content[0].text) && /held by jane\. How to clear: ask the holder to synchronise/.test(bor.content[0].text));
+  assert.ok(wa().slice(n1).every((x) => x.args.check_only === true), "only the read-only check ran");
+  // check_only: the plan read-only, no explanation, no dry run, nothing remembered as a preview.
+  const n2 = wa().length;
+  const rco = await call("assign_worksets", { action: "rename", renames: rx.renames, check_only: true });
+  assert.ok(!rco.isError && wa().length === n2 + 1 && wa().at(-1).args.check_only === true && /WORKSETS RENAME in Test \(check, read-only, nothing changed\)\.\nPlan: 1 step\(s\):\n- rename tst_beams -> TST_Beams/.test(rco.content.at(-1).text));
+  assert.match((await call("assign_worksets", rx)).content[0].text, /not been previewed/, "a check is not a preview");
+  const rd = await call("assign_worksets", { ...rx, dry_run: true });
+  assert.match(rd.content.at(-1).text, /Notes:\n- would borrow tst_beams/, "the add-in's notes are printed");
+  const [rc, rdd] = wa().slice(-2).map((x) => x.args);
+  assert.ok(rc.check_only && rdd.dry_run === true && rdd.expect_model === "Test" && rdd.expect_version === SERVER_VERSION && !("expect_plan" in rdd));
+  assert.match(rd.content.at(-1).text, /WORKSETS RENAME in Test \(dry run\)\.\nPlan: 1 step\(s\):\n- rename tst_beams -> TST_Beams\nNotes:\n- would borrow tst_beams\nSelf-check: ok \(element count per category the same before and after, 7 checked; only the workset changed\)\.\nChanges: would have been rename 1; rolled back, nothing changed\./);
+  const ra = await call("assign_worksets", rx);
+  assert.ok(!ra.isError && wa().at(-1).args.dry_run === false && wa().at(-1).args.expect_plan === "wh-rename:7TST_Beams" && wa().at(-1).args.expect_model === "Test");
+  assert.match(ra.content.at(-1).text, /\(applied as ONE undo step\)[\s\S]*Changes: renamed 1 done\.[\s\S]*Run record: .*workset-admin-run-Test-/);
+  assert.match((await call("assign_worksets", rx)).content[0].text, /not been previewed/, "a preview is used once");
+  // Renames from the naming rule when none are given; the same suggestion again on the apply.
+  await call("assign_worksets", { action: "rename", explanation: "Rename per the rule", dry_run: true });
+  assert.deepEqual(wa().at(-1).args.renames, [{ from: "tst_beams", to: "TST_Beams" }]);
+  assert.match((await call("assign_worksets", { action: "rename", explanation: "Rename per the rule" })).content.at(-1).text, /Renames from the naming rule's suggestions\./);
+  // A failed self-check rolls back; a changed plan is refused plainly.
+  const vf = { action: "rename", renames: [{ from: "tst_beams", to: "TST_Verifyfail" }], explanation: "x" };
+  await call("assign_worksets", { ...vf, dry_run: true });
+  const vr = await call("assign_worksets", vf);
+  assert.ok(vr.isError && /NOT applied: rolled back/.test(vr.content.at(-1).text) && /Self-check FAILED: Walls: 7 -> 6; rolled back, nothing changed\./.test(vr.content.at(-1).text) && /Changes: would have been rename 1; rolled back, nothing changed\./.test(vr.content.at(-1).text));
+  const dr = { action: "rename", renames: [{ from: "tst_beams", to: "TST_Drift" }], explanation: "x" };
+  await call("assign_worksets", { ...dr, dry_run: true });
+  assert.match((await call("assign_worksets", dr)).content[0].text, /the model changed since the preview: run the dry run again/);
+
+  // delete_empty: only empty worksets by default; a non-empty one needs move_to and its name, never implicit.
+  const de = await call("assign_worksets", { action: "delete_empty", dry_run: true, explanation: "Delete empty worksets" });
+  assert.match(de.content.at(-1).text, /Plan: 1 step\(s\):\n- delete TST_Empty \(0 elements\)/);
+  assert.match((await call("assign_worksets", { action: "delete_empty", check_only: true })).content.at(-1).text, /Notes:\n- skipped TST_Locked: empty but borrowed by jane/);
+  // A suggested target that exists in another case is a merge, not a rename; a case-only fix of the name itself stays.
+  const W = await import("../lib/worksets.js");
+  const sg = W.audit({ worksets: [{ name: "tst-old", elements: 1 }, { name: "TST_OLD", elements: 1 }] }, W.namingOf({ naming: { allowed: ["TST_Old"] } })).suggestions;
+  assert.deepEqual(sg, [{ from: "TST_OLD", to: "TST_Old", why: "breaks the naming rule" }]);
+  const ne = await call("assign_worksets", { action: "delete_empty", worksets: ["TST_Walls"], dry_run: true, explanation: "x" });
+  assert.ok(ne.isError && /TST_Walls: it holds 5 element\(s\).*How to clear: name a target with move_to/.test(ne.content[0].text));
+  assert.ok((await call("assign_worksets", { action: "delete_empty", move_to: "TST_Columns", dry_run: true, explanation: "x" })).isError, "move_to without named worksets is refused");
+  const mv = await call("assign_worksets", { action: "delete_empty", worksets: ["TST_Walls"], move_to: "TST_Columns", dry_run: true, explanation: "Empty and delete" });
+  assert.match(mv.content.at(-1).text, /- move 5 element\(s\) of TST_Walls to TST_Columns \(Walls 4, Floors 1\), then delete TST_Walls/);
+  assert.ok((await call("assign_worksets", { action: "delete_empty", worksets: ["Shared Levels and Grids"], dry_run: true, explanation: "x" })).isError);
+}
+// --- capture_method: start, status, stop -> case record (actions by pair, journal commands, plan comparison) ---
+{
+  assert.ok((await call("capture_method", { action: "start" })).isError, "a capture needs a label");
+  const busy = await call("capture_method", { action: "start", label: "TST busy" });
+  assert.ok(busy.isError && /already running/.test(busy.content[0].text) && !/started/.test(busy.content[0].text), "a refused start never reads as started");
+  assert.match((await call("capture_method", { action: "start", label: "TST joins", categories: ["Floors", "Structural Columns"] })).content.at(-1).text, /Capture "TST joins" started in Test: 50 element\(s\) recorded\./);
+  assert.deepEqual(seen.at(-1).args, { action: "start", label: "TST joins", categories: ["Floors", "Structural Columns"] });
+  assert.match((await call("capture_method", { action: "status" })).content.at(-1).text, /running in Test since/);
+  const cDir = path.join(tmp, "cases");
+  const st = await call("capture_method", { action: "stop", out_dir: cDir, plan_dir: path.join(tmp, "clash") });
+  const t = st.content.at(-1).text;
+  assert.match(t, /Capture "TST joins" stopped in Test: 7 changed element\(s\)\./);
+  assert.match(t, /- Floors x Structural Columns: join added: 3; Floors cut Structural Columns in 2 of 3; exceptions: 303 x 203 \(Structural Columns cuts\)/, "a join counted once per pair, with its exception");
+  assert.match(t, /- Floors x Walls: join order switched: 1; Walls cut Floors in 1 of 1/);
+  assert.match(t, /- Structural Framing: end extension changed \(end\): 1/);
+  assert.match(t, /- Structural Framing: moved: 1/);
+  assert.match(t, /Revit commands: Join Geometry 2, Switch Join Order 1, ID_TST_UNKNOWN_CMD 1\./, "readable names; unknown ids kept raw");
+  assert.match(t, /Add-in archive of the raw diff: C:\/Users\/x\/AppData\/Roaming\/ACE-RevitMCP\/captures\/c1-TST joins\.json\./);
+  assert.match(t, /Compared with the clash_resolve plan \(.*clash-run-Test-.*\.json\): differs 2, agree 1, planned, not done 1, not planned 1\./);
+  const files = t.match(/Case: (.+)\n(.+)/).slice(1).map((f) => f.trim());
+  assert.ok(files.every((f) => path.dirname(f) === cDir) && /\d{4}-\d\d-\d\d-tst-joins\.json$/.test(files[0]) && files[1].endsWith(".md"));
+  const md = fs.readFileSync(files[1], "utf8");
+  assert.match(md, /\| 201 \| 301 \| 201 cuts 301 \(join\) \| join added, 301 cuts \| differs \|/);
+  assert.match(md, /\| 205 \| 206 \| 205 cuts 206 \(switch-join\) \| join order switched, 205 cuts \| agree \|/);
+  assert.match(md, /- In order: Join Geometry x2 > Switch Join Order > ID_TST_UNKNOWN_CMD/);
+  assert.match(md, /## Proposed rules \(need owner confirmation\)\n\nNothing below is applied\.[\s\S]*- Floors before Structural Columns in the join order \(Floors x Structural Columns: Floors cut Structural Columns in 2 of 3 pair\(s\); 1 exception\(s\)\)\n- Walls before Floors in the join order \(Floors x Walls: Walls cut Floors in 1 of 1 pair\(s\)\)\n$/, "ends with proposed rules, never applied");
+  assert.equal(JSON.parse(fs.readFileSync(files[0], "utf8")).comparison.counts.agree, 1);
 }
 // A large check goes to report files; the reply stays small.
 const bigRows = Array.from({ length: 210 }, (_, i) => ({ name: `TST_P${i}`, categories: "Levels" }));

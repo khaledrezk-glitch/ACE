@@ -49,6 +49,7 @@ namespace AceRevitMcp.Commands
                 ["list_warnings"] = Dashboard.WarningCommands.List,
                 ["presentation_standard"] = Dashboard.PresentationCommands.Run,
                 ["assign_worksets"] = Rules.WorksetCommands.Run,
+                ["workset_admin"] = Rules.WorksetAdmin.Run,
                 ["project_rules"] = Rules.ProjectRulesCommands.Run,
                 ["compliance"] = Rules.ComplianceCommands.Run,
                 ["audit_summary"] = Rules.AuditSummary.Run,
@@ -56,6 +57,7 @@ namespace AceRevitMcp.Commands
                 ["clash_resolve"] = Coordination.ClashResolve.Run,
                 ["open_model"] = ModelFileCommands.Open,
                 ["close_model"] = ModelFileCommands.Close,
+                ["capture_method"] = CaptureMethod.Run,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

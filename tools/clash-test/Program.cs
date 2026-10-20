@@ -434,6 +434,91 @@ class P {
     Check((string)OD("RefType").Invoke(null, new object[] { "CADLink" }) == "CAD" && (string)OD("RefType").Invoke(null, new object[] { "RevitLink" }) == "RevitLink"
       && ((string)OD("Clip").Invoke(null, new object[] { new string('x', 300), 200 })).Length == 200, "unresolvedLinks type names; dialog messages clipped to 200 characters");
 
+    // 16. 1.12.5: workset_admin plans (rename, delete_empty, self-check) and capture_method diffs. Synthetic TST_ names only.
+    var wal = a.GetType("AceRevitMcp.Rules.WorksetAdminLogic");
+    var wsT = a.GetType("AceRevitMcp.Rules.WorksetAdminLogic+Workset");
+    MethodInfo WA(string n) => wal.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    object WS(long id, string name, int elements = 0, string owner = null, bool open = true)
+    {
+      var w = Activator.CreateInstance(wsT, true);
+      wsT.GetField("Id").SetValue(w, id); wsT.GetField("Name").SetValue(w, name); wsT.GetField("Elements").SetValue(w, elements);
+      wsT.GetField("Owner").SetValue(w, owner); wsT.GetField("Open").SetValue(w, open);
+      if (elements > 0) ((Dictionary<string, int>)wsT.GetField("ByCategory").GetValue(w))["Walls"] = elements;
+      return w;
+    }
+    var wsList = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(wsT));
+    foreach (var w in new[] { WS(1, "Shared Levels and Grids", 12), WS(2, "TST_Columns", 5), WS(3, "TST-COLUMNS"), WS(4, "TST_Empty"), WS(5, "TST_Walls", 7),
+                              WS(6, "TST_Held", 0, "other.user"), WS(7, "TST_Closed", 0, null, false), WS(8, "TST_Mine", 0, "me") }) wsList.Add(w);
+    object FW(object o, string f) => o.GetType().GetField(f).GetValue(o);
+    (IList Steps, IList Blocks) Ren(params (string, string)[] r)
+    {
+      var t = WA("PlanRename").Invoke(null, new object[] { wsList, r.ToList(), "me" });
+      return ((IList)FW(t, "Item1"), (IList)FW(t, "Item2"));
+    }
+    string Codes(IList blocks) => string.Join(",", blocks.Cast<object>().Select(b => (string)FW(b, "Code")));
+    var rn = Ren(("TST-COLUMNS", "TST_Beams"), ("Shared Levels and Grids", "TST_Grids"), ("TST_Walls", "TST_Columns"), ("TST_Nope", "TST_X"), ("TST_Held", "TST_Held2"), ("TST_Empty", "TST?Bad"), ("TST_Mine", "TST_Mine"));
+    Check(rn.Steps.Count == 1 && (string)FW(rn.Steps[0], "Id") == "rename:3" && (string)FW(rn.Steps[0], "To") == "TST_Beams" && Codes(rn.Blocks) == "system,exists,not-found,borrowed,naming",
+      $"rename: one step; protected, name taken, unknown, borrowed and a bad name are blocked; a no-op is neither ({Codes(rn.Blocks)})");
+    var rn2 = Ren(("TST_Empty", "TST_A"), ("TST_Mine", "tst_a"), ("TST_Walls", "tst_walls"));
+    Check(rn2.Steps.Count == 2 && Codes(rn2.Blocks) == "exists" && (string)FW(rn2.Steps[1], "To") == "tst_walls", "rename: two renames to one name are blocked; a case-only rename of itself is allowed");
+    (IList Steps, IList Blocks, List<string> Skipped) Del(string[] names, string moveTo)
+    {
+      var t = WA("PlanDelete").Invoke(null, new object[] { wsList, names?.ToList(), moveTo, "me" });
+      return ((IList)FW(t, "Item1"), (IList)FW(t, "Item2"), (List<string>)FW(t, "Item3"));
+    }
+    var dAll = Del(null, null);
+    var dIds = dAll.Steps.Cast<object>().Select(x => (string)FW(x, "Id")).ToList();
+    Check(dIds.SequenceEqual(new[] { "delete:3", "delete:4", "delete:8" }) && dAll.Blocks.Count == 0 && dAll.Skipped.SequenceEqual(new[] { "TST_Held (borrowed by other.user)", "TST_Closed (closed)" }),
+      $"delete_empty: every open empty workset; borrowed and closed ones are skipped with a note, protected and non-empty never ({string.Join(",", dIds)})");
+    Check(dAll.Steps.Cast<object>().All(x => (long)FW(x, "SafetyId") == 2L && (string)FW(x, "Safety") == "TST_Columns"),
+      "delete_empty: each delete moves anything the count missed to an open workset that stays (protected last), never deletes it");
+    var dHeld = Del(new[] { "TST_Held" }, null);
+    Check(dHeld.Steps.Count == 0 && Codes(dHeld.Blocks) == "borrowed" && (string)FW(dHeld.Blocks[0], "Holder") == "other.user", "delete_empty: a named borrowed workset stays blocked, with its holder");
+    var dNamed = Del(new[] { "TST_Walls", "Shared Levels and Grids", "TST_Closed", "TST_Nope" }, null);
+    Check(dNamed.Steps.Count == 0 && Codes(dNamed.Blocks) == "not-found,not-empty,system,closed" && (int)FW(dNamed.Blocks[1], "Elements") == 7,
+      $"delete_empty: a named workset with elements is not-empty without move_to ({Codes(dNamed.Blocks)})");
+    var dMove = Del(new[] { "TST_Walls", "TST_Empty" }, "TST_Columns");
+    Check(dMove.Steps.Count == 2 && (string)FW(dMove.Steps[0], "Kind") == "move-and-delete" && (long)FW(dMove.Steps[0], "MoveToId") == 2L && (string)FW(dMove.Steps[1], "Kind") == "delete" && dMove.Blocks.Count == 0,
+      "delete_empty: move_to moves a named workset's elements, then deletes it");
+    var dSelf = Del(new[] { "TST_Walls" }, "TST_Walls");
+    Check(dSelf.Steps.Count == 0 && Codes(dSelf.Blocks).Split(',').Contains("naming") && Codes(dSelf.Blocks).Split(',').Contains("not-empty"), "delete_empty: move_to cannot be a workset being deleted");
+    string WPH(IList steps) => (string)WA("PlanHash").Invoke(null, new object[] { steps });
+    Check(WPH(dAll.Steps) == WPH(Del(null, null).Steps) && WPH(dAll.Steps) != WPH(dMove.Steps) && WPH(rn.Steps).Length == 64, "workset plan hash: stable for the same plan, different for another");
+    var cmp = (IList)WA("CompareCounts").Invoke(null, new object[] { new Dictionary<string, int> { ["Walls"] = 3, ["Floors"] = 2 }, new Dictionary<string, int> { ["Walls"] = 3, ["Floors"] = 1, ["Doors"] = 1 } });
+    Check(cmp.Count == 2 && (string)FW(cmp[0], "Item1") == "elements: Doors" && (string)FW(cmp[1], "Item3") == "1", "workset self-check: a category whose count changed is a mismatch");
+
+    var cl = a.GetType("AceRevitMcp.Commands.CaptureLogic");
+    var esT = a.GetType("AceRevitMcp.Commands.CaptureLogic+ElemState"); var jT = a.GetType("AceRevitMcp.Commands.CaptureLogic+Join");
+    object ES(long id, string type, double[] start, double[] end, double ext = 0, params (long Id, bool Cuts)[] joins)
+    {
+      var e = Activator.CreateInstance(esT, true);
+      esT.GetField("Id").SetValue(e, id); esT.GetField("Category").SetValue(e, "Structural Framing"); esT.GetField("Family").SetValue(e, "TST_Beam"); esT.GetField("Type").SetValue(e, type);
+      esT.GetField("Start").SetValue(e, start); esT.GetField("End").SetValue(e, end); esT.GetField("Workset").SetValue(e, "TST_Framing");
+      ((Dictionary<string, double>)esT.GetField("Extensions").GetValue(e))["startExtension"] = ext;
+      var jl = (IList)esT.GetField("Joins").GetValue(e);
+      foreach (var (jid, cuts) in joins) { var j = Activator.CreateInstance(jT, true); jT.GetField("Id").SetValue(j, jid); jT.GetField("Cuts").SetValue(j, cuts); jT.GetField("Category").SetValue(j, "Floors"); jl.Add(j); }
+      return e;
+    }
+    IList EL(params object[] xs) { var l = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(esT)); foreach (var x in xs) l.Add(x); return l; }
+    double[] P(double x) => new[] { x, 0.0, 3000.0 };
+    var capBefore = EL(ES(10, "T1", P(0), P(5000), 0, (90, true)), ES(11, "T1", P(0), P(4000), 0, (91, true)), ES(12, "T1", P(0), P(3000)), ES(13, "T1", P(0), P(2000)));
+    var capAfter = EL(ES(10, "T1", P(0), P(5000.3), -25, (90, false)), ES(11, "T2", P(100), P(4000), 0), ES(13, "T1", P(0), P(2000), 0, (92, false)), ES(14, "T1", P(0), P(1000)));
+    var diffs = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Invoke(null, new object[] { capBefore, capAfter });
+    string Whats(int i) => string.Join(",", diffs[i]!["changes"]!.AsArray().Select(c => c!["what"]!.ToString()));
+    Check(diffs.Count == 5 && (string)diffs[4]!["changes"]![0]!["what"]! == "created" && (long)diffs[0]!["id"]! == 10 && Whats(0) == "extension,join-order" && (long)diffs[0]!["changes"]![1]!["cutter"]! == 90 && diffs[0]!["changes"]![0]!["end"]!.ToString() == "start",
+      $"capture: a 0.3 mm move is noise; an extension and a switched join order are changes, cutter = the element that cuts now ({Whats(0)})");
+    Check(Whats(1) == "moved,type,join-removed" && (long)diffs[1]!["changes"]![2]!["cutter"]! == 11 && diffs[1]!["changes"]![2]!["otherCategory"]!.ToString() == "Floors" && diffs[1]!["type"]!.ToString() == "TST_Beam : T2",
+      $"capture: moved, type changed, join removed (cutter = who cut before, other's category) ({Whats(1)})");
+    Check(Whats(2) == "deleted" && (long)diffs[2]!["id"]! == 12 && Whats(3) == "join-added" && (long)diffs[3]!["changes"]![0]!["cutter"]! == 92 && (long)diffs[4 - 1]!["id"]! == 13,
+      $"capture: deleted and join-added (cutter = the other element when it cuts) ({Whats(2)} / {Whats(3)})");
+    var created = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Invoke(null, new object[] { EL(), EL(ES(14, "T1", P(0), P(1000))) });
+    Check(created.Count == 1 && created[0]!["changes"]![0]!["what"]!.ToString() == "created", "capture: a new element is created");
+    var jlines = cl.GetMethod("JournalLines", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    var jr = jlines.Invoke(null, new object[] { new[] { "' comment", "Jrn.Command \"Ribbon\" , \"x\"", "", "' 0:< timing", "Jrn.Data \"y\"" }, 2 });
+    var jr2 = jlines.Invoke(null, new object[] { new[] { "a", "' b" }, 5 });
+    Check(((List<string>)FW(jr, "Item1")).Count == 2 && (bool)FW(jr, "Item2") && ((List<string>)FW(jr, "Item1"))[0].StartsWith("Jrn.Command") && ((List<string>)FW(jr2, "Item1")).Count == 2 && !(bool)FW(jr2, "Item2"),
+      "capture journal: all lines up to the cap; above it comments go first and truncated is set");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

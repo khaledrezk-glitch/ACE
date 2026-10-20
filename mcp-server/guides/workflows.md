@@ -88,6 +88,19 @@ clear_transmitted writes into the file on disk: only on a working copy, with con
 
 model_changes compares this model and its linked models with an earlier snapshot (since: last, today, yesterday, week, month, a weekday such as monday, "3 days", or a date): added, deleted, moved, retyped and changed elements, by category and by person. Use it for "what changed", "what did STR change since Monday", and after a link is reloaded. Before a milestone (issue, submission), offer snapshot_model with a label. get_model_brief lists the linked and open discipline models and whether their levels and grids line up: when they don't, say so before any coordination work.
 
+## Recording a person's method (capture_method)
+
+When the user wants ACE to learn how they solve something by hand ("watch how I fix these", "record my method"):
+capture_method start with a label (and categories, default structural) before they begin; they work in Revit as
+usual; capture_method stop when they are done (status says whether a capture runs). The model is never changed. The
+case is written to the vault (cases/<date>-<label>.json and .md; trusted vault, else out_dir): the element changes
+grouped into actions by pair type ("Floors x Structural Columns: join added; Floors cut Structural Columns in 5 of 6;
+exceptions ..."), single-element actions per category (moved, end extension changed, type changed), the Revit commands
+from the journal in order (readable names; unknown ids kept raw) and, when a clash_resolve run record exists for the
+model, a comparison per element pair: agree, differs, planned, not done, not planned. Summarise the actions and the
+differences for the user. The case ends with proposed rules (e.g. a join order): they need the owner's confirmation and
+are never written into the vault rules by ACE on its own.
+
 ## Model health and status
 
 for "how healthy is this model", "audit", "dashboard" or "status report", call model_dashboard (read-only; show: true opens it in Revit). It returns the 0-100 score, each finding with its score impact and sample ids, and the path of an ACE-branded HTML report the user can share. Explain the top findings in plain words and offer fixes (each fix follows the preview protocol). The user can also open it themselves: ACE tab > Insights > Dashboard. The checks follow the sections of Autodesk's Model Checker (file and project, worksets, levels and grids, warnings, model content, views, annotation, naming) plus ACE's rooms, parameters and submission checks; each has a pass rule from the office check set (checkset.json, see checkset.example.json), merged with the project's project-requirements.json when the model has one (project wins; project_rules shows what is in force), and results are pass / review / action needed. The dashboard also shows the latest clash results (coordination). Code compliance is not built yet (planned); say so.
@@ -98,6 +111,21 @@ for "put things on the right worksets", "workset check", "set up worksets" use a
 
 With a rules file in place, model_dashboard also reports "Elements on the wrong workset (BEP)" (the same rules), so
 the check runs every time the model is checked, not only when asked.
+
+Workset housekeeping ("clean up the worksets", "which worksets are empty", "rename the worksets to the BEP names"):
+assign_worksets action audit first (read-only): every user workset with its element count by category, owner and
+whether it is open, flagged empty, naming (breaks the project's rule), near-duplicate ("ST_Columns" vs "ST-COLUMNS")
+and wrong-workset (elements the BEP rules put elsewhere). With out_dir it also writes an HTML table for review and a
+CSV. Show the table and let the user decide before anything changes. The naming rule is optional and lives in the
+worksets section of project-requirements.json: "naming": { "pattern": "<regex>", "allowed": [names], "rename":
+[{ "from", "to" }] } (Shared Levels and Grids is exempt). action rename takes renames [{ from, to }] (default: the
+rule's suggestions: its rename list, and near-duplicates of an allowed name; a target that already exists is not
+suggested, that is a merge: move the elements, then delete the empty one). action delete_empty deletes only worksets
+with no element at all (view-specific, hidden, in groups and design options counted); a workset that still holds
+elements is kept and listed unless the user names it in worksets AND gives move_to (its elements move there first).
+Both run like clash_resolve: dry_run: true (the plan, the self-check: element count per category the same before and
+after), then the identical call (ONE undo step). Shared Levels and Grids and the system worksets are never renamed or
+deleted; borrowed, closed or changed-in-central worksets block with what, why, who and how.
 
 ## Parameter requirements (AIS, LOIN, Model Checker, shared parameter files)
 

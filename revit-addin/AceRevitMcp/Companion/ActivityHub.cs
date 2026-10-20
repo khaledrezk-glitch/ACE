@@ -96,9 +96,9 @@ namespace AceRevitMcp.Companion
             else
             {
                 // Native commands: every argument except how it is run (preview or not, from the panel, pictures, the
-                // model and version guards); parameter_fill also leaves out its read-only extras (impact scan, register).
+                // model, version and plan guards); parameter_fill also leaves out its read-only extras (impact scan, register).
                 var keys = args.Select(kv => kv.Key)
-                    .Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name" or "explanation" or "plan" or "step" or "expect_model" or "expect_version"))
+                    .Where(k => k is not ("dry_run" or "_fromPanel" or "preview_image" or "transaction_name" or "explanation" or "plan" or "step" or "expect_model" or "expect_version" or "expect_plan"))
                     .Where(k => kind != "parameter_fill" || k is not ("impact" or "register"))
                     .OrderBy(k => k, StringComparer.Ordinal);
                 material = kind + "\n" + string.Join("\n", keys.Select(k => $"{k}={part(k)}"));

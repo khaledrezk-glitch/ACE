@@ -20,6 +20,8 @@ import * as ParamActions from "./lib/paramactions.js";
 import * as ParamExec from "./lib/paramexec.js";
 import * as ClashResolve from "./lib/clashresolve.js";
 import * as Interference from "./lib/interference.js";
+import * as Worksets from "./lib/worksets.js";
+import * as Capture from "./lib/capture.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
@@ -855,8 +857,14 @@ tool("vault", {
 
 tool("assign_worksets", {
   title: "Assign worksets per the BEP",
-  description: "Put elements on the right worksets by the BEP rules: category, function (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or a parameter value; the first matching rule wins and names can use {level}, {zone}, {category}. Rules are the ones in force for the open model (the project's project-requirements.json merged over the office worksets.json, project first; see project_rules) unless given. check_only: true reports what is on the wrong workset (read-only in effect). Otherwise it moves elements, with the usual dry_run preview and confirmation; elements borrowed by others are skipped. One undo step.",
+  description: "action assign (default): put elements on the right worksets by the BEP rules: category, function (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or a parameter value; the first matching rule wins and names can use {level}, {zone}, {category}. Rules are the ones in force for the open model (the project's project-requirements.json merged over the office worksets.json, project first; see project_rules) unless given. check_only: true reports what is on the wrong workset (read-only in effect). Otherwise it moves elements, with the usual dry_run preview and confirmation; elements borrowed by others are skipped. One undo step. action audit: read-only table of every user workset (elements by category, owner, open; flags empty, naming, near-duplicate, wrong workset; naming rule from project-requirements.json worksets.naming), files with out_dir. action rename (renames, default: the rule's suggestions) and delete_empty (worksets, move_to for a non-empty one): check, dry_run, then the identical call, ONE undo step, self-checked.",
   inputSchema: {
+    action: z.enum(["assign", "audit", "rename", "delete_empty"]).optional(),
+    renames: z.array(z.object({ from: z.string().max(200), to: z.string().max(200) })).max(200).optional().describe("rename: old -> new (default: the naming rule's suggestions)"),
+    worksets: z.array(z.string().max(200)).max(500).optional().describe("delete_empty: only these (default: every empty user workset)"),
+    move_to: z.string().max(200).optional().describe("delete_empty: move the elements of a named non-empty workset here first (never implicit)"),
+    out_dir: z.string().optional().describe("audit: folder for the HTML and CSV"),
+    max_ids: z.number().int().min(0).max(500).optional(),
     check_only: z.boolean().optional().describe("Only report elements on the wrong workset"),
     only_workset1: z.boolean().optional().describe("Move only elements still on Workset1 (leave deliberate choices alone)"),
     create_missing: z.boolean().optional().describe("Create worksets named in the rules that do not exist yet"),
@@ -869,7 +877,8 @@ tool("assign_worksets", {
     timeout_seconds: z.number().int().min(10).max(3600).optional().describe("Default 900 (large models)"),
   },
   annotations: writes,
-}, async ({ check_only, dry_run, explanation, timeout_seconds, rules_file, plan, step, ...a }) => {
+}, async ({ check_only, dry_run, explanation, timeout_seconds, rules_file, plan, step, action, ...a }) => {
+  if (action && action !== "assign") return worksetAdmin(action, a, { check_only, dry_run, explanation, plan, step, rules_file, timeout: timeout_seconds ?? 900 });
   // The rules travel with the request (from the BEP file unless given), so the preview and the apply use the same rules.
   const src = a.rules ? { file: "given in the request", rules: a.rules } : await worksetRules(rules_file);
   const req = {
@@ -888,6 +897,223 @@ tool("assign_worksets", {
   if (!dry_run && result?.success) briefCache.clear();
   journal({ title: `${dry_run ? "Preview" : "Change"}: assign worksets per the BEP`, explanation, outcome: outcomeOf(result, dry_run), details: result?.byWorkset });
   return text(result);
+});
+
+// Workset administration (assign_worksets audit / rename / delete_empty, bridge command workset_admin). The naming rule
+// is the worksets section's naming { pattern, allowed, rename } in project-requirements.json (merged by the add-in).
+async function worksetNaming() {
+  let r;
+  try { r = await callRevit("project_rules", { section: "worksets" }, 30); } catch { return { naming: null }; }
+  try { return { naming: Worksets.namingOf(r?.rules), source: r?.source }; } catch (e) { throw new RevitError(e.message); }
+}
+const adminState = new Map();   // request key -> { key (gate), model, planHash } of its last good dry run
+
+async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan, step, rules_file, timeout }) {
+  const { naming, source } = await worksetNaming();
+  const rules = a.rules ?? (rules_file ? (await worksetRules(rules_file)).rules : undefined);
+  const base = { max_ids: a.max_ids ?? 20, ...(rules ? { rules } : {}) };
+  const auditNow = () => callRevit("workset_admin", { action: "audit", check_only: true, ...base }, timeout);
+  if (action === "audit") {
+    const r = await auditNow();
+    const au = Worksets.audit(r, naming);
+    const model = r?.model ?? "model";
+    let files = [];
+    if (a.out_dir) {
+      const stamp = localDate(new Date(), { time: true }), stem = Worksets.auditStem(model, stamp);
+      files = [writeOut(a.out_dir, `${stem}.html`, Worksets.auditHtml(model, au, { when: new Date().toLocaleString(), naming, brand: brand() })), writeOut(a.out_dir, `${stem}.csv`, Worksets.auditCsv(au))];
+    }
+    const out = text({ model, workshared: r?.workshared, naming: naming ? { pattern: naming.source, allowed: naming.allowed, rename: naming.rename, file: source } : null, counts: au.counts, worksets: au.rows, nearDuplicateGroups: au.groups, suggestions: au.suggestions, files });
+    out.content.push({ type: "text", text: r?.workshared === false ? `${model} is not workshared: it has no worksets to audit.` : `${Worksets.auditText(model, au, naming)}${r?.notes?.length ? `\nNotes:\n${r.notes.map((n) => `- ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`).join("\n")}` : ""}${files.length ? `\nFiles:\n${files.map((f) => `- ${f}`).join("\n")}` : ""}` });
+    return out;
+  }
+
+  // rename / delete_empty: the request, then the same stages as clash_resolve (check, dry run, identical apply).
+  let req, early = [];
+  if (action === "rename") {
+    let renames = a.renames, src = "request";
+    if (!renames?.length) {
+      renames = Worksets.audit(await auditNow(), naming).suggestions.map(({ from, to }) => ({ from, to }));
+      src = "the naming rule's suggestions";
+      if (!renames.length) return text(naming ? "Nothing to rename: every workset name keeps the naming rule (or has no clear target). Give renames to rename anyway." : "Nothing to rename: give renames, or add a naming rule (worksets.naming in project-requirements.json).");
+    }
+    for (const r of renames) {
+      if (Worksets.isProtected(r.from)) early.push({ what: `rename ${r.from}`, why: "Shared Levels and Grids is never renamed", code: "system" });
+      else if (naming && Worksets.namingOk(r.to, naming) === false) early.push({ what: `rename ${r.from} -> ${r.to}`, why: "the new name breaks the project's workset naming rule", code: "naming" });
+    }
+    const dupTo = renames.map((r) => r.to).filter((t, i, l) => l.indexOf(t) !== i);
+    if (dupTo.length) early.push({ what: `rename to ${dupTo[0]}`, why: "two worksets would get the same name", code: "exists" });
+    req = { action, renames, renamesFrom: src };
+  } else {
+    if (a.worksets?.some(Worksets.isProtected)) early.push({ what: "delete Shared Levels and Grids", why: "it is never deleted", code: "system" });
+    if (a.move_to && !a.worksets?.length) early.push({ what: "move_to", why: "a non-empty workset is emptied only when it is named in worksets: move_to never applies to every workset", how: "name the worksets to empty in worksets" });
+    req = { action, ...(a.worksets?.length ? { worksets: a.worksets } : {}), ...(a.move_to ? { move_to: a.move_to } : {}) };
+  }
+  if (early.length) return blockedReply(early.map(Worksets.blockWithHow), "Blocked before Revit was asked; nothing changed:");
+  const { renamesFrom, ...bridgeReq } = req;
+  return planExecute({
+    name: `worksets ${action}`, command: "workset_admin", req: { ...bridgeReq, ...base, expect_version: VERSION }, ident: { ...bridgeReq, rules: base.rules ?? null },
+    check_only, dry_run, explanation, plan, step, state: adminState, timeout, a, folder: { sub: "worksets", reports: "worksets" },
+    planOf: Worksets.planOf, identity: Worksets.planIdentity, blocksOf: (r) => Worksets.blocksOf(r).map(Worksets.blockWithHow), rolledBackOf: Worksets.rolledBackOf,
+    render: (r, mode, model, rolledBack) => Worksets.planText(r, { action, model, mode, rolledBack }) + (renamesFrom !== "request" && action === "rename" ? `\nRenames from ${renamesFrom}.` : ""),
+    nothing: (model) => `Nothing to ${action === "rename" ? "rename" : "delete"} in ${model}.`,
+  });
+}
+
+/**
+ * The execution stage shared by the plan-based native changes (worksets rename / delete_empty): an apply needs the
+ * identical dry run in the same Revit session (checked before Revit is asked), a read-only check fails fast on blocks and
+ * a version mismatch, the gate key holds the request, the model and the plan (planHash and steps), the dry run and the
+ * apply name their model (expect_model) and the apply its plan (expect_plan; the add-in refuses "plan-changed"), a failed
+ * self-check rolls back and is said as "would have been ...; rolled back, nothing changed"; a run record is written.
+ */
+async function planExecute(o) {
+  const { name, command, req, ident, dry_run, explanation, plan, step, state, timeout, a } = o;
+  if (o.check_only) {
+    // Read-only: the plan and its blocks as Revit sees them now; no gate, nothing remembered as a preview.
+    const pre = await callRevit(command, { ...req, check_only: true, dry_run: false }, timeout);
+    const out = text(pre);
+    out.content.push({ type: "text", text: `${o.render(pre, "check", pre?.model ?? "the model", false)}\n${o.planOf(pre).length && !o.blocksOf(pre).length ? "To change: the same call with dry_run: true, then the identical call after the user's OK." : ""}`.trim() });
+    return out;
+  }
+  requireExplanation(dry_run, explanation);
+  const reqKey = fingerprint(`${command}.request`, ident);
+  const prev = dry_run ? null : state.get(reqKey);
+  if (!dry_run) { if (!prev) requirePreview(`none:${reqKey}`); requirePreview(prev.key); }
+  const session = await pinSession();
+  if (!dry_run && previews.get(prev.key)?.session !== sessionKey(session))
+    return blockedReply([{ what: "the apply", why: `the preview was made in Revit session ${previews.get(prev.key)?.label}, this call would go to ${sessionLabel(session)}`, how: "preview again in the session to change" }], "Blocked before Revit was asked; nothing changed:");
+  const pre = await callRevit(command, { ...req, check_only: true, dry_run: false }, timeout);
+  const model = pre?.model;
+  if (!model) throw new RevitError("Revit answered without a model: open the model and run again.");
+  const { dir, note: dirNote } = await auditFolder(a, model, o.folder);
+  const stamp = localDate(new Date(), { time: true });
+  const record = (x) => writeOut(dir, `${ParamExec.fileStem(`${command.replace(/_/g, "-")}-run`, model, stamp)}.json`, JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, request: req, ...x }, null, 1));
+  const stop = (b, lead) => {
+    record({ outcome: "blocked", blocked: b });
+    journal({ title: `Blocked: ${name}`, explanation, outcome: "BLOCKED - nothing changed", details: { blocked: b } });
+    const out = blockedReply(b, lead, { model });
+    return out;
+  };
+  const version = pre.aceVersion;
+  if (!version || !sameVersion(version, VERSION))
+    return stop([{ what: "the whole plan", why: version ? `the ACE server is ${VERSION}, the add-in in Revit is ${version}` : `the add-in did not report its version (older than ${VERSION}?): install ${VERSION}`,
+      how: "install one ACE version for both (build a package with build-package.ps1, run install.ps1, restart Revit)" }], `Blocked in ${model}; nothing changed:`);
+  const preBlocks = o.blocksOf(pre);
+  if (preBlocks.length) {
+    const out = stop(preBlocks, `Blocked in ${model}; stopped before the dry run, nothing changed:`);
+    out.content.push({ type: "text", text: o.render(pre, "check", model, false) });
+    return out;
+  }
+  if (!o.planOf(pre).length) { const out = text(pre); out.content.push({ type: "text", text: `${o.render(pre, "check", model, false)}\n${o.nothing(model)} No dry run needed.` }); return out; }
+  const key = fingerprint(`${command}.plan`, { model, req: ident, plan: o.identity(pre) });
+  if (prev && prev.key !== key) return stop([ClashResolve.PLAN_CHANGED], `Blocked in ${model}; nothing changed:`);
+  const ok = (r) => r?.success === true && !o.blocksOf(r).length && r?.verify?.ok !== false;   // a dry run is always rolled back: its self-check decides
+  const result = await gated(key, { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
+    () => callRevit(command, { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step, expect_model: dry_run ? model : prev.model, ...(!dry_run && prev.planHash ? { expect_plan: prev.planHash } : {}) }, timeout), ok);
+  if (dry_run && ok(result)) state.set(reqKey, { key, model: result.model ?? model, planHash: result.planHash ?? pre.planHash ?? null });
+  if (!dry_run) state.delete(reqKey);
+  if (result?.alreadyApplied) return text(result);
+  if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
+  if (ClashResolve.planChanged(result)) return stop([ClashResolve.PLAN_CHANGED], `Blocked in ${model}: the model changed since the preview: run the dry run again. Nothing changed:`);
+  if (result?.stage === "blocked" || (o.blocksOf(result).length && result?.success !== true))
+    return stop(o.blocksOf(result).length ? o.blocksOf(result) : [{ what: "the plan", why: result?.error ?? "refused by the add-in" }], `Blocked in ${model}: ${result?.error ?? "nothing changed"}`);
+  const rolledBack = !dry_run && o.rolledBackOf(result);
+  const outcome = rolledBack ? "self-check failed, rolled back" : outcomeOf(result, dry_run);
+  const runFile = record({ outcome, plan: o.planOf(result), done: result?.done, wouldDo: result?.wouldDo, verify: result?.verify });
+  journal({ title: `${dry_run ? "Preview" : "Change"}: ${name} in ${model} (${o.planOf(result).length} step(s))`, explanation, outcome, details: { plan: o.planOf(result).slice(0, 30), verify: result?.verify, done: result?.done } });
+  if (!dry_run && result?.success && !rolledBack) briefCache.clear();
+  const out = text(result);
+  const lines = [o.render(result, dry_run ? "dry run" : "apply", model, rolledBack)];
+  if (dry_run) lines.push(ok(result) ? "PREVIEW ONLY - the model is unchanged. Show the user the plan and ask for confirmation. Apply with the identical call (without dry_run): ONE approval, ONE undo step."
+    : "This dry run cannot be applied (see above). Fix the cause, then run the dry run again.");
+  lines.push(`Run record: ${runFile}${dirNote ? `\n${dirNote}` : ""}`);
+  out.content.push({ type: "text", text: lines.join("\n") });
+  if (rolledBack || (dry_run && !ok(result))) out.isError = true;
+  return out;
+}
+
+// capture_method: record how a person solves something (start, then the person works in Revit, then stop). The add-in
+// keeps the per-element state; the server groups the diff into actions, reads the journal commands, compares with the
+// latest clash_resolve plan of the model and writes the case record (never rules).
+async function casesFolder(a) {
+  const dir = await projectVaultDir(a);
+  if (dir && fs.existsSync(dir) && Vault.trusted(path.dirname(CONFIG_PATH), dir)) return { dir: path.join(dir, "cases") };
+  if (a.out_dir) return { dir: a.out_dir, note: dir && fs.existsSync(dir) ? `vault not trusted: case written to out_dir (ACE writes into ${dir} once the user allows it: vault with consent: true).` : null };
+  const fallback = path.join(REPORTS_DIR, "cases");
+  return { dir: fallback, note: `no trusted vault and no out_dir: case written to ${fallback}.` };
+}
+
+/** The latest clash_resolve run record with a plan for this model (vault 04 Audits/<model>/clashes, report_dir-less fallback). */
+async function latestClashPlan(a, model) {
+  const dirs = [];
+  try { dirs.push((await auditFolder({ vault: a.vault }, model, { sub: "clashes", reports: "clash-resolve" })).dir); } catch { /* none */ }
+  dirs.push(path.join(REPORTS_DIR, "clash-resolve"));
+  if (a.plan_dir) dirs.unshift(a.plan_dir);
+  const prefix = `clash-run-${ParamExec.safeName(model)}-`;
+  const files = [];
+  for (const d of [...new Set(dirs)]) { try { for (const f of fs.readdirSync(d)) if (f.startsWith(prefix) && f.endsWith(".json")) files.push(path.join(d, f)); } catch { /* missing */ } }
+  for (const f of files.sort((x, y) => fs.statSync(y).mtimeMs - fs.statSync(x).mtimeMs)) {
+    try { const j = JSON.parse(fs.readFileSync(f, "utf8")); if (Array.isArray(j.plan) && j.plan.length) return { file: f, plan: j.plan }; } catch { /* next */ }
+  }
+  return null;
+}
+
+tool("capture_method", {
+  title: "Record how a person solves something",
+  description: "start (label, categories): snapshot the per-element state (location, extensions, joins and which cuts, type, material, workset) and note the journal; the person then works in Revit; stop: the diff grouped into actions by pair type with counts and exceptions, the Revit commands from the journal, a comparison with the latest clash_resolve plan, saved as a case (vault cases/<date>-<label>.json and .md, else out_dir). status: is a capture running. The model is not changed; a case never becomes rules by itself.",
+  inputSchema: {
+    action: z.enum(["start", "stop", "status"]),
+    label: z.string().max(80).optional().describe("start: a short name for the case"),
+    categories: z.array(z.string().max(80)).max(30).optional().describe("start: categories to capture (default: structural)"),
+    parameters: z.array(z.string().max(120)).max(30).optional().describe("start: extra parameters to record"),
+    vault: z.string().optional(), out_dir: z.string().optional(),
+    plan_dir: z.string().optional().describe("stop: folder with a clash_resolve run record to compare with (default: the vault's and the reports folder)"),
+  },
+  annotations: benign,
+}, async ({ action, ...a }) => {
+  if (action === "start" && !a.label?.trim()) throw new RevitError("Give label: a short name for the case (e.g. \"slab-column joins L1\").");
+  if (action !== "stop") {
+    const r = await callRevit("capture_method", { action, ...(action === "start" ? { label: a.label, categories: a.categories, parameters: a.parameters } : {}) }, 600);
+    if (r?.success === false) throw new RevitError(r.error ?? `capture_method ${action} was refused.`);   // e.g. start while a capture runs
+    const out = text(r);
+    out.content.push({ type: "text", text: action === "start" ? `Capture "${r?.label ?? a.label}" started in ${r?.model ?? "the model"}: ${r?.elements ?? "?"} element(s) recorded. Let the user work in Revit as usual, then call capture_method stop.`
+      : r?.active ? `Capture "${r.label}" running in ${r.model} since ${r.startedAt} (${r.elements ?? "?"} element(s)).` : "No capture is running." });
+    return out;
+  }
+  const r = await callRevit("capture_method", { action: "stop" }, 600);
+  if (r?.success === false) throw new RevitError(r.error ?? "The capture could not be stopped.");
+  const diffs = Capture.diffsOf(r);
+  const actions = Capture.actionsOf(diffs);
+  const lines = r?.journalLines ?? r?.journal?.lines ?? [];
+  const journalCmds = Capture.journalCommands(lines);
+  const truncated = r?.journalTruncated ?? r?.journal?.truncated;
+  const stored = await latestClashPlan(a, r?.model ?? "model");
+  const comparison = stored ? { file: stored.file, ...Capture.compareWithPlan(stored.plan, diffs) } : null;
+  const c = { label: r?.label ?? a.label ?? "case", model: r?.model, startedAt: r?.startedAt, stoppedAt: r?.stoppedAt, elements: r?.elements ?? r?.counts?.before, categories: r?.categories,
+    diffs, actions, journal: journalCmds, journalNote: truncated ? "The journal lines were cut (more than 5000); the command list is incomplete." : !lines.length ? "No journal lines came back (journal not found?)." : null, comparison };
+  // The add-in has already ended the capture (its archive keeps the raw diff): the case must land somewhere.
+  const archive = r?.archive ?? r?.stored ?? r?.archivePath ?? null;
+  let { dir, note } = await casesFolder(a).catch(() => ({ dir: path.join(REPORTS_DIR, "cases"), note: "the case folder could not be found: written to the reports folder." }));
+  const stem = Capture.caseStem(localDate(new Date()), c.label);
+  const caseJson = JSON.stringify({ ...c, journalFile: r?.journal?.path ?? r?.journal, archive, recordedBy: "ACE capture_method", aceVersion: VERSION }, null, 1);
+  let json, md;
+  try { json = writeOut(dir, `${stem}.json`, caseJson); md = writeOut(dir, `${stem}.md`, Capture.caseMarkdown(c)); }
+  catch (e) {
+    const fallback = path.join(REPORTS_DIR, "cases");
+    note = `could not write to ${dir} (${e.message}): written to ${fallback}.`;
+    json = writeOut(fallback, `${stem}.json`, caseJson); md = writeOut(fallback, `${stem}.md`, Capture.caseMarkdown(c));
+  }
+  journal({ title: `Captured method: ${c.label}`, outcome: `${diffs.length} changed element(s), ${actions.length} action group(s)`, details: { model: c.model, files: [json, md] } });
+  const out = text({ label: c.label, model: c.model, changedElements: diffs.length, actions: actions.map((g) => ({ label: g.label, count: g.count, rule: g.rule?.text, exceptions: g.exceptions })), commands: journalCmds.totals, comparison: comparison && { file: comparison.file, counts: comparison.counts }, files: [json, md] });
+  out.content.push({ type: "text", text: [`Capture "${c.label}" stopped in ${c.model}: ${diffs.length} changed element(s).`,
+    actions.length ? `Actions:\n${actions.slice(0, 12).map((g) => `- ${Capture.actionLine(g)}`).join("\n")}${actions.length > 12 ? `\n- ... ${actions.length - 12} more (case file)` : ""}` : "No element changed.",
+    journalCmds.sequence.length ? `Revit commands: ${Object.entries(journalCmds.totals).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ")}.` : "Revit commands: none found in the journal.",
+    c.journalNote ?? "",
+    comparison ? `Compared with the clash_resolve plan (${comparison.file}): ${Object.entries(comparison.counts).map(([k, n]) => `${k} ${n}`).join(", ") || "nothing to compare"}.` : "No stored clash_resolve plan for this model to compare with.",
+    `Case: ${json}\n${md}${note ? `\n${note}` : ""}`,
+    `Add-in archive of the raw diff: ${archive ?? "not reported"}.`,
+    "Proposed rules are in the case file and need the owner's confirmation; nothing was changed in the vault rules."].filter(Boolean).join("\n") });
+  return out;
 });
 
 // Parameter requirements: one merged list from the client's sources (AIS CSV, LOIN workbook, Model Checker XML, shared

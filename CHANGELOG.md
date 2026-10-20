@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.12.5 (20 Oct 2026)
+- **Worksets audit, rename, delete empty** (assign_worksets action audit / rename / delete_empty): a reviewable table of
+  every user workset (elements by category, owner, open) flagged empty, off the naming rule, near-duplicate or holding
+  elements on the wrong workset, as HTML and CSV with out_dir; the naming rule is a new optional `naming` { pattern,
+  allowed, rename } in the worksets section of project-requirements.json. Rename (default: the rule's suggestions) and
+  delete_empty (a workset with elements only with a named move_to) go check > dry run > identical apply (expect_model,
+  planHash / expect_plan), ONE undo step, self-checked (element count per category unchanged). Shared Levels and Grids
+  is never renamed or deleted; every block says what, why, who and how.
+- **capture_method** (start / status / stop): records how a person solves something. The case (vault cases/<date>-<label>
+  .json and .md, else out_dir) groups the element changes into actions by pair type with counts and exceptions, lists
+  the Revit commands from the journal, compares with the latest clash_resolve plan (agree / differs / planned, not done
+  / not planned) and ends with proposed rules that need the owner's confirmation; nothing becomes a rule by itself.
+
 ## 1.12.4 (20 Oct 2026)
 - **open_model, nothing silent:** reads the transmitted flag and the external references before opening; lists
   missing links (`unresolvedLinks`); answers the "Unresolved References" dialog with "ignore and continue" and records

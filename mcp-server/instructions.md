@@ -104,6 +104,10 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   A rolled-back apply set nothing: report its counts as "would have been set", never as done.
   "Discipline not read from the title": say it first and ask for models or titleField in the mapping. Complete with
   NA is not complete: the data is still missing.
+- Worksets housekeeping: assign_worksets action audit (read-only table; out_dir for HTML/CSV), then rename or
+  delete_empty only after the user reviewed it (dry_run, then the identical call). Never delete a workset that holds
+  elements unless the user named it and move_to. Recording how a person works: capture_method start, stop; report the
+  grouped actions and the plan comparison; proposed rules need the owner's confirmation.
 - Opening and closing models: open_model (path; detach preserve_worksets for a central or cloud model you must not
   touch; discard_worksets only after the user agreed, with confirm: true; audit; worksets; close_previous) and
   close_model (a non-active model, closed without saving). For a batch of models in one Revit session: open_model each
