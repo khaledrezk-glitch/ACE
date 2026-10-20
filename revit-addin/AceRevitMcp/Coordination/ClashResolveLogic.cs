@@ -12,10 +12,13 @@ namespace AceRevitMcp.Coordination
     /// </summary>
     internal static class ClashResolveLogic
     {
-        /// <summary>The default join order: an earlier category wins (cuts the later one).</summary>
+        /// <summary>
+        /// The default join priority: an earlier category cuts a later one (common structural practice: foundation > column >
+        /// wall > floor > beam). The vault's rules/clash-resolve.json order, passed by the server, replaces it.
+        /// </summary>
         public static readonly string[] DefaultOrder =
         {
-            "OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_StructuralFraming", "OST_Floors", "OST_Stairs",
+            "OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming", "OST_Stairs",
         };
 
         /// <summary>A cutback longer than this is not a trim but a modelling question (reported, not fixed).</summary>
@@ -42,6 +45,90 @@ namespace AceRevitMcp.Coordination
         /// <summary>The plan's material label of a pair.</summary>
         public static string PairMaterial(string a, string b) => a == b && (a == "concrete" || a == "steel") ? a : "mixed";
 
+        /// <summary>
+        /// An order entry as an OST name: a short alias (foundation, column, wall, slab / floor, beam / framing, stair), a
+        /// category name ("Structural Foundations") or an OST name; null when it is none of these.
+        /// </summary>
+        public static string CategoryAlias(string name)
+        {
+            var k = (name ?? "").Trim().Replace(" ", "").Replace("_", "").ToLowerInvariant();
+            if (k.StartsWith("ost")) k = k.Substring(3);
+            switch (k)
+            {
+                case "foundation": case "foundations": case "structuralfoundation": case "structuralfoundations": return "OST_StructuralFoundation";
+                case "column": case "columns": case "structuralcolumn": case "structuralcolumns": return "OST_StructuralColumns";
+                case "wall": case "walls": return "OST_Walls";
+                case "slab": case "slabs": case "floor": case "floors": return "OST_Floors";
+                case "beam": case "beams": case "framing": case "structuralframing": return "OST_StructuralFraming";
+                case "stair": case "stairs": return "OST_Stairs";
+                case "ramp": case "ramps": return "OST_Ramps";
+                default: return null;
+            }
+        }
+
+        // ---- trim to face (R3) -----------------------------------------------------------------------------------
+
+        /// <summary>Default and hard limit of a trim to a face (mm): a longer one is a modelling question.</summary>
+        public const double DefaultTrimMaxMm = 1000;
+        /// <summary>The largest trim a rules file may allow (max_mm above this is held to it).</summary>
+        public const double TrimCeilingMm = 3000;
+
+        /// <summary>
+        /// Where a member's axis (p0 + t * u, u a unit vector) meets a plane (origin, normal): t, or null when the axis runs
+        /// (nearly) parallel to the plane.
+        /// </summary>
+        public static double? AxisPlane(double[] p0, double[] u, double[] origin, double[] normal)
+        {
+            double Dot(double[] a, double[] b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            var nl = Math.Sqrt(Dot(normal, normal));
+            if (nl < 1e-12) return null;
+            var den = Dot(u, normal) / nl;
+            if (Math.Abs(den) < 0.1) return null;
+            var d = new[] { origin[0] - p0[0], origin[1] - p0[1], origin[2] - p0[2] };
+            return Dot(d, normal) / nl / den;
+        }
+
+        /// <summary>
+        /// The new end of a member trimmed to the face its end runs into: among the axis/face hits in that end's half, the one
+        /// nearest the middle (the face the end enters through). Only shortens: hits at or beyond the ends are ignored. Returns
+        /// (t of the new end, trim length) or null with a reason ("no face", "trim too long").
+        /// </summary>
+        public static (double T, double Trim)? TrimTarget(double length, IEnumerable<double> hits, int end, double maxTrim, double minTrim, out string reason)
+        {
+            reason = null;
+            var inside = (hits ?? Enumerable.Empty<double>()).Where(t => t > minTrim && t < length - minTrim).ToList();
+            var half = end == 1 ? inside.Where(t => t > length / 2).ToList() : inside.Where(t => t < length / 2).ToList();
+            if (half.Count == 0) { reason = "no face"; return null; }
+            var t0 = end == 1 ? half.Min() : half.Max();
+            var trim = end == 1 ? length - t0 : t0;
+            if (trim > maxTrim + 1e-9) { reason = "trim too long"; return null; }
+            return (t0, trim);
+        }
+
+        /// <summary>
+        /// Pairs of boxes (min, max) that overlap or come within tol of each other on every axis: a sweep along X, each pair
+        /// once as (lower id, higher id), in id order.
+        /// </summary>
+        public static List<(long A, long B)> TouchingPairs(IList<(long Id, double[] Min, double[] Max)> boxes, double tol)
+        {
+            var list = new List<(long, long)>();
+            var sorted = (boxes ?? new List<(long, double[], double[])>()).OrderBy(b => b.Min[0]).ThenBy(b => b.Id).ToList();
+            for (var i = 0; i < sorted.Count; i++)
+            {
+                var a = sorted[i];
+                for (var j = i + 1; j < sorted.Count && sorted[j].Min[0] <= a.Max[0] + tol; j++)
+                {
+                    var b = sorted[j];
+                    if (b.Min[1] > a.Max[1] + tol || a.Min[1] > b.Max[1] + tol || b.Min[2] > a.Max[2] + tol || a.Min[2] > b.Max[2] + tol) continue;
+                    list.Add(a.Id < b.Id ? (a.Id, b.Id) : (b.Id, a.Id));
+                }
+            }
+            return list.OrderBy(p => p.Item1).ThenBy(p => p.Item2).ToList();
+        }
+
+        /// <summary>A trim's plan id: "trim:&lt;trimmed id&gt;&gt;&lt;face owner id&gt;:&lt;end&gt;".</summary>
+        public static string TrimId(long trimmed, long faceOwner, int end) => $"trim:{trimmed}>{faceOwner}:{end}";
+
         /// <summary>The position of a category in the join order, or -1 when it is not in it.</summary>
         public static int Rank(IList<string> order, string category)
         {
@@ -50,12 +137,27 @@ namespace AceRevitMcp.Coordination
             return -1;
         }
 
-        /// <summary>"A" or "B": the side that cuts (earlier in the order); null for the same rank (Revit's own choice is kept).</summary>
+        /// <summary>"A" or "B": the side that cuts (earlier in the order); null for the same rank or a category not in the order.</summary>
         public static string Winner(IList<string> order, string catA, string catB)
         {
             var ra = Rank(order, catA); var rb = Rank(order, catB);
             if (ra < 0 || rb < 0 || ra == rb) return null;
             return ra < rb ? "A" : "B";
+        }
+
+        /// <summary>
+        /// The side that cuts, from the elements alone, never from which one the clash test listed first: the category order,
+        /// and within one category the larger volume, then the lower element id. Null only when a category is not in the order.
+        /// </summary>
+        public static string CutterOf(IList<string> order, Side a, Side b)
+        {
+            var ra = Rank(order, a.Category); var rb = Rank(order, b.Category);
+            if (ra < 0 || rb < 0) return null;
+            if (ra != rb) return ra < rb ? "A" : "B";
+            var big = Math.Max(Math.Abs(a.Volume), Math.Abs(b.Volume));
+            if (Math.Abs(a.Volume - b.Volume) > 1e-9 * Math.Max(1, big)) return a.Volume > b.Volume ? "A" : "B";
+            if (a.Id != b.Id) return a.Id < b.Id ? "A" : "B";
+            return null;
         }
 
         /// <summary>
@@ -77,6 +179,7 @@ namespace AceRevitMcp.Coordination
         /// <summary>One side of a clash pair, as the classification needs it.</summary>
         internal sealed class Side
         {
+            public long Id;              // the element id (the last tie-break of the join order)
             public string Category;      // OST_ name
             public string Material;      // concrete | steel | other
             public bool Host = true;     // in the active model (links are never changed)
@@ -141,7 +244,7 @@ namespace AceRevitMcp.Coordination
             {
                 if (Rank(o.Order, p.A.Category) < 0 || Rank(o.Order, p.B.Category) < 0)
                     return Report(material, "not-in-order", "a category that is not in the join order", "Add the category to order, or resolve the clash by hand.");
-                var winner = Winner(o.Order, p.A.Category, p.B.Category);
+                var winner = CutterOf(o.Order, p.A, p.B);
                 if ((insideA && winner != "A") || (insideB && winner != "B"))
                     return Report(material, "inside", "one element lies (almost) entirely inside the other: a join would cut it away", "Check which element is intended and delete or resize the other by hand.");
                 if (p.Joined)
@@ -153,7 +256,9 @@ namespace AceRevitMcp.Coordination
                 return new Decision
                 {
                     Kind = "join", Changed = winner, Material = material,
-                    Why = winner == null ? "concrete with concrete of the same category: join geometry" : $"concrete with concrete: join geometry, the {(winner == "A" ? "first" : "second")} element cuts (order)",
+                    Why = winner == null ? "concrete with concrete, two identical elements: join geometry (Revit's order)"
+                        : p.A.Category == p.B.Category ? $"concrete with concrete of the same category: join geometry, the larger element cuts"
+                        : $"concrete with concrete: join geometry, the {Short(winner == "A" ? p.A.Category : p.B.Category)} cuts the {Short(winner == "A" ? p.B.Category : p.A.Category)} (order)",
                 };
             }
 
@@ -388,7 +493,7 @@ namespace AceRevitMcp.Coordination
         /// cope): it goes to changedValues (once per dimension), not to the mismatches.
         /// </summary>
         public static (List<(long Element, string What, string Before, string After)> Mismatches, List<(long Element, long Dimension, string Before, string After)> ChangedValues)
-            Compare(IList<ElementState> before, IDictionary<long, ElementState> after, ICollection<long> trimmed = null)
+            Compare(IList<ElementState> before, IDictionary<long, ElementState> after, ICollection<long> trimmed = null, ICollection<long> relocated = null)
         {
             var list = new List<(long, string, string, string)>();
             var changed = new List<(long, long, string, string)>();
@@ -401,7 +506,7 @@ namespace AceRevitMcp.Coordination
                     continue;
                 }
                 if (a.TypeId != b.TypeId) list.Add((b.Id, "type", b.TypeId.ToString(), a.TypeId.ToString()));
-                if (!SameLocation(b.Location, a.Location)) list.Add((b.Id, "location", Text(b.Location), Text(a.Location)));
+                if (!SameLocation(b.Location, a.Location) && !(relocated != null && relocated.Contains(b.Id))) list.Add((b.Id, "location", Text(b.Location), Text(a.Location)));
                 if (a.Tags != b.Tags) list.Add((b.Id, "tags", b.Tags.ToString(), a.Tags.ToString()));
                 foreach (var kv in b.Dimensions)
                 {

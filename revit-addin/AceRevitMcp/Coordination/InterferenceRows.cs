@@ -14,6 +14,7 @@ namespace AceRevitMcp.Coordination
         public string AModel, ACategory, AFamily, AType, BModel, BCategory, BFamily, BType;
         public double DepthMm;
         public double X, Y, Z;           // project coordinates (relative to the project base point), metres
+        public bool Rechecked = true;    // false: a stored result the latest run of its test did not look at (kept out of every open count)
     }
 
     /// <summary>
@@ -33,10 +34,13 @@ namespace AceRevitMcp.Coordination
 
         /// <param name="originMm">The project base point in the host's internal coordinates (mm): subtracted from each clash point.</param>
         /// <param name="names">Optional: family and type by element unique id, read from the model; else from the stored names.</param>
+        /// <param name="latestRuns">Optional: the latest run time per test (LatestRuns); clashes that run did not look at come last, rechecked: false.</param>
         public static List<InterferenceRow> Rows(IEnumerable<Clash> clashes, (double X, double Y, double Z) originMm,
-            IDictionary<string, (string Family, string Type)> names = null)
+            IDictionary<string, (string Family, string Type)> names = null, IDictionary<string, DateTime> latestRuns = null)
         {
-            var all = (clashes ?? Enumerable.Empty<Clash>()).ToList();
+            var given = (clashes ?? Enumerable.Empty<Clash>()).ToList();
+            var all = given.Where(c => Rechecked(c, latestRuns)).ToList();
+            var stored = given.Where(c => !Rechecked(c, latestRuns)).ToList();
             var issues = ClashLogic.Issues(all);
             double M(double mm, double origin) => Math.Round((mm - origin) / 1000.0, 3);
             (string, string) Names(string uid, string name) =>
@@ -61,18 +65,51 @@ namespace AceRevitMcp.Coordination
             foreach (var status in new[] { "approved", "resolved" })
                 foreach (var c in all.Where(c => c.Status == status).OrderBy(c => c.Test, StringComparer.Ordinal).ThenBy(c => c.Level, StringComparer.Ordinal).ThenBy(c => c.Key, StringComparer.Ordinal))
                     rows.Add(Row(c, null, null));
+            foreach (var c in stored.OrderBy(c => c.Test, StringComparer.Ordinal).ThenBy(c => c.Key, StringComparer.Ordinal))
+            {
+                var r = Row(c, null, null);
+                r.Rechecked = false;
+                rows.Add(r);
+            }
             return rows;
+        }
+
+        /// <summary>The latest run time per test (test names case-insensitive).</summary>
+        public static Dictionary<string, DateTime> LatestRuns(IEnumerable<ClashRun> runs)
+        {
+            var d = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in runs ?? Enumerable.Empty<ClashRun>())
+                if (r?.Test != null && (!d.TryGetValue(r.Test, out var t) || r.Time > t)) d[r.Test] = r.Time;
+            return d;
+        }
+
+        /// <summary>
+        /// Whether the latest run of the clash's test looked at it (it was found, or marked resolved, at that run's time). A
+        /// stored result from another model, level or scope keeps an older time: it stays stored but is never counted as
+        /// open. A test without a run record (an import, or no record yet) counts as rechecked.
+        /// </summary>
+        public static bool Rechecked(Clash c, IDictionary<string, DateTime> latestRuns) =>
+            latestRuns == null || c.Test == null || !latestRuns.TryGetValue(c.Test, out var t) || c.LastSeen >= t.AddMinutes(-2);   // older run records were saved a little after the merge
+
+        /// <summary>The stored results a run did not look at: { count, open, models } (the models they come from).</summary>
+        public static (int Count, int Open, List<string> Models) Stored(IEnumerable<Clash> notRechecked)
+        {
+            var list = (notRechecked ?? Enumerable.Empty<Clash>()).ToList();
+            var models = list.SelectMany(c => new[] { c.SourceA, c.SourceB }).Where(m => !string.IsNullOrEmpty(m)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList();
+            return (list.Count, list.Count(ClashLogic.IsOpen), models);
         }
 
         /// <summary>{ clashes, issues, open, new, active, reopened, approved, resolved } of the rows.</summary>
         public static Dictionary<string, int> Counts(IList<InterferenceRow> rows)
         {
+            var re = rows.Where(r => r.Rechecked).ToList();
             var d = new Dictionary<string, int>(StringComparer.Ordinal)
             {
-                ["clashes"] = rows.Count, ["issues"] = rows.Where(r => r.Issue.HasValue).Select(r => r.Issue.Value).Distinct().Count(),
-                ["open"] = rows.Count(r => r.Status == "new" || r.Status == "active" || r.Status == "reopened"),
+                ["clashes"] = re.Count, ["issues"] = re.Where(r => r.Issue.HasValue).Select(r => r.Issue.Value).Distinct().Count(),
+                ["open"] = re.Count(r => r.Status == "new" || r.Status == "active" || r.Status == "reopened"),
             };
-            foreach (var s in new[] { "new", "active", "reopened", "approved", "resolved" }) d[s] = rows.Count(r => r.Status == s);
+            foreach (var s in new[] { "new", "active", "reopened", "approved", "resolved" }) d[s] = re.Count(r => r.Status == s);
+            d["stored"] = rows.Count - re.Count;
             return d;
         }
 

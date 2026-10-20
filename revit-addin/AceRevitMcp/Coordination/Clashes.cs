@@ -469,9 +469,48 @@ namespace AceRevitMcp.Coordination
 
         // ---- status between runs -------------------------------------------------------------------------------
 
+        /// <summary>
+        /// The key the clash store is kept under: the central model's name for a workshared model (so a local copy
+        /// "&lt;name&gt;_&lt;user&gt;" and the central share one store), else the file's name; both without the extension.
+        /// </summary>
+        public static string StoreKey(Document host)
+        {
+            string central = null;
+            try
+            {
+                if (host.IsWorkshared && host.GetWorksharingCentralModelPath() is ModelPath mp)
+                    central = ModelPathUtils.ConvertModelPathToUserVisiblePath(mp);
+            }
+            catch { central = null; }
+            return ClashLogic.StoreKey(host.IsWorkshared, central, host.PathName, host.Title);
+        }
+
+        /// <summary>A note when this run moved a store from its old (local file) key to the store key; null otherwise. Read once.</summary>
+        public static string TakeMigrationNote() { var n = _migrationNote; _migrationNote = null; return n; }
+        private static string _migrationNote;
+
+        /// <summary>
+        /// The model's store folder. A store kept under the old key (the local file's title and path) moves once to the
+        /// store key when the new folder does not exist yet; an existing new store is never overwritten.
+        /// </summary>
+        private static string StoreDir(Document host)
+        {
+            var root = Path.Combine(AceConfig.Directory, "clashes");
+            var key = StoreKey(host);
+            var dir = Path.Combine(root, key);
+            if (!Directory.Exists(dir))
+            {
+                var old = Path.Combine(root, Tracking.Snapshots.ModelKey(host));
+                if (!string.Equals(old, dir, StringComparison.OrdinalIgnoreCase) && Directory.Exists(old))
+                    try { Directory.Move(old, dir); _migrationNote = $"The clash results stored for this model were moved to the store key '{key}' (the central model's name), so local copies and the central share them."; }
+                    catch (Exception ex) { Log.Warn($"Clash store not migrated: {ex.Message}"); return old; }
+            }
+            return dir;
+        }
+
         private static string StoreFile(Document host, string test)
         {
-            var dir = Path.Combine(AceConfig.Directory, "clashes", Tracking.Snapshots.ModelKey(host));
+            var dir = StoreDir(host);
             Directory.CreateDirectory(dir);
             return Path.Combine(dir, string.Concat(test.Select(ch => char.IsLetterOrDigit(ch) ? ch : '_')) + ".json");
         }
@@ -481,7 +520,7 @@ namespace AceRevitMcp.Coordination
         /// <summary>Every stored result for this model (all standard tests and any custom ones).</summary>
         public static List<Clash> LoadAll(Document host)
         {
-            var dir = Path.Combine(AceConfig.Directory, "clashes", Tracking.Snapshots.ModelKey(host));
+            var dir = StoreDir(host);
             var all = new List<Clash>();
             if (!Directory.Exists(dir)) return all;
             foreach (var f in Directory.GetFiles(dir, "*.json"))
@@ -499,7 +538,7 @@ namespace AceRevitMcp.Coordination
         /// <summary>The run records live beside the results, in "runs" (so LoadAll never reads them as clashes).</summary>
         private static string RunFile(Document host, string test)
         {
-            var dir = Path.Combine(AceConfig.Directory, "clashes", Tracking.Snapshots.ModelKey(host), "runs");
+            var dir = Path.Combine(StoreDir(host), "runs");
             Directory.CreateDirectory(dir);
             return Path.Combine(dir, string.Concat(test.Select(ch => char.IsLetterOrDigit(ch) ? ch : '_')) + ".json");
         }
@@ -514,7 +553,7 @@ namespace AceRevitMcp.Coordination
         public static List<ClashRun> LoadRuns(Document host)
         {
             var list = new List<ClashRun>();
-            var dir = Path.Combine(AceConfig.Directory, "clashes", Tracking.Snapshots.ModelKey(host), "runs");
+            var dir = Path.Combine(StoreDir(host), "runs");
             if (!Directory.Exists(dir)) return list;
             foreach (var f in Directory.GetFiles(dir, "*.json"))
                 try { var r = JsonSerializer.Deserialize<ClashRun>(File.ReadAllText(f), Json); if (r?.Test != null) list.Add(r); } catch { }

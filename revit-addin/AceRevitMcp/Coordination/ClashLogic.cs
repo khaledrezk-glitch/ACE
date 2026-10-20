@@ -119,6 +119,25 @@ namespace AceRevitMcp.Coordination
         /// max_elements, says nothing about the rest); out-of-scope ones are kept as they were.
         /// A resolved clash that comes back is new again (and counted as reopened).
         /// </summary>
+        /// <summary>
+        /// The clash store's key: the central model's file name for a workshared model, else the model file's name (the title
+        /// for an unsaved model); without the extension and safe as a folder name.
+        /// </summary>
+        public static string StoreKey(bool workshared, string centralPath, string pathName, string title)
+        {
+            string NameOf(string p)
+            {
+                if (string.IsNullOrWhiteSpace(p)) return null;
+                var t = p.Trim().TrimEnd('/', '\\');
+                var i = Math.Max(t.LastIndexOf('/'), t.LastIndexOf('\\'));
+                if (i >= 0) t = t.Substring(i + 1);
+                return t.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase) ? t.Substring(0, t.Length - 4) : t;
+            }
+            var name = (workshared ? NameOf(centralPath) : null) ?? NameOf(pathName) ?? NameOf(title) ?? "model";
+            var bad = System.IO.Path.GetInvalidFileNameChars().Concat("<>:\"/\\|?*").ToArray();   // Windows' set on every platform
+            return string.Concat(name.Select(ch => bad.Contains(ch) || ch < ' ' ? '_' : ch));
+        }
+
         public static List<Clash> Merge(List<Clash> previous, List<Clash> now, Func<Clash, bool> inScope, DateTime time)
         {
             var before = new Dictionary<string, Clash>();

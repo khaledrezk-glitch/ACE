@@ -31,6 +31,7 @@ namespace AceRevitMcp.Coordination
             var loaded = new HashSet<string>(sources.Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
             var withModel = Args.Str(args, "with_model");
             var primaryModel = Args.Str(args, "primary_model");
+            var storedAll = new List<Clash>();
             foreach (var t in tests)
             {
                 var testNotes = new List<string>();
@@ -51,15 +52,21 @@ namespace AceRevitMcp.Coordination
                 if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
                 var stored = Clashes.Load(host, t.Name);
                 DateTime? previousRun = stored.Count > 0 ? stored.Max(c => c.LastSeen) : (DateTime?)null;
-                var merged = ClashLogic.Merge(stored, found, scope, DateTime.Now);
+                var now = DateTime.Now;   // the run's time: the merge stamps what it looked at with it, the run record keeps it
+                var kept = ClashLogic.Merge(stored, found, scope, now);
+                // Only what this run looked at counts (found now, or marked resolved now); other stored results stay stored, apart.
+                var runTime = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase) { [t.Name] = now };
+                var merged = kept.Where(c => InterferenceLogic.Rechecked(c, runTime)).ToList();
+                var notRechecked = kept.Where(c => !InterferenceLogic.Rechecked(c, runTime)).ToList();
+                storedAll.AddRange(notRechecked);
                 try { Clashes.Explain(sources, merged.Where(c => c.Status == "new" && c.Cause == null).ToList(), previousRun, testNotes); }
                 catch (Exception ex) { Log.Warn($"Clash causes: {ex.Message}"); }
                 var testIssues = ClashLogic.Issues(merged);
-                Clashes.Save(host, t.Name, merged);
+                Clashes.Save(host, t.Name, kept);
                 // The run itself, also when it found nothing: a report can then say "0 clashes" instead of "never run".
                 Clashes.SaveRun(host, new ClashRun
                 {
-                    Test = t.Name, Time = DateTime.Now, Level = level, ToleranceMm = t.ToleranceMm, ClearanceMm = t.ClearanceMm,
+                    Test = t.Name, Time = now, Level = level, ToleranceMm = t.ToleranceMm, ClearanceMm = t.ClearanceMm,
                     ACategories = t.A.Categories.Select(c => c.ToString()).ToArray(), BCategories = t.B.Categories.Select(c => c.ToString()).ToArray(),
                     AMaterials = t.A.Materials, BMaterials = t.B.Materials, ExcludeMaterials = t.A.ExcludeMaterials,
                     Filtered = new Dictionary<string, int>(filtered.Counts), Clashes = found.Count, Open = merged.Count(ClashLogic.IsOpen), Complete = complete,
@@ -79,6 +86,7 @@ namespace AceRevitMcp.Coordination
                     ["byPair"] = Group(merged.Where(ClashLogic.IsOpen), c => $"{c.CatA} x {c.CatB}"),
                     ["materials"] = t.A.FiltersMaterial || t.B.FiltersMaterial ? MaterialFilter(t) : null,
                     ["filtered"] = t.A.FiltersMaterial || t.B.FiltersMaterial ? Counts(filtered) : null,
+                    ["stored"] = StoredJson(notRechecked),
                     ["notes"] = new JsonArray(testNotes.Select(n => (JsonNode)n).ToArray()),
                 });
             }
@@ -87,9 +95,14 @@ namespace AceRevitMcp.Coordination
             // Published with the tests not run now (e.g. imported Navisworks tests), so the browser and dashboard keep them.
             var ran = new HashSet<string>(tests.Select(t => t.Name), StringComparer.OrdinalIgnoreCase);
             StatusStore.PublishClashes(host.Title, Clashes.Current(host).Where(c => !ran.Contains(c.Test ?? "")).Concat(all).ToList(), report);
+            if (storedAll.Count > 0) notes.Add($"{storedAll.Count} stored result(s) this run did not look at (other models, levels or scope) stay stored and are not counted as open (see stored).");
+            if (Clashes.TakeMigrationNote() is string moved) notes.Add(moved);
             if (Args.Bool(args, "show")) ClashBrowser.ShowFor(app);
             return new JsonObject
             {
+                ["storeKey"] = Clashes.StoreKey(host),
+                ["stored"] = StoredJson(storedAll),
+                ["notes"] = new JsonArray(notes.Select(n => (JsonNode)n).ToArray()),
                 ["tests"] = perTest,
                 ["topIssues"] = new JsonArray(issues.Take(20).Select(i => (JsonNode)new JsonObject
                 {
@@ -110,6 +123,13 @@ namespace AceRevitMcp.Coordination
                 ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1),
                 ["note"] = "Ids are ids inside the model named in brackets; only ids of this model can be selected here. Status is kept between runs (new, active, resolved, approved; a resolved clash that comes back is new again and counted as reopened). Issues group the clashes of one element that has to move: coordinate issue by issue, not clash by clash.",
             };
+        }
+
+        /// <summary>Stored results a run did not look at: { count, open, models }.</summary>
+        internal static JsonObject StoredJson(IEnumerable<Clash> notRechecked)
+        {
+            var (count, open, models) = InterferenceLogic.Stored(notRechecked);
+            return new JsonObject { ["count"] = count, ["open"] = open, ["models"] = new JsonArray(models.Select(m => (JsonNode)m).ToArray()) };
         }
 
         /// <summary>The material filter of a test, as given: { a: { materials, exclude }, b: { ... } }.</summary>

@@ -127,3 +127,20 @@ ${body || `<tbody><tr><td colspan="${head.length}">${esc(empty)}</td></tr></tbod
 }
 
 export const stem = (model, test, stamp) => fileStem("interference", `${safeName(model)}-${safeName(test)}`, stamp);
+
+/**
+ * Results this run did not re-evaluate (other models, stored earlier): { count, models } over the answer, its tests and
+ * its models; kept out of the open totals by the add-in, said on their own line here.
+ */
+export function storedOf(r) {
+  let count = 0;
+  const models = new Set();
+  const take = (x) => { const s = x?.stored ?? x?.notRechecked; if (s && typeof s === "object") { count += Number(s.count) || 0; for (const m of s.models ?? []) models.add(m); } };
+  take(r);
+  for (const t of [...(r?.tests ?? []), ...(r?.models ?? [])]) take(t);
+  return { count, models: [...models] };
+}
+export function storedLine(r) {
+  const s = storedOf(r);
+  return s.count ? `Stored, not re-checked in this run: ${s.count}${s.models.length ? ` (${s.models.join(", ")})` : ""}; not in the open totals.` : "";
+}

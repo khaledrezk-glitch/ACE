@@ -9,8 +9,9 @@ import { filteredText, materialArgs, materialScope } from "./interference.js";
 export const DEFAULT_TEST = "ST vs ST";
 export const ST_CATEGORIES = ["OST_StructuralColumns", "OST_StructuralFraming", "OST_Walls", "OST_Floors", "OST_StructuralFoundation", "OST_Stairs", "OST_Ramps"];
 export const RULES_FILE = "clash-resolve.json";   // in the vault's rules folder
-export const KINDS = ["join", "switch-join", "cutback", "cope"];
-const DONE_FIELD = { join: "join", "switch-join": "switchJoin", cutback: "cutback", cope: "cope" };
+export const KINDS = ["join", "switch-join", "cutback", "cope", "trim"];
+const DONE_FIELD = { join: "join", "switch-join": "switchJoin", cutback: "cutback", cope: "cope", trim: "trim" };
+export const SCOPES = ["clashing", "all-touching"];
 
 // Words people write in the vault's order -> the Revit category the add-in reads. OST names pass unchanged.
 const ROLE = {
@@ -20,7 +21,52 @@ const ROLE = {
   beam: "OST_StructuralFraming", beams: "OST_StructuralFraming", framing: "OST_StructuralFraming",
   slab: "OST_Floors", slabs: "OST_Floors", floor: "OST_Floors", floors: "OST_Floors",
   stair: "OST_Stairs", stairs: "OST_Stairs", ramp: "OST_Ramps", ramps: "OST_Ramps",
+  "structural foundation": "OST_StructuralFoundation", "structural foundations": "OST_StructuralFoundation",
+  "structural column": "OST_StructuralColumns", "structural columns": "OST_StructuralColumns", "structural framing": "OST_StructuralFraming",
 };
+// The add-in's built-in join priority (strongest first), when neither the call nor the vault gives one.
+export const DEFAULT_ORDER = ["OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming", "OST_Stairs"];
+const NICE = { OST_StructuralFoundation: "Structural Foundations", OST_StructuralColumns: "Structural Columns", OST_Walls: "Walls", OST_Floors: "Floors", OST_StructuralFraming: "Structural Framing", OST_Stairs: "Stairs", OST_Ramps: "Ramps" };
+export const niceCategory = (c) => NICE[c] ?? String(c).replace(/^OST_/, "");
+/** Where the join order came from and what it is: the add-in's echo first, else what the request sent. */
+export function orderLine(r, req, merged = {}) {
+  const source = req?.order_source ? "vault" : req?.order ? "request" : (r?.orderSource ?? "default");
+  const order = r?.order ?? req?.order ?? DEFAULT_ORDER;
+  const from = source === "vault" ? whereText(merged.from?.order, merged.files ?? {}) ?? "the rules file" : source === "request" ? "the request" : "ACE's default";
+  const scope = r?.scope ?? req?.scope ?? "clashing";
+  const sSource = r?.scopeSource ?? req?.scope_source ?? (req?.scope ? "request" : "default");
+  const sFrom = req?.scope_source ? whereText(merged.from?.scope, merged.files ?? {}) ?? "the rules file" : sSource === "request" ? "the request" : "ACE's default";
+  return `Join order (one category priority list, strongest cuts; from ${from}): ${order.map(niceCategory).join(" > ")}. Same category: the larger element cuts.\n` +
+    `Scope (from ${sFrom}): ${scope === "all-touching" ? "every touching pair of the categories" : "only the clashing pairs"}${req?.selection ? ", in the current selection" : ""}. Trim to face: ${req?.trim_to_face ? `on (allowed by ${whereText(merged.from?.trimAllowed, merged.files ?? {}) ?? "the rules"}${req.trim_to_face.max_mm ? `, at most ${req.trim_to_face.max_mm} mm` : ""})` : "off"}.`;
+}
+
+/** The plan per category pair and kind: "Floors x Structural Columns: join 25, switch-join 3" (all-touching can be large). */
+export function pairSummary(plan = []) {
+  const by = new Map();
+  for (const p of plan) {
+    const k = [p.cutterCategory ?? p.aCategory ?? "?", p.cutCategory ?? p.bCategory ?? "?"].map(niceCategory).sort().join(" x ");
+    const g = by.get(k) ?? { n: 0, kinds: {} };
+    g.n++; g.kinds[p.kind] = (g.kinds[p.kind] ?? 0) + 1; by.set(k, g);
+  }
+  return [...by].sort((x, y) => y[1].n - x[1].n).map(([k, g]) => `${k}: ${kindText(g.kinds)}`);
+}
+/** One trim: element, end, length before -> after, trim in mm, the face. */
+/** One trim: element, end, length before -> after, trim in mm, the face (fields as the add-in sends them). */
+export function trimLine(p) {
+  const m = /^trim:(\d+)>(\d+):(\w+)/.exec(String(p.id ?? ""));
+  const el = p.trimmed ?? p.cut ?? p.a ?? m?.[1], owner = p.faceOwner ?? p.cutter ?? p.b ?? m?.[2], end = p.end ?? m?.[3] ?? "end";
+  const cat = p.cutCategory ?? p.aCategory;
+  return `trim ${el}${cat ? ` (${niceCategory(cat)})` : ""} ${end}: ${p.lengthBefore ?? p.lengthBeforeMm ?? "?"} -> ${p.lengthAfter ?? p.lengthAfterMm ?? "?"} mm (trim ${p.trimMm ?? "?"} mm) to ${p.face ?? p.faceOf ?? `the face of ${owner}`}${p.fallbackFor ? ` (only if ${p.fallbackFor} does not clear)` : ""}`;
+}
+/** Trims: planned on their own, or carried by a join as its fallback (the add-in's 1.12.8 shape). */
+export const trimsOf = (plan = []) => [...plan.filter((p) => p.kind === "trim"), ...plan.map((p) => p.trim).filter((t) => t && typeof t === "object")];
+export const droppedOf = (r) => Number(r?.dropped?.notTouching ?? r?.droppedNotTouching ?? 0) || 0;
+/** All-touching scope: what the add-in looked at. */
+export function touchingLine(t) {
+  if (!t) return "";
+  const by = Array.isArray(t.byPair) ? t.byPair.map((x) => `${x.pair ?? `${x.a} x ${x.b}`} ${x.count ?? x.pairs ?? ""}`.trim()) : Object.entries(t.byPair ?? {}).map(([k, v]) => `${k} ${typeof v === "object" ? JSON.stringify(v) : v}`);
+  return `All touching: ${t.candidates ?? "?"} candidate pair(s), ${t.pairs ?? "?"} touching, ${t.right ?? 0} already right; join ${t.join ?? 0}, switch join ${t.switchJoin ?? 0}${by.length ? ` (${by.slice(0, 8).join(", ")}${by.length > 8 ? ", ..." : ""})` : ""}.`;
+}
 
 /** The join order (strongest first) -> OST category names; an entry ACE cannot read is an error, never dropped. */
 export function normaliseOrder(order, where = "order") {
@@ -37,13 +83,59 @@ export function normaliseOrder(order, where = "order") {
   return out;
 }
 
-/** The vault's rules/clash-resolve.json ({ order, steel: { cutback, coping } }) -> { order?, steel? }; invalid -> error. */
+/**
+ * The vault's rules/clash-resolve.json ({ order, scope, trim_to_face, steel }) -> { order?, scope?, trim?, steel? }.
+ * scope: "clashing" (default) | "all-touching"; trim_to_face: { allowed, preview_required, max_mm } (owner-approved
+ * fix kind). An unknown value is an error, never ignored.
+ */
 export function readRules(text, file) {
   let o;
-  try { o = JSON.parse(String(text).replace(/^﻿/, "")); } catch (e) { throw new Error(`${file} is not valid JSON (${e.message}): fix it or remove it.`); }
-  if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error(`${file} must hold an object { order, steel }.`);
+  try { o = JSON.parse(String(text).replace(/^\uFEFF/, "")); } catch (e) { throw new Error(`${file} is not valid JSON (${e.message}): fix it or remove it.`); }
+  if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error(`${file} must hold an object { order, scope, trim_to_face, steel }.`);
   const steel = o.steel == null ? undefined : steelOf(o.steel, `${file} steel`);
-  return { order: normaliseOrder(o.order, `${file} order`), steel };
+  return { order: normaliseOrder(o.order, `${file} order`), scope: scopeOf(o.scope, `${file} scope`), trim: trimOf(o.trim_to_face, `${file} trim_to_face`), steel };
+}
+
+/**
+ * Office rules (clash-resolve.json beside config.json, or config.json "clashResolveRules") under the project vault's
+ * rules/clash-resolve.json (D3): the project wins key by key; trim_to_face and steel merge per sub-key.
+ * office / project: { rules, file } or null -> { rules, from: { order, scope, trim, steel: "office" | "project" }, files }
+ */
+export function mergeRules(office, project) {
+  const o = office?.rules ?? {}, p = project?.rules ?? {};
+  const from = {}, rules = {};
+  for (const k of ["order", "scope"]) {
+    if (p[k] != null) { rules[k] = p[k]; from[k] = "project"; } else if (o[k] != null) { rules[k] = o[k]; from[k] = "office"; }
+  }
+  for (const k of ["trim", "steel"]) {
+    if (o[k] == null && p[k] == null) continue;
+    rules[k] = { ...(o[k] ?? {}), ...(p[k] ?? {}) };
+    from[k] = p[k] && o[k] ? (Object.keys(p[k]).length === Object.keys(rules[k]).length ? "project" : "project over office") : p[k] ? "project" : "office";
+    if (k === "trim") from.trimAllowed = p.trim?.allowed != null ? "project" : "office";
+  }
+  return { rules, from, files: { office: office?.file ?? null, project: project?.file ?? null } };
+}
+const whereText = (src, files) => src === "office" ? `the office file (${files.office})` : src === "project" ? `the project vault (${files.project})`
+  : src === "project over office" ? `the project vault over the office file (${files.project}; ${files.office})` : null;
+
+export function scopeOf(v, where = "scope") {
+  if (v == null) return undefined;
+  if (!SCOPES.includes(v)) throw new Error(`${where}: "${v}" is not a scope ACE knows (use "clashing" or "all-touching").`);
+  return v;
+}
+
+function trimOf(t, where) {
+  if (t == null) return undefined;
+  if (typeof t !== "object" || Array.isArray(t)) throw new Error(`${where} must be { allowed: true|false, preview_required: true|false, max_mm: <number> }.`);
+  const out = {};
+  for (const [k, v] of Object.entries(t)) {
+    if (k.startsWith("_")) continue;
+    if (k === "allowed" || k === "preview_required") { if (typeof v !== "boolean") throw new Error(`${where}.${k} must be true or false.`); out[k] = v; }
+    else if (k === "max_mm") { if (typeof v !== "number" || !(v > 0)) throw new Error(`${where}.max_mm must be a positive number of millimetres.`); out.max_mm = v; }
+    else throw new Error(`${where}: "${k}" is not a setting ACE knows (allowed, preview_required, max_mm).`);
+  }
+  if (out.allowed == null) throw new Error(`${where}.allowed is missing: true or false.`);
+  return out;
 }
 
 function steelOf(s, where) {
@@ -62,6 +154,15 @@ function steelOf(s, where) {
  */
 export function buildRequest(a, rules = {}, version) {
   const order = a.order ? normaliseOrder(a.order) : rules.order;
+  const scope = scopeOf(a.scope, "scope") ?? rules.scope;
+  const scopeSource = a.scope ? null : rules.scope ? "vault" : null;
+  // Trim to a face is approved in the vault only; a call can switch it off, never on.
+  if (a.trim_to_face === true && !rules.trim?.allowed) {
+    const w = rules.from?.trimAllowed === "office" ? `the office file ${rules.files?.office}` : rules.from?.trimAllowed === "project" ? `the vault's rules/${RULES_FILE}` : null;
+    throw new Error(`trim_to_face is not allowed for this project: ${w ? `${w} has trim_to_face.allowed: false` : `neither the vault's rules/${RULES_FILE} nor the office file has trim_to_face`}. Only the owner switches it on there.`);
+  }
+  const trim = rules.trim?.allowed && a.trim_to_face !== false ? { allowed: true, preview_required: rules.trim.preview_required !== false, ...(rules.trim.max_mm ? { max_mm: rules.trim.max_mm } : {}) } : null;
+  const orderSource = a.order ? null : rules.order ? "vault" : null;   // the add-in echoes "request" / "default" itself
   const steel = { ...(rules.steel ?? {}), ...(a.steel ?? {}) };
   const test = a.test ?? DEFAULT_TEST;
   // The ST set only for the default test: another test name ("Arch vs ST") runs as the add-in defines it.
@@ -79,6 +180,11 @@ export function buildRequest(a, rules = {}, version) {
     ...(a.level ? { level: a.level } : {}),
     ...(a.keys?.length ? { keys: a.keys } : {}),
     ...(order ? { order } : {}),
+    ...(orderSource ? { order_source: orderSource } : {}),
+    ...(scope ? { scope } : {}),
+    ...(scopeSource ? { scope_source: scopeSource } : {}),
+    ...(a.selection ? { selection: true } : {}),
+    ...(trim ? { trim_to_face: trim } : {}),
     ...(Object.keys(steel).length ? { steel } : {}),
     block_on_borrowed: true,
     expect_version: version,
@@ -88,7 +194,7 @@ export function buildRequest(a, rules = {}, version) {
 }
 
 /** The plan's identity for the preview gate: the add-in's planHash and every step (ids are opaque, never parsed). */
-export const planIdentity = (r) => ({ hash: r?.planHash ?? null, steps: (r?.plan ?? []).map((p) => [p.id, p.kind, p.a, p.b]) });
+export const planIdentity = (r) => ({ hash: r?.planHash ?? null, steps: (r?.plan ?? []).map((p) => p.kind === "trim" ? [p.id, p.kind, p.a, p.b, p.end ?? null, p.trimMm ?? null] : [p.id, p.kind, p.a, p.b]) });
 /** The add-in refused an apply because its recomputed plan differs from the previewed one (expect_plan). */
 export const planChanged = (r) => r?.code === "plan-changed" || (r?.blocked ?? []).some((b) => b?.code === "plan-changed");
 export const PLAN_CHANGED = { what: "the apply", why: "the model changed since the preview: run the dry run again", how: "run the dry run again, show the user the new plan, then apply", code: "plan-changed" };
@@ -144,7 +250,16 @@ export function replyText(r, { mode, model, test, rolledBack = false, forced = f
   if (ms || filteredText(r?.filtered)) lines.push(`Material filter: ${ms || "none"}${filteredText(r?.filtered) ? `; left out: ${filteredText(r.filtered)} element(s)` : ""}.`);
   const b = r?.before ?? {};
   lines.push(`Before: ${b.clashes ?? "?"} clash(es) in ${b.issues ?? "?"} issue(s)${pairLine(b.byPair) ? `; by pair: ${pairLine(b.byPair)}` : ""}.`);
-  lines.push(`Plan: ${plan.length} change(s): ${kindText(counts)}. Only joins, switched join orders, steel end cutbacks and copes; nothing is deleted, recreated or moved.`);
+  lines.push(`Plan: ${plan.length} change(s): ${kindText(counts)}. Only joins, switched join orders, steel end cutbacks and copes${counts.trim ? ", and trims to a face (approved in the vault)" : ""}; nothing is deleted, recreated or moved${counts.trim ? " (a trim changes only the member's end)" : ""}.`);
+  const pairs = pairSummary(plan);
+  if (pairs.length > 1 || plan.length > 10) lines.push(`By category pair:\n${pairs.slice(0, 15).map((x) => `- ${x}`).join("\n")}${pairs.length > 15 ? `\n- ... ${pairs.length - 15} more (run record)` : ""}`);
+  if (touchingLine(r?.touching)) lines.push(touchingLine(r.touching));
+  if (droppedOf(r)) lines.push(`Not touching, dropped: ${droppedOf(r)} pair(s) in scope that do not touch (no join needed).`);
+  if (Number(r?.dropped?.trim)) lines.push(`Trims dropped: ${r.dropped.trim}.`);
+  const trims = trimsOf(plan);
+  if (trims.length) lines.push(`Trims to a face (${trims.length}; a trim on a join runs only if the join does not clear):\n${trims.slice(0, 50).map((p) => `- ${trimLine(p)}`).join("\n")}${trims.length > 50 ? `\n- ... ${trims.length - 50} more (run record)` : ""}`);
+  const capMm = r?.trimToFace?.maxMm ?? r?.trimToFace?.max_mm;
+  if (capMm && capMm < (scope.trim_to_face?.max_mm ?? 0)) lines.push(`Trim limit: the add-in caps a trim at ${capMm} mm (the rules ask ${scope.trim_to_face.max_mm} mm).`);
   // Steel ends: the method per step and what the probe found writable (read-only plan included), and any join-state change.
   const ends = plan.filter((p) => p.kind === "cutback" || p.kind === "cope");
   if (ends.length) lines.push(`Steel ends:\n${ends.slice(0, 10).map((p) => `- ${p.kind} ${p.a} at ${p.b}: ${p.method ?? "no method"}${p.changesJoinState ? " (CHANGES THE JOIN STATE: allowUnjoin)" : ""}${p.probe ? ` [writable: ${Object.entries(p.probe).filter(([k, v]) => v === true && k !== "joinedTo").map(([k]) => k).join(", ") || "none"}${p.probe.joinedTo ? `; joined to ${p.probe.joinedTo}` : ""}]` : ""}`).join("\n")}${ends.length > 10 ? `\n- ... ${ends.length - 10} more (run record)` : ""}`);
@@ -186,7 +301,10 @@ export function evidenceMarkdown({ model, test, when = localDate(new Date(), { t
   if (r.before?.byPair) section("Clashes before by pair", [pairLine(r.before.byPair)]);
   // Only steps that were made (or would have been): a step Revit refused or a block held is listed under Skipped, not here.
   const skippedIds = new Set((r.skipped ?? []).map((x) => x.id).filter(Boolean));
-  section(rb ? "Changes (would have been made; rolled back)" : "Changes", plan.filter((p) => !skippedIds.has(p.id)).map((p) => `${p.kind}: ${p.a} x ${p.b} (${[p.aCategory, p.bCategory].filter(Boolean).join(" x ")}${p.material ? `, ${p.material}` : ""}${p.level ? `, ${p.level}` : ""})${p.why ? `: ${p.why}` : ""}`));
+  section(rb ? "Trims to a face (would have been made; rolled back)" : "Trims to a face (planned; a join's trim runs only if the join does not clear)", trimsOf(plan).filter((p) => !skippedIds.has(p.id)).map(trimLine));
+  if (doneCounts(r.done).trim) section("Trims made", [`${doneCounts(r.done).trim}`]);
+  if (droppedOf(r)) section("Not touching, dropped", [`${droppedOf(r)} pair(s) in scope did not touch; no join made`]);
+  section(rb ? "Changes (would have been made; rolled back)" : "Changes", plan.filter((p) => !skippedIds.has(p.id) && p.kind !== "trim").map((p) => `${p.kind}: ${p.a} x ${p.b} (${[p.aCategory, p.bCategory].filter(Boolean).join(" x ")}${p.material ? `, ${p.material}` : ""}${p.level ? `, ${p.level}` : ""})${p.why ? `: ${p.why}` : ""}`));
   section("Annotation guard differences", (g?.mismatches ?? []).map((m) => `#${m.element} ${m.what}: ${JSON.stringify(m.before)} -> ${JSON.stringify(m.after)}`));
   section("Dimension values changed on shortened members (references intact; information, not a failure)", changedValues(g).map(valueLine));
   section("New warnings", (w.new ?? []).map((x) => typeof x === "string" ? x : x.text ?? x.message ?? JSON.stringify(x)));
@@ -198,5 +316,7 @@ export function evidenceMarkdown({ model, test, when = localDate(new Date(), { t
   return out.join("\n");
 }
 
+/** The clash store key: the central model's name as the add-in reports it, so runs of local copies connect. */
+export const storeKeyOf = (r, model) => r?.storeKey ?? r?.centralName ?? model;
 export const evidenceName = (model, stamp) => `${fileStem("evidence-clash", model, stamp)}.md`;
 export const recordName = (model, stamp) => `${fileStem("clash-run", model, stamp)}.json`;

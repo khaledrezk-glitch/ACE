@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.12.8 (20 Oct 2026)
+- **Trim limit:** trim_to_face.max_mm defaults to 1000 mm; a rules file may raise it up to 3000 mm (longer trims are report-only, "trim too long").
+- **From a recorded manual solve:** clash_resolve reads the vault's order as one category priority list (e.g.
+  Structural Foundations > Structural Columns > Walls > Floors > Structural Framing, also the built-in default; same
+  category: the larger element cuts) and says where the order came from (request, vault or default); plan steps name
+  their cutter, and capture_method compares the person's join direction with it, with agreement per category pair.
+- **clash_resolve R2 and R3 (approved by the owner):** scope "all-touching" (every touching pair of the categories,
+  not only the clashing ones; selection: true for the current selection) and a new fix kind "trim" (a beam or wall end
+  trimmed to the face it runs into), both from the vault's rules/clash-resolve.json (scope, trim_to_face { allowed,
+  preview_required, max_mm }); a call can switch trim off, never on. The reply groups the plan per category pair, lists
+  every trim (end, length before and after, trim, face), counts the not-touching pairs dropped and says where the order
+  and scope came from; evidence and journal include the trims. Same gate: check, dry run, identical apply.
+- **Office clash-resolve rules:** `%APPDATA%\ACE-RevitMCP\clash-resolve.json` (or config.json "clashResolveRules"),
+  same keys as the vault file; the project vault's file wins key by key (trim_to_face per sub-key); the reply names the
+  file each setting came from; project_rules section "clash-resolve" shows the merged rules; example in
+  bep/clash-resolve.example.json.
+- **Office methods linked to tools:** guides/methods/index.json is the registry (name, skill, version, updated, tools,
+  sourceCase, file) and guides/methods/<name>.md the text; revit_guide lists them ("methods") and reads one
+  ("methods/<name>"); each linked tool's description ends with "Office method: revit_guide methods/<name>" from the
+  registry; a capture case with proposed join rules names the method it would update. First: structural-interference-solving
+  (clash_resolve, run_clash_test, coordination_report, capture_method), version 1.
+- **Clash results not re-checked:** run_clash_test and coordination_report show results from other models and stored
+  results this run did not re-evaluate on their own line ("stored, not re-checked in this run: N"), out of the open
+  totals; interference reports leave such rows out.
+- **Clash store key:** run records, evidence and interference file names use the add-in's store key (the central
+  model's name), so runs on local copies connect; capture_method finds the plan by it.
+- **capture_method:** area, volume and annotation changes are grouped in the case ("Floors: area changed on 3 (sketch
+  edits likely)", "Annotation: dimensions 120 -> 119").
+- **register_update:** a heading with fewer naming fields than most ids and a word ("000-GENERAL") is skipped; an id
+  listed twice in the register appears once in every list, marked "(x2 in register)".
+
 ## 1.12.7 (20 Oct 2026)
 - **register_update, from a test on a real register:** section heading rows are no longer ids (id_pattern from the call
   or the vault's rules/naming.json idPattern; without one, an id needs a digit and a separator and no space, or the

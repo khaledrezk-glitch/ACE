@@ -45,7 +45,7 @@ export function diffsOf(r) {
 // ---- actions by pair type -------------------------------------------------------------------------------------------
 
 const JOIN = { "join-added": "join added", "join-removed": "join removed", "join-order": "join order switched" };
-const SINGLE = { moved: "moved", extension: "end extension changed", offset: "offset changed", type: "type changed", material: "material changed", workset: "workset changed", level: "level changed", parameter: "parameter changed", created: "created", deleted: "deleted", "cope-added": "cope added", "cope-removed": "cope removed" };
+const SINGLE = { area: "area changed", volume: "volume changed", annotation: "annotation changed", moved: "moved", extension: "end extension changed", offset: "offset changed", type: "type changed", material: "material changed", workset: "workset changed", level: "level changed", parameter: "parameter changed", created: "created", deleted: "deleted", "cope-added": "cope added", "cope-removed": "cope removed" };
 
 /**
  * Groups the changes into actions: joins per unordered element pair (counted once), by category pair; the rest per
@@ -71,7 +71,9 @@ export function actionsOf(diffs = []) {
     }
     const what = SINGLE[c.what] ? c.what : "other";
     const label = `${d.category ?? "?"}: ${SINGLE[c.what] ?? c.what}${c.what === "parameter" && c.name ? ` (${c.name})` : c.what === "offset" && c.name ? ` (${c.name})` : c.what === "extension" && c.end ? ` (${c.end})` : ""}`;
-    add(label, { what, label, categories: [d.category] }, { ids: String(d.id), a: String(d.id), b: c.other != null ? String(c.other) : null });
+    add(label, { what, label, categories: [d.category] }, { ids: String(d.id), a: String(d.id), b: c.other != null ? String(c.other) : null,
+      delta: (c.what === "area" || c.what === "volume") && Number.isFinite(+c.after) && Number.isFinite(+c.before) ? +c.after - +c.before : undefined,
+      annotation: c.what === "annotation" ? { before: c.before, after: c.after } : undefined });
   }
   for (const g of groups.values()) {
     if (!JOIN[g.what]) continue;
@@ -84,7 +86,31 @@ export function actionsOf(diffs = []) {
   }
   return [...groups.values()].sort((x, y) => y.count - x.count || x.label.localeCompare(y.label));
 }
-export const actionLine = (g) => `${g.label}: ${g.count}${g.rule ? `; ${g.rule.text} in ${g.rule.count} of ${g.rule.of}` : ""}${g.exceptions?.length ? `; exceptions: ${g.exceptions.slice(0, 5).join(", ")}${g.exceptions.length > 5 ? ", ..." : ""}` : ""} (e.g. ${g.ids.join(", ")})`;
+const SKETCHED = /^(floors|roofs|ceilings|structural foundations)$/i;
+const sum = (g) => g.pairs.reduce((n, p) => n + (p.delta ?? 0), 0);
+/** Area / volume / annotation groups: "Floors: area changed on 3 (sketch edits likely), total -11.000 m2". */
+function measureLine(g) {
+  const cat = g.categories?.[0] ?? "?";
+  if (g.what === "annotation") {
+    const t = {};
+    for (const p of g.pairs) for (const k of Object.keys({ ...(p.annotation?.before ?? {}), ...(p.annotation?.after ?? {}) })) t[k] = (t[k] ?? 0) + (Number(p.annotation?.after?.[k]) || 0) - (Number(p.annotation?.before?.[k]) || 0);
+    const d = Object.entries(t).filter(([, n]) => n).map(([k, n]) => `${k} ${n > 0 ? "+" : ""}${n}`).join(", ");
+    return `${cat}: annotation referencing them changed on ${g.count}${d ? ` (${d})` : ""} (e.g. ${g.ids.join(", ")})`;
+  }
+  const unit = g.what === "area" ? "m2" : "m3";
+  const hint = SKETCHED.test(cat) ? "sketch edits likely" : /walls|framing/i.test(cat) ? "ends or profile changed" : "geometry edited";
+  return `${cat}: ${g.what} changed on ${g.count} (${hint}), total ${sum(g) >= 0 ? "+" : ""}${sum(g).toFixed(3)} ${unit} (e.g. ${g.ids.join(", ")})`;
+}
+/** The model's annotation counts before -> after (start and stop): only the kinds that changed, else "unchanged". */
+export function annotationLine(a) {
+  if (!a || typeof a !== "object") return "";
+  const NAME = { dimensions: "dimensions", spotDimensions: "spot dimensions", spotElevations: "spot elevations", tags: "tags", constraints: "constraints" };
+  const all = Object.entries(a).filter(([, v]) => v && typeof v === "object" && "before" in v);
+  const changed = all.filter(([, v]) => v.before !== v.after);
+  return changed.length ? `Annotation: ${changed.map(([k, v]) => `${NAME[k] ?? k} ${v.before} -> ${v.after}`).join(", ")}.`
+    : all.length ? `Annotation: unchanged (${all.map(([k, v]) => `${NAME[k] ?? k} ${v.after}`).join(", ")}).` : "";
+}
+export const actionLine = (g) => ["area", "volume", "annotation"].includes(g.what) ? measureLine(g) : `${g.label}: ${g.count}${g.rule ? `; ${g.rule.text} in ${g.rule.count} of ${g.rule.of}` : ""}${g.exceptions?.length ? `; exceptions: ${g.exceptions.slice(0, 5).join(", ")}${g.exceptions.length > 5 ? ", ..." : ""}` : ""} (e.g. ${g.ids.join(", ")})`;
 
 // ---- the journal ----------------------------------------------------------------------------------------------------
 
@@ -134,6 +160,8 @@ export function journalCommands(lines = []) {
  */
 export function compareWithPlan(plan = [], diffs = []) {
   const byPair = new Map(), byElem = new Map();
+  const catOf = new Map();
+  for (const d of diffs) { catOf.set(String(d.id), d.category); for (const c of d.changes ?? []) if (c.other != null && c.otherCategory) catOf.set(String(c.other), c.otherCategory); }
   const pk = (x, y) => [String(x), String(y)].sort().join("|");
   for (const d of diffs) for (const c of d.changes ?? []) {
     if (JOIN[c.what] || c.what === "cope-added") {
@@ -146,26 +174,35 @@ export function compareWithPlan(plan = [], diffs = []) {
     const a = String(p.a), b = String(p.b), k = pk(a, b);
     const did = byPair.get(k);
     const elemActs = [...(byElem.get(a) ?? []), ...(byElem.get(b) ?? [])];
-    const planText = p.kind === "cutback" ? `cut back ${a} at ${b}` : p.kind === "cope" ? `cope ${a} at ${b}` : `${a} cuts ${b} (${p.kind})`;
+    // The plan's own cutter (1.12.8: steps carry cutter / cut); older plans meant "a cuts".
+    const cutter = p.cutter != null ? String(p.cutter) : a, cut = cutter === a ? b : a;
+    const planText = p.kind === "trim" ? `trim ${a} to the face of ${b}` : p.kind === "cutback" ? `cut back ${a} at ${b}` : p.kind === "cope" ? `cope ${a} at ${b}` : `${cutter} cuts ${cut} (${p.kind})`;
+    const cats = [p.cutterCategory ?? p[cutter === a ? "aCategory" : "bCategory"] ?? catOf.get(cutter) ?? "?", p.cutCategory ?? p[cutter === a ? "bCategory" : "aCategory"] ?? catOf.get(cut) ?? "?"];
     let person = "nothing", verdict = "planned, not done";
     if (did) {
       used.add(k);
       person = JOIN[did.what] ? `${JOIN[did.what]}${did.cutter ? `, ${did.cutter} cuts` : ""}` : "cope added";
-      if ((p.kind === "join" || p.kind === "switch-join") && JOIN[did.what] && did.what !== "join-removed") verdict = did.cutter === a ? "agree" : "differs";
+      if ((p.kind === "join" || p.kind === "switch-join") && JOIN[did.what] && did.what !== "join-removed") verdict = did.cutter === cutter ? "agree" : "differs";
       else if (p.kind === "cope" && did.what === "cope-added") verdict = "agree";
       else verdict = "differs";
     } else if (elemActs.length) {
       person = [...new Set(elemActs)].map((w) => SINGLE[w] ?? w).join(", ");
-      verdict = p.kind === "cutback" && (byElem.get(a) ?? []).includes("extension") ? "agree" : "differs";
+      verdict = (p.kind === "cutback" || p.kind === "trim") && (byElem.get(a) ?? []).some((w) => w === "extension" || w === "moved") ? "agree" : "differs";
       used.add(`e|${a}`); used.add(`e|${b}`);
     }
-    rows.push({ a, b, plan: planText, person, verdict });
+    rows.push({ a, b, plan: planText, person, verdict, pair: [...cats].sort().join(" x "), join: p.kind === "join" || p.kind === "switch-join" });
   }
   for (const [k, did] of byPair) if (!used.has(k)) rows.push({ a: did.a, b: did.b, plan: "-", person: JOIN[did.what] ?? "cope added", verdict: "not planned" });
-  const counts = {};
-  for (const r of rows) counts[r.verdict] = (counts[r.verdict] ?? 0) + 1;
-  return { rows, counts };
+  const counts = {}, byCategoryPair = {};
+  for (const r of rows) {
+    counts[r.verdict] = (counts[r.verdict] ?? 0) + 1;
+    if (r.join && (r.verdict === "agree" || r.verdict === "differs")) { const g = byCategoryPair[r.pair] ??= { agree: 0, differs: 0 }; g[r.verdict]++; }
+  }
+  return { rows, counts, byCategoryPair };
 }
+
+/** "Floors x Structural Columns: agree 2, differs 25; ..." (joins where the order matters). */
+export const pairAgreement = (by = {}) => Object.entries(by).sort((x, y) => (y[1].agree + y[1].differs) - (x[1].agree + x[1].differs)).map(([k, v]) => `${k}: agree ${v.agree}, differs ${v.differs}`).join("; ");
 
 // ---- the case record ------------------------------------------------------------------------------------------------
 
@@ -175,7 +212,7 @@ export const caseStem = (date, label) => `${date}-${safeName(label).replace(/\s+
 export function caseMarkdown(c) {
   const out = [`# Method case: ${c.label}`, "", `Model ${c.model}; captured ${c.startedAt} to ${c.stoppedAt}${c.elements != null ? `; ${c.elements} element(s) in scope` : ""}${c.categories?.length ? ` (${c.categories.join(", ")})` : ""}.`,
     `Changed elements: ${c.diffs.length}. Recorded by ACE capture_method; this is a record of what a person did, not a rule.`, "", "## Actions by pair type", ""];
-  out.push(...(c.actions.length ? c.actions.map((g) => `- ${actionLine(g)}`) : ["- No element changed."]), "");
+  out.push(...(c.actions.length ? c.actions.map((g) => `- ${actionLine(g)}`) : ["- No element changed."]), ...(annotationLine(c.annotation) ? [`- ${annotationLine(c.annotation)}`] : []), "");
   out.push("## Revit commands (journal)", "");
   if (c.journal.sequence.length) out.push(`- In order: ${c.journal.sequence.map((s) => `${s.command}${s.times > 1 ? ` x${s.times}` : ""}`).join(" > ")}`, `- Totals: ${Object.entries(c.journal.totals).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ")}`);
   else out.push("- No commands found in the journal lines.");
@@ -183,6 +220,7 @@ export function caseMarkdown(c) {
   out.push("");
   if (c.comparison) {
     out.push(`## Compared with the clash_resolve plan (${c.comparison.file})`, "", `${Object.entries(c.comparison.counts).map(([k, n]) => `${k} ${n}`).join(", ") || "nothing to compare"}.`, "",
+      ...(Object.keys(c.comparison.byCategoryPair ?? {}).length ? [`Join direction per category pair: ${pairAgreement(c.comparison.byCategoryPair)}.`, ""] : []),
       "| A | B | plan | person | verdict |", "|---|---|---|---|---|", ...c.comparison.rows.slice(0, 60).map((r) => `| ${r.a} | ${r.b} | ${r.plan} | ${r.person} | ${r.verdict} |`), "");
     if (c.comparison.rows.length > 60) out.push(`${c.comparison.rows.length - 60} more row(s) in the JSON record.`, "");
   }
@@ -190,5 +228,7 @@ export function caseMarkdown(c) {
     "Nothing below is applied. A person confirms each line; only then does it go into the vault (e.g. rules/clash-resolve.json order).", "");
   const rules = c.actions.filter((g) => g.rule).map((g) => `- ${g.rule.text.replace(" cut ", " before ")} in the join order (${g.label.split(":")[0]}: ${g.rule.text} in ${g.rule.count} of ${g.rule.of} pair(s)${g.exceptions.length ? `; ${g.exceptions.length} exception(s)` : ""})`);
   out.push(...(rules.length ? rules : ["- None proposed: no consistent join direction between two categories."]), "");
+  // The join-order rules concern clash_resolve: say which office method(s) a confirmed rule would update.
+  if (rules.length && c.methods?.length) out.push(...c.methods.map((m) => `Would update office method ${m.name} (v${m.version}) once confirmed (revit_guide methods/${m.name}).`), "");
   return out.join("\n");
 }

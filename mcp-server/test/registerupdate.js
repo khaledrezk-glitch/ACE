@@ -143,5 +143,26 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   await assert.rejects(updateRegister(fs.readFileSync(f4), { id_column: "Doc", stage_columns: ["Stage"], submission_date: "2026-10-20", label: "S", files: ["TST-DOC-001+TST-DOC-002.pdf"] }),
     /looks wrong \(Doc\): 1 delivered file\(s\) match more than one id \(e\.g\. TST-DOC-001\+TST-DOC-002\.pdf -> TST-DOC-001, TST-DOC-002\)/);
 }
+
+// 1.12.8: a heading with an id-like number ("000-GENERAL") is skipped; an id listed twice is one entry everywhere.
+{
+  const w5 = new ExcelJS.Workbook();
+  const s5 = w5.addWorksheet("TST_REG5");
+  s5.getRow(1).values = ["Doc", "Stage"];
+  ["000-GENERAL", "TST-P1-AR-ZZ-DR-100001", "TST-P1-AR-ZZ-DR-100002", "TST-P1-ST-ZZ-RP-900400", "TST-P1-ST-ZZ-RP-900400", "TST-P1-AR-ZZ-DR-100009", "TST-P1-AR-ZZ-DR-100009", "TST-P1-AR-ZZ-DR-100010",
+    ...Array.from({ length: 20 }, (_, i) => `TST-P1-AR-ZZ-DR-2000${10 + i}`)]
+    .forEach((id, i) => { s5.getRow(2 + i).values = [id]; });
+  const f5 = path.join(tmp, "TST register 5.xlsx");
+  await w5.xlsx.writeFile(f5);
+  const { report: r5 } = await updateRegister(fs.readFileSync(f5), { id_column: "Doc", stage_columns: ["Stage"], submission_date: "2026-10-20", label: "S5",
+    files: ["TST-P1-AR-ZZ-DR-100001.pdf", "TST-P1-ST-XX1-RP-900400.pdf"], force_id_column: false });
+  assert.deepEqual(r5.skipped, [{ row: 2, value: "000-GENERAL" }], "a heading with fewer fields and a word is skipped");
+  assert.deepEqual(r5.near.map((x) => x.id), ["TST-P1-ST-ZZ-RP-900400"], "listed once");
+  assert.deepEqual(r5.notDelivered.slice(0, 3), ["TST-P1-AR-ZZ-DR-100002", "TST-P1-AR-ZZ-DR-100009", "TST-P1-AR-ZZ-DR-100010"], "listed once");
+  assert.equal(r5.notDelivered.length, 23);
+  const t5 = reportText(r5, { mode: "check" });
+  assert.match(t5, /TST-P1-ST-ZZ-RP-900400 \(x2 in register\) ~ TST-P1-ST-XX1-RP-900400\.pdf/);
+  assert.match(t5, /In the register but not delivered: 23: TST-P1-AR-ZZ-DR-100002; TST-P1-AR-ZZ-DR-100009 \(x2 in register\); TST-P1-AR-ZZ-DR-100010;/);
+}
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("registerupdate test passed");

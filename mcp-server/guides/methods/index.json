@@ -1,0 +1,14 @@
+{
+  "about": "Office methods (Claude skills) linked to ACE tools. Adding a method: its <name>.md here and one entry below. Each linked tool's description gets \"Office method: revit_guide methods/<name>\" from this file.",
+  "methods": [
+    {
+      "name": "structural-interference-solving",
+      "skill": "structural-interference-solving",
+      "version": 1,
+      "updated": "2026-10-20",
+      "tools": ["clash_resolve", "run_clash_test", "coordination_report", "capture_method"],
+      "sourceCase": "A senior engineer's manual solve of the structural self-interferences of one structural model of a live project (72 overlaps down to 1), recorded and compared with clash_resolve.",
+      "file": "structural-interference-solving.md"
+    }
+  ]
+}

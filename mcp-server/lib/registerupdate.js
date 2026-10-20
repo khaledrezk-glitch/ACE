@@ -94,7 +94,15 @@ export function splitIds(all, idPattern) {
   for (const x of all) counts.set(shape(x.id), (counts.get(shape(x.id)) ?? 0) + 1);
   const [common, n] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
   const dominant = n >= 3 && n >= all.length / 2 ? common : null;
-  const isId = (id) => (/\d/.test(id) && SEP.test(id) && !/\s/.test(id)) || shape(id) === dominant;
+  // The field count most rows share ("TST-P1-AR-ZZ-DR-100001": 6): a heading like "000-GENERAL" has fewer.
+  const nf = (id) => String(id).split(/[-_.]/).length;
+  const fc = new Map();
+  for (const x of all) fc.set(nf(x.id), (fc.get(nf(x.id)) ?? 0) + 1);
+  const [fields, fn] = [...fc].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+  const major = fn >= 3 && fn >= all.length / 2 ? fields : null;
+  const isId = (id) => ((/\d/.test(id) && SEP.test(id) && !/\s/.test(id)) || shape(id) === dominant)
+    && !(major && nf(id) !== major)
+    && !(major && /[A-Za-z]{4,}/.test(id) && nf(id) < major);
   return { rows: all.filter((x) => isId(x.id)), skipped: all.filter((x) => !isId(x.id)) };
 }
 
@@ -182,7 +190,8 @@ export async function updateRegister(buf, o) {
   }
   // Near matches: a delivered file and a register id with the same final number block, one naming field different.
   // Never matched by themselves: "probably the same, confirm"; accept_near: [ids] sets them.
-  const near = nearMatches(rows.map((x) => x.id).filter((id) => !m.matched.has(id)), m.unmatched);
+  const uniqueIds = [...new Map(rows.map((x) => [lc(x.id), x.id])).values()];
+  const near = nearMatches(uniqueIds.filter((id) => !m.matched.has(id)), m.unmatched);
   const accepted = new Set((o.accept_near ?? []).map(lc));
   for (const n of near) if (accepted.has(lc(n.id))) { m.matched.set(n.id, [...(m.matched.get(n.id) ?? []), n.file]); n.accepted = true; }
   const nearFiles = new Set(near.map((n) => n.file));
@@ -253,7 +262,8 @@ export async function updateRegister(buf, o) {
   ws.name = label;
   const report = {
     sheet: oldName, label, submissionDate: day(sub), rows: rows.length, stageColumn: setCols.map(([, c]) => header(c)).join(", "),
-    matched: set, deliveredNotInRegister: m.unmatched, notDelivered: rows.filter((x) => !m.matched.has(x.id) && !near.some((n) => n.id === x.id)).map((x) => x.id),
+    matched: set, deliveredNotInRegister: m.unmatched, notDelivered: uniqueIds.filter((id) => !m.matched.has(id) && !near.some((n) => n.id === id)),
+    timesInRegister: Object.fromEntries(uniqueIds.map((id) => [id, rows.filter((x) => lc(x.id) === lc(id)).length]).filter(([, n]) => n > 1)),
     near: near.filter((n) => !n.accepted).map(({ id, file, differs }) => ({ id, file, differs })), nearAccepted: near.filter((n) => n.accepted).map(({ id, file }) => ({ id, file })),
     skipped: skipped.map((x) => ({ row: x.r, value: x.id })),
     cleared, formulaDates, ambiguous: m.ambiguous, duplicateIds: [...new Set(dupIds)], formulas, notDates,
@@ -264,15 +274,16 @@ export async function updateRegister(buf, o) {
 
 /** The report in words (counts first, then the first items of each list). */
 export function reportText(rep, { mode, output }) {
+  const xn = (id) => rep.timesInRegister?.[id] > 1 ? `${id} (x${rep.timesInRegister[id]} in register)` : id;
   const few = (l, f = (x) => x) => l.length ? `: ${l.slice(0, 10).map(f).join("; ")}${l.length > 10 ? `; ... ${l.length - 10} more` : ""}` : "";
   return [`REGISTER UPDATE ${rep.sheet} -> "${rep.label}" for the submission of ${rep.submissionDate} (${mode === "write" ? `written to ${output}` : "check, nothing written"}).`,
     `${rep.rows} register row(s); stage column(s) ${rep.stageColumn}.`,
-    `Matched (delivered, date set): ${new Set(rep.matched.map((x) => x.id)).size}${few(rep.matched.filter((x, i, l) => l.findIndex((y) => y.id === x.id) === i), (x) => `${x.id} <- ${x.files.join(", ")}`)}.`,
-    rep.near.length ? `Probably the same, confirm (one naming field differs; set only with accept_near: [ids]): ${rep.near.length}${few(rep.near, (x) => `${x.id} ~ ${x.file} (${x.differs})`)}.` : "",
+    `Matched (delivered, date set): ${new Set(rep.matched.map((x) => x.id)).size}${few(rep.matched.filter((x, i, l) => l.findIndex((y) => y.id === x.id) === i), (x) => `${xn(x.id)} <- ${x.files.join(", ")}`)}.`,
+    rep.near.length ? `Probably the same, confirm (one naming field differs; set only with accept_near: [ids]): ${rep.near.length}${few(rep.near, (x) => `${xn(x.id)} ~ ${x.file} (${x.differs})`)}.` : "",
     rep.nearAccepted.length ? `Near matches accepted (date set): ${rep.nearAccepted.map((x) => `${x.id} <- ${x.file}`).join("; ")}.` : "",
     rep.skipped.length ? `Headings/skipped (not ids): ${rep.skipped.length}${few(rep.skipped, (x) => `row ${x.row} "${x.value}"`)}.` : "",
     `Delivered but not in the register: ${rep.deliveredNotInRegister.length}${few(rep.deliveredNotInRegister)}.`,
-    `In the register but not delivered: ${rep.notDelivered.length}${few(rep.notDelivered)}.`,
+    `In the register but not delivered: ${rep.notDelivered.length}${few(rep.notDelivered, xn)}.`,
     `Dates later than the submission, cleared: ${rep.cleared.length}${few(rep.cleared, (x) => `${x.id} ${x.column} ${x.was}`)}.`,
     rep.ambiguous.length ? `Ambiguous file names (match several ids, all set): ${rep.ambiguous.map((a) => `${a.file} -> ${a.ids.join(", ")}`).join("; ")}.` : "",
     rep.duplicateIds.length ? `Ids listed twice in the register: ${rep.duplicateIds.join(", ")}.` : "",

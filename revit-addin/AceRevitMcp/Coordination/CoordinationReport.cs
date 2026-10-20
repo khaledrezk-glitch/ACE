@@ -34,10 +34,14 @@ namespace AceRevitMcp.Coordination
             if (Args.Bool(args, "rerun")) ClashCommands.Run(app, new JsonObject { ["test"] = Args.Str(args, "test") ?? "all" });
 
             var test = Args.Str(args, "test");
-            var clashes = Clashes.Current(host);
-            if (test != null) clashes = clashes.Where(c => string.Equals(c.Test, test, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (clashes.Count == 0)
+            var current = Clashes.Current(host);
+            if (test != null) current = current.Where(c => string.Equals(c.Test, test, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (current.Count == 0)
                 throw new CommandException("No clash results for this model yet. Run a clash test first (run_clash_test), or call again with rerun: true.");
+            // Only what the latest run of each test looked at counts; other stored results are reported apart (stored).
+            var latestRuns = InterferenceLogic.LatestRuns(Clashes.LoadRuns(host));
+            var clashes = current.Where(c => InterferenceLogic.Rechecked(c, latestRuns)).ToList();
+            var notRechecked = current.Where(c => !InterferenceLogic.Rechecked(c, latestRuns)).ToList();
 
             var issues = ClashLogic.Issues(clashes);
             var max = Math.Max(1, Math.Min(40, Args.Int(args, "max_issues", 12)));
@@ -63,8 +67,12 @@ namespace AceRevitMcp.Coordination
             if (Args.Bool(args, "open", false))
                 try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(report) { UseShellExecute = true }); } catch { }
 
+            if (notRechecked.Count > 0) notes.Add($"{notRechecked.Count} stored result(s) the latest runs did not look at are not counted (see stored).");
+            if (Clashes.TakeMigrationNote() is string moved) notes.Add(moved);
             return new JsonObject
             {
+                ["storeKey"] = Clashes.StoreKey(host),
+                ["stored"] = ClashCommands.StoredJson(notRechecked),
                 ["htmlReport"] = report,
                 ["excelList"] = csv,
                 ["issues"] = issues.Count,
@@ -166,12 +174,14 @@ namespace AceRevitMcp.Coordination
             try { var p = BasePoint.GetProjectBasePoint(host).Position; origin = (Lengths.Mm(p.X), Lengths.Mm(p.Y), Lengths.Mm(p.Z)); }
             catch (Exception ex) { notes.Add("The project base point could not be read: coordinates are internal. " + ex.Message); }
 
-            var rows = InterferenceLogic.Rows(clashes, origin, names);
+            var latestRuns = InterferenceLogic.LatestRuns(runs);
+            var rows = InterferenceLogic.Rows(clashes, origin, names, latestRuns);
+            var notRechecked = clashes.Where(c => !InterferenceLogic.Rechecked(c, latestRuns)).ToList();
             var pictures = new Dictionary<string, string>(StringComparer.Ordinal);
             if (active && Args.Bool(args, "pictures", false))
             {
                 var max = Math.Max(1, Math.Min(40, Args.Int(args, "max_issues", 12)));
-                var shown = ClashLogic.Issues(clashes).Take(max).ToList();
+                var shown = ClashLogic.Issues(clashes.Where(c => InterferenceLogic.Rechecked(c, latestRuns)).ToList()).Take(max).ToList();
                 var time = DateTime.Now;
                 var safe = string.Concat(host.Title.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
                 var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ACE Insights", safe);
@@ -185,7 +195,8 @@ namespace AceRevitMcp.Coordination
             var tests = clashes.Select(c => c.Test).Concat(runs.Select(r => r.Test)).Where(t => t != null).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t, StringComparer.Ordinal).ToList();
             var result = new JsonObject
             {
-                ["model"] = host.Title, ["test"] = test ?? string.Join(", ", tests), ["tests"] = new JsonArray(tests.Select(t => (JsonNode)t).ToArray()),
+                ["model"] = host.Title, ["storeKey"] = Clashes.StoreKey(host), ["stored"] = ClashCommands.StoredJson(notRechecked),
+                ["test"] = test ?? string.Join(", ", tests), ["tests"] = new JsonArray(tests.Select(t => (JsonNode)t).ToArray()),
                 ["run"] = InterferenceLogic.RunDate(clashes, runs.Take(test == null ? int.MaxValue : 1)),
                 ["runs"] = new JsonArray(runs.Select(RunJson).ToArray()),
                 ["coordinates"] = "project coordinates (relative to the project base point), metres",
@@ -195,7 +206,7 @@ namespace AceRevitMcp.Coordination
                     ["issue"] = r.Issue, ["issueTitle"] = r.IssueTitle, ["issueKey"] = r.IssueKey, ["clashKey"] = r.ClashKey, ["test"] = r.Test, ["status"] = r.Status,
                     ["aId"] = r.AId, ["aModel"] = r.AModel, ["aCategory"] = r.ACategory, ["aFamily"] = r.AFamily, ["aType"] = r.AType,
                     ["bId"] = r.BId, ["bModel"] = r.BModel, ["bCategory"] = r.BCategory, ["bFamily"] = r.BFamily, ["bType"] = r.BType,
-                    ["level"] = r.Level, ["depthMm"] = r.DepthMm, ["x"] = r.X, ["y"] = r.Y, ["z"] = r.Z, ["responsible"] = r.Responsible,
+                    ["level"] = r.Level, ["depthMm"] = r.DepthMm, ["x"] = r.X, ["y"] = r.Y, ["z"] = r.Z, ["responsible"] = r.Responsible, ["rechecked"] = r.Rechecked,
                     ["picture"] = r.IssueKey != null && pictures.TryGetValue(r.IssueKey, out var pic) ? pic : null,
                 }).ToArray()),
                 ["notes"] = new JsonArray(notes.Select(x => (JsonNode)x).ToArray()),

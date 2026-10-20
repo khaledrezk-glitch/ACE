@@ -25,6 +25,7 @@ import * as Capture from "./lib/capture.js";
 import * as RegisterUpdate from "./lib/registerupdate.js";
 import * as ViewFill from "./lib/viewfill.js";
 import * as Deliverables from "./lib/deliverables.js";
+import * as Methods from "./lib/methods.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
@@ -44,7 +45,10 @@ const server = new McpServer(
  * Registers a tool whose failures become readable tool errors, and logs every call locally. A client cancel stops the
  * wait for Revit; while a long call runs, a progress note every 15 s keeps a client that asked for progress waiting.
  */
+const METHOD_LIST = Methods.registry();   // office methods: the linked tools' descriptions end with their method
 function tool(name, config, handler) {
+  const method = Methods.descriptionLine(name, METHOD_LIST);
+  if (method) config = { ...config, description: `${config.description} ${method}.` };
   server.registerTool(name, config, async (args, extra) => {
     const started = Date.now();
     const token = extra?._meta?.progressToken;
@@ -216,8 +220,19 @@ tool("run_clash_test", {
   if (sources) return text(await callRevit("coordination_sources", {}, 60));
   if (stored) return text(await callRevit("clash_results", {}, 60));
   if (import_report) return text(await callRevit("import_clash_report", { path: import_report, test: a.test, show: a.show }, 600));
-  return text(await callRevit("run_clash_test", a, 1800));
+  return withStored(await callRevit("run_clash_test", a, 1800));
 });
+
+/** A clash answer plus, on its own line, what this run did not re-check (other models, stored results). */
+function withStored(r) {
+  const out = text(r);
+  const line = Interference.storedLine(r);
+  if (line) {
+    const open = (r?.tests ?? []).reduce((n, t) => n + (Number(t.open) || 0), 0);
+    out.content.push({ type: "text", text: `${r?.tests?.length ? `Open in this run: ${open}.\n` : ""}${line}` });
+  }
+  return out;
+}
 
 tool("set_clash_status", {
   title: "Approve or reopen clashes",
@@ -367,7 +382,7 @@ tool("coordination_report", {
   },
   annotations: benign,
 }, async ({ out_dir, ...a }) => {
-  if (!a.interference) return text(await callRevit("coordination_report", a, 900));
+  if (!a.interference) return withStored(await callRevit("coordination_report", a, 900));
   if (!out_dir) throw new RevitError("interference: true needs out_dir: the folder the user wants the report in.");
   return interferenceReport(await callRevit("coordination_report", a, 900), a, out_dir);
 });
@@ -386,16 +401,18 @@ function interferenceReport(answer, a, outDir) {
     throw new RevitError(`Revit answered without interference rows: the add-in in Revit is older than ${VERSION} (install the same ACE version), or run run_clash_test first.`);
   const b = brand();
   const out = sets.map((m) => {
-    const rows = m.rows ?? [];
+    // Rows this run did not re-check (rechecked: false) stay out of the report and its totals; counted on their own.
+    const rows = (m.rows ?? []).filter((x) => x.rechecked !== false);
+    const notRechecked = (m.rows ?? []).length - rows.length + (Interference.storedOf(m).count || 0);
     const model = m.model ?? answer?.model ?? "model", test = m.test ?? answer?.test ?? a.test ?? "all";
-    const name = Interference.stem(model, test, stamp);
+    const name = Interference.stem(m.storeKey ?? answer?.storeKey ?? model, test, stamp);
     const o = { model, test, when, run: m.run, filters, filtered: m.filtered, brand: b };
     const files = [writeOut(outDir, `${name}.html`, Interference.html(rows, o)), writeOut(outDir, `${name}.csv`, Interference.csv(rows)), writeOut(outDir, `${name}.xlsx`, Interference.workbook(rows, o))];
     const s = Interference.summarise(rows);
-    return { model, test, clashes: s.clashes, issues: s.issues, byStatus: s.byStatus, byPair: s.byPair, ...(m.filtered ? { filtered: m.filtered } : {}), files };
+    return { model, test, clashes: s.clashes, issues: s.issues, byStatus: s.byStatus, byPair: s.byPair, ...(m.filtered ? { filtered: m.filtered } : {}), ...(notRechecked ? { notRechecked } : {}), files };
   });
   const lines = out.map((m) => `Interference report ${m.model} (${m.test}): ${m.clashes ? `${m.clashes} clash(es) in ${m.issues} issue(s)` : "0 interferences found (the report is written all the same)"}; by status ${Object.entries(m.byStatus).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}; ` +
-    `by pair ${Object.entries(m.byPair).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}.${m.filtered && Interference.filteredText(m.filtered) ? ` Left out by the material filter: ${Interference.filteredText(m.filtered)}.` : ""}\n${m.files.map((f) => `- ${f}`).join("\n")}`);
+    `by pair ${Object.entries(m.byPair).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}.${m.filtered && Interference.filteredText(m.filtered) ? ` Left out by the material filter: ${Interference.filteredText(m.filtered)}.` : ""}${m.notRechecked ? ` Stored, not re-checked in this run: ${m.notRechecked}; not in these totals.` : ""}\n${m.files.map((f) => `- ${f}`).join("\n")}`);
   const res = text({ filters, reports: out });
   res.content.push({ type: "text", text: `${lines.join("\n")}\nFilters: ${filters}. Give the user the file paths (the HTML is for the client; the CSV and xlsx are the same rows).` });
   return res;
@@ -442,12 +459,18 @@ const guideTopics = () => fs.readdirSync(GUIDES_DIR).filter((f) => f.endsWith(".
 
 tool("revit_guide", {
   title: "Expert guide",
-  description: `Expert guidance for hard tasks: verified Revit 2025 API patterns and how to run ACE's workflows. Topics: ${guideTopics().join(", ")}.`,
+  description: `Expert guidance for hard tasks: verified Revit 2025 API patterns and how to run ACE's workflows. Topics: ${guideTopics().join(", ")}; methods (the office methods, then methods/<name>).`,
   inputSchema: { topic: z.string().optional() },
   annotations: readOnly,
 }, async ({ topic }) => {
+  if (topic === "methods") return text(Methods.listText(METHOD_LIST));
+  if (topic?.startsWith("methods/")) {
+    const body = Methods.read(topic.slice(8), METHOD_LIST);
+    if (!body) throw new RevitError(`No office method '${topic}'. ${Methods.listText(METHOD_LIST)}`);
+    return text(body);
+  }
   const topics = guideTopics();
-  if (!topic) return text(`Available guides: ${topics.join(", ")}`);
+  if (!topic) return text(`Available guides: ${topics.join(", ")}\n${Methods.listText(METHOD_LIST)}`);
   const match = topics.find((t) => t === topic || t.startsWith(topic.toLowerCase()));
   if (!match) throw new RevitError(`No guide '${topic}'. Available: ${topics.join(", ")}`);
   return text(fs.readFileSync(path.join(GUIDES_DIR, `${match}.md`), "utf8"));
@@ -704,11 +727,18 @@ tool("project_rules", {
   title: "Project rules in force",
   description: "Which rules apply to the open model and where they come from: the project requirements file (project-requirements.json, found beside the central model or mapped in config.json \"projects\" for cloud models) merged over the office files (check set, worksets, clash ranks), project wins key by key. Read-only. section: checks | presentation | worksets | clash returns that section's merged rules; include_rules: true returns all of them.",
   inputSchema: {
-    section: z.enum(["checks", "presentation", "worksets", "clash"]).optional(),
+    section: z.enum(["checks", "presentation", "worksets", "clash", "clash-resolve"]).optional(),
     include_rules: z.boolean().optional(),
+    vault: z.string().optional().describe("clash-resolve: project folder or its ACE Vault (default: the open model's)"),
   },
   annotations: readOnly,
-}, async (a) => text(await callRevit("project_rules", a, 30)));
+}, async ({ vault, ...a }) => {
+  if (a.section !== "clash-resolve") return text(await callRevit("project_rules", a, 30));
+  // clash_resolve's rules (server side): the office file under the project vault's, project first, with their sources.
+  const { merged } = await clashRules({ vault });
+  return text({ section: "clash-resolve", rules: { ...merged.rules, trim_to_face: merged.rules.trim, trim: undefined }, from: merged.from, files: merged.files,
+    defaultOrder: ClashResolve.DEFAULT_ORDER, note: "The project vault's rules/clash-resolve.json wins key by key over the office file; trim_to_face merges per sub-key; a call can narrow (trim off, scope), never switch trim on." });
+});
 
 // ---------------------------------------------------------------------------------------------
 // Requirements vault (V1, V2): documents, requirement records and decisions for one project
@@ -1219,10 +1249,10 @@ tool("capture_method", {
   const lines = r?.journalLines ?? r?.journal?.lines ?? [];
   const journalCmds = Capture.journalCommands(lines);
   const truncated = r?.journalTruncated ?? r?.journal?.truncated;
-  const stored = await latestClashPlan(a, r?.model ?? "model");
+  const stored = await latestClashPlan(a, ClashResolve.storeKeyOf(r, r?.model ?? "model"));
   const comparison = stored ? { file: stored.file, ...Capture.compareWithPlan(stored.plan, diffs) } : null;
-  const c = { label: r?.label ?? a.label ?? "case", model: r?.model, startedAt: r?.startedAt, stoppedAt: r?.stoppedAt, elements: r?.elements ?? r?.counts?.before, categories: r?.categories,
-    diffs, actions, journal: journalCmds, journalNote: truncated ? "The journal lines were cut (more than 5000); the command list is incomplete." : !lines.length ? "No journal lines came back (journal not found?)." : null, comparison };
+  const c = { methods: Methods.forTool("clash_resolve", METHOD_LIST).map((m) => ({ name: m.name, version: m.version ?? 1 })), label: r?.label ?? a.label ?? "case", model: r?.model, startedAt: r?.startedAt, stoppedAt: r?.stoppedAt, elements: r?.elements ?? r?.counts?.before, categories: r?.categories,
+    annotation: r?.annotation ?? r?.annotations ?? null, diffs, actions, journal: journalCmds, journalNote: truncated ? "The journal lines were cut (more than 5000); the command list is incomplete." : !lines.length ? "No journal lines came back (journal not found?)." : null, comparison };
   // The add-in has already ended the capture (its archive keeps the raw diff): the case must land somewhere.
   const archive = r?.archive ?? r?.stored ?? r?.archivePath ?? null;
   let { dir, note } = await casesFolder(a).catch(() => ({ dir: path.join(REPORTS_DIR, "cases"), note: "the case folder could not be found: written to the reports folder." }));
@@ -1236,12 +1266,13 @@ tool("capture_method", {
     json = writeOut(fallback, `${stem}.json`, caseJson); md = writeOut(fallback, `${stem}.md`, Capture.caseMarkdown(c));
   }
   journal({ title: `Captured method: ${c.label}`, outcome: `${diffs.length} changed element(s), ${actions.length} action group(s)`, details: { model: c.model, files: [json, md] } });
-  const out = text({ label: c.label, model: c.model, changedElements: diffs.length, actions: actions.map((g) => ({ label: g.label, count: g.count, rule: g.rule?.text, exceptions: g.exceptions })), commands: journalCmds.totals, comparison: comparison && { file: comparison.file, counts: comparison.counts }, files: [json, md] });
+  const out = text({ label: c.label, model: c.model, changedElements: diffs.length, actions: actions.map((g) => ({ label: g.label, count: g.count, rule: g.rule?.text, exceptions: g.exceptions })), commands: journalCmds.totals, comparison: comparison && { file: comparison.file, counts: comparison.counts, byCategoryPair: comparison.byCategoryPair }, annotation: c.annotation, files: [json, md] });
   out.content.push({ type: "text", text: [`Capture "${c.label}" stopped in ${c.model}: ${diffs.length} changed element(s).`,
     actions.length ? `Actions:\n${actions.slice(0, 12).map((g) => `- ${Capture.actionLine(g)}`).join("\n")}${actions.length > 12 ? `\n- ... ${actions.length - 12} more (case file)` : ""}` : "No element changed.",
+    Capture.annotationLine(c.annotation),
     journalCmds.sequence.length ? `Revit commands: ${Object.entries(journalCmds.totals).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ")}.` : "Revit commands: none found in the journal.",
     c.journalNote ?? "",
-    comparison ? `Compared with the clash_resolve plan (${comparison.file}): ${Object.entries(comparison.counts).map(([k, n]) => `${k} ${n}`).join(", ") || "nothing to compare"}.` : "No stored clash_resolve plan for this model to compare with.",
+    comparison ? `Compared with the clash_resolve plan (${comparison.file}): ${Object.entries(comparison.counts).map(([k, n]) => `${k} ${n}`).join(", ") || "nothing to compare"}.${Object.keys(comparison.byCategoryPair ?? {}).length ? `\nJoin direction per category pair: ${Capture.pairAgreement(comparison.byCategoryPair)}.` : ""}` : "No stored clash_resolve plan for this model to compare with.",
     `Case: ${json}\n${md}${note ? `\n${note}` : ""}`,
     `Add-in archive of the raw diff: ${archive ?? "not reported"}.`,
     "Proposed rules are in the case file and need the owner's confirmation; nothing was changed in the vault rules."].filter(Boolean).join("\n") });
@@ -1807,25 +1838,36 @@ tool("parameter_fill", {
 // step, each naming the model it is for; the add-in guards every annotation of the touched elements and the warnings.
 const clashState = new Map();   // request key -> { key (gate), model, planHash } of its last good dry run
 
-/** The project's rules (rules/clash-resolve.json in the vault: order, steel), when there is one. Invalid -> error. */
+/** The office clash-resolve rules: config.json "clashResolveRules", else clash-resolve.json beside config.json (as worksets.json). */
+const officeClashFile = () => readConfig()?.clashResolveRules || path.join(path.dirname(CONFIG_PATH), ClashResolve.RULES_FILE);
+
+/**
+ * The rules in force: the office file under the project vault's rules/clash-resolve.json (project wins key by key,
+ * trim_to_face per sub-key). Invalid -> error. -> { rules (with from, files), file (project), merged }
+ */
 async function clashRules(a) {
+  const read = (file) => {
+    if (!file || !fs.existsSync(file)) return null;
+    try { return { rules: ClashResolve.readRules(fs.readFileSync(file, "utf8"), file), file }; } catch (e) { throw new RevitError(e.message); }
+  };
   const dir = await projectVaultDir(a);
-  const file = dir && path.join(dir, "rules", ClashResolve.RULES_FILE);
-  if (!file || !fs.existsSync(file)) return { rules: {} };
-  try { return { rules: ClashResolve.readRules(fs.readFileSync(file, "utf8"), file), file }; } catch (e) { throw new RevitError(e.message); }
+  const project = read(dir && path.join(dir, "rules", ClashResolve.RULES_FILE));
+  const office = read(officeClashFile());
+  const merged = ClashResolve.mergeRules(office, project);
+  return { rules: { ...merged.rules, from: merged.from, files: merged.files }, file: project?.file, merged };
 }
 
 async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
-  const { rules, file: rulesFile } = await clashRules(a);
+  const { rules, merged } = await clashRules(a);
   let req;
   try { req = ClashResolve.buildRequest(a, rules, VERSION); } catch (e) { throw new RevitError(e.message); }
-  const rulesNote = rulesFile ? `Project rules: ${rulesFile}${req.order ? ` (join order ${req.order.join(" > ")})` : ""}.` : "";
+  const rulesLine = (r) => `${[merged.files.office ? `Office rules: ${merged.files.office}.` : "", merged.files.project ? `Project rules: ${merged.files.project}.` : ""].filter(Boolean).join("\n")}${merged.files.office || merged.files.project ? "\n" : ""}${ClashResolve.orderLine(r, req, merged)}`;
   const checkNow = () => callRevit("clash_resolve", { ...req, check_only: true, dry_run: false }, 1800);
   if (action !== "fix") {
     const r = await checkNow();
     const out = text(r);
     const v = r?.aceVersion;
-    out.content.push({ type: "text", text: [ClashResolve.replyText(r, { mode: "plan", model: r?.model, test: req.test, scope: req }), rulesNote,
+    out.content.push({ type: "text", text: [ClashResolve.replyText(r, { mode: "plan", model: r?.model, test: req.test, scope: req }), rulesLine(r),
       v && !sameVersion(v, VERSION) ? `Note: the add-in is ${v}, the server ${VERSION}: a fix is refused until both are one version.` : "",
       r?.plan?.length && !r?.blocked?.length ? "To fix: clash_resolve action fix with dry_run: true, show the user the result, then the identical call without dry_run." : ""].filter(Boolean).join("\n") });
     return out;
@@ -1851,9 +1893,11 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
   const pre = await checkNow();
   const model = pre?.model;
   if (!model) throw new RevitError("Revit answered without a model: open the model to fix and run again.");
-  const { dir, note: dirNote } = await auditFolder(a, model, { sub: "clashes", reports: "clash-resolve" });
+  // Run records and evidence under the clash store key (the central model's name), so local copies' runs connect.
+  const storeKey = ClashResolve.storeKeyOf(pre, model);
+  const { dir, note: dirNote } = await auditFolder(a, storeKey, { sub: "clashes", reports: "clash-resolve" });
   const stamp = localDate(new Date(), { time: true });
-  const record = (o) => writeOut(dir, ClashResolve.recordName(model, stamp), JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, request: req, ...o }, null, 1));
+  const record = (o) => writeOut(dir, ClashResolve.recordName(storeKey, stamp), JSON.stringify({ at: stamp, model, storeKey, dryRun: !!dry_run, explanation, request: req, ...o }, null, 1));
   const stop = (b, lead) => {
     record({ outcome: "blocked", blocked: b });
     journal({ title: "Blocked: clash resolve", explanation, outcome: "BLOCKED - nothing changed", details: { blocked: b } });
@@ -1868,7 +1912,7 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
   if (!pre.plan?.length) {
     record({ outcome: "nothing to fix", reportOnly: pre.reportOnly });
     const out = text(pre);
-    out.content.push({ type: "text", text: `${ClashResolve.replyText(pre, { mode: "plan", model, test: req.test, scope: req })}\nNothing to fix automatically in ${model}: no dry run needed.${rulesNote ? `\n${rulesNote}` : ""}` });
+    out.content.push({ type: "text", text: `${ClashResolve.replyText(pre, { mode: "plan", model, test: req.test, scope: req })}\nNothing to fix automatically in ${model}: no dry run needed.\n${rulesLine(pre)}` });
     return out;
   }
   // One gate key per plan: the request and what would change (kind and elements of every step).
@@ -1895,15 +1939,15 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
   const outcome = rolledBack ? "guard or self-check failed, rolled back" : outcomeOf(result, dry_run);
   record({ outcome, before: result?.before, plan: result?.plan, reportOnly: result?.reportOnly, after: result?.after, guard: result?.guard, warnings: result?.warnings, done: result?.done, skipped: result?.skipped });
   journal({ title: `${dry_run ? "Preview" : "Change"}: clash resolve ${req.test} in ${model} (${result?.plan?.length ?? 0} change(s))`, explanation, outcome,
-    details: { counts: ClashResolve.countsByKind(result?.plan), before: result?.before?.clashes, after: rolledBack ? null : result?.after?.clashes, guard: result?.guard, warnings: result?.warnings, done: result?.done } });
+    details: { counts: ClashResolve.countsByKind(result?.plan), trims: ClashResolve.trimsOf(result?.plan).slice(0, 50).map(ClashResolve.trimLine), notTouchingDropped: ClashResolve.droppedOf(result) || undefined, before: result?.before?.clashes, after: rolledBack ? null : result?.after?.clashes, guard: result?.guard, warnings: result?.warnings, done: result?.done } });
   let evidence;
   if (!dry_run) {
-    evidence = writeOut(dir, ClashResolve.evidenceName(model, stamp), ClashResolve.evidenceMarkdown({ model, test: req.test, when: stamp, result, explanation, scope: req }));
+    evidence = writeOut(dir, ClashResolve.evidenceName(storeKey, stamp), ClashResolve.evidenceMarkdown({ model, test: req.test, when: stamp, result, explanation, scope: req }));
     if (result?.success && !rolledBack) briefCache.clear();
   }
   const out = text(result);
   const lines = [ClashResolve.replyText(result, { mode: dry_run ? "dry run" : "apply", model, test: req.test, rolledBack, forced: !!a.test_force_verify_mismatch, scope: req })];
-  if (rulesNote) lines.push(rulesNote);
+  lines.push(rulesLine(result));
   if (dry_run) {
     const why = [result?.success !== true ? "the dry run failed" : "", result?.guard?.ok === false ? "the annotation guard found differences" : "", result?.verify?.ok === false ? "the self-check failed" : "",
       result?.warnings?.new?.length ? "it raises new Revit warnings" : ""].filter(Boolean);
@@ -1918,7 +1962,7 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
 
 tool("clash_resolve", {
   title: "Structural self-clash solver (ST vs ST)",
-  description: "Fixes structure-vs-structure clashes without moving, deleting or recreating anything: only join geometry, switch join order, steel end cutback, cope; the rest is report-only with a reason. Tags, dimensions and locations are guarded, warnings compared. action plan (default): read-only. fix: dry_run: true first, then the identical call (ONE undo step, evidence file). Details: revit_guide workflows.",
+  description: "Fixes structure-vs-structure clashes without moving, deleting or recreating anything: only join geometry, switch join order, steel end cutback, cope, and trim to a face where the vault allows it; scope clashing or all-touching; the rest is report-only with a reason. Tags, dimensions and locations are guarded, warnings compared. action plan (default): read-only. fix: dry_run: true first, then the identical call (ONE undo step, evidence file). Details: revit_guide workflows.",
   inputSchema: {
     action: z.enum(["plan", "fix"]).optional(),
     test: z.string().max(80).optional().describe("Default \"ST vs ST\""),
@@ -1929,7 +1973,10 @@ tool("clash_resolve", {
     tolerance_mm: z.number().min(0).max(500).optional(),
     level: z.string().max(120).optional(),
     keys: z.array(z.string().max(300)).max(2000).optional().describe("Only these clash or issue keys (run_clash_test)"),
-    order: z.array(z.string().max(60)).max(12).optional().describe("Join order, strongest first (default: the vault's rules/clash-resolve.json, else foundation > column > wall > beam > slab > stair)"),
+    order: z.array(z.string().max(60)).max(12).optional().describe("Join order, strongest first (default: the vault's rules/clash-resolve.json, else foundation > column > wall > slab > beam > stair)"),
+    scope: z.enum(["clashing", "all-touching"]).optional().describe("Default: the vault's, else clashing"),
+    selection: z.boolean().optional().describe("Only the current selection"),
+    trim_to_face: z.boolean().optional().describe("false switches the vault-approved trim off; true only where the vault allows it"),
     steel: z.object({ cutback: z.boolean().optional(), coping: z.boolean().optional(), allowUnjoin: z.boolean().optional().describe("Only after the user agrees: a steel end joined to a column may be unjoined (join state changes) to cut it back") }).optional(),
     vault: z.string().optional().describe("Project folder or its ACE Vault (default: the open model's)"),
     report_dir: z.string().optional().describe("Folder for the evidence and run record"),

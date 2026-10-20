@@ -105,10 +105,15 @@ const bridge = http.createServer((req, res) => {
           { id: "switch-join:205>206", kind: "switch-join", a: 205, b: 206, aCategory: "Walls", bCategory: "Floors", material: "Concrete", level: "L1", why: "the slab won; the wall goes first" },
           { id: "cutback:302>202:end", kind: "cutback", a: 202, b: 302, aCategory: "Structural Framing", bCategory: "Structural Columns", material: "Steel", level: "Roof", why: "beam end runs into the column" },
           { id: "cope:204>203", kind: "cope", a: 203, b: 204, aCategory: "Structural Framing", bCategory: "Structural Framing", material: "Steel", level: "Roof", why: "secondary into primary" }];
+        // 1.12.8: a trim rides on its join as the fallback (runs only if the join does not clear).
+        if (args.trim_to_face && plan[0]) plan[0] = { ...plan[0], trim: { kind: "trim", id: "trim:211>302:end", fallbackFor: plan[0].id, cutCategory: "Structural Framing", lengthBefore: 4833, lengthAfter: 3822, trimMm: 1011, face: "Structural Columns 302 near face" } };
         const reportOnly = [{ a: 401, b: 402, aCategory: "Walls", bCategory: "Walls", why: "duplicate or overlapping walls", recommendation: "decide which wall stays" }];
         const blocked = keys.includes("TST_BORROW") ? [{ what: "2 element(s) to join", why: "borrowed by another user", elements: 2, sampleIds: [201, 301], holder: "jane", how: "ask jane to synchronise and relinquish, then run again", code: "borrowed" }] : [];
         const filtered = args.materials?.length || args.exclude_materials?.length ? { filtered: { steel: 12, unknown: 1 } } : {};
-        const base = { model: "Test", ...filtered, aceVersion: keys.includes("TST_OLDADDIN") ? "1.9.0" : SERVER_VERSION, before, plan, planHash: `ph-${keys.join(",")}-${args.test_force_verify_mismatch ? "f" : ""}`, reportOnly, blocked, echo: args };
+        const base = { model: "Test", ...filtered, aceVersion: keys.includes("TST_OLDADDIN") ? "1.9.0" : SERVER_VERSION, before, plan, planHash: `ph-${keys.join(",")}-${args.test_force_verify_mismatch ? "f" : ""}`, reportOnly, blocked, echo: args,
+          ...(args.scope === "all-touching" ? { dropped: { notTouching: 40, trim: 0 }, scope: "all-touching", scopeSource: args.scope_source ?? "request", touching: { candidates: 120, pairs: 80, right: 38, join: 30, switchJoin: 12, byPair: { "Floors x Structural Columns": 25 } } } : {}),
+          storeKey: keys.includes("TST_STORE") ? "TST_Central" : "Test", orderSource: args.order_source ?? (args.order ? "request" : "default"),
+          order: args.order ?? ["OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming", "OST_Stairs"] };
         if (args.check_only) return reply({ ok: true, result: { success: true, checkOnly: true, ...base, after: null, guard: null, warnings: { before: 10, after: null, new: [] } } });
         if (args.expect_version !== SERVER_VERSION) return reply({ ok: true, result: { success: false, stage: "blocked", error: "Nothing was changed: version", model: "Test", blocked: [{ what: "the whole plan", why: "version", how: "update" }] } });
         // expect_plan: the apply's recomputed plan must be the previewed one (TST_DRIFT: the model changed in between).
@@ -121,7 +126,7 @@ const bridge = http.createServer((req, res) => {
           guard: forced ? { ok: false, checked: 8, mismatches: [{ element: 202, what: "tags", before: 2, after: 1 }] }
             : { ok: true, checked: 8, mismatches: [], changedValues: [{ element: 202, dimension: 9001, before: "6000", after: "5917" }] },
           warnings: { before: 10, after: 10, new: keys.includes("TST_NEWWARN") ? ["Highlighted elements are joined but do not intersect."] : [] },
-          done: args.dry_run || forced ? { join: 0, switchJoin: 0, cutback: 0, cope: 0 } : { join: 1, switchJoin: 1, cutback: 1, cope: 1 }, skipped: [],
+          done: args.dry_run || forced ? { join: 0, switchJoin: 0, cutback: 0, cope: 0, trim: 0 } : { join: 1, switchJoin: 1, cutback: 1, cope: 1, trim: args.trim_to_face ? 1 : 0 }, skipped: [],
           [args.dry_run ? "wouldChange" : forced ? "wouldHaveChanged" : "changed"]: { added: 0, modified: 8, deleted: 0 } } });
       }
       case "presentation_standard":
@@ -215,6 +220,7 @@ const bridge = http.createServer((req, res) => {
         const j = (id, cat, other, oc, cutter, what = "join-added") => ({ id, category: cat, type: "TST type", changes: [{ what, other, otherCategory: oc, cutter }] });
         return reply({ ok: true, result: { model: "Test", label: "TST joins", startedAt: "2026-10-20 10:00", stoppedAt: "2026-10-20 10:30", elements: 50, journal: "C:/journals/journal.0001.txt",
           archive: "C:/Users/x/AppData/Roaming/ACE-RevitMCP/captures/c1-TST joins.json",
+          annotation: { dimensions: { before: 120, after: 119 }, spotDimensions: { before: 4, after: 4 }, tags: { before: 30, after: 30 } },
           diffs: [j(301, "Floors", 201, "Structural Columns", 301), j(201, "Structural Columns", 301, "Floors", 301), j(302, "Floors", 202, "Structural Columns", 302), j(303, "Floors", 203, "Structural Columns", 203),
             j(205, "Walls", 206, "Floors", 205, "join-order"),
             { id: 210, category: "Structural Framing", type: "TST BU", changes: [{ what: "extension", end: "end", before: 0, after: -83 }] },
@@ -240,7 +246,8 @@ const bridge = http.createServer((req, res) => {
           { issue: "I-2", issueTitle: "Wall W1 overlaps wall W2", clashKey: "k3", status: "active", aId: 401, aCategory: "Walls", aFamily: "Basic Wall", aType: "RC 200", bId: 402, bCategory: "Walls", bFamily: "Basic Wall", bType: "RC 200", level: "L1", depthMm: 200, x: 1.5, y: 2.25, z: 0, responsible: "STR" },
           { issue: "I-1", issueTitle: `Beam B7 into columns (${model})`, clashKey: "k1", status: "new", aId: 202, aCategory: "Structural Framing", aFamily: "BU <250>", aType: "BU 250", bId: 302, bCategory: "Structural Columns", bFamily: "Concrete-Rectangular-Column", bType: "400x400", level: "Roof", depthMm: 83.4, x: 10.1234, y: 5, z: 12.5, responsible: "STR" },
           { issue: "I-1", issueTitle: `Beam B7 into columns (${model})`, clashKey: "k2", status: "new", aId: 202, aCategory: "Structural Framing", aFamily: "BU <250>", aType: "BU 250", bId: 303, bCategory: "Structural Columns", bFamily: "Concrete-Rectangular-Column", bType: "400x400", level: "Roof", depthMm: 80, x: 14, y: 5, z: 12.5, responsible: "STR" }];
-        const one = (model) => ({ model, test: args.test ?? "all", run: { id: "run-1", at: "2026-10-20T10:00:00Z" }, counts: { clashes: 3 }, rows: rows(model), ...(args.exclude_materials?.length ? { filtered: { steel: 12 } } : {}) });
+        const one = (model) => ({ model, test: args.test ?? "all", run: { id: "run-1", at: "2026-10-20T10:00:00Z" }, counts: { clashes: 3 },
+          rows: [...rows(model), ...(args.test === "TST_STORED" ? [{ ...rows(model)[0], clashKey: "k9", rechecked: false }] : [])], ...(args.exclude_materials?.length ? { filtered: { steel: 12 } } : {}) });
         if (args.test === "EMPTY") return reply({ ok: true, result: { model: "Test", test: "EMPTY", run: { id: "run-2" }, counts: { clashes: 0 }, rows: [], filtered: { steel: 40 } } });
         if (args.test === "OLDADDIN") return reply({ ok: true, result: { htmlReport: "C:/x/old.html", issues: 0 } });
         return reply({ ok: true, result: args.test === "MULTI" ? { models: [one("Test"), one("Test-ARC")] } : one("Test") });
@@ -255,7 +262,7 @@ const bridge = http.createServer((req, res) => {
       case "model_changes":
         return reply({ ok: true, result: { since: args.since || "last", models: [{ model: "Test", relation: "this model", added: 3, moved: 2 }, { model: "Test-STR", relation: "link", moved: 12 }] } });
       case "run_clash_test":
-        return reply({ ok: true, result: { tests: [{ test: args.test || "all", open: 4, byResponsible: { "MEP (HVAC)": 3, "ARC": 1 } }] } });
+        return reply({ ok: true, result: { storeKey: "Test", tests: [{ test: args.test || "all", open: 4, byResponsible: { "MEP (HVAC)": 3, "ARC": 1 }, ...(args.test === "TST_STORED" ? { stored: { count: 1340, models: ["TST_Other"] } } : {}) }] } });
       case "get_model_insights":
         return reply({ ok: true, result: { model: "Test", score: 81, grade: "Fair", checks: [{ check: "Revit warnings", status: "warn" }], htmlReport: "C:/Users/x/Documents/ACE Insights/Test/Test - Insights.html", shown: !!args.show } });
       case "backup_model":
@@ -881,9 +888,69 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const vs = crs().at(-1).args;
   assert.deepEqual(vs.order, ["OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_StructuralFraming", "OST_Floors", "OST_Stairs"]);
   assert.deepEqual(vs.steel, { coping: false, cutback: true }, "the call's steel setting over the vault's");
-  assert.match(vr.content.at(-1).text, /Project rules: .*clash-resolve\.json \(join order OST_StructuralFoundation > OST_StructuralColumns/);
-  await call("clash_resolve", { vault: cv, order: ["column", "OST_Walls"] });
-  assert.deepEqual(crs().at(-1).args.order, ["OST_StructuralColumns", "OST_Walls"], "the call's order wins");
+  assert.ok(vs.order_source === "vault", "the vault's order is sent as such (the add-in cannot tell it from a request)");
+  assert.match(vr.content.at(-1).text, /Join order \(one category priority list, strongest cuts; from the project vault \(.*clash-resolve\.json\)\): Structural Foundations > Structural Columns > Walls > Structural Framing > Floors > Stairs\./);
+  const ro = await call("clash_resolve", { vault: cv, order: ["column", "OST_Walls"] });
+  assert.ok(crs().at(-1).args.order.join() === "OST_StructuralColumns,OST_Walls" && !("order_source" in crs().at(-1).args), "the call's order wins");
+  assert.match(ro.content.at(-1).text, /from the request\): Structural Columns > Walls\./);
+  const rdflt = await call("clash_resolve", {});
+  assert.match(rdflt.content.at(-1).text, /from ACE's default\): Structural Foundations > Structural Columns > Walls > Floors > Structural Framing > Stairs\./, "the default order, said");
+  const { normaliseOrder } = await import("../lib/clashresolve.js");
+  assert.deepEqual(normaliseOrder(["Structural Foundations", "Structural Columns", "Walls", "Floors", "Structural Framing"]), ["OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming"], "the documented example reads");
+  // R2 / R3 (owner-approved): scope all-touching and trim to face from the vault; a call can switch trim off, never on.
+  const tv = path.join(tmp, "tv", "ACE Vault");
+  fs.mkdirSync(path.join(tv, "rules"), { recursive: true });
+  const tvRules = (o) => fs.writeFileSync(path.join(tv, "rules", "clash-resolve.json"), JSON.stringify(o));
+  tvRules({ order: ["foundation", "column", "wall", "slab", "beam"], scope: "all-touching", trim_to_face: { allowed: true, preview_required: true } });
+  const tp = await call("clash_resolve", { vault: tv });
+  const ta = crs().at(-1).args, tt = tp.content.at(-1).text;
+  assert.ok(ta.scope === "all-touching" && ta.scope_source === "vault" && JSON.stringify(ta.trim_to_face) === JSON.stringify({ allowed: true, preview_required: true }) && ta.order.join() === "OST_StructuralFoundation,OST_StructuralColumns,OST_Walls,OST_Floors,OST_StructuralFraming");
+  assert.match(tt, /Plan: 4 change\(s\): join 1, switch-join 1, cutback 1, cope 1\./);
+  assert.match(tt, /By category pair:\n- Structural Columns x Structural Framing: join 1, cutback 1\n/, "the summary per category pair");
+  assert.match(tt, /All touching: 120 candidate pair\(s\), 80 touching, 38 already right; join 30, switch join 12 \(Floors x Structural Columns 25\)\./);
+  assert.match(tt, /Not touching, dropped: 40 pair\(s\) in scope that do not touch/);
+  assert.match(tt, /Trims to a face \(1; a trim on a join runs only if the join does not clear\):\n- trim 211 \(Structural Framing\) end: 4833 -> 3822 mm \(trim 1011 mm\) to Structural Columns 302 near face \(only if join:201>301 does not clear\)/, "each trim, one by one");
+  assert.match(tt, /Scope \(from the project vault \(.*\)\): every touching pair of the categories\. Trim to face: on \(allowed by the project vault \(.*clash-resolve\.json\)\)\./);
+  await call("clash_resolve", { vault: tv, trim_to_face: false, scope: "clashing", selection: true });
+  assert.ok(!("trim_to_face" in crs().at(-1).args) && crs().at(-1).args.scope === "clashing" && !crs().at(-1).args.scope_source && crs().at(-1).args.selection === true, "the call switches trim off and narrows the scope");
+  const tdr = await call("clash_resolve", { vault: tv, action: "fix", dry_run: true, explanation: "TST trims", report_dir: path.join(tmp, "trimrun") });
+  assert.ok(!tdr.isError && /Changes: would have been join 1, switch-join 1, cutback 1, cope 1; rolled back/.test(tdr.content.at(-1).text));
+  const tap = await call("clash_resolve", { vault: tv, action: "fix", explanation: "TST trims", report_dir: path.join(tmp, "trimrun") });
+  assert.match(tap.content.at(-1).text, /Changes: join 1, switch-join 1, cutback 1, cope 1, trim 1 done\./, "the identical apply after the dry run");
+  const tev = fs.readdirSync(path.join(tmp, "trimrun")).find((f) => f.startsWith("evidence-clash-"));
+  assert.match(fs.readFileSync(path.join(tmp, "trimrun", tev), "utf8"), /## Trims to a face \(planned; a join's trim runs only if the join does not clear\)\n\n- trim 211 \(Structural Framing\) end: 4833 -> 3822 mm \(trim 1011 mm\)[\s\S]*## Trims made\n\n- 1\n[\s\S]*## Not touching, dropped\n\n- 40 pair\(s\)/);
+  tvRules({ order: ["foundation"], trim_to_face: { allowed: false } });
+  const n4 = crs().length;
+  assert.ok(/trim_to_face is not allowed for this project: the vault's rules\/clash-resolve\.json has trim_to_face\.allowed: false/.test((await call("clash_resolve", { vault: tv, trim_to_face: true })).content[0].text) && crs().length === n4, "a call never switches trim on");
+  assert.ok(!("trim_to_face" in (await call("clash_resolve", { vault: tv }), crs().at(-1).args)), "allowed: false sends no trim");
+  tvRules({ scope: "everything" });
+  assert.match((await call("clash_resolve", { vault: tv })).content[0].text, /scope: "everything" is not a scope ACE knows/);
+  tvRules({ trim_to_face: { allowed: true, depth: 3 } });
+  assert.match((await call("clash_resolve", { vault: tv })).content[0].text, /trim_to_face: "depth" is not a setting ACE knows/);
+  // Office rules (clash-resolve.json beside config.json) under the project vault's, project first key by key (D3).
+  const officeFile = path.join(tmp, "clash-resolve.json");
+  const noVault = path.join(tmp, "novault");
+  fs.writeFileSync(officeFile, JSON.stringify({ order: ["foundation", "column", "wall", "slab", "beam"], scope: "all-touching", trim_to_face: { allowed: false, max_mm: 50 } }));
+  const oo = await call("clash_resolve", { vault: noVault });
+  assert.ok(crs().at(-1).args.order.join() === "OST_StructuralFoundation,OST_StructuralColumns,OST_Walls,OST_Floors,OST_StructuralFraming" && crs().at(-1).args.scope === "all-touching" && !("trim_to_face" in crs().at(-1).args), "office only");
+  assert.match(oo.content.at(-1).text, /Office rules: .*clash-resolve\.json\.\nJoin order \(one category priority list, strongest cuts; from the office file \(.*clash-resolve\.json\)\)[\s\S]*Scope \(from the office file/);
+  tvRules({ scope: "clashing", trim_to_face: { allowed: true } });
+  const po = await call("clash_resolve", { vault: tv });
+  const pa = crs().at(-1).args;
+  assert.ok(pa.scope === "clashing" && pa.order[0] === "OST_StructuralFoundation" && JSON.stringify(pa.trim_to_face) === JSON.stringify({ allowed: true, preview_required: true, max_mm: 50 }), "project over office per key; trim per sub-key");
+  assert.match(po.content.at(-1).text, /from the office file \(.*\)\): Structural Foundations[\s\S]*Scope \(from the project vault \(.*\)\): only the clashing pairs\. Trim to face: on \(allowed by the project vault \(.*\), at most 50 mm\)\./);
+  const pr = JSON.parse((await call("project_rules", { section: "clash-resolve", vault: tv })).content[0].text);
+  assert.ok(pr.from.order === "office" && pr.from.scope === "project" && pr.rules.trim_to_face.max_mm === 50 && pr.files.office === officeFile, "project_rules shows the merged rules and their sources");
+  fs.writeFileSync(officeFile, JSON.stringify({ trim_to_face: { allowed: true } }));
+  tvRules({ trim_to_face: { allowed: false } });
+  const n5 = crs().length;
+  assert.ok(/the vault's rules\/clash-resolve\.json has trim_to_face\.allowed: false/.test((await call("clash_resolve", { vault: tv, trim_to_face: true })).content[0].text) && crs().length === n5, "the merged allowed: false refuses a request to trim");
+  fs.writeFileSync(officeFile, JSON.stringify({ trim_to_face: { allowed: false } }));
+  assert.match((await call("clash_resolve", { vault: noVault, trim_to_face: true })).content[0].text, /the office file .*clash-resolve\.json has trim_to_face\.allowed: false/);
+  fs.rmSync(officeFile);
+  // The clash store key (the central's name) names the run records, not the local file's title.
+  await call("clash_resolve", { action: "fix", keys: ["TST_STORE"], dry_run: true, explanation: "store key", report_dir: path.join(tmp, "storekey") });
+  assert.ok(fs.readdirSync(path.join(tmp, "storekey")).some((f) => /^clash-run-TST_Central-.+\.json$/.test(f)), "run record under the store key");
   const n3 = crs().length;
   assert.match((await call("clash_resolve", { order: ["roof"] })).content[0].text, /"roof" is not a category ACE knows/);
   fs.writeFileSync(path.join(cv, "rules", "clash-resolve.json"), "{ order: ");
@@ -1080,7 +1147,8 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(md, /\| 201 \| 301 \| 201 cuts 301 \(join\) \| join added, 301 cuts \| differs \|/);
   assert.match(md, /\| 205 \| 206 \| 205 cuts 206 \(switch-join\) \| join order switched, 205 cuts \| agree \|/);
   assert.match(md, /- In order: Join Geometry x2 > Switch Join Order > ID_TST_UNKNOWN_CMD/);
-  assert.match(md, /## Proposed rules \(need owner confirmation\)\n\nNothing below is applied\.[\s\S]*- Floors before Structural Columns in the join order \(Floors x Structural Columns: Floors cut Structural Columns in 2 of 3 pair\(s\); 1 exception\(s\)\)\n- Walls before Floors in the join order \(Floors x Walls: Walls cut Floors in 1 of 1 pair\(s\)\)\n$/, "ends with proposed rules, never applied");
+  assert.match(md, /- Annotation: dimensions 120 -> 119\./, "the case says the annotation lost");
+  assert.match(md, /## Proposed rules \(need owner confirmation\)\n\nNothing below is applied\.[\s\S]*- Floors before Structural Columns in the join order \(Floors x Structural Columns: Floors cut Structural Columns in 2 of 3 pair\(s\); 1 exception\(s\)\)\n- Walls before Floors in the join order \(Floors x Walls: Walls cut Floors in 1 of 1 pair\(s\)\)\n\nWould update office method structural-interference-solving \(v1\) once confirmed \(revit_guide methods\/structural-interference-solving\)\.\n$/, "ends with proposed rules, never applied");
   assert.equal(JSON.parse(fs.readFileSync(files[0], "utf8")).comparison.counts.agree, 1);
 }
 // --- view_membership_fill: check, dry run, identical apply; the definition only from the vault's shared parameter files ---
@@ -1176,6 +1244,49 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   // Without a naming rule: the model name.
   await call("export_deliverables", { out_dir: path.join(eDir, "plain"), vault: path.join(eDir, "none"), ifc: { config: path.join(vRules, "ifc", "tst-setup.json") }, check_only: true });
   assert.ok(ed().at(-1).args.ifc.file === "Test.ifc" && ed().at(-1).args.ifc.setup === "tst-setup");
+}
+// --- 1.12.8: results this run did not re-check are counted on their own line, out of the open totals ---
+{
+  const st = await call("run_clash_test", { test: "TST_STORED" });
+  assert.match(st.content.at(-1).text, /^Open in this run: 4\.\nStored, not re-checked in this run: 1340 \(TST_Other\); not in the open totals\.$/);
+  assert.equal((await call("run_clash_test", { test: "all" })).content.length, 1, "nothing extra when every result was re-checked");
+  const ir = await call("coordination_report", { interference: true, test: "TST_STORED", out_dir: path.join(tmp, "stored-int") });
+  assert.match(ir.content.at(-1).text, /Interference report Test \(TST_STORED\): 3 clash\(es\) in 2 issue\(s\)[\s\S]*Stored, not re-checked in this run: 1; not in these totals\./, "the stored row stays out of the report totals");
+}
+// --- 1.12.8 capture: area / volume / annotation grouped; the plan's real cutter, agreement per category pair ---
+{
+  const Cap = await import("../lib/capture.js");
+  const area = (id, b, a) => ({ id, category: "Floors", type: "TST slab", changes: [{ what: "area", before: b, after: a }] });
+  const acts = Cap.actionsOf([area(501, 100, 94.5), area(502, 50, 50.2), area(503, 20, 19), { id: 601, category: "Walls", changes: [{ what: "volume", before: 3, after: 2.5 }] },
+    { id: 701, category: "Floors", changes: [{ what: "annotation", before: { dimensions: 3, tags: 1 }, after: { dimensions: 2, tags: 1 } }] }]);
+  const lines = acts.map(Cap.actionLine);
+  assert.ok(lines.includes("Floors: area changed on 3 (sketch edits likely), total -6.300 m2 (e.g. 501, 502, 503)"), lines.join(" | "));
+  assert.ok(lines.includes("Walls: volume changed on 1 (ends or profile changed), total -0.500 m3 (e.g. 601)"));
+  assert.ok(lines.includes("Floors: annotation referencing them changed on 1 (dimensions -1) (e.g. 701)"));
+  assert.equal(Cap.annotationLine({ dimensions: { before: 120, after: 119 }, tags: { before: 3, after: 3 } }), "Annotation: dimensions 120 -> 119.");
+  // A plan step that names its cutter: the person's direction is compared with it, not with "a".
+  const plan = [{ kind: "join", a: 11, b: 12, cutter: 12, cut: 11, cutterCategory: "Structural Columns", cutCategory: "Floors" },
+    { kind: "join", a: 13, b: 14, aCategory: "Floors", bCategory: "Structural Columns" }];
+  const j = (id, cat, other, oc, cutter) => ({ id, category: cat, changes: [{ what: "join-added", other, otherCategory: oc, cutter }] });
+  const cmp = Cap.compareWithPlan(plan, [j(12, "Structural Columns", 11, "Floors", 12), j(14, "Structural Columns", 13, "Floors", 14)]);
+  assert.deepEqual(cmp.rows.map((r) => [r.plan, r.verdict]), [["12 cuts 11 (join)", "agree"], ["13 cuts 14 (join)", "differs"]]);
+  assert.deepEqual(cmp.byCategoryPair, { "Floors x Structural Columns": { agree: 1, differs: 1 } });
+  assert.equal(Cap.pairAgreement(cmp.byCategoryPair), "Floors x Structural Columns: agree 1, differs 1");
+}
+// --- 1.12.8 office methods: the registry links methods to tools (descriptions, revit_guide, capture_method cases) ---
+{
+  const listed = (await client.listTools()).tools;
+  const desc = (n) => listed.find((t) => t.name === n).description;
+  for (const n of ["clash_resolve", "run_clash_test", "coordination_report", "capture_method"])
+    assert.ok(desc(n).endsWith(" Office method: revit_guide methods/structural-interference-solving."), `${n} names its office method`);
+  assert.ok(!/Office method:/.test(desc("register_update")), "only linked tools");
+  assert.match((await call("revit_guide", { topic: "methods" })).content[0].text, /Office methods \(read one with revit_guide methods\/<name>\):\n- methods\/structural-interference-solving \(v1, 2026-10-20\): tools clash_resolve, run_clash_test, coordination_report, capture_method\./);
+  assert.match((await call("revit_guide", { topic: "methods/structural-interference-solving" })).content[0].text, /Join priority Foundation > Column > Wall > Slab > Beam\. Join all touching concrete, not only clashing pairs\./);
+  assert.match((await call("revit_guide", { topic: "methods/none" })).content[0].text, /No office method 'methods\/none'/);
+  const Cap = await import("../lib/capture.js");
+  const md = Cap.caseMarkdown({ label: "TST", model: "Test", startedAt: "a", stoppedAt: "b", diffs: [], journal: { sequence: [], totals: {} }, methods: [{ name: "structural-interference-solving", version: 1 }],
+    actions: [{ label: "Floors x Structural Columns: join added", count: 3, ids: ["1 x 2"], rule: { text: "Structural Columns cut Floors", count: 3, of: 3 }, exceptions: [] }] });
+  assert.match(md, /Would update office method structural-interference-solving \(v1\) once confirmed \(revit_guide methods\/structural-interference-solving\)\./);
 }
 // --- register_update (no Revit): check first, write with confirm after the identical check, never the register ---
 {

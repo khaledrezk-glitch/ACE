@@ -1,5 +1,5 @@
 // Clash logic test (no Revit needed): dotnet run --project tools/clash-test (after the add-in build)
-using System; using System.Collections; using System.Collections.Generic; using System.Linq; using System.Reflection;
+using System; using System.Collections; using System.Collections.Generic; using System.IO; using System.Linq; using System.Reflection;
 class P {
   static int failures;
   static void Check(bool ok, string what) { Console.WriteLine((ok ? "ok   " : "FAIL ") + what); if (!ok) failures++; }
@@ -202,7 +202,9 @@ class P {
     var order = (string[])rl.GetField("DefaultOrder").GetValue(null);
     string Win(string x, string y) => (string)R("Winner").Invoke(null, new object[] { order, x, y });
     Check(Win("OST_StructuralColumns", "OST_StructuralFraming") == "A" && Win("OST_Floors", "OST_Walls") == "B" && Win("OST_Walls", "OST_Walls") == null && Win("OST_Ramps", "OST_Walls") == null,
-      "join order: foundation > column > wall > beam > slab > stair; same category or not in the order = no winner");
+      "join order: categories only; same category or not in the order = no category winner");
+    Check(order.Take(5).SequenceEqual(new[] { "OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming" }) && Win("OST_Floors", "OST_StructuralFraming") == "A",
+      "1.12.8 default priority: foundation > column > wall > floor > beam (a floor cuts a beam)");
     (int, double) EO(double len, double mMin, double mMax, double iMin, double iMax) { var t = R("EndOverlap").Invoke(null, new object[] { len, mMin, mMax, iMin, iMax, 0.016 }); return ((int)t.GetType().GetField("Item1").GetValue(t), (double)t.GetType().GetField("Item2").GetValue(t)); }
     var e0 = EO(20, -0.1, 20, -0.1, 0.25); var e1 = EO(20, 0, 20.2, 19.6, 20.2); var em = EO(20, 0, 20, 9, 11); var ew = EO(20, 0, 20, 0, 20);
     Check(e0.Item1 == 0 && Math.Abs(e0.Item2 - 0.35) < 1e-9 && e1.Item1 == 1 && Math.Abs(e1.Item2 - 0.6) < 1e-9 && em.Item1 == -1 && ew.Item1 == -1,
@@ -267,7 +269,7 @@ class P {
     var bl = (IList)Activator.CreateInstance(stateListT);
     bl.Add(State(1, new[] { 0.0, 0, 0, 10, 0, 0 }, 2, 5, true, (900L, dimA))); bl.Add(State(2, new[] { 1.0, 1, 0, 0 }, 1)); bl.Add(State(3, null, 0));
     object CmpT(ICollection<long> trimmed, params object[] after) { var dct = (IDictionary)Activator.CreateInstance(stateDictT); foreach (var st in after) dct[(long)F(st, "Id")] = st;
-      return R("Compare").Invoke(null, new object[] { bl, dct, trimmed }); }
+      return R("Compare").Invoke(null, new object[] { bl, dct, trimmed, null }); }
     IList Cmp(params object[] after) { var t = CmpT(null, after); return (IList)t.GetType().GetField("Item1").GetValue(t); }
     string W(object m) => (string)m.GetType().GetField("Item2").GetValue(m);
     Check(Cmp(State(1, new[] { 0.0, 0, 0, 10, 0, 0 }, 2, 5, true, (900L, DT(2, new long[] { 3, 11 }, new double?[] { 10.0000000001 }))), State(2, new[] { 1.0, 1, 0, 0 }, 1), State(3, null, 0)).Count == 0,
@@ -283,6 +285,8 @@ class P {
     var tv = CmpT(new HashSet<long> { 3 }, S1(DT(2, new long[] { 3, 11 }, new double?[] { 9.7 })), S2(), S3());
     var tvM = (IList)tv.GetType().GetField("Item1").GetValue(tv); var tvC = (IList)tv.GetType().GetField("Item2").GetValue(tv);
     Check(tvM.Count == 0 && tvC.Count == 1 && (long)tvC[0].GetType().GetField("Item2").GetValue(tvC[0]) == 900, "guard: a cutback member's dimension value change goes to changedValues, not mismatches");
+    var rel = R("Compare").Invoke(null, new object[] { bl, ((Func<IDictionary>)(() => { var d = (IDictionary)Activator.CreateInstance(stateDictT); foreach (var x in new[] { State(1, new[] { 0.0, 0, 0, 9.6, 0, 0 }, 2, 5, true, (900L, dimA)), State(2, new[] { 1.0, 1, 0, 0 }, 1), State(3, null, 0) }) d[(long)F(x, "Id")] = x; return d; }))(), new HashSet<long> { 1 }, new HashSet<long> { 1 } });
+    Check(((IList)rel.GetType().GetField("Item1").GetValue(rel)).Count == 0, "guard: a member trimmed to a face may change its location (checked against the planned end instead)");
     var tl = CmpT(new HashSet<long> { 3 }, S1(DT(1, new long[] { 11 }, new double?[] { 9.7 })), S2(), S3());
     Check(((IList)tl.GetType().GetField("Item1").GetValue(tl)).Count == 1, "guard: a trimmed member's dimension that lost a reference is still a mismatch");
     var tj = CmpT(new HashSet<long>(), S1(DT(2, new long[] { 3, 11 }, new double?[] { 9.7 })), S2(), S3());
@@ -376,7 +380,7 @@ class P {
       && sn2.GetType().GetField("Item1").GetValue(sn2) == null && (string)sn2.GetType().GetField("Item2").GetValue(sn2) == "Generic - 200mm", "row names: \"Family : Type\" split; a system type name is the type");
     object CX(string key, string status, string ua, string ub, double depth, int reopened = 0, double x = 1000) { var c = C(key, status, ua, ub, "Walls", "Floors", "L1", null, "STR", depth); Set(c, ("Reopened", reopened), ("X", x), ("Y", 2500.0), ("Z", 3000.0), ("IdA", 11L), ("IdB", 22L), ("NameA", "Basic Wall : W200"), ("NameB", "F250")); return c; }
     var ic = List(CX("x1", "new", "w1", "f1", 40), CX("x2", "active", "w1", "f2", 90), CX("x3", "new", "w9", "f9", 20, 1), CX("x4", "approved", "w5", "f5", 30), CX("x5", "resolved", "w6", "f6", 10));
-    var rowsT = (IList)IL("Rows").Invoke(null, new object[] { ic, (500.0, 500.0, 0.0), null });
+    var rowsT = (IList)IL("Rows").Invoke(null, new object[] { ic, (500.0, 500.0, 0.0), null, null });
     object RF(object r, string f) => r.GetType().GetField(f).GetValue(r);
     var rk = rowsT.Cast<object>().Select(r => (string)RF(r, "ClashKey")).ToList();
     Check(rowsT.Count == 5 && rk.SequenceEqual(new[] { "x2", "x1", "x3", "x4", "x5" }), $"rows: one per clash, by issue (largest first, deepest first), then approved, then resolved ({string.Join(",", rk)})");
@@ -391,7 +395,7 @@ class P {
     var cnt = (Dictionary<string, int>)IL("Counts").Invoke(null, new object[] { rl2 });
     Check(cnt["clashes"] == 5 && cnt["issues"] == 2 && cnt["open"] == 3 && cnt["new"] == 1 && cnt["active"] == 1 && cnt["reopened"] == 1 && cnt["approved"] == 1 && cnt["resolved"] == 1, "rows: counts by status and issues");
     var names2 = new Dictionary<string, (string, string)> { ["w1"] = ("Basic Wall", "RC 250") };
-    var rowsN = (IList)IL("Rows").Invoke(null, new object[] { ic, (0.0, 0.0, 0.0), names2 });
+    var rowsN = (IList)IL("Rows").Invoke(null, new object[] { ic, (0.0, 0.0, 0.0), names2, null });
     Check((string)RF(rowsN[0], "AType") == "RC 250" && (string)IL("RunDate").Invoke(null, new object[] { ic, null }) == "2026-09-01T00:00:00", "rows: family / type read from the model win; run date from the clashes");
 
     // 14. 1.12.3: a stored run with zero clashes is a report with no rows; only a test that never ran is an error.
@@ -404,7 +408,7 @@ class P {
     string Nothing(string test, int clashes, int nRuns) => (string)IL("NothingToReport").Invoke(null, new object[] { test, clashes, nRuns, "M" });
     Check(Nothing("ST vs ST", 0, 1) == null && Nothing("ST vs ST", 3, 0) == null && Nothing("ST vs ST", 0, 0).Contains("never run") && Nothing(null, 0, 0).StartsWith("No clash results"),
       "empty report: a run with 0 clashes is no error; a test never run is");
-    var emptyRows = (IList)IL("Rows").Invoke(null, new object[] { List(), (0.0, 0.0, 0.0), null });
+    var emptyRows = (IList)IL("Rows").Invoke(null, new object[] { List(), (0.0, 0.0, 0.0), null, null });
     var emptyList = (IList)Activator.CreateInstance(rowListT);
     var emptyCounts = (Dictionary<string, int>)IL("Counts").Invoke(null, new object[] { emptyList });
     Check(emptyRows.Count == 0 && emptyCounts.Values.All(v => v == 0) && emptyCounts.ContainsKey("clashes") && emptyCounts.ContainsKey("issues"), "empty report: rows [] and every count 0");
@@ -548,6 +552,114 @@ class P {
     Check((string)FW(ic2, "Item1") == "IFC2x3CV2" && (bool?)FW(ic2, "Item2") == true && (bool?)FW(ic2, "Item3") == false && FW(ic2, "Item4") == null
       && ((Dictionary<string, string>)FW(ic2, "Item5"))["TST_Option"] == "x" && ((List<string>)FW(ic2, "Item6")).Count == 1,
       "export: IFC config keys map to options; an out-of-range space boundary level is reported");
+
+    // 18. 1.12.8: the cutter depends on the two elements only, never on which one the clash listed first.
+    object CSide(long id, string cat, double vol) => Set(Activator.CreateInstance(rSideT, true), ("Id", id), ("Category", cat), ("Material", "concrete"), ("Volume", vol), ("Host", true));
+    var cats18 = new[] { "OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming" };
+    var asym = new List<string>();
+    long CutterId(object a1, object b1)
+    {
+      var d = Dec(Pair(a1, b1, 0.01));
+      if (K(d) != "join") return -1;
+      var ch = Ch(d);
+      return ch == null ? 0 : (long)FW(ch == "A" ? a1 : b1, "Id");
+    }
+    foreach (var k1 in cats18) foreach (var k2 in cats18)
+      foreach (var (v1, v2) in new[] { (5.0, 3.0), (3.0, 5.0), (4.0, 4.0) })
+      {
+        var x = CSide(101, k1, v1); var y = CSide(202, k2, v2);
+        var ab = CutterId(x, y); var ba = CutterId(y, x);
+        if (ab != ba || ab <= 0) asym.Add($"{k1}/{k2} {v1}/{v2}: {ab} vs {ba}");
+      }
+    Check(asym.Count == 0, $"join cutter: (a,b) and (b,a) give the same cutter for every category pair, same-category pairs too ({string.Join("; ", asym.Take(3))})");
+    var fb1 = CutterId(CSide(11, "OST_StructuralFoundation", 2), CSide(12, "OST_StructuralFraming", 9)); var fb2 = CutterId(CSide(12, "OST_StructuralFraming", 9), CSide(11, "OST_StructuralFoundation", 2));
+    var same1 = CutterId(CSide(21, "OST_Floors", 2), CSide(22, "OST_Floors", 9)); var tie = CutterId(CSide(32, "OST_Walls", 4), CSide(31, "OST_Walls", 4));
+    Check(fb1 == 11 && fb2 == 11 && same1 == 22 && tie == 31, "join cutter: the foundation cuts the beam both ways; same category: the larger cuts, then the lower id");
+
+    // 19. 1.12.8: vault order aliases, trim to face (pure geometry), touching pairs, store key, stored results, capture area / annotation / journal.
+    string Al(string n) => (string)R("CategoryAlias").Invoke(null, new object[] { n });
+    Check(Al("foundation") == "OST_StructuralFoundation" && Al("Column") == "OST_StructuralColumns" && Al("wall") == "OST_Walls" && Al("slab") == "OST_Floors" && Al("floor") == "OST_Floors"
+      && Al("beam") == "OST_StructuralFraming" && Al("framing") == "OST_StructuralFraming" && Al("Structural Foundations") == "OST_StructuralFoundation" && Al("OST_StructuralColumns") == "OST_StructuralColumns"
+      && Al("TST_Nothing") == null && Al("") == null, "order aliases: foundation, column, wall, slab / floor, beam / framing, full and OST names; unknown is null");
+    var vaultOrder = new List<string> { "foundation", "column", "wall", "slab", "beam" }.Select(Al).ToList();
+    var aliasAsym = new List<string>();
+    foreach (var k1 in cats18) foreach (var k2 in cats18)
+    {
+      var x = CSide(301, k1, 2); var y = CSide(302, k2, 2);
+      var o1 = R("CutterOf").Invoke(null, new object[] { vaultOrder, x, y }); var o2 = R("CutterOf").Invoke(null, new object[] { vaultOrder, y, x });
+      var q1 = (string)o1 == "A" ? 301 : (string)o1 == "B" ? 302 : 0; var q2 = (string)o2 == "A" ? 302 : (string)o2 == "B" ? 301 : 0;
+      var expect = Array.IndexOf(cats18, k1) < Array.IndexOf(cats18, k2) ? 301 : Array.IndexOf(cats18, k1) > Array.IndexOf(cats18, k2) ? 302 : 301;
+      if (q1 != q2 || q1 != expect) aliasAsym.Add($"{k1}/{k2}: {q1} vs {q2}");
+    }
+    Check(aliasAsym.Count == 0, $"vault order: the higher category cuts whichever side it is on; same category and size: the lower id ({string.Join("; ", aliasAsym.Take(3))})");
+    double? AP(double[] p0, double[] u, double[] o, double[] n) => (double?)R("AxisPlane").Invoke(null, new object[] { p0, u, o, n });
+    var tHit = AP(new[] { 0.0, 0, 0 }, new[] { 1.0, 0, 0 }, new[] { 4000.0, 7, 9 }, new[] { -2.0, 0, 0 });
+    var tSkew = AP(new[] { 0.0, 0, 0 }, new[] { 1.0, 0, 0 }, new[] { 3000.0, 0, 0 }, new[] { 1.0, 1.0, 0 });
+    Check(tHit.HasValue && Math.Abs(tHit.Value - 4000) < 1e-9 && tSkew.HasValue && Math.Abs(tSkew.Value - 3000) < 1e-9 && AP(new[] { 0.0, 0, 0 }, new[] { 1.0, 0, 0 }, new[] { 0.0, 500, 0 }, new[] { 0.0, 1, 0 }) == null,
+      "trim: axis meets plane at t (normal length / direction free, skew plane); a parallel plane gives none");
+    (double T, double Trim)? TT(double len, double[] hits, int end, double max, out string why)
+    { var args = new object[] { len, hits, end, max, 1.0, null }; var r = R("TrimTarget").Invoke(null, args); why = (string)args[5]; return r == null ? null : ((double, double)?)r; }
+    var te1 = TT(6000, new[] { 5600.0, 5900.0, 200.0 }, 1, 1000, out var tw1); var te0 = TT(6000, new[] { 300.0, 100.0, 5600.0 }, 0, 1000, out var tw0);
+    var beyond = TT(6000, new[] { 6000.0, 6400.0, -50.0 }, 1, 1000, out var wB); var tooFar = TT(6000, new[] { 4500.0 }, 1, 1000, out var wF); var atMax = TT(6000, new[] { 5000.0 }, 1, 1000, out _);
+    Check(te1.HasValue && te1.Value.T == 5600 && te1.Value.Trim == 400 && te0.HasValue && te0.Value.T == 300 && te0.Value.Trim == 300,
+      "trim: the end's half only, the face nearest the middle (end 1 keeps 0..5600, end 0 keeps 300..6000)");
+    Check(beyond == null && wB == "no face" && tooFar == null && wF == "trim too long" && atMax.HasValue && atMax.Value.Trim == 1000 && (double)rl.GetField("DefaultTrimMaxMm", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.GetValue(null)! == 1000,
+      "trim: shorten only (a face at or beyond the end is none); longer than max_mm is report-only; exactly max is allowed; default 1000 mm");
+    Check((string)R("TrimId").Invoke(null, new object[] { 501L, 77L, 1 }) == "trim:501>77:1", "trim plan id: trim:<trimmed>><face owner>:<end>");
+    var tboxes = new List<(long, double[], double[])> { (5, new[] { 0.0, 0, 0 }, new[] { 10.0, 10, 10 }), (3, new[] { 10.004, 0, 0 }, new[] { 20.0, 10, 10 }), (9, new[] { 30.0, 0, 0 }, new[] { 40.0, 10, 10 }),
+      (7, new[] { 5.0, 10.02, 0 }, new[] { 8.0, 12, 10 }), (8, new[] { 2.0, 2, 2 }, new[] { 3.0, 3, 3 }) };
+    var tp = (List<(long A, long B)>)R("TouchingPairs").Invoke(null, new object[] { tboxes, 0.005 });
+    Check(tp.SequenceEqual(new List<(long, long)> { (3, 5), (5, 8) }), $"touching pairs: overlap or within tol on every axis, each pair once (low id, high id), in id order ({string.Join(" ", tp)})");
+    var clg = a.GetType("AceRevitMcp.Coordination.ClashLogic");
+    string SK(bool ws, string central, string path, string title) => (string)clg.GetMethod("StoreKey", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { ws, central, path, title });
+    Check(SK(true, "\\\\srv\\TST\\TST_CENTRAL.rvt", "C:\\local\\TST_CENTRAL_user.rvt", "TST_CENTRAL_user") == "TST_CENTRAL" && SK(false, null, "C:\\p\\TST_MODEL.rvt", "TST_MODEL") == "TST_MODEL"
+      && SK(false, null, "", "TST_Unsaved") == "TST_Unsaved" && SK(true, null, "C:\\p\\TST_DETACHED.rvt", "x") == "TST_DETACHED" && SK(false, null, null, "a:b") == "a_b",
+      "store key: the central model's name when workshared, else the file name, else the title; safe as a folder name");
+    var runsS = (IList)Activator.CreateInstance(runListT); runsS.Add(Run("T", t0.AddDays(2)));
+    var latest = IL("LatestRuns").Invoke(null, new object[] { runsS });
+    object SC(string key, string status, DateTime seen, string model) => Set(C(key, status, "u" + key, "v" + key, "Walls", "Floors", "L1"), ("LastSeen", seen), ("SourceA", model), ("SourceB", model));
+    var mixed = List(SC("s1", "new", t0.AddDays(2), "TST_A"), SC("s2", "active", t0.AddDays(2).AddMinutes(-1), "TST_A"), SC("s3", "new", t0, "TST_B"), SC("s4", "resolved", t0, "TST_B"));
+    var rowsS = (IList)IL("Rows").Invoke(null, new object[] { mixed, (0.0, 0.0, 0.0), null, latest });
+    var rlS = (IList)Activator.CreateInstance(rowListT); foreach (var r in rowsS) rlS.Add(r);
+    var cntS = (Dictionary<string, int>)IL("Counts").Invoke(null, new object[] { rlS });
+    var notRe = List(mixed[2], mixed[3]);
+    var st = IL("Stored").Invoke(null, new object[] { notRe });
+    Check(cntS["clashes"] == 2 && cntS["open"] == 2 && cntS["stored"] == 2 && rowsS.Count == 4 && !(bool)RF(rowsS[3], "Rechecked") && (bool)RF(rowsS[0], "Rechecked")
+      && (int)FW(st, "Item1") == 2 && (int)FW(st, "Item2") == 1 && ((List<string>)FW(st, "Item3")).SequenceEqual(new[] { "TST_B" }),
+      "stored results: only clashes the latest run looked at count as open; the others are listed last, rechecked: false, with their models");
+    var noRuns = (IList)IL("Rows").Invoke(null, new object[] { mixed, (0.0, 0.0, 0.0), null, null });
+    Check(noRuns.Cast<object>().All(r => (bool)RF(r, "Rechecked")), "stored results: without run records everything counts as rechecked");
+    object ESA(long id, double? area, double? vol, int dims, int tags) { var e = ES(id, "T1", P(0), P(1000)); esT.GetField("Area").SetValue(e, area); esT.GetField("Volume").SetValue(e, vol); esT.GetField("Dimensions").SetValue(e, dims); esT.GetField("Tags").SetValue(e, tags); return e; }
+    var dA = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] {
+      EL(ESA(1, 20.0, 5.0, 2, 1), ESA(2, 10.0, 2.0, 0, 0)), EL(ESA(1, 18.5, 4.6, 1, 1), ESA(2, 10.0004, 2.00005, 0, 0)) });
+    string WA2(int i) => string.Join(",", dA[i]!["changes"]!.AsArray().Select(c => c!["what"]!.ToString()));
+    Check(dA.Count == 1 && WA2(0) == "area,volume,annotation" && (double)dA[0]!["changes"]![0]!["before"]! == 20 && (int)dA[0]!["changes"]![2]!["after"]!["dimensions"]! == 1,
+      $"capture: area and volume changes (noise ignored) and a lost dimension are reported ({(dA.Count > 0 ? WA2(0) + " " + dA[0]!.ToJsonString() : "")})");
+    var anT = a.GetType("AceRevitMcp.Commands.CaptureLogic+Annotation");
+    object AN(int d, int s, int t) => Set(Activator.CreateInstance(anT, true)!, ("Dimensions", d), ("SpotDimensions", s), ("Tags", t));
+    var ad = (System.Text.Json.Nodes.JsonObject)cl.GetMethod("AnnotationDiff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { AN(10, 2, 30), AN(9, 2, 31) });
+    Check((int)ad["dimensions"]!["before"]! == 10 && (int)ad["dimensions"]!["after"]! == 9 && (int)ad["tags"]!["after"]! == 31 && (int)ad["spotDimensions"]!["before"]! == 2, "capture: annotation counts at start and stop");
+    // The journal is still open for writing by Revit: read through a shared stream to EOF, never from its length.
+    var jPath = Path.Combine(Path.GetTempPath(), "TST_journal_" + Guid.NewGuid().ToString("N") + ".txt");
+    try
+    {
+      long jEnd; List<string> jNew, jRot;
+      using (var w = new FileStream(jPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+      {
+        void Wr(string t) { var b = System.Text.Encoding.UTF8.GetBytes(t); w.Write(b, 0, b.Length); w.Flush(); }
+        Wr("' TST before\nJrn.Command \"TST\" , \"old\"\n");
+        jEnd = (long)cl.GetMethod("JournalEnd", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { jPath })!;
+        Wr("Jrn.Command \"TST\" , \"new\"\n' TST after\n");
+        jNew = (List<string>)cl.GetMethod("JournalFrom", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { jPath, jEnd })!;
+        jRot = (List<string>)cl.GetMethod("JournalFrom", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { jPath, 100000L })!;
+      }
+      var nl = jNew.Where(l => l.Length > 0).ToList();
+      Check(jEnd == System.Text.Encoding.UTF8.GetByteCount("' TST before\nJrn.Command \"TST\" , \"old\"\n") && nl.Count == 2 && nl[0].Contains("\"new\"") && nl[1] == "' TST after",
+        "capture journal: the start offset is the bytes read to EOF while another stream writes; stop reads only what came after");
+      Check(jRot.Count(l => l.Length > 0) == 4 && jRot[0] == "' TST before", "capture journal: a stream shorter than the offset (rotated) is read from its beginning");
+      Check((long)cl.GetMethod("JournalEnd", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { jPath + ".missing" })! == 0, "capture journal: a missing journal has offset 0");
+    }
+    finally { try { File.Delete(jPath); } catch { } }
 
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");

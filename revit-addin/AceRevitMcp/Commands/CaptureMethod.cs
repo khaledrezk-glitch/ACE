@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AceRevitMcp.Bridge;
@@ -16,7 +15,7 @@ namespace AceRevitMcp.Commands
     /// <summary>
     /// Bridge "capture_method" { action: start | status | stop, label, categories?, parameters? }: records how a person solves
     /// something. start snapshots the elements (location, offsets, extensions, joins and which element cuts, copes, type,
-    /// material, workset, listed parameters) and notes the journal file and its length; stop snapshots again and returns the
+    /// material, workset, listed parameters) and notes the journal file and the bytes read to its end; stop snapshots again and returns the
     /// per-element diff and the journal lines written in between. Read-only: no transaction. The running capture is kept on
     /// disk (%APPDATA%\ACE-RevitMCP\captures\active.json) so a Revit restart does not lose it.
     /// </summary>
@@ -33,6 +32,7 @@ namespace AceRevitMcp.Commands
             public long JournalOffset;
             public List<string> Categories = new List<string>(), Parameters = new List<string>();
             public List<S> Elements = new List<S>();
+            public CaptureLogic.Annotation Annotation;
         }
 
         private static Record _current;
@@ -63,14 +63,15 @@ namespace AceRevitMcp.Commands
                     var cats = Categories(doc, args);
                     var parameters = Args.Strings(args, "parameters").Where(p => !string.IsNullOrWhiteSpace(p)).Distinct(StringComparer.Ordinal).ToList();
                     string journal = null; long offset = 0;
-                    try { journal = app.Application.RecordingJournalFilename; if (!string.IsNullOrEmpty(journal) && File.Exists(journal)) offset = new FileInfo(journal).Length; }
+                    try { journal = app.Application.RecordingJournalFilename; offset = CaptureLogic.JournalEnd(journal); }   // bytes read to EOF, not Length
                     catch { /* no journal: the diff still works */ }
                     var rec = new Record
                     {
                         Id = DateTime.Now.ToString("yyyyMMdd-HHmmss"), Label = label.Trim(), Model = doc.Title, ModelPath = doc.PathName,
                         StartedAt = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"), Journal = journal, JournalOffset = offset,
                         Categories = cats.Select(c => c.Name).ToList(), Parameters = parameters,
-                        Elements = Snapshot(doc, cats.Select(c => c.Id).ToList(), parameters),
+                        Elements = Snapshot(doc, cats.Select(c => c.Id).ToList(), parameters, out var annotation),
+                        Annotation = annotation,
                     };
                     Directory.CreateDirectory(Folder);
                     File.WriteAllText(ActiveFile, JsonSerializer.Serialize(rec, Json));
@@ -79,6 +80,7 @@ namespace AceRevitMcp.Commands
                     {
                         ["success"] = true, ["aceVersion"] = aceVersion, ["model"] = rec.Model, ["label"] = rec.Label, ["startedAt"] = rec.StartedAt,
                         ["journal"] = rec.Journal, ["elements"] = rec.Elements.Count,
+                        ["annotation"] = CaptureLogic.AnnotationDiff(rec.Annotation, null),
                         ["categories"] = new JsonArray(rec.Categories.Select(c => (JsonNode)c).ToArray()),
                         ["parameters"] = new JsonArray(rec.Parameters.Select(p => (JsonNode)p).ToArray()),
                     };
@@ -90,7 +92,7 @@ namespace AceRevitMcp.Commands
                     if (!string.Equals(doc.Title, current.Model, StringComparison.Ordinal))
                         return Fail($"the capture was started on {current.Model}, the active model is {doc.Title}: switch to that model, then stop");
                     var cats = current.Categories.Select(n => Args.ResolveCategory(doc, n)).Where(c => c != null).ToList();
-                    var after = Snapshot(doc, cats.Select(c => c.Id).ToList(), current.Parameters);
+                    var after = Snapshot(doc, cats.Select(c => c.Id).ToList(), current.Parameters, out var annotationNow);
                     var diffs = CaptureLogic.Diff(current.Elements, after);
                     string journalNow = null;
                     try { journalNow = app.Application.RecordingJournalFilename; } catch { }
@@ -117,6 +119,7 @@ namespace AceRevitMcp.Commands
                         ["categories"] = new JsonArray(current.Categories.Select(c => (JsonNode)c).ToArray()),
                         ["journalLines"] = new JsonArray(lines.Select(l => (JsonNode)l).ToArray()), ["journalTruncated"] = truncated,
                         ["diffs"] = diffs,
+                        ["annotation"] = CaptureLogic.AnnotationDiff(current.Annotation, annotationNow),
                     };
                 }
                 default: throw new CommandException("action must be start, status or stop.");
@@ -164,9 +167,42 @@ namespace AceRevitMcp.Commands
             ("startJoinCutback", BuiltInParameter.START_JOIN_CUTBACK), ("endJoinCutback", BuiltInParameter.END_JOIN_CUTBACK),
         };
 
-        private static List<S> Snapshot(Document doc, List<ElementId> categories, List<string> parameters)
+        private const double M2PerFt2 = 0.09290304, M3PerFt3 = 0.028316846592;
+
+        /// <summary>
+        /// Model-wide dimension, spot dimension and tag counts, and per element how many dimensions and tags reference it (one
+        /// pass over each).
+        /// </summary>
+        private static CaptureLogic.Annotation Annotations(Document doc, Dictionary<long, int> dims, Dictionary<long, int> tags)
+        {
+            var a = new CaptureLogic.Annotation();
+            foreach (var d in new FilteredElementCollector(doc).OfClass(typeof(Dimension)).Cast<Dimension>())
+            {
+                if (d is SpotDimension) a.SpotDimensions++; else a.Dimensions++;
+                try
+                {
+                    var seen = new HashSet<long>();
+                    if (d.References != null)
+                        foreach (Reference r in d.References)
+                            if (r != null && seen.Add(r.ElementId.Value)) dims[r.ElementId.Value] = dims.TryGetValue(r.ElementId.Value, out var n) ? n + 1 : 1;
+                }
+                catch { /* a dimension without readable references */ }
+            }
+            foreach (var t in new FilteredElementCollector(doc).OfClass(typeof(IndependentTag)).Cast<IndependentTag>())
+            {
+                a.Tags++;
+                try { foreach (var id in t.GetTaggedLocalElementIds()) tags[id.Value] = tags.TryGetValue(id.Value, out var n) ? n + 1 : 1; }
+                catch { }
+            }
+            return a;
+        }
+
+        private static List<S> Snapshot(Document doc, List<ElementId> categories, List<string> parameters, out CaptureLogic.Annotation annotation)
         {
             var list = new List<S>();
+            var dims = new Dictionary<long, int>(); var tagged = new Dictionary<long, int>();
+            annotation = null;
+            try { annotation = Annotations(doc, dims, tagged); } catch (Exception ex) { Log.Warn($"Capture annotation counts: {ex.Message}"); }
             if (categories.Count == 0) return list;
             var table = doc.IsWorkshared ? doc.GetWorksetTable() : null;
             foreach (var e in new FilteredElementCollector(doc).WherePasses(new ElementMulticategoryFilter(categories)).WhereElementIsNotElementType())
@@ -196,6 +232,16 @@ namespace AceRevitMcp.Commands
                 if (s.Point == null && s.Start == null)
                     try { var bb = e.get_BoundingBox(null); if (bb != null) { s.BoxMin = Mm(bb.Min); s.BoxMax = Mm(bb.Max); } } catch { }
                 foreach (var (name, bip) in OffsetParams) Length(e, bip, name, s.Offsets);
+                try
+                {
+                    var ar = e.get_Parameter(BuiltInParameter.HOST_AREA_COMPUTED);
+                    if (ar != null && ar.HasValue && ar.StorageType == StorageType.Double) s.Area = Math.Round(ar.AsDouble() * M2PerFt2, 4);
+                    var vo = e.get_Parameter(BuiltInParameter.HOST_VOLUME_COMPUTED);
+                    if (vo != null && vo.HasValue && vo.StorageType == StorageType.Double) s.Volume = Math.Round(vo.AsDouble() * M3PerFt3, 5);
+                }
+                catch { }
+                s.Dimensions = dims.TryGetValue(s.Id, out var dn) ? dn : 0;
+                s.Tags = tagged.TryGetValue(s.Id, out var tn) ? tn : 0;
                 foreach (var (name, bip) in ExtensionParams) Length(e, bip, name, s.Extensions);
                 try
                 {
@@ -251,23 +297,11 @@ namespace AceRevitMcp.Commands
             return lines;
         }
 
-        /// <summary>Reads a file Revit is still writing (read-only, shared), from a byte offset.</summary>
+        /// <summary>Reads a file Revit is still writing (shared stream, to EOF), from a byte offset; see CaptureLogic.JournalFrom.</summary>
         private static IEnumerable<string> ReadFrom(string file, long offset)
         {
-            if (string.IsNullOrEmpty(file) || !File.Exists(file)) return Enumerable.Empty<string>();
-            try
-            {
-                using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                {
-                    var head = new byte[2];
-                    var unicode = fs.Read(head, 0, 2) == 2 && head[0] == 0xFF && head[1] == 0xFE;
-                    if (offset > fs.Length) offset = 0;   // a new file under the same name
-                    if (unicode && offset % 2 == 1) offset++;
-                    fs.Seek(Math.Max(offset, unicode && offset == 0 ? 2 : offset), SeekOrigin.Begin);
-                    using (var reader = new StreamReader(fs, unicode ? Encoding.Unicode : Encoding.UTF8, false))
-                        return reader.ReadToEnd().Split('\n');
-                }
-            }
+            if (string.IsNullOrEmpty(file)) return Enumerable.Empty<string>();
+            try { return CaptureLogic.JournalFrom(file, offset); }
             catch (Exception ex) { Log.Warn($"Journal not read: {ex.Message}"); return Enumerable.Empty<string>(); }
         }
     }
