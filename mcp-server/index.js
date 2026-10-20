@@ -602,6 +602,9 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
   if (result && result.success === false) {
     out.isError = true;
     if (result.stage === "compile") out.content.push({ type: "text", text: "Tip: check uncertain members with revit_api_lookup before retrying." });
+  } else if (modifies && dry_run && result?.previewable === false) {
+    // Not-undoable calls (save, sync, export, rename workset...): compiled and screened, not executed; nothing to preview.
+    out.content.push({ type: "text", text: `${result.warning ?? "Not previewed: this script cannot be undone."} Tell the user exactly what the real run would do and that it cannot be rolled back; only if they agree, run the identical call with dry_run: false and allow_risky: true.` });
   } else if (modifies && dry_run) {
     out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Explain this result to the user in plain words and ask for confirmation before applying (same call with dry_run: false). This preview now also appears in the ACE Companion panel in Revit, where the user can click Apply or Cancel instead of answering here." });
   }
@@ -646,6 +649,7 @@ tool("open_model", {
     audit: z.boolean().optional(),
     worksets: z.enum(["all", "last_viewed", "none"]).optional(),
     close_previous: z.boolean().optional(),
+    activate: z.boolean().optional().describe("If the model is already open, make it the active model (otherwise it is opened and activated)"),
     confirm: z.boolean().optional().describe("Only after the user agreed: needed for detach discard_worksets and clear_transmitted"),
   },
   annotations: benign,
@@ -657,10 +661,14 @@ tool("open_model", {
     throw new RevitError("Blocked for safety: clear_transmitted writes into the file on disk (it clears the transmitted flag of that .rvt). Use it only on a working copy, never on " +
       "the client's issued file or a central. Tell the user exactly that; only if they agree, call again with confirm: true.");
   const req = { path: a.path, detach: a.detach ?? "none", audit: !!a.audit, worksets: a.worksets ?? "all", close_previous: !!a.close_previous,
-    clear_transmitted: !!a.clear_transmitted, save_as_central_ok: !!a.save_as_central_ok };
+    clear_transmitted: !!a.clear_transmitted, save_as_central_ok: !!a.save_as_central_ok, activate: !!a.activate };
   await pinSession();
   const r = await callRevit("open_model", req, 600);
   modelSwitched(r?.model);
+  if (r?.alreadyOpen) {
+    journal({ title: `Activate model ${r?.model ?? a.path}`, outcome: r.activated ? "Made the active model" : "Already the active model", details: { path: a.path } });
+    return text(r);
+  }
   const flags = [r?.detached ? `detached${req.detach === "discard_worksets" ? ", worksets discarded" : req.detach === "preserve_worksets" ? ", worksets preserved" : ""}` : "",
     r?.audited ? "audited" : "", r?.workshared ? `worksets: ${r.worksetsOpened && typeof r.worksetsOpened === "object" ? `${r.worksetsOpened.open ?? "?"} of ${r.worksetsOpened.total ?? "?"} open` : r.worksetsOpened ?? req.worksets}` : "not workshared"].filter(Boolean).join(" / ");
   const c = r?.closed;
@@ -690,14 +698,35 @@ function openNotes(r, req) {
 
 tool("close_model", {
   title: "Close a model",
-  description: "Close an open model that is not the active one, without saving (unsaved changes in it are lost: ask the user first). model: its title.",
-  inputSchema: { model: z.string().min(1).max(260) },
+  description: "Close an open model that is not the active one, without saving. A model with unsaved changes is kept open, unless discard: true (with confirm: true, the user's OK) and ACE opened it in this session and nobody changed it since (a workshared one only if ACE opened it detached): then its changes are thrown away. model: its title (two open models with one title: give path).",
+  inputSchema: {
+    model: z.string().min(1).max(260).optional(), path: z.string().max(1000).optional().describe("The file the model was opened from"),
+    discard: z.boolean().optional().describe("Close even with unsaved changes (only models ACE opened and nobody changed): the changes are lost"),
+    confirm: z.boolean().optional().describe("Only after the user agreed: needed for discard"),
+  },
   annotations: writes,
 }, async (a) => {
+  if (!a.model && !a.path) throw new RevitError("Give model (its title) or path.");
+  if (a.discard && !a.confirm)
+    throw new RevitError("Blocked for safety: discard throws away the model's unsaved changes. Tell the user exactly that; only if they agree, call again with confirm: true.");
   await pinSession();
-  const r = await callRevit("close_model", { model: a.model }, 300);
+  const r = await callRevit("close_model", { ...(a.model ? { model: a.model } : {}), ...(a.path ? { path: a.path } : {}), discard: !!a.discard }, 300);
   forgetInstances();
-  journal({ title: `Close model ${a.model}`, outcome: r?.closed === false ? `Not closed: ${r?.why ?? "refused"}` : "Closed without saving", details: r });
+  journal({ title: `Close model ${a.model ?? a.path}`, outcome: r?.closed === false ? `Not closed: ${r?.why ?? "refused"}` : "Closed without saving", details: r });
+  return text(r);
+});
+
+tool("save_model", {
+  title: "Save a model",
+  description: "Save an open model to its own file (Save, never Save As; a workshared local is saved locally, NOT synchronized with central). It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and never-saved models. model: its title (default: the active model).",
+  inputSchema: { model: z.string().min(1).max(260).optional(), allow_risky: z.boolean().optional().describe("Only after the user explicitly agreed to save") },
+  annotations: writes,
+}, async (a) => {
+  if (!a.allow_risky)
+    throw new RevitError("Blocked for safety: saving writes the model file and cannot be undone. Tell the user which model would be saved; only if they agree, call again with allow_risky: true.");
+  await pinSession();
+  const r = await callRevit("save_model", { ...(a.model ? { model: a.model } : {}), allow_risky: true }, 900);
+  journal({ title: `Save model ${r?.model ?? a.model ?? "(active)"}`, outcome: r?.saved ? `Saved (${r.kind}) in ${r.ms} ms` : "Not saved", details: r });
   return text(r);
 });
 
@@ -1094,11 +1123,42 @@ async function worksetFactsFor(a, timeout) {
   const out = [];
   if (a.paths?.length) {
     await pinSession();
-    for (const [i, p] of a.paths.entries()) {
-      // Only models this batch opened are closed (never the user's own active model).
-      const r = await callRevit("open_model", { path: p, detach: a.detach ?? "preserve_worksets", audit: false, worksets: "all", close_previous: i > 0, clear_transmitted: false, save_as_central_ok: false }, 600);
-      modelSwitched(r?.model);
-      out.push({ path: p, facts: await facts(), naming: (await worksetNaming(a)).naming });
+    // Exactly the models this batch opened (by handle) are closed; never "whatever is active". With detach none the copies are
+    // the user's own files: closed only when unmodified, never discarded.
+    const discard = (a.detach ?? "preserve_worksets") !== "none";
+    const opened = []; const notes = []; let previous;
+    const closeOne = async (o) => {
+      try {
+        const c = await callRevit("close_model", { handle: o.handle, discard }, 300);
+        if (c?.closed === false) notes.push(`${o.model} stays open: ${c.why ?? "not closed"}.`);
+      } catch (e) { notes.push(`${o.model} stays open: ${e.message}.`); }
+    };
+    try {
+      for (const [i, p] of a.paths.entries()) {
+        const r = await callRevit("open_model", { path: p, detach: a.detach ?? "preserve_worksets", audit: false, worksets: "all", close_previous: false, clear_transmitted: false, save_as_central_ok: false }, 600);
+        if (i === 0) previous = r?.previous ?? null;
+        modelSwitched(r?.model);
+        out.push({ path: p, facts: await facts(), naming: (await worksetNaming(a)).naming });
+        if (opened.length) await closeOne(opened.pop());   // the one before is no longer active now
+        if (r?.handle) opened.push({ handle: r.handle, model: r.model });
+      }
+    } finally {
+      // The last one is active: switch back to the model that was active before, then close it.
+      for (const o of opened) {
+        if (previous?.path) {
+          try {
+            await callRevit("open_model", { path: previous.path, activate: true }, 600);
+            modelSwitched(previous.model);
+            await closeOne(o);
+          } catch (e) { notes.push(`${o.model} stays open: could not switch back to ${previous.model} (${e.message}).`); }
+        } else notes.push(`Left ${o.model} active; your previous document ${previous?.model ? `(${previous.model}) ` : ""}has no file path to switch back to${previous ? "" : " (none was open)"}.`);
+      }
+      forgetInstances();
+      if (notes.length) {
+        journal({ title: "Batch models left open", outcome: notes.join(" ") });
+        const lastFacts = out.at(-1)?.facts;
+        if (lastFacts) lastFacts.notes = [...(lastFacts.notes ?? []), ...notes];
+      }
     }
   } else out.push({ facts: await facts(), naming: (await worksetNaming(a)).naming });
   return out;
@@ -1194,6 +1254,7 @@ tool("workset_plan", {
     confirm_standard: z.boolean().optional().describe("Mark the vault's worksets-standard.json confirmed (after the user agreed)"),
     only: z.object({ rows: z.array(z.union([z.number(), z.string()])).optional(), worksets: z.array(z.string()).optional(), categories: z.array(z.string()).optional(), models: z.array(z.string()).optional(), keys: z.array(z.string()).optional() }).optional().describe("apply: part of the plan"),
     reset: z.enum(["default"]).optional().describe("apply: everything to the default workset, then the rules (end state: one move per element)"),
+    create_missing: z.boolean().optional().describe("confirm: a rule may create its workset in models that lack it"),
     max_ids: z.number().int().min(0).max(500).optional(),
     check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().max(600).optional(),
     report_dir: z.string().optional(), timeout_seconds: z.number().int().min(10).max(3600).optional(),
@@ -1244,7 +1305,7 @@ tool("workset_plan", {
     if (useRules) {
       const ctx = WorksetPlan.nameCtx(list.flatMap((x) => x.facts?.levels ?? []), list[0]?.naming, ruleT.rows.map((r) => r.proposed));
       rr = WorksetPlan.rulesFromRows(ruleT.rows, ctx);
-      results = list.map((x) => ({ ...WorksetPlan.planFromRules(rr.rules, x.facts), flagged: rr.flagged, undecided: rr.undecided, skipped: rr.skipped, confirmed: rr.confirmed }));
+      results = list.map((x) => ({ ...WorksetPlan.planFromRules(rr.rules, x.facts, { ...ctx, createMissing: !!a.create_missing }), flagged: rr.flagged, undecided: rr.undecided, skipped: rr.skipped, confirmed: rr.confirmed }));
       rules = { rules: WorksetPlan.vaultRules(rr.rules, [...new Set(list.flatMap((x) => x.facts?.zones ?? []))]), ambiguous: [] };
       if (rr.flagged.length) unused.push(`${ruleT.sheet ? `${ruleT.sheet} sheet` : "The file"}: ${rr.flagged.length} decision(s) not used (flagged above).`);
     }
@@ -1302,7 +1363,7 @@ tool("workset_plan", {
   if (a.reset) {
     if (!pf.rules) throw new RevitError("reset: \"default\" needs a rule-level plan (confirm the Worksets sheet): without rules every correctly placed element would go to the default workset.");
     const vwA = await vaultWorksetsOf(a);
-    rs = WorksetPlan.resetPlan(pf, cur.facts, { manualOnly: cur.naming?.manualOnly ?? [], keep: vwA?.keep ?? [] });
+    rs = WorksetPlan.resetPlan(pf, cur.facts, { manualOnly: cur.naming?.manualOnly ?? [], keep: vwA?.keep ?? [], zoneWins: cur.naming?.zoneWins !== false, typeTokens: cur.naming?.typeTokens ?? null });
     plan = rs.plan;
     lines.push(`Reset to ${Worksets.q(rs.defaultName)} (end state, each element moves once): ${rs.toDefault.elements} element(s) in ${rs.toDefault.groups} group(s) no rule takes go to the default (${rs.stay.onDefault} already there); kept: datum ${rs.stay.datum}, manual-only ${rs.stay.manual}, skipped on the Groups sheet ${rs.stay.skipped}${rs.borrowed ? `; ${rs.borrowed} borrowed by others (pending)` : ""}.`);
   }
@@ -1492,6 +1553,7 @@ tool("view_membership_fill", {
     project_parameters: z.string().optional().describe("The project's shared parameter file (default: the vault mapping's)"),
     shared_parameters: z.array(z.string()).max(50).optional(),
     mapping: z.string().optional(), vault: z.string().optional(), report_dir: z.string().optional(),
+    param_group: z.string().max(100).optional().describe("Revit parameter group to bind a missing parameter under (e.g. General, Data, IdentityData); default: the file's group when it is a Revit group, else General"),
     check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().optional(),
     plan: z.string().optional(), step: z.string().optional(),
     max_ids: z.number().int().min(0).max(500).optional(), timeout_seconds: z.number().int().min(10).max(3600).optional(),
@@ -1504,7 +1566,7 @@ tool("view_membership_fill", {
   const d = ViewFill.definitionFor(a.parameter, files, mapping);
   const mentioned = await parameterMentions(d.use, a);
   const definition = d.definition ? { name: d.definition.name, guid: d.definition.guid, dataType: d.definition.dataType, group: d.definition.group, instance: true, categories: a.categories ?? [] } : undefined;
-  const ident = { view: a.view, parameter: d.use, value_in: a.value_in, value_out: a.value_out, categories: a.categories ?? [], definition: definition ?? null };
+  const ident = { view: a.view, parameter: d.use, value_in: a.value_in, value_out: a.value_out, categories: a.categories ?? [], definition: definition ?? null, ...(a.param_group ? { param_group: a.param_group } : {}) };
   const extra = (r) => {
     const near = ViewFill.modelNearMisses(d.use, r?.modelNames ?? []);
     return [...d.notes,

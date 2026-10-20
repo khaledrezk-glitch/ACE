@@ -15,6 +15,14 @@ namespace AceRevitMcp.Compiler
     /// </summary>
     internal static class RiskScreen
     {
+        /// <summary>
+        /// Ends the reason of a call that escapes the run's TransactionGroup rollback (saving, closing, syncing, borrowing,
+        /// renaming worksets, exporting, unloading links, writing the shared parameter file): a dry run or readonly run refuses it
+        /// even with allow_risky ("cannot be previewed: not undoable"). The add-in looks for this text.
+        /// </summary>
+        public const string NotUndoable = " (not undoable)";
+        private const string NU = NotUndoable;
+
         private static readonly (string Prefix, string Why)[] Namespaces =
         {
             ("System.IO.Compression", "creates, changes or deletes files on disk"),
@@ -48,25 +56,31 @@ namespace AceRevitMcp.Compiler
             ("System.Type", "GetField", "uses reflection to reach code beyond the Revit API"),
             ("System.Type", "GetProperty", "uses reflection to reach code beyond the Revit API"),
             ("System.Type", "GetConstructor", "uses reflection to reach code beyond the Revit API"),
-            ("Autodesk.Revit.DB.Document", "Save", "saves or closes a model"), ("Autodesk.Revit.DB.Document", "SaveAs", "saves or closes a model"),
-            ("Autodesk.Revit.DB.Document", "SaveCloudModel", "saves or closes a model"), ("Autodesk.Revit.DB.Document", "Close", "saves or closes a model"),
-            ("Autodesk.Revit.DB.Document", "SynchronizeWithCentral", "syncs with the central model"),
-            ("Autodesk.Revit.DB.Document", "ReloadLatest", "syncs with the central model"),
-            ("Autodesk.Revit.DB.Document", "Export", "exports files from the model"), ("Autodesk.Revit.DB.Document", "ExportImage", "exports files from the model"),
-            ("Autodesk.Revit.DB.WorksharingUtils", "RelinquishOwnership", "syncs with the central model"),
-            ("Autodesk.Revit.DB.RevitLinkType", "Unload", "opens other models or unloads links"),
-            ("Autodesk.Revit.DB.RevitLinkType", "UnloadLocally", "opens other models or unloads links"),
-            ("Autodesk.Revit.DB.RevitLinkType", "LoadFrom", "opens other models or unloads links"),
-            ("Autodesk.Revit.ApplicationServices.Application", "OpenDocumentFile", "opens other models or unloads links"),
-            ("Autodesk.Revit.UI.UIApplication", "OpenAndActivateDocument", "opens other models or unloads links"),
-            ("Autodesk.Revit.UI.UIApplication", "PostCommand", "triggers Revit commands"),
-            ("Autodesk.Revit.UI.UIDocument", "SaveAndClose", "saves or closes a model"),
-            ("Autodesk.Revit.UI.UIDocument", "SaveAs", "saves or closes a model"),
-            ("Autodesk.Revit.ApplicationServices.Application", "CopyModel", "creates, changes or deletes files on disk"),
-            ("Autodesk.Revit.DB.TransmissionData", "WriteTransmissionData", "creates, changes or deletes files on disk"),
-            ("Autodesk.Revit.DB.PrintManager", "SubmitPrint", "prints or writes files"),
-            ("Autodesk.Revit.DB.DefinitionGroups", "Create", "changes the shared parameter file"),
-            ("Autodesk.Revit.DB.Definitions", "Create", "changes the shared parameter file"),
+            ("Autodesk.Revit.DB.Document", "Save", "saves or closes a model" + NU), ("Autodesk.Revit.DB.Document", "SaveAs", "saves or closes a model" + NU),
+            ("Autodesk.Revit.DB.Document", "SaveCloudModel", "saves or closes a model" + NU), ("Autodesk.Revit.DB.Document", "SaveAsCloudModel", "saves or closes a model" + NU),
+            ("Autodesk.Revit.DB.Document", "Close", "saves or closes a model" + NU),
+            ("Autodesk.Revit.DB.Document", "SynchronizeWithCentral", "syncs with the central model" + NU),
+            ("Autodesk.Revit.DB.Document", "ReloadLatest", "syncs with the central model" + NU),
+            ("Autodesk.Revit.DB.Document", "EnableWorksharing", "enables worksharing" + NU),
+            ("Autodesk.Revit.DB.Document", "Export*", "exports files from the model" + NU),
+            ("Autodesk.Revit.DB.WorksharingUtils", "RelinquishOwnership", "syncs with the central model" + NU),
+            ("Autodesk.Revit.DB.WorksharingUtils", "CheckoutElements", "borrows elements from the central model" + NU),
+            ("Autodesk.Revit.DB.WorksharingUtils", "CheckoutWorksets", "borrows worksets from the central model" + NU),
+            ("Autodesk.Revit.DB.WorksharingUtils", "CreateNewLocal", "creates, changes or deletes files on disk" + NU),
+            ("Autodesk.Revit.DB.WorksetTable", "RenameWorkset", "renames a workset" + NU),
+            ("Autodesk.Revit.DB.RevitLinkType", "Unload", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.DB.RevitLinkType", "UnloadLocally", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.DB.RevitLinkType", "LoadFrom", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.ApplicationServices.Application", "OpenDocumentFile", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.UI.UIApplication", "OpenAndActivateDocument", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.UI.UIApplication", "PostCommand", "triggers Revit commands" + NU),
+            ("Autodesk.Revit.UI.UIDocument", "SaveAndClose", "saves or closes a model" + NU),
+            ("Autodesk.Revit.UI.UIDocument", "SaveAs", "saves or closes a model" + NU),
+            ("Autodesk.Revit.ApplicationServices.Application", "CopyModel", "creates, changes or deletes files on disk" + NU),
+            ("Autodesk.Revit.DB.TransmissionData", "WriteTransmissionData", "creates, changes or deletes files on disk" + NU),
+            ("Autodesk.Revit.DB.PrintManager", "SubmitPrint", "prints or writes files" + NU),
+            ("Autodesk.Revit.DB.DefinitionGroups", "Create", "changes the shared parameter file" + NU),
+            ("Autodesk.Revit.DB.Definitions", "Create", "changes the shared parameter file" + NU),
             ("System.IO.Path", "GetTempFileName", "creates, changes or deletes files on disk"),
             ("System.Xml.XmlDocument", "Save", "creates, changes or deletes files on disk"),
             ("System.Xml.Linq.XDocument", "Save", "creates, changes or deletes files on disk"),
@@ -109,7 +123,7 @@ namespace AceRevitMcp.Compiler
             {
                 foreach (var (t, member, why) in Members)
                 {
-                    if (m.Name != member) continue;
+                    if (member.EndsWith("*", StringComparison.Ordinal) ? !m.Name.StartsWith(member.TrimEnd('*'), StringComparison.Ordinal) : m.Name != member) continue;
                     if (t == "System.Type" && member == "GetType" && !m.IsStatic) continue;   // obj.GetType() is harmless
                     if (typeName == t || InheritsFrom(owner, t)) return why;
                 }

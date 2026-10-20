@@ -85,7 +85,7 @@ export function levelTokens(levels, aliases = {}) {
 /** The parse context of a proposal or a confirm: levels (with the vault's aliases), the token table, the vault's own tokens. */
 export function nameCtx(levels, naming, names = []) {
   return { levels: levelTokens(levels, naming?.levelAliases), table: W.tokenTable(naming), strong: new Set(Object.keys(naming?.categoryTokens ?? {}).map((k) => up(k).trim())),
-    noise: commonTokens(names), manualOnly: naming?.manualOnly ?? [] };
+    noise: commonTokens(names), manualOnly: naming?.manualOnly ?? [], typeTokens: naming?.typeTokens ?? null, zoneWins: naming?.zoneWins !== false };
 }
 
 /** Tokens shared by most workset names (a project prefix such as "XX-ST"): noise for matching. */
@@ -101,6 +101,10 @@ export function commonPrefix(names) {
   return [...count].filter(([, c]) => c / Math.max(1, names.length) > 0.5).sort((a, b) => b[0].length - a[0].length)[0]?.[0] ?? "";
 }
 
+/** Category words that name an asset (a zone / asset workset keeps what sits on it) and are distinctive in type names. */
+const ASSET_TOKENS = new Set(["PARAPET", "PARAPETS", "SOG", "RAFT", "PILE", "PILES", "FOOTING", "FOOTINGS"]);
+/** Material abbreviations that are distinctive in type names ("PCC 100", "Floor : PCC"). */
+const DISTINCT_MATERIAL = new Set(["PCC", "RCC", "PRECAST"]);
 /** Category words that head a name without a plural (mass nouns and abbreviations). */
 const MASS_HEADS = new Set(["FRAMING", "FURNITURE", "RAFT", "SOG", "CAD", "DWG", "RVT", "STEEL"]);
 const isZoneWord = (x) => x.kind === "other" && x.w.length >= 3 && !STOP.has(x.w) && !MANUAL.has(x.w) && !/^\d+$/.test(x.w);
@@ -115,7 +119,7 @@ const isZoneWord = (x) => x.kind === "other" && x.w.length >= 3 && !STOP.has(x.w
 export function parseName(name, { levels = [], table = W.CATEGORY_TOKENS, strong = new Set(), noise = new Set(), manualOnly = [], isProtected = false } = {}) {
   const t = { ...table, ...EXTRA_TOKENS };
   for (const k of strong) if (table[k]) t[k] = table[k];
-  const out = { workset: name, categories: [], levels: [], words: [], material: null, links: false, cad: false, codes: [],
+  const out = { workset: name, categories: [], levels: [], words: [], material: null, links: false, cad: false, codes: [], assets: [], distinct: [],
     manual: manualOnly.some((m) => norm(m) === norm(name)), isDefault: W.isDefaultName(name), protected: !!isProtected };
   // The name's parts (split at - _ ( ) / , ;) and its words, each with its part and whether the part is a "&" list.
   const parts = String(name ?? "").split(/[-_()\/,;|]+/);
@@ -136,7 +140,7 @@ export function parseName(name, { levels = [], table = W.CATEGORY_TOKENS, strong
     if (MANUAL.has(w)) out.manual = true;
     if (noise.has(w)) continue;
     if (LINK_WORDS.has(w)) { if (w === "CAD" || w === "DWG") out.cad = true; else out.links = true; continue; }
-    if (MATERIAL_TOKENS[w]) { out.material = MATERIAL_TOKENS[w]; continue; }
+    if (MATERIAL_TOKENS[w]) { out.material = MATERIAL_TOKENS[w]; if (DISTINCT_MATERIAL.has(w)) out.distinct.push(w); continue; }
     if (strong.has(w) && t[w]) { items.push({ w, seg, kind: "strong", cats: t[w] }); continue; }
     const lv = levels.filter((l) => l.codes.has(num(w)) || l.phrases.some((p) => p.length === 1 && p[0] === num(w))).map((l) => l.name);
     if (lv.length) { items.push({ w, seg, kind: t[w] ? "levelcat" : "level", levels: lv, cats: t[w] }); continue; }
@@ -160,10 +164,10 @@ export function parseName(name, { levels = [], table = W.CATEGORY_TOKENS, strong
   for (const x of items) {
     if (x.kind === "levelcat") x.kind = otherCat ? "level" : "cat";
     if (x.kind === "level") x.levels.forEach((l) => out.levels.includes(l) || out.levels.push(l));
-    else if (x.kind === "cat" || x.kind === "strong") x.cats.forEach((c) => out.categories.includes(c) || out.categories.push(c));
+    else if (x.kind === "cat" || x.kind === "strong") { x.cats.forEach((c) => out.categories.includes(c) || out.categories.push(c)); if (ASSET_TOKENS.has(x.w)) { out.assets.push(x.w); out.distinct.push(x.w); } }
     else if (x.kind === "other") {
       if (x.w.length >= 2 && x.w.length <= 3 && !STOP.has(x.w)) out.codes.push(x.w);   // a discipline code (EL, MV, PL ...) for links
-      if (isZoneWord(x)) out.words.push(x.w);
+      if (isZoneWord(x)) { out.words.push(x.w); out.distinct.push(x.w); }
     }
   }
   if (out.cad) out.links = false;
@@ -185,6 +189,21 @@ export function contradicts(g, r) {
   return !!(r.levels.length && g.level && !r.levels.includes(g.level) && !r.words.some((w) => have.has(w)));
 }
 
+/** A zone / asset workset: its name carries zone or asset words (BOUNDARY WALLS, STEEL FENCE, RF PARAPETS). */
+export const isZoneWs = (r) => !!r && usableRule(r) && !r.links && !r.cad && ((r.words?.length ?? 0) + (r.assets?.length ?? 0)) > 0;
+/**
+ * zoneWins (vault naming.zoneWins, default true): a group its zone / asset workset's category contradicts stays there
+ * (a boundary wall's columns belong to BOUNDARY WALLS), unless one rule names that zone / asset word AND its category.
+ * -> null (not a zone / asset workset) | { stay: true, why } | { to, why }
+ */
+export function zoneHold(g, cur, rules, { zoneWins = true } = {}) {
+  if (!zoneWins || !isZoneWs(cur)) return null;
+  const zw = [...cur.words, ...(cur.assets ?? [])];
+  const other = rules.filter((r) => r !== cur && r.workset !== cur.workset && usableRule(r) && r.categories.length && catIs(g.category, r.categories) && [...(r.words ?? []), ...(r.assets ?? [])].some((w) => zw.includes(w)));
+  if (other.length === 1) return { to: other[0].workset, why: `zone / asset ${zw.filter((w) => [...other[0].words, ...(other[0].assets ?? [])].includes(w)).join(" ").toLowerCase()} + category ${g.category}` };
+  return { stay: true, why: `kept on zone/asset workset ${q(cur.workset)}` };
+}
+
 /**
  * The home of a group among the rules (parsed workset names): { workset|null, confidence: high|medium|low, reason }.
  * Links go by the discipline code in their name before a generic links workset; CAD imports to a CAD (else LINKS)
@@ -193,8 +212,19 @@ export function contradicts(g, r) {
  * level is the catch-all for levels without their own workset), a material mismatch excludes, and where like elements
  * already sit only breaks a tie. Manual (visibility) worksets never receive anything.
  */
-export function place(g, rules, groups = []) {
+export function place(g, rules, groups = [], opts = {}) {
   const cands = rules.filter(usableRule);
+  // A type token that names a workset beats level + category ("Floor : SOG 120mm" -> SOG): the vault's typeTokens first.
+  if (!/^rvt links$/i.test(g.category) && !W.isCad(g.category)) {
+    const tw = new Set(words(g.type));
+    for (const [tok, ws] of Object.entries(opts.typeTokens ?? {})) {
+      const r = words(tok).length && words(tok).every((t) => tw.has(t)) ? cands.find((x) => norm(x.workset) === norm(ws)) : null;
+      if (r) return { workset: r.workset, confidence: "high", reason: `type ${up(tok)} (vault typeTokens)` };
+    }
+    let hits = cands.filter((r) => !r.links && !r.cad && !(r.levels?.length && !(g.level && r.levels.includes(g.level))) && (r.distinct ?? r.words ?? []).some((w) => tw.has(w)) && (!r.categories.length || catIs(g.category, r.categories)) && !(r.material && known(g.material) && r.material !== g.material));
+    if (hits.length > 1) { const lv = hits.filter((r) => g.level && r.levels.includes(g.level)); if (lv.length) hits = lv; }
+    if (hits.length === 1) return { workset: hits[0].workset, confidence: "high", reason: `type name ${(hits[0].distinct ?? hits[0].words).filter((w) => tw.has(w)).join(" ")} names the workset` };
+  }
   if (/^rvt links$/i.test(g.category)) {
     const lw = cands.filter((r) => r.links);
     const code = new Set(words(g.type));
@@ -330,7 +360,14 @@ export function propose(list) {
       }
       const dflt = onDefault(g, protectedNames), wrong = !dflt && contradicts(g, cur);
       if (!dflt && !wrong) continue;
-      const pl = place(g, rules, groups);
+      // zoneWins: what sits on a zone / asset workset stays there (shown, so the user can still mark the row).
+      const zh = wrong ? zoneHold(g, cur, rules, ctx) : null;
+      if (zh?.stay) {
+        detail.push({ Model: m.model, Row: "MOVE", "Current workset": g.workset, Category: g.category, "Type / link / contents": g.type ?? "", Level: g.level ?? "", Elements: Number(g.elements),
+          "Proposed workset": g.workset, "Proposed action": "keep", Reason: `${zh.why} (zoneWins: change to <workset> to move it)`, Confidence: "high", [DECISION]: "", Key: g.key });
+        continue;
+      }
+      const pl = zh?.to ? { workset: zh.to, confidence: "high", reason: zh.why } : place(g, rules, groups, ctx);
       if (pl.workset && pl.workset === cur?.workset) continue;
       // Visibility: a move from a workset shown in an export view to one hidden there hides the elements.
       const from = wsByName.get(g.workset), to = pl.workset ? [...wsByName.values()].find((w) => canonOf(w.name, w) === pl.workset) : null;
@@ -379,7 +416,8 @@ export function propose(list) {
     if (hid.length) note.push(`WOULD HIDE ${hid.reduce((n, h) => n + h.n, 0)} element(s) in ${[...new Set(hid.map((h) => h.v))].map(q).join(", ")}`);
     const proposed = r.isDefault ? defaultName ?? r.workset : r.workset;
     if (r.isDefault) note.push(defaultName ? "the vault's default name (naming.defaultName)" : "the default workset keeps its name (renaming it is opt-in: naming.defaultName in the vault)");
-    const rule = { workset: r.workset, categories: r.categories, levels: r.levels, words: r.words, material: r.material, links: r.links, cad: r.cad, codes: r.codes, manual: r.manual, isDefault: r.isDefault, protected: r.protected, twins };
+    const rule = { workset: r.workset, categories: r.categories, levels: r.levels, words: r.words, material: r.material, links: r.links, cad: r.cad, codes: r.codes, manual: r.manual, isDefault: r.isDefault, protected: r.protected, twins,
+      assets: r.assets, distinct: r.distinct, models: where };
     return { Group: section(r, action === "delete"), "Proposed workset": proposed, Action: action, Models: where.length === all.length && all.length > 1 ? `All ${all.length}` : `${where.join(", ")}${where.length > 1 ? ` (${where.length})` : ""}`,
       "What it holds (from its name)": describe(r), "Holds now": holds, "Would receive": recv, "Open / visibility": visText(f.vis), Note: note.join("; "), [DECISION]: "", Rule: JSON.stringify(rule) };
   });
@@ -388,6 +426,7 @@ export function propose(list) {
   const counts = { worksets: ruleRows.length, keep: ruleRows.filter((r) => /^keep/.test(r.Action)).length, delete: ruleRows.filter((r) => r.Action === "delete").length,
     twins: ruleRows.filter((r) => /spelling twins/.test(r.Note)).length, moves: detail.filter((d) => d["Proposed action"] === "move").length,
     moveElements: detail.filter((d) => d["Proposed action"] === "move").reduce((n, d) => n + d.Elements, 0), review: detail.filter((d) => d["Proposed action"] === "review").length,
+    keptZone: detail.filter((d) => d["Proposed action"] === "keep").length,
     sameAs: models.filter((m) => m.sameAs).map((m) => ({ model: m.model, sameAs: m.sameAs })), applied: done };
   return { rules: ruleRows, detail, models: models.map(({ model, hash, sameAs }) => ({ model, hash, sameAs })), counts };
 }
@@ -417,7 +456,7 @@ export async function proposalXlsx(p, file) {
 
 export function proposalText(p, files) {
   const c = p.counts;
-  const lines = [`WORKSET PLAN proposal for ${p.models.map((m) => m.model).join(", ")} (read-only, nothing changed): ${c.worksets} worksets (keep ${c.keep}, delete ${c.delete}, ${c.twins} with spelling twins merged); ${c.moves} element group(s) move (${c.moveElements} elements); ${c.review} group(s) to review (no confident home: left blank).`];
+  const lines = [`WORKSET PLAN proposal for ${p.models.map((m) => m.model).join(", ")} (read-only, nothing changed): ${c.worksets} worksets (keep ${c.keep}, delete ${c.delete}, ${c.twins} with spelling twins merged); ${c.moves} element group(s) move (${c.moveElements} elements); ${c.review} group(s) to review (no confident home: left blank)${c.keptZone ? `; ${c.keptZone} group(s) kept on their zone / asset workset` : ""}.`];
   for (const s of c.sameAs) lines.push(`${s.model}: same as ${s.sameAs} (identical facts), proposed once.`);
   if (p.standard) lines.push(`Standard: ${p.standard}.`);
   if (c.applied?.groups || c.applied?.changed) lines.push(`Applied by ACE earlier (not proposed again): ${c.applied.groups} group(s), ${c.applied.elements} element(s)${c.applied.changed ? `; ${c.applied.changed} group(s) changed after apply: flagged for review` : ""}.`);
@@ -476,6 +515,7 @@ export function decisionOf(cell) {
   const s = String(cell ?? "").trim();
   if (!s) return { kind: "none" };
   if (/^(ok|okay|yes|y|agree|accept|approved?|✓|✔|x)$/i.test(s)) return { kind: "ok" };
+  if (/^(ok,?\s*)?create( it| where missing)?$/i.test(s)) return { kind: "ok", create: true };
   if (/^(skip|no|n|keep as is|leave|reject|-)$/i.test(s)) return { kind: "skip" };
   const m = s.match(/^(?:change(?:\s+it)?\s*(?:to)?|move\s+to|rename\s+to|->|=>|to)\s*:?\s*(.+)$/i);
   if (m && m[1].trim()) return { kind: "change", to: m[1].trim().replace(/^["']|["']$/g, "") };
@@ -560,7 +600,7 @@ export function rulesFromRows(rows, ctx = {}) {
     const name = d.kind === "change" ? d.to : (r.proposed.trim() || (rule.isDefault ? "" : rule.workset));
     if (!name) { flagged.push({ line: r.line, what: from, why: "no name: write change to <name>" }); continue; }
     if (rule.protected && norm(name) !== norm(from)) { flagged.push({ line: r.line, what: from, why: "the datum workset is never renamed" }); continue; }
-    rules.push({ ...rule, workset: name, from, delete: /^delete$/i.test(r.action) || /delete where empty/i.test(r.action), line: r.line });
+    rules.push({ ...rule, workset: name, from, delete: /^delete$/i.test(r.action) || /delete where empty/i.test(r.action), line: r.line, ...(d.create ? { create: true } : {}) });
     confirmed.push(r.line);
   }
   return { rules, flagged, undecided, skipped, confirmed };
@@ -571,12 +611,18 @@ export function rulesFromRows(rows, ctx = {}) {
  * name, a spelling twin when the canonical name is not in the model), moves (a twin's elements when both exist; groups on
  * the default workset or contradicting their workset's name, placed by the rules), creates, deletes (empty after the moves).
  */
-export function planFromRules(R, facts) {
+export function planFromRules(Rall, facts, opts = {}) {
   const model = facts?.model ?? "model";
   const ws = facts?.worksets ?? [];
   const groups = (facts?.groups ?? []).filter(modelGroup).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
   const plan = finalPlan(), notes = [];
   const has = (n) => ws.find((w) => norm(w.name) === norm(n));
+  // A rule applies only in a model that has its workset (or the workset it renames); it never creates one elsewhere
+  // unless the row says "create" or the call says create_missing: naming schemes do not leak between models.
+  const inModel = (r) => !!has(r.workset) || [r.from, ...(r.twins ?? [])].some((n) => n && has(n));
+  const R = Rall.filter((r) => r.protected || r.manual || r.isDefault || inModel(r) || r.create || opts.createMissing);
+  const outside = Rall.filter((r) => !R.includes(r) && usableRule(r)).map((r) => r.workset);
+  if (outside.length) notes.push(`not used in ${model} (it has no such workset; a "create" decision or create_missing: true adds it): ${outside.map(q).join(", ")}`);
   const finalName = new Map(), mergeInto = new Map();
   for (const r of R) {
     const own = [r.from, ...(r.twins ?? [])].map(has).filter(Boolean);
@@ -595,8 +641,11 @@ export function planFromRules(R, facts) {
     const cur = finalOf(g.workset), curRule = ruleOf(cur);
     if (curRule?.manual) continue;
     let to = mergeInto.has(g.workset) ? mergeInto.get(g.workset) : null;
-    if (onDefault({ ...g, workset: g.workset }, protectedNames) || contradicts(g, curRule)) {
-      const pl = place(g, R, groups);
+    const dflt = onDefault({ ...g, workset: g.workset }, protectedNames);
+    if (dflt || contradicts(g, curRule)) {
+      const zh = dflt ? null : zoneHold(g, curRule, R, opts);
+      if (zh?.stay && !to) continue;
+      const pl = zh?.to ? { workset: zh.to } : zh?.stay ? { workset: null } : place(g, R, groups, opts);
       if (pl.workset) to = pl.workset; else if (!to) { notes.push(`${g.elements} ${g.category}${g.level ? ` @ ${g.level}` : ""} on ${q(g.workset)}: ${pl.reason} (left where it is)`); continue; }
     }
     if (!to || norm(to) === norm(g.workset)) continue;
@@ -644,7 +693,7 @@ export function vaultRules(R, zones = []) {
   const out = [];
   for (const r of R) {
     if (r.manual || r.isDefault || r.protected) continue;
-    const base = { id: `plan-${slug(r.workset)}`, workset: r.workset, source: "workset_plan" };
+    const base = { id: `plan-${slug(r.workset)}`, workset: r.workset, source: "workset_plan", ...(r.models?.length ? { models: r.models } : {}) };
     if (r.links) { out.push({ ...base, category: ["RVT Links"], ...(r.codes.length ? { type: wordRegex(r.codes) } : {}), spec: r.codes.length ? 9 : 1, cat: 1 }); continue; }
     if (r.cad) { out.push({ ...base, category: ["CAD Imports"], spec: 1, cat: 1 }); continue; }
     if (!r.categories.length && !r.levels.length && !r.words.length && !r.material) continue;
@@ -916,9 +965,11 @@ export function statusOf(facts, { std = null, ctx = {}, records = [], pending = 
       const s = stdTarget(g, std?.rules);
       if (s) { target = s.workset; why = s.why; }
       else if (!std?.rules?.length || !std.strict) {
-        const cur = ruleOf(g.workset);
-        if (!onDefault(g, protectedNames) && !contradicts(g, cur)) { target = g.workset; why = "its workset's name fits it"; }
-        else { const pl = place(g, rules, groups); target = pl.workset; why = pl.reason; }
+        const cur = ruleOf(g.workset), dflt = onDefault(g, protectedNames), zh = !dflt && contradicts(g, cur) ? zoneHold(g, cur, rules, ctx) : null;
+        if (!dflt && !contradicts(g, cur)) { target = g.workset; why = "its workset's name fits it"; }
+        else if (zh?.stay) { target = g.workset; why = zh.why; }
+        else if (zh?.to) { target = zh.to; why = zh.why; }
+        else { const pl = place(g, rules, groups, ctx); target = pl.workset; why = pl.reason; }
       }
     }
     const as = appliedState(g, applied, groups), rec = as?.rec;
@@ -989,7 +1040,7 @@ export const statusTile = (s, at) => ({ id: "worksets", title: "Worksets", value
  * every other group goes where the confirmed rules place it, else to the default workset. Borrowed elements are
  * planned and skipped by the add-in (pending). -> { plan, defaultName, endState, toDefault, stay, borrowed }
  */
-export function resetPlan(pf, facts, { manualOnly = [], keep = [] } = {}) {
+export function resetPlan(pf, facts, { manualOnly = [], keep = [], ...opts } = {}) {
   const keepSet = new Set((keep ?? []).map(twinKey));
   const R = pf.rules ?? [];
   const ws = facts?.worksets ?? [];
@@ -1011,7 +1062,14 @@ export function resetPlan(pf, facts, { manualOnly = [], keep = [] } = {}) {
     if (DATUM.test(g.category)) { stay.datum += n; keepKeys.push(g.key); continue; }
     if (skip.has(g.key)) { stay.skipped += n; keepKeys.push(g.key); continue; }
     let to = planned.get(g.key)?.to ?? null, row = planned.get(g.key)?.row;
-    if (!to) { const pl = place(g, R, groups); to = pl.workset; row = R.find((r) => norm(r.workset) === norm(to ?? ""))?.line; }
+    // zoneWins: what sits on a zone / asset workset stays (or goes to the one rule naming that zone and its category).
+    const curR = R.find((r) => norm(r.workset) === norm(cur) || [r.from, ...(r.twins ?? [])].some((n) => n && norm(n) === norm(g.workset)));
+    if (!to && curR && opts.zoneWins !== false && isZoneWs(curR)) {
+      const zh = contradicts(g, curR) ? zoneHold(g, curR, R, opts) : { stay: true };
+      if (zh?.stay) { stay.zone = (stay.zone ?? 0) + n; keepKeys.push(g.key); continue; }
+      if (zh?.to) to = zh.to;
+    }
+    if (!to) { const pl = place(g, R, groups, opts); to = pl.workset; row = R.find((r) => norm(r.workset) === norm(to ?? ""))?.line; }
     if (!to) {
       if (isProt(ws.find((w) => w.name === g.workset))) { stay.datum += n; keepKeys.push(g.key); continue; }
       // A workset kept by a confirmed decision is never emptied by a reset: what no rule takes elsewhere stays on it.

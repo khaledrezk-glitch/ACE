@@ -113,7 +113,19 @@ namespace AceRevitMcp.Rules
                 if (bindCats.Count == 0) blocks.Add(Block("definition " + paramName, "no-definition", null, "the definition names no model category to bind to"));
                 if (!def.Instance) blocks.Add(Block("definition " + paramName, "type-parameter", null, "the definition is a type parameter: one value per type, not per element"));
                 if (!string.Equals(def.DataType ?? "TEXT", "TEXT", StringComparison.OrdinalIgnoreCase)) blocks.Add(Block("definition " + paramName, "datatype", null, $"the definition's data type is {def.DataType}; view_membership_fill writes text"));
-                if (ParameterFill.GroupFor(def.Group) == null) blocks.Add(Block("definition " + paramName, "datatype", null, $"'{def.Group}' is not a Revit parameter group"));
+                // The Revit parameter group: param_group wins; a shared parameter file's own group ("Default Group") is not one, so
+                // it falls back to General, and the answer says so.
+                var paramGroup = Args.Str(args, "param_group");
+                if (!string.IsNullOrWhiteSpace(paramGroup))
+                {
+                    if (ParameterFill.GroupFor(paramGroup) == null) blocks.Add(Block("param_group " + paramGroup, "datatype", null, $"'{paramGroup}' is not a Revit parameter group"));
+                    else def.Group = paramGroup;
+                }
+                else if (ParameterFill.GroupFor(def.Group) == null)
+                {
+                    notes.Add($"'{def.Group}' (the shared parameter file's group) is not a Revit parameter group: {paramName} is bound under General (param_group sets another).");
+                    def.Group = "General";
+                }
                 try
                 {
                     if (SharedParameterElement.Lookup(doc, def.Guid) is SharedParameterElement held && !string.Equals(held.Name, def.Name, StringComparison.Ordinal))

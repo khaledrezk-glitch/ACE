@@ -85,6 +85,7 @@ namespace AceRevitMcp.Rules
                         blocks.Add(new L.Block { What = $"{g.Count()} element{(g.Count() == 1 ? "" : "s")} on {st.Workset}", Code = g.Key.Code, Holder = g.Key.Holder, Elements = g.Count(), SampleIds = g.Select(h => h.Id).ToList() });
                 }
             }
+            foreach (var n in steps.Select(x => L.SpacesNote(x.Workset)).Where(n => n != null).Distinct()) notes.Add(n);
             var planHash = L.PlanHash(steps);
             var planJson = new JsonArray(steps.Select(st => (JsonNode)StepJson(st)).ToArray());
             var blockedJson = new JsonArray(blocks.Select(b => (JsonNode)ToJson(b, maxIds)).ToArray());
@@ -322,13 +323,18 @@ namespace AceRevitMcp.Rules
             try { return e.Category?.Name ?? "(no category)"; } catch { return "(no category)"; }
         }
 
-        /// <summary>Every element of the model (instances and types) by category: the self-check's measure.</summary>
+        /// <summary>Every model and annotation element (instances and types) by category: the self-check's measure.</summary>
         private static Dictionary<string, int> CountByCategory(Document doc)
         {
             var counts = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var e in AllElements(doc))
             {
-                var cat = CategoryName(e);
+                string type, bic;
+                try { type = e.Category?.CategoryType.ToString(); bic = e.Category?.BuiltInCategory.ToString(); } catch { type = null; bic = null; }
+                // Model and annotation categories, plus views / sheets / schedules / viewports as their own count; never
+                // Revit's side effects (new sketch planes, uncategorised items).
+                var cat = L.CheckKey(type, e is SketchPlane, bic, CategoryName(e));
+                if (cat == null) continue;
                 counts[cat] = counts.TryGetValue(cat, out var n) ? n + 1 : 1;
             }
             return counts;

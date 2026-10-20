@@ -16,7 +16,8 @@ const regDir = path.join(tmp, "exec");
 const regFiles = () => { try { return fs.readdirSync(regDir).filter((f) => f.startsWith("missing-register-")); } catch { return []; } };
 const token = "test-token";
 const seen = [];
-let fakeOpened = null;   // workset_plan paths: the model open_model opened last (facts answer for it)
+let fakeOpened = null;
+const notUndoableRuns = [];   // execute_code runs of not-undoable code the fake bridge executed   // workset_plan paths: the model open_model opened last (facts answer for it)
 
 const bridge = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") { res.setHeader("Content-Type", "application/json"); return res.end(JSON.stringify({ ok: true, service: "ace-revit-mcp", revitVersion: "2025" })); }
@@ -36,6 +37,12 @@ const bridge = http.createServer((req, res) => {
         if (args.code.includes("PANEL_REJECTED") && !args.dry_run) return reply({ ok: true, result: { success: false, stage: "rejected", error: "The user cancelled this change in the ACE Companion panel" } });
         if (args.code.includes("PICTURE") && args.dry_run) return reply({ ok: true, result: { success: true, transaction: "RolledBack", wouldChange: { added: 2, modified: 0, deleted: 0 }, previewImages: [{ view: "Plan", mimeType: "image/png", base64: "iVBORw0KGgo=" }, { view: "3D", mimeType: "image/png", base64: "iVBORw0KGgo=" }], echoPreview: args.preview_image } });
         if (args.code.includes("SEMANTIC_RISK") && !args.allow_risky) return reply({ ok: true, result: { success: false, stage: "risky", error: "Blocked for safety: this code reads or changes files on disk." } });
+        if (args.code.includes("NOT_UNDOABLE")) {
+          // A not-undoable call: the dry run only compiles and screens (records no execution); the real run executes.
+          if (args.dry_run) return reply({ ok: true, result: { success: true, dryRun: true, executed: false, previewable: false, notUndoable: ["renames a workset"], warning: "Not previewed: this script renames a workset, which cannot be undone. The dry run only compiled and screened it. A real run needs allow_risky and the user's consent, and it cannot be rolled back." } });
+          notUndoableRuns.push(args.code);
+          return reply({ ok: true, result: { success: true, transaction: "Committed", executed: true } });
+        }
         if (args.code.includes("boom")) return reply({ ok: true, result: { success: false, stage: "compile", errors: ["line 1: CS0103"] } });
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
       case "project_rules": {
@@ -364,7 +371,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "register_update", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "register_update", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_model", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -489,6 +496,16 @@ assert.ok(sem.isError && /Blocked for safety/.test(sem.content[0].text), "a risk
 const semOk = await call("execute_revit_code", { code: "var x = 1; // SEMANTIC_RISK", mode: "readonly", allow_risky: true });
 assert.equal(semOk.isError, undefined, "with consent the run goes ahead");
 assert.equal(seen.filter((s) => s.command === "execute_code").at(-1).args.allow_risky, true, "consent reaches the add-in");
+
+// --- not-undoable calls (RenameWorkset, SaveAs...): the dry run compiles and screens only; the identical real run needs consent ---
+const nuCode = 'WorksetTable.RenameWorkset(doc, new WorksetId(1), "TST_X"); // NOT_UNDOABLE';
+const nuDry = await call("execute_revit_code", { code: nuCode, dry_run: true, explanation: "Rename a workset", allow_risky: true });
+assert.equal(nuDry.isError, undefined, "a dry run of not-undoable code is a successful (compile-only) preview");
+assert.ok(nuDry.content.some((c) => /Not previewed: this script renames a workset/.test(c.text)) && !nuDry.content.some((c) => /PREVIEW ONLY/.test(c.text)), "the reply says it was not previewed");
+assert.equal(notUndoableRuns.length, 0, "the dry run executed nothing");
+const nuReal = await call("execute_revit_code", { code: nuCode, dry_run: false, explanation: "Rename a workset", allow_risky: true });
+assert.equal(nuReal.isError, undefined, "the identical real run with allow_risky goes through the preview gate");
+assert.equal(notUndoableRuns.length, 1, "the real run executed once");
 
 // --- set_parameters has the same gate ---
 const changes = [{ id: 1, parameter: "Comments", value: "x" }];
@@ -1165,6 +1182,9 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(!("confirm" in seen.at(-1).args), "confirm stays on this side");
   assert.equal(json(await call("close_model", { model: "Test" })).closed, true);
   assert.equal(seen.at(-1).command, "close_model");
+  const nBefore = seen.length;
+  const cmDisc = await call("close_model", { model: "Test", discard: true });
+  assert.ok(cmDisc.isError && /confirm: true/.test(cmDisc.content[0].text) && seen.length === nBefore, "discard without the user's OK is refused before Revit is asked");
 }
 // --- worksets: audit (read-only table and files), rename and delete_empty through the gate ---
 {
@@ -1627,6 +1647,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
     assert.equal(WP.rulesFromRows([{ line: 2, proposed: "Workset1", action: "keep Workset1 (default)", decision: "skip", rule: JSON.stringify({ workset: "Workset1", isDefault: true, categories: [], levels: [], words: [], codes: [] }) }]).rules.length, 0);
   }
   // --- 1.13.3: status (four states), apply records, reset end state, partial apply, already done, pending, refresh, standard ---
+  const Wk13 = await import("../lib/worksets.js");
   {
     const G = (workset, category, type, level, elements, extra = {}) => ({ workset, category, type, level, material: "concrete", zone: "", option: "", elements, borrowed: 0, ...extra });
     const fs13 = { model: "TST_S13", levels: [{ name: "TST-GF(GROUND FLOOR)" }], worksets: [{ name: "Workset1", elements: 5, isDefault: true }, { name: "TST-ST-GF COLUMNS", elements: 10 }, { name: "TST-ST-WALLS", elements: 6 }, { name: "TST-ST-BEAMS", elements: 0 }],
@@ -1763,6 +1784,42 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
     // PUMP ROOM: a singular category word after another word in its part is a place, not the category.
     for (const n of ["TST-ST-PUMP ROOM", "TST-POOL & Pump Room"]) assert.ok(!WP.parseName(n, {}).categories.includes("Rooms") && WP.parseName(n, {}).words.includes("PUMP"), n);
     assert.ok(WP.parseName("TST-ST-BASE COLUMNS", {}).categories.includes("Structural Columns") && WP.parseName("TST-ST-LOBBY WALLS", {}).categories.includes("Walls") && WP.parseName("TST-ST-ROOMS", {}).categories.includes("Rooms"), "plural element heads and a name-first category still count");
+    const W13x = () => Wk13;
+    // 1.13.5 live defects: rules stay in models that have their workset; zone / asset worksets keep their elements; type tokens.
+    {
+      const G5 = (workset, category, type, level, elements, material = "concrete") => ({ workset, category, type, level, material, zone: "", option: "", elements, borrowed: 0 });
+      const mk = (model, names, groups) => ({ model, levels: [{ name: "C-GF(GROUND FLOOR)" }, { name: "A-01(FIRST FLOOR)" }, { name: "C-RF(ROOF)" }],
+        worksets: [{ name: "Workset1", isDefault: true, elements: 0 }, ...names.map((n) => ({ name: n, elements: groups.filter((g) => g.workset === n).reduce((k, g) => k + g.elements, 0) }))], groups });
+      const fA = mk("TST_A", ["TST-ST-GF COL & WALLS", "TST-ST-RF COL & WALLS"], [G5("Workset1", "Structural Columns", "TST C : 1", "C-GF(GROUND FLOOR)", 3), G5("Workset1", "Structural Columns", "TST C : 2", "A-01(FIRST FLOOR)", 1)]);
+      const fB = mk("TST_B", ["TST-ST-01 COLUMNS"], [G5("Workset1", "Structural Columns", "TST C : 1", "A-01(FIRST FLOOR)", 2)]);
+      const pAB = WP.propose([{ facts: fA }, { facts: fB }]);
+      const rows = pAB.rules.map((r, i) => ({ line: i + 2, proposed: r["Proposed workset"], action: r.Action, decision: "OK", rule: r.Rule }));
+      const RR = WP.rulesFromRows(rows).rules;
+      const plA = WP.planFromRules(RR, fA), plB = WP.planFromRules(RR, fB);
+      assert.ok(!plA.plan.create.length && !plB.plan.create.length && !plA.plan.moves.some((m) => m.to === "TST-ST-01 COLUMNS") && !plB.plan.moves.some((m) => /COL & WALLS/.test(m.to)), "a rule never leaks into a model without its workset");
+      assert.ok(plA.notes.some((n) => /not used in TST_A .*"TST-ST-01 COLUMNS"/.test(n)), "said per model");
+      assert.ok(WP.planFromRules(RR, fA, { createMissing: true }).plan.create.includes("TST-ST-01 COLUMNS"), "create_missing: true allows it");
+      const RRc = WP.rulesFromRows(rows.map((r) => r.proposed === "TST-ST-01 COLUMNS" ? { ...r, decision: "create" } : r)).rules;
+      assert.ok(RRc.find((r) => r.workset === "TST-ST-01 COLUMNS").create && WP.planFromRules(RRc, fA).plan.create.includes("TST-ST-01 COLUMNS"), "a per-row create decision lets the rule apply everywhere");
+      assert.deepEqual(WP.vaultRules(RR).find((r) => r.workset === "TST-ST-01 COLUMNS").models, ["TST_B"], "saved rules record their source models");
+      // zoneWins: a boundary wall's columns stay on BOUNDARY WALLS; a rule naming that zone + category takes them; the vault can turn it off.
+      const fZ = mk("TST_Z", ["TST-ST-BOUNDARY WALLS", "TST-ST-01 COLUMNS", "TST-ST-STEEL FENCE", "TST-ST-FOUNDATIONS", "TST-ST-RF PARAPETS", "TST-ST-UPSTAND WALL", "TST-ST-GF FRAMING", "TST-ST-SOG", "TST-ST-PCC"],
+        [G5("TST-ST-BOUNDARY WALLS", "Structural Columns", "TST C : 1", "A-01(FIRST FLOOR)", 4), G5("TST-ST-BOUNDARY WALLS", "Walls", "TST W : 1", "A-01(FIRST FLOOR)", 6), G5("TST-ST-STEEL FENCE", "Structural Foundations", "TST F : 1", "C-GF(GROUND FLOOR)", 2),
+         G5("TST-ST-RF PARAPETS", "Floors", "TST Slab : 1", "C-RF(ROOF)", 1), G5("Workset1", "Floors", "Floor : SOG 120mm", "C-GF(GROUND FLOOR)", 5), G5("Workset1", "Floors", "Floor : BLINDING 50", "C-GF(GROUND FLOOR)", 2)]);
+      const nz = { categoryTokens: { FRAMING: ["Structural Framing", "Floors"] }, typeTokens: { BLINDING: "TST-ST-PCC" } };
+      const pZ = WP.propose([{ facts: fZ, naming: nz }]);
+      const dz = (cur, type) => pZ.detail.find((d) => d["Current workset"] === cur && d["Type / link / contents"] === type);
+      assert.ok(dz("TST-ST-BOUNDARY WALLS", "TST C : 1")["Proposed action"] === "keep" && /kept on zone\/asset workset "TST-ST-BOUNDARY WALLS"/.test(dz("TST-ST-BOUNDARY WALLS", "TST C : 1").Reason), "columns stay on BOUNDARY WALLS");
+      assert.equal(dz("TST-ST-STEEL FENCE", "TST F : 1")["Proposed action"], "keep", "concrete foundations stay on STEEL FENCE (its material word would have pulled them out)");
+      assert.equal(dz("TST-ST-RF PARAPETS", "TST Slab : 1")["Proposed action"], "keep", "what sits on RF PARAPETS stays (an asset workset)");
+      assert.equal(dz("Workset1", "Floor : SOG 120mm")["Proposed workset"], "TST-ST-SOG", "a type token (SOG) beats level + category (GF FRAMING)");
+      assert.equal(dz("Workset1", "Floor : BLINDING 50")["Proposed workset"], "TST-ST-PCC", "vault typeTokens override");
+      const pZ2 = WP.propose([{ facts: { ...fZ, worksets: [...fZ.worksets, { name: "TST-ST-BOUNDARY COLUMNS", elements: 0 }] }, naming: nz }]);
+      assert.equal(pZ2.detail.find((d) => d["Current workset"] === "TST-ST-BOUNDARY WALLS" && d.Category === "Structural Columns")["Proposed workset"], "TST-ST-BOUNDARY COLUMNS", "a rule naming that zone and the category takes them");
+      const pZ3 = WP.propose([{ facts: fZ, naming: { ...nz, zoneWins: false } }]);
+      assert.equal(pZ3.detail.find((d) => d["Current workset"] === "TST-ST-BOUNDARY WALLS" && d.Category === "Structural Columns")["Proposed workset"], "TST-ST-01 COLUMNS", "naming.zoneWins: false: the category rule pulls them out");
+      assert.equal(W13x().namingOf({ naming: { typeTokens: { SOG: "TST-ST-SOG" }, zoneWins: false } }).zoneWins, false);
+    }
     // refresh: earlier decisions kept, rows marked new / changed / same / gone.
     const rf = await call("workset_plan", { action: "propose", out_dir: path.join(tmp, "wref"), refresh: edited });
     const rfT = rf.content.at(-1).text;

@@ -363,8 +363,11 @@ namespace AceRevitMcp.Rules
             {
                 if (string.IsNullOrWhiteSpace(name)) return null;
                 var n = name.Trim();
-                var ex = finalName.FirstOrDefault(kv => string.Equals(kv.Value, n, StringComparison.Ordinal));
-                if (ex.Value == null) ex = finalName.FirstOrDefault(kv => string.Equals(kv.Value, n, StringComparison.OrdinalIgnoreCase));
+                // The exact name first (a real name may end in a space), then ignoring case, then ignoring leading/trailing spaces.
+                var ex = finalName.FirstOrDefault(kv => string.Equals(kv.Value, name, StringComparison.Ordinal));
+                if (ex.Value == null) ex = finalName.FirstOrDefault(kv => string.Equals(kv.Value, name, StringComparison.OrdinalIgnoreCase));
+                if (ex.Value == null) ex = finalName.FirstOrDefault(kv => string.Equals(kv.Value.Trim(), n, StringComparison.Ordinal));
+                if (ex.Value == null) ex = finalName.FirstOrDefault(kv => string.Equals(kv.Value.Trim(), n, StringComparison.OrdinalIgnoreCase));
                 if (ex.Value != null) return (ex.Key, ex.Value);
                 var cr = createSteps.FirstOrDefault(s => string.Equals(s.Workset, n, StringComparison.OrdinalIgnoreCase));
                 return cr != null ? (0L, cr.Workset) : ((long, string)?)null;
@@ -398,7 +401,7 @@ namespace AceRevitMcp.Rules
             }
             // What stays where it is: the datum workset, keep_worksets (by name now or after the renames) and keep_keys groups.
             var keepNames = (planArg["keep_worksets"] as JsonArray ?? args["keep_worksets"] as JsonArray ?? new JsonArray()).Select(n => n?.ToString()?.Trim()).Where(n => !string.IsNullOrEmpty(n)).ToList();
-            var keep = new HashSet<long>(worksets.Where(w => L.IsProtected(w) || keepNames.Any(n => string.Equals(n, w.Name, StringComparison.OrdinalIgnoreCase) || string.Equals(n, finalName[w.Id], StringComparison.OrdinalIgnoreCase))).Select(w => w.Id));
+            var keep = new HashSet<long>(worksets.Where(w => L.IsProtected(w) || keepNames.Any(n => string.Equals(n, w.Name.Trim(), StringComparison.OrdinalIgnoreCase) || string.Equals(n, finalName[w.Id].Trim(), StringComparison.OrdinalIgnoreCase))).Select(w => w.Id));
             var keepKeys = new HashSet<string>((planArg["keep_keys"] as JsonArray ?? args["keep_keys"] as JsonArray ?? new JsonArray()).Select(k => k?.ToString()).Where(k => k != null), StringComparer.Ordinal);
             var datumIds = new HashSet<long>(worksets.Where(L.IsProtected).Select(w => w.Id));
             void Take(P.Step step, Fact f, (long Id, string Name) to, string what, List<long> readOnly)
@@ -542,7 +545,7 @@ namespace AceRevitMcp.Rules
                 if (to == null) blocks.Add(new L.Block { What = "reset_to " + resetTo.Trim(), Code = "not-found", Detail = $"no workset is called {resetTo.Trim()} after the creates and renames" });
                 else
                 {
-                    foreach (var n in keepNames.Where(n => !worksets.Any(w => string.Equals(n, w.Name, StringComparison.OrdinalIgnoreCase) || string.Equals(n, finalName[w.Id], StringComparison.OrdinalIgnoreCase))))
+                    foreach (var n in keepNames.Where(n => !worksets.Any(w => string.Equals(n, w.Name.Trim(), StringComparison.OrdinalIgnoreCase) || string.Equals(n, finalName[w.Id].Trim(), StringComparison.OrdinalIgnoreCase))))
                         notes.Add($"keep_worksets names {n}, which is not a workset of this model.");
                     // keep_keys: groups that stay where they are (already placed, skipped rows, datum categories).
                     var (pick, held, central) = P.ResetPick(facts.Select(f => (f.Id, f.WorksetId, f.Key, f.Borrowed, f.Central)), claimed.Keys.ToList(), keep, keepKeys, to.Value.Id);
@@ -647,6 +650,7 @@ namespace AceRevitMcp.Rules
                     NonModel = nonModelOn.TryGetValue(s.WorksetId, out var dnm) ? dnm : 0,
                 })));
             var planHash = P.PlanHash(steps);
+            foreach (var n in steps.Where(x => x.Kind != "create").Select(x => L.SpacesNote(x.Kind == "rename" ? x.From : x.Workset)).Where(n => n != null).Distinct()) notes.Add(n);
 
             // Visibility in the export views: elements whose target workset shows differently there than their own does now.
             var visibility = new JsonArray();

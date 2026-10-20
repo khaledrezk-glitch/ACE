@@ -81,9 +81,25 @@ namespace AceRevitMcp.Rules
         private static bool OwnedByOther(Workset w, string me) =>
             !string.IsNullOrWhiteSpace(w.Owner) && !string.Equals(w.Owner.Trim(), (me ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
 
-        private static Workset Find(IList<Workset> worksets, string name) =>
-            worksets.FirstOrDefault(w => string.Equals(w.Name, name, StringComparison.Ordinal))
-            ?? worksets.FirstOrDefault(w => string.Equals(w.Name, name, StringComparison.OrdinalIgnoreCase));
+        /// <summary>
+        /// A workset by name: the exact name first, then ignoring case, then ignoring leading and trailing spaces (a real model
+        /// has "NAME " that a request names "NAME").
+        /// </summary>
+        public static Workset Find(IList<Workset> worksets, string name)
+        {
+            if (name == null || worksets == null) return null;
+            var t = name.Trim();
+            return worksets.FirstOrDefault(w => string.Equals(w.Name, name, StringComparison.Ordinal))
+                ?? worksets.FirstOrDefault(w => string.Equals(w.Name, name, StringComparison.OrdinalIgnoreCase))
+                ?? worksets.FirstOrDefault(w => string.Equals((w.Name ?? "").Trim(), t, StringComparison.Ordinal))
+                ?? worksets.FirstOrDefault(w => string.Equals((w.Name ?? "").Trim(), t, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>A note when a workset's real name has leading or trailing spaces (null otherwise).</summary>
+        public static string SpacesNote(string realName) =>
+            realName != null && realName != realName.Trim()
+                ? $"The workset \"{realName}\" has leading or trailing spaces in its name; it was matched without them. Rename it to \"{realName.Trim()}\" to fix it."
+                : null;
 
         /// <summary>Renames as asked: one step per rename that can run, one block per rename that cannot (a no-op is neither).</summary>
         public static (List<Step> Steps, List<Block> Blocks) PlanRename(IList<Workset> worksets, IList<(string From, string To)> renames, string me)
@@ -96,7 +112,7 @@ namespace AceRevitMcp.Rules
                 var from = (fromRaw ?? "").Trim(); var to = (toRaw ?? "").Trim();
                 var what = $"rename {from} > {to}";
                 if (from.Length == 0 || to.Length == 0) { blocks.Add(new Block { What = what, Code = "naming", Detail = "a rename needs both from and to" }); continue; }
-                var w = Find(worksets, from);
+                var w = Find(worksets, fromRaw);
                 if (w == null) { blocks.Add(new Block { What = what, Code = "not-found", Detail = $"no user workset is called {from}" }); continue; }
                 if (IsProtected(w)) { blocks.Add(new Block { What = what, Code = "system", Detail = $"{w.Name} is the levels and grids workset: never renamed" }); continue; }
                 if (string.Equals(w.Name, to, StringComparison.Ordinal)) continue;   // already named so
@@ -191,6 +207,27 @@ namespace AceRevitMcp.Rules
                 .Select(s => string.Join("|", s.Kind, s.WorksetId.ToString(inv), s.From ?? "", s.To ?? "", s.MoveToId.ToString(inv), s.Elements.ToString(inv)))
                 .OrderBy(l => l, StringComparer.Ordinal);
             return Util.Compat.Sha256Hex(string.Join("\n", lines)).ToLowerInvariant();
+        }
+
+        /// <summary>
+        /// Whether an element counts in the self-check: categories of type Model or Annotation only. Uncategorised elements and
+        /// sketch planes are left out: Revit creates and drops them as a side effect (a moved beam or ramp gets a new sketch plane).
+        /// </summary>
+        public static bool CountedInCheck(string categoryType, bool isSketchPlane) =>
+            !isSketchPlane && (categoryType == "Model" || categoryType == "Annotation");
+
+        /// <summary>Internal categories the self-check still counts, in a separate count: views, sheets, schedules, viewports.</summary>
+        public static readonly string[] ViewCategories = { "OST_Views", "OST_Sheets", "OST_Schedules", "OST_Viewports" };
+
+        /// <summary>
+        /// The self-check's count key of an element (null: not counted): its category name for Model and Annotation categories,
+        /// "views and sheets: name" for views, sheets, schedules and viewports; never sketch planes or uncategorised elements.
+        /// </summary>
+        public static string CheckKey(string categoryType, bool isSketchPlane, string builtInCategory, string categoryName)
+        {
+            if (isSketchPlane || categoryType == null) return null;
+            if (ViewCategories.Contains(builtInCategory)) return "views and sheets: " + categoryName;
+            return CountedInCheck(categoryType, false) ? categoryName : null;
         }
 
         /// <summary>The self-check: every category keeps its element count (only worksets change).</summary>

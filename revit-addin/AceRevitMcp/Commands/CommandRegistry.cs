@@ -57,6 +57,7 @@ namespace AceRevitMcp.Commands
                 ["clash_resolve"] = Coordination.ClashResolve.Run,
                 ["open_model"] = ModelFileCommands.Open,
                 ["close_model"] = ModelFileCommands.Close,
+                ["save_model"] = ModelFileCommands.Save,
                 ["capture_method"] = CaptureMethod.Run,
                 ["view_membership_fill"] = Rules.ViewMembership.Run,
                 ["export_deliverables"] = ExportDeliverables.Run,

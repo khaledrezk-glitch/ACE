@@ -197,6 +197,9 @@ namespace AceRevitMcp.Rules
             Workset Named(string name)
             {
                 if (worksets.TryGetValue(name, out var w)) return w;
+                // A real name with leading or trailing spaces ("NAME ") matches a rule's "NAME".
+                w = worksets.Values.FirstOrDefault(x => string.Equals(x.Name.Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (w != null) { worksets[name] = w; return w; }
                 if (!opt.CreateMissing || opt.PlanOnly || !WorksetTable.IsWorksetNameUnique(doc, name)) { missing.Add(name); return null; }
                 w = Workset.Create(doc, name);
                 worksets[name] = w; created.Add(name);

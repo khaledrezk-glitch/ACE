@@ -192,6 +192,11 @@ overlaps_ok: true after the user agreed). An xlsx is read on both sheets: rule r
 group, the Groups sheet wins. action apply with plan_file:
 check_only, dry_run, then the identical call (ONE undo step: create, rename, move, delete; borrowed elements skipped
 and listed; a changed group count refuses the whole plan). Office method: revit_guide methods/workset-cleanup.
+A confirmed rule applies only in models that already have its workset (never created elsewhere: a "create" decision on
+the row, or confirm with create_missing: true, allows it); saved rules record their source models. What sits on a zone
+or asset workset (BOUNDARY WALLS, STEEL FENCE, RF PARAPETS) stays there ("kept on zone/asset workset"), unless one rule
+names that zone and its category (vault naming.zoneWins: false turns this off). A type word that names a workset (SOG,
+PCC, a zone word) beats level + category; vault naming.typeTokens { "BLINDING": "<workset>" } overrides.
 The vault (every workset_plan reply prints its path): an explicit vault always wins; else the model's folders and their
 parents are searched for an ACE Vault (also one level down: X\WORK\<sub> finds X\ACE\ACE Vault). A given vault without
 workset rules, or one that cannot be read, stops with the path: never a silent fallback to the built-in words. Worksets

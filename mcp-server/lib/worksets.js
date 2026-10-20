@@ -34,8 +34,12 @@ export function namingOf(section) {
   if (aliases != null && (typeof aliases !== "object" || Array.isArray(aliases) || Object.values(aliases).some((v) => !Array.isArray(v) && typeof v !== "string")))
     throw new Error("naming.levelAliases must be { \"TOKEN\": [\"level name or regex\", ...] } (e.g. { \"GF\": [\"C-GF(GROUND FLOOR)\"] }).");
   const defaultName = typeof n.defaultName === "string" && n.defaultName.trim() ? n.defaultName.trim() : null;
+  const typeTokens = n.typeTokens == null ? undefined : n.typeTokens;
+  if (typeTokens != null && (typeof typeTokens !== "object" || Array.isArray(typeTokens) || Object.values(typeTokens).some((v) => typeof v !== "string")))
+    throw new Error("naming.typeTokens must be { \"TOKEN\": \"workset\" } (e.g. { \"SOG\": \"XX-ST-SOG\" }).");
   return { pattern, source: n.pattern ?? null, allowed: [...list(n.allowed), ...list(n.names)], rename, ...(tokens ? { categoryTokens: tokens } : {}),
-    ...(aliases ? { levelAliases: aliases } : {}), ...(list(n.manualOnly).length ? { manualOnly: list(n.manualOnly) } : {}), ...(defaultName ? { defaultName } : {}) };
+    ...(aliases ? { levelAliases: aliases } : {}), ...(list(n.manualOnly).length ? { manualOnly: list(n.manualOnly) } : {}), ...(defaultName ? { defaultName } : {}),
+    ...(typeTokens ? { typeTokens } : {}), ...(n.zoneWins === false ? { zoneWins: false } : {}) };
 }
 
 /** Does a name keep the rule: the pattern (when given) and the allowed list (when given). null without a rule. */

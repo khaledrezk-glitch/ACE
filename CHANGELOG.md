@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.13.5 (20 Oct 2026)
+- **Workset rules from the second live run:** a rule applies only in models that already have its workset (no cross-model
+  creates unless a row says create or `create_missing`); zone/asset worksets keep their elements (`naming.zoneWins`,
+  default on); type tokens (SOG, PCC, `naming.typeTokens`) beat level + category; the self-check counts only model and
+  annotation categories (Revit's own sketch planes no longer roll back an apply); worksets with leading/trailing spaces
+  are found and can be renamed.
+- **Documents:** `close_model discard:true` (only models ACE opened or detached copies); propose/confirm batches close
+  what they opened and return to the model that was active; `open_model activate:true`; new `save_model` (risky, needs
+  consent; saves in place, never synchronizes).
+- **Safety:** scripts that call something not undoable (Save, SaveAs, RenameWorkset, Sync, Close, checkouts, exports, …)
+  are not executed in a dry run: it compiles and screens them and says they cannot be previewed; readonly refuses them;
+  the identical real run needs allow_risky. view_membership_fill: a shared-parameter-file group that is not a Revit group
+  falls back to General; `param_group` overrides.
+
 ## 1.13.4 (20 Oct 2026)
 - MCP server only (install with `install.ps1 -SkipAddin`, Revit stays open; the 1.13.3 add-in works with it).
 - **Live fixes:** an explicit vault always wins (workset_plan, project_rules worksets) and its path is printed; without

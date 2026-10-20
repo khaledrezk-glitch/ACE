@@ -771,6 +771,21 @@ class P {
     Check(((IList)FW(delDatum, "Item1")).Count == 0 && ((IList)FW(delNamed, "Item1")).Count == 0 && (string)FW(((IList)FW(delNamed, "Item2"))[0], "Code") == "system"
       && ((IList)FW(renDatum, "Item1")).Count == 0 && (string)FW(((IList)FW(renDatum, "Item2"))[0], "Code") == "system" && (bool)wal.GetMethod("IsProtected", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { wsT }, null)!.Invoke(null, new object[] { emptyDatum[0] })!,
       "datum workset: protected, never deleted (even empty, even when named) or renamed");
+    // 1.13.5: trailing-space workset names; the self-check counts model and annotation categories only.
+    var spaced = DW((5, "TST_STEEL ROOF ", 0, 0), (9, "TST_STR", 0, 3));
+    var renSp = WA("PlanRename").Invoke(null, new object[] { spaced, new List<(string, string)> { ("TST_STEEL ROOF", "TST_STEEL ROOF") }, "me" })!;
+    var delSp = WA("PlanDelete").Invoke(null, new object[] { spaced, new List<string> { "TST_STEEL ROOF" }, null, "me" })!;
+    Check(((IList)FW(renSp, "Item1")).Count == 1 && (string)FW(((IList)FW(renSp, "Item1"))[0], "From") == "TST_STEEL ROOF " && (string)FW(((IList)FW(renSp, "Item1"))[0], "To") == "TST_STEEL ROOF"
+      && ((IList)FW(renSp, "Item2")).Count == 0 && ((IList)FW(delSp, "Item1")).Count == 1 && (string)FW(((IList)FW(delSp, "Item1"))[0], "Workset") == "TST_STEEL ROOF "
+      && WA("SpacesNote").Invoke(null, new object[] { "TST_STEEL ROOF " }) != null && WA("SpacesNote").Invoke(null, new object[] { "TST_STR" }) == null,
+      "workset names with trailing spaces: found by the trimmed name, renamed to drop the spaces (not 'already named'), deleted, and reported");
+    bool CIC(string t, bool sp) => (bool)WA("CountedInCheck").Invoke(null, new object[] { t, sp })!;
+    Check(CIC("Model", false) && CIC("Annotation", false) && !CIC(null, false) && !CIC("Model", true) && !CIC("Internal", false) && !CIC("AnalyticalModel", false),
+      "self-check counts: model and annotation categories only; sketch planes and uncategorised side effects never trip it");
+    string? CK(string? t, bool sp, string? bic, string n) => (string?)WA("CheckKey").Invoke(null, new object?[] { t, sp, bic, n });
+    Check(CK("Internal", false, "OST_Sheets", "Sheets") == "views and sheets: Sheets" && CK("Internal", false, "OST_Viewports", "Viewports") == "views and sheets: Viewports"
+      && CK("Model", false, "OST_Walls", "Walls") == "Walls" && CK("Internal", false, "OST_IOSSketchGrid", "x") == null && CK(null, false, null, "(no category)") == null && CK("Model", true, "OST_Walls", "x") == null,
+      "self-check counts: views, sheets, schedules and viewports are a separate count that must stay equal");
     var lt1 = PS("move", "TST_LINKS", 0, 2, 1, 21); var lt2 = PS("move", "TST_LINKS", 0, 2, 1, 21); ((List<long>)FW(lt2, "TypeIds")).Add(22);
     Check(PHW(PL(lt1)) != PHW(PL(lt2)), "workset plan hash: a link type moved with its instance is part of the plan");
 

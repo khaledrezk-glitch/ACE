@@ -135,6 +135,26 @@ public static class AceScript
                     ["hint"] = "Line numbers refer to your code. Fix the errors and call again.",
                 };
             }
+            // Calls that escape the TransactionGroup rollback (saving, syncing, borrowing, renaming worksets, exporting...):
+            // a dry run only compiles and screens the code (not executed, success: executed false, previewable false), so the
+            // identical real run (the server binds the exact code) can follow with allow_risky; a readonly run refuses them.
+            var notUndoable = compiled.risks.Where(x => x.EndsWith(" (not undoable)", StringComparison.Ordinal)).Select(x => x.Substring(0, x.Length - 15)).ToArray();
+            if (notUndoable.Length > 0 && mode == "readonly" && !compileOnlyRequested)
+                return new JsonObject
+                {
+                    ["success"] = false,
+                    ["stage"] = "risky",
+                    ["error"] = $"This code cannot be previewed: not undoable. It {string.Join(", ", notUndoable)}, which a readonly run cannot roll back. Nothing was run.",
+                };
+            if (notUndoable.Length > 0 && dryRun && !compileOnlyRequested)
+                return new JsonObject
+                {
+                    ["success"] = true, ["mode"] = mode, ["dryRun"] = true, ["executed"] = false, ["previewable"] = false,
+                    ["notUndoable"] = new JsonArray(notUndoable.Select(x => (JsonNode)x).ToArray()),
+                    ["risks"] = new JsonArray(compiled.risks.Select(x => (JsonNode)x).ToArray()),
+                    ["warning"] = $"Not previewed: this script {string.Join(", ", notUndoable)}, which cannot be undone. The dry run only compiled and screened it. " +
+                                  "A real run needs allow_risky and the user's consent, and it cannot be rolled back.",
+                };
             // What the code really calls (resolved by the compiler): files, programs, network, reflection, saving or
             // syncing models need the user's consent, like the MCP server's quick text screen.
             if (compiled.risks.Length > 0 && !Commands.Args.Bool(args, "allow_risky"))

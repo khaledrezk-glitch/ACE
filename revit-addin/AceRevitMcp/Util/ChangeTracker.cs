@@ -35,6 +35,8 @@ namespace AceRevitMcp.Util
 
         public static void OnDocumentChanged(object sender, DocumentChangedEventArgs e)
         {
+            // A change while the bridge runs no request is the user's: a model ACE opened is no longer safe to discard.
+            if (Bridge.RequestDispatcher.Busy == null) Commands.ModelFileCommands.UserTouched(e.GetDocument());
             var op = e.Operation;
             if (_temporary > 0 && _current == null) return;
             if (_current != null)

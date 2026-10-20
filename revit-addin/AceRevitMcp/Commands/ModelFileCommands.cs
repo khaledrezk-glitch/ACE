@@ -16,6 +16,73 @@ namespace AceRevitMcp.Commands
     /// </summary>
     internal static class ModelFileCommands
     {
+        /// <summary>A model open_model opened in this session: its handle, the file it came from, how it opened, and whether the user touched it.</summary>
+        private sealed class Opened
+        {
+            public string Handle, Source;
+            public Document Doc;
+            public bool Detached;
+            public bool Untouched = true;   // cleared by any change made outside an ACE request (ModelFileCommands.UserTouched)
+        }
+        private static readonly System.Collections.Generic.List<Opened> OpenedByAce = new System.Collections.Generic.List<Opened>();
+
+        private static Opened Entry(Document d)
+        {
+            OpenedByAce.RemoveAll(x => { try { return !x.Doc.IsValidObject; } catch { return true; } });
+            return d == null ? null : OpenedByAce.FirstOrDefault(x => x.Doc.Equals(d));
+        }
+
+        /// <summary>A change made outside an ACE request (DocumentChanged while the bridge is idle): the user worked in that model.</summary>
+        internal static void UserTouched(Document d)
+        {
+            try { var e = Entry(d); if (e != null) e.Untouched = false; } catch { }
+        }
+
+        /// <summary>
+        /// The safety boundary of discard: ACE opened the model in this session and the user has not changed it since; a
+        /// workshared model only when ACE opened it detached (a workshared local holds the user's own work).
+        /// </summary>
+        private static bool CanDiscard(Document d)
+        {
+            var e = Entry(d);
+            if (e == null || !e.Untouched) return false;
+            bool workshared;
+            try { workshared = d.IsWorkshared; } catch { workshared = true; }
+            return !workshared || e.Detached;
+        }
+
+        /// <summary>An open model by handle (from open_model), by path (the file it came from, or its own), or by a title only one model has.</summary>
+        private static Document FindDoc(UIApplication app, JsonObject args, out string error)
+        {
+            error = null;
+            var docs = app.Application.Documents.Cast<Document>().Where(d => !d.IsLinked).ToList();
+            var handle = Args.Str(args, "handle");
+            if (!string.IsNullOrWhiteSpace(handle))
+            {
+                Entry(null);
+                var e = OpenedByAce.FirstOrDefault(x => x.Handle == handle.Trim());
+                if (e == null) error = $"No model opened by ACE has the handle {handle} (closed already?).";
+                return e?.Doc;
+            }
+            var path = Args.Str(args, "path");
+            var name = Args.Str(args, "model");
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                var full = Normalize(path.Trim().Trim('"'));
+                Entry(null);
+                var byPath = OpenedByAce.FirstOrDefault(x => string.Equals(Normalize(x.Source), full, StringComparison.OrdinalIgnoreCase))?.Doc
+                             ?? docs.FirstOrDefault(d => SamePath(d, full));
+                if (byPath == null) error = $"No open model comes from {path}.";
+                return byPath;
+            }
+            if (string.IsNullOrWhiteSpace(name)) { error = "Give handle (from open_model), path or model (the title)."; return null; }
+            var byTitle = docs.Where(d => string.Equals(d.Title, name, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (byTitle.Count > 1) { error = $"{byTitle.Count} open models are called '{name}': give path or handle."; return null; }
+            var doc = byTitle.FirstOrDefault() ?? docs.FirstOrDefault(d => !string.IsNullOrEmpty(d.PathName) && string.Equals(d.PathName, name, StringComparison.OrdinalIgnoreCase));
+            if (doc == null) error = $"No open model is called '{name}'. Open: {string.Join(", ", docs.Select(d => d.Title))}.";
+            return doc;
+        }
+
         /// <summary>
         /// open_model { path, detach: none | preserve_worksets | discard_worksets, audit, worksets: all | last_viewed | none,
         /// close_previous, clear_transmitted, save_as_central_ok }: opens and activates the file. Refuses a missing file, a file
@@ -42,10 +109,27 @@ namespace AceRevitMcp.Commands
             var full = Path.GetFullPath(path);
             var previous = app.ActiveUIDocument?.Document;
 
-            // Already open: activate it instead of opening it twice.
+            // Already open: activate: true makes it the active model; otherwise it is refused (never opened twice).
             var open = app.Application.Documents.Cast<Document>().FirstOrDefault(d => !d.IsLinked && SamePath(d, full));
             if (open != null)
-                throw new CommandException($"{open.Title} is already open in this Revit session. Switch to it in Revit (or close it first): ACE does not open a model twice.");
+            {
+                if (!Args.Bool(args, "activate"))
+                    throw new CommandException($"{open.Title} is already open in this Revit session. Call open_model again with activate: true to make it the active model (or close it first): ACE does not open a model twice.");
+                var wasActive = previous != null && previous.Equals(open);
+                if (!wasActive)
+                {
+                    if (string.IsNullOrEmpty(open.PathName)) throw new CommandException($"{open.Title} has no file path (a detached copy never saved): switch to it in Revit.");
+                    try { app.OpenAndActivateDocument(open.PathName); }
+                    catch (Exception ex) { throw new CommandException($"Revit could not activate {open.Title}: {ex.Message}"); }
+                }
+                InstanceRegistry.Update(app);
+                return new JsonObject
+                {
+                    ["model"] = open.Title, ["path"] = open.PathName, ["activated"] = !wasActive, ["alreadyOpen"] = true,
+                    ["active"] = app.ActiveUIDocument?.Document?.Title, ["previous"] = PreviousJson(previous), ["openDocuments"] = OpenDocuments(app),
+                    ["notes"] = new JsonArray((JsonNode)(wasActive ? "It was already the active model." : "It was already open: made it the active model (nothing reopened).")),
+                };
+            }
 
             BasicFileInfo info;
             try { info = BasicFileInfo.Extract(full); }
@@ -144,10 +228,13 @@ namespace AceRevitMcp.Commands
             finally { app.DialogBoxShowing -= OnDialog; }
             var doc = opened?.Document ?? throw new CommandException($"Revit did not open {Path.GetFileName(full)}." + DialogText(dialogs));
             if (dialogs.Any(d => d?["answer"] == null)) notes.Add("A dialog during the open needed a person (see dialogs).");
+            Entry(null);
+            var handle = Guid.NewGuid().ToString("N").Substring(0, 12);
+            OpenedByAce.Add(new Opened { Handle = handle, Source = full, Doc = doc, Detached = detached });
 
             JsonNode closed = null;
             if (Args.Bool(args, "close_previous") && previous != null && !previous.Equals(doc))
-                closed = CloseQuietly(previous);
+                closed = CloseQuietly(previous, Args.Bool(args, "discard_previous"));
 
             JsonNode worksetsOpened = null;
             if (doc.IsWorkshared)
@@ -163,43 +250,102 @@ namespace AceRevitMcp.Commands
             {
                 ["model"] = doc.Title, ["path"] = doc.PathName, ["workshared"] = doc.IsWorkshared, ["detached"] = detached, ["audited"] = audit,
                 ["worksetsOpened"] = worksetsOpened, ["closed"] = closed, ["openDocuments"] = OpenDocuments(app),
+                ["active"] = app.ActiveUIDocument?.Document?.Title, ["previous"] = PreviousJson(previous), ["openedByAce"] = true, ["handle"] = handle,
                 ["transmitted"] = transmitted, ["transmittedCleared"] = transmittedCleared, ["externalReferences"] = externalReferences,
                 ["unresolvedLinks"] = unresolvedLinks, ["dialogs"] = dialogs, ["notes"] = notes,
             };
         }
 
         /// <summary>
-        /// close_model { model }: closes an open model that is not the active one, without saving: { model, closed, why, openDocuments }.
-        /// The active, a modified or a linked model is kept (closed: false, why); an unknown name is an error.
+        /// close_model { handle | path | model, discard }: closes an open model that is not the active one, without saving: { model,
+        /// closed, why, discarded, openDocuments }. The active or a linked model is kept (closed: false, why); a modified one too,
+        /// unless discard: true and CanDiscard; an unknown or ambiguous name is an error.
         /// </summary>
         public static JsonNode Close(UIApplication app, JsonObject args)
         {
-            var name = Args.Str(args, "model");
-            if (string.IsNullOrWhiteSpace(name)) throw new CommandException("Give model: the title (or path) of the open model to close.");
-            var docs = app.Application.Documents.Cast<Document>().ToList();
-            var doc = docs.FirstOrDefault(d => string.Equals(d.Title, name, StringComparison.OrdinalIgnoreCase))
-                      ?? docs.FirstOrDefault(d => !string.IsNullOrEmpty(d.PathName) && string.Equals(d.PathName, name, StringComparison.OrdinalIgnoreCase))
-                      ?? throw new CommandException($"No open model is called '{name}'. Open: {string.Join(", ", docs.Where(d => !d.IsLinked).Select(d => d.Title))}.");
+            var doc = FindDoc(app, args, out var error) ?? throw new CommandException(error);
             JsonObject Kept(string why) => new JsonObject { ["model"] = doc.Title, ["closed"] = false, ["why"] = why, ["openDocuments"] = OpenDocuments(app) };
             if (doc.IsLinked) return Kept("a linked model: unload the link in the host instead");
             if (app.ActiveUIDocument?.Document?.Equals(doc) == true) return Kept("the active model: ACE never closes the active model; switch to another model first (open_model)");
-            if (doc.IsModified) return Kept("it has unsaved changes: ACE does not close it (nothing is saved); save or discard them in Revit first");
+            var discarded = false;
+            if (doc.IsModified)
+            {
+                if (!Args.Bool(args, "discard")) return Kept("it has unsaved changes: ACE does not close it (nothing is saved); save or discard them in Revit first, or discard: true for a model ACE opened");
+                if (!CanDiscard(doc)) return Kept("discard is only for a model ACE opened in this session and nobody changed since (a workshared one only when ACE opened it detached): this one may hold someone's work; save or discard it in Revit");
+                discarded = true;
+            }
             var title = doc.Title;
             bool done;
             try { done = doc.Close(false); }
             catch (Exception ex) { return Kept("Revit did not close it: " + ex.Message); }
             InstanceRegistry.Update(app);
-            return new JsonObject { ["model"] = title, ["closed"] = done, ["why"] = done ? null : "Revit did not close it", ["openDocuments"] = OpenDocuments(app) };
+            return new JsonObject { ["model"] = title, ["closed"] = done, ["why"] = done ? null : "Revit did not close it", ["discarded"] = done && discarded, ["openDocuments"] = OpenDocuments(app) };
         }
 
-        /// <summary>Closes a model that is not active without saving; a modified one is kept open: { model, closed, why }.</summary>
-        private static JsonObject CloseQuietly(Document d)
+        /// <summary>
+        /// Closes a model that is not active without saving; a modified one is kept open, unless discard and ACE opened it in
+        /// this session or it is a detached copy: { model, closed, why, discarded }.
+        /// </summary>
+        private static JsonObject CloseQuietly(Document d, bool discard)
         {
             var title = d.Title;
             if (d.IsLinked || d.IsFamilyDocument) return new JsonObject { ["model"] = title, ["closed"] = false, ["why"] = "not a project model opened on its own" };
-            if (d.IsModified) return new JsonObject { ["model"] = title, ["closed"] = false, ["why"] = "it has unsaved changes: kept open (ACE never saves or discards them)" };
-            try { return new JsonObject { ["model"] = title, ["closed"] = d.Close(false), ["why"] = null }; }
+            var discarded = d.IsModified && discard && CanDiscard(d);
+            if (d.IsModified && !discarded)
+                return new JsonObject { ["model"] = title, ["closed"] = false, ["why"] = discard ? "it has unsaved changes that ACE may not discard (not opened by ACE, changed by the user, or a workshared local): kept open" : "it has unsaved changes: kept open (ACE never saves or discards them)" };
+            try { var ok = d.Close(false); return new JsonObject { ["model"] = title, ["closed"] = ok, ["why"] = null, ["discarded"] = ok && discarded }; }
             catch (Exception ex) { return new JsonObject { ["model"] = title, ["closed"] = false, ["why"] = "Revit did not close it: " + ex.Message }; }
+        }
+
+        private static JsonObject PreviousJson(Document d)
+        {
+            if (d == null) return null;
+            try { return new JsonObject { ["model"] = d.Title, ["path"] = string.IsNullOrEmpty(d.PathName) ? null : d.PathName }; } catch { return null; }
+        }
+
+        /// <summary>
+        /// save_model { model, allow_risky }: saves an open model to its own file (never Save As, never Synchronize with Central):
+        /// a local, detached-and-saved or non-workshared file and a workshared local copy are saved in place; a central opened
+        /// directly is saved with SaveOptions. Refuses without allow_risky, in a dry run, and for read-only, cloud, linked or
+        /// never-saved documents. { model, path, saved, sizeBefore, sizeAfter, ms, kind }.
+        /// </summary>
+        public static JsonNode Save(UIApplication app, JsonObject args)
+        {
+            if (Args.Bool(args, "dry_run") || Args.Bool(args, "check_only") || Args.Bool(args, "readonly"))
+                throw new CommandException("save_model cannot be previewed: saving is not undoable. Nothing was saved.");
+            if (!Args.Bool(args, "allow_risky"))
+                throw new CommandException("save_model writes the model file and cannot be undone: it needs allow_risky: true after the user agreed. Nothing was saved.");
+            var name = Args.Str(args, "model");
+            var docs = app.Application.Documents.Cast<Document>().ToList();
+            var doc = string.IsNullOrWhiteSpace(name) ? app.ActiveUIDocument?.Document
+                : docs.FirstOrDefault(d => string.Equals(d.Title, name, StringComparison.OrdinalIgnoreCase))
+                  ?? docs.FirstOrDefault(d => !string.IsNullOrEmpty(d.PathName) && string.Equals(d.PathName, name, StringComparison.OrdinalIgnoreCase));
+            if (doc == null) throw new CommandException(string.IsNullOrWhiteSpace(name) ? "No model is open." : $"No open model is called '{name}'.");
+            if (doc.IsLinked) throw new CommandException($"{doc.Title} is a linked model: save it from its own file. Nothing was saved.");
+            if (doc.IsModelInCloud) throw new CommandException($"{doc.Title} is a cloud model: ACE does not save cloud models (use Synchronize in Revit). Nothing was saved.");
+            if (doc.IsReadOnly || doc.IsReadOnlyFile) throw new CommandException($"{doc.Title} is read-only. Nothing was saved.");
+            if (string.IsNullOrEmpty(doc.PathName)) throw new CommandException($"{doc.Title} has never been saved (no file path; e.g. a detached copy): it needs Save As, which ACE does not do. Nothing was saved.");
+            long? Size() { try { return new FileInfo(doc.PathName).Length; } catch { return null; } }
+            string kind;
+            var central = false;
+            try { central = doc.IsWorkshared && !doc.IsDetached && string.Equals(Normalize(ModelPathUtils.ConvertModelPathToUserVisiblePath(doc.GetWorksharingCentralModelPath())), Normalize(doc.PathName), StringComparison.OrdinalIgnoreCase); }
+            catch { central = false; }
+            kind = !doc.IsWorkshared ? "file" : doc.IsDetached ? "detached copy" : central ? "central (opened directly)" : "workshared local (saved locally; not synchronized with central)";
+            var before = Size();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                if (central) doc.Save(new SaveOptions());
+                else doc.Save();
+            }
+            catch (Exception ex) { throw new CommandException($"Revit did not save {doc.Title}: {ex.Message}"); }
+            sw.Stop();
+            return new JsonObject
+            {
+                ["model"] = doc.Title, ["path"] = doc.PathName, ["saved"] = true, ["kind"] = kind,
+                ["sizeBefore"] = before, ["sizeAfter"] = Size(), ["ms"] = sw.ElapsedMilliseconds,
+                ["note"] = doc.IsWorkshared && !central && !doc.IsDetached ? "Saved locally only: Synchronize with Central is not part of save_model." : null,
+            };
         }
 
         private static bool SamePath(Document d, string full)
