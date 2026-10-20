@@ -25,12 +25,16 @@ namespace AceRevitMcp.Commands
             public int Dimensions, SpotDimensions, Tags;
         }
 
-        /// <summary>{ dimensions: { before, after }, spotDimensions: {...}, tags: {...} }.</summary>
-        public static JsonObject AnnotationDiff(Annotation before, Annotation after)
+        /// <summary>
+        /// { available, dimensions: { before, after }, spotDimensions: {...}, tags: {...} }. available is false when the counts
+        /// could not be taken (at start, or at start or stop for a stop): then no annotation diffs are made.
+        /// </summary>
+        public static JsonObject AnnotationDiff(Annotation before, Annotation after, bool atStop = true)
         {
             JsonObject Pair(int? b, int? a) => new JsonObject { ["before"] = b, ["after"] = a };
             return new JsonObject
             {
+                ["available"] = before != null && (!atStop || after != null),
                 ["dimensions"] = Pair(before?.Dimensions, after?.Dimensions),
                 ["spotDimensions"] = Pair(before?.SpotDimensions, after?.SpotDimensions),
                 ["tags"] = Pair(before?.Tags, after?.Tags),
@@ -73,7 +77,8 @@ namespace AceRevitMcp.Commands
         /// The diffs between two captures: [{ id, uniqueId, category, type, changes: [{ what, before, after, name?, end?, other?,
         /// otherCategory?, cutter? }] }], one entry per element that changed (created and deleted included), by id.
         /// </summary>
-        public static JsonArray Diff(IList<ElemState> before, IList<ElemState> after)
+        /// <param name="annotations">false when the annotation snapshot failed on either side: no "annotation" changes.</param>
+        public static JsonArray Diff(IList<ElemState> before, IList<ElemState> after, bool annotations = true)
         {
             var b = (before ?? new List<ElemState>()).GroupBy(s => s.Id).ToDictionary(g => g.Key, g => g.First());
             var a = (after ?? new List<ElemState>()).GroupBy(s => s.Id).ToDictionary(g => g.Key, g => g.First());
@@ -85,14 +90,14 @@ namespace AceRevitMcp.Commands
                 var changes = new JsonArray();
                 if (x == null) changes.Add(Change("created", null, y.TypeName));
                 else if (y == null) changes.Add(Change("deleted", x.TypeName, null));
-                else Compare(x, y, changes);
+                else Compare(x, y, changes, annotations);
                 if (changes.Count == 0) continue;
                 diffs.Add(new JsonObject { ["id"] = id, ["uniqueId"] = s.UniqueId, ["category"] = s.Category, ["type"] = s.TypeName, ["changes"] = changes });
             }
             return diffs;
         }
 
-        private static void Compare(ElemState x, ElemState y, JsonArray changes)
+        private static void Compare(ElemState x, ElemState y, JsonArray changes, bool annotations)
         {
             var hasLocation = x.Point != null || x.Start != null || y.Point != null || y.Start != null;
             if (hasLocation && !(Same(x.Point, y.Point) && Same(x.Start, y.Start) && Same(x.End, y.End))) changes.Add(Change("moved", Location(x), Location(y)));
@@ -114,7 +119,7 @@ namespace AceRevitMcp.Commands
             }
             if (Differs(x.Area, y.Area, ToleranceM2)) changes.Add(Change("area", Round(x.Area), Round(y.Area)));
             if (Differs(x.Volume, y.Volume, ToleranceM3)) changes.Add(Change("volume", Round(x.Volume), Round(y.Volume)));
-            if (x.Dimensions != y.Dimensions || x.Tags != y.Tags)
+            if (annotations && (x.Dimensions != y.Dimensions || x.Tags != y.Tags))
                 changes.Add(Change("annotation", new JsonObject { ["dimensions"] = x.Dimensions, ["tags"] = x.Tags }, new JsonObject { ["dimensions"] = y.Dimensions, ["tags"] = y.Tags }));
             if (!string.Equals(x.TypeName, y.TypeName, StringComparison.Ordinal)) changes.Add(Change("type", x.TypeName, y.TypeName));
             if (!string.Equals(x.Material, y.Material, StringComparison.Ordinal)) changes.Add(Change("material", x.Material, y.Material));

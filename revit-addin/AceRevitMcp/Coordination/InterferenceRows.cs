@@ -34,9 +34,9 @@ namespace AceRevitMcp.Coordination
 
         /// <param name="originMm">The project base point in the host's internal coordinates (mm): subtracted from each clash point.</param>
         /// <param name="names">Optional: family and type by element unique id, read from the model; else from the stored names.</param>
-        /// <param name="latestRuns">Optional: the latest run time per test (LatestRuns); clashes that run did not look at come last, rechecked: false.</param>
+        /// <param name="latestRuns">Optional: the latest run record per test (LatestRuns); clashes that run did not look at come last, rechecked: false.</param>
         public static List<InterferenceRow> Rows(IEnumerable<Clash> clashes, (double X, double Y, double Z) originMm,
-            IDictionary<string, (string Family, string Type)> names = null, IDictionary<string, DateTime> latestRuns = null)
+            IDictionary<string, (string Family, string Type)> names = null, IDictionary<string, ClashRun> latestRuns = null)
         {
             var given = (clashes ?? Enumerable.Empty<Clash>()).ToList();
             var all = given.Where(c => Rechecked(c, latestRuns)).ToList();
@@ -74,22 +74,28 @@ namespace AceRevitMcp.Coordination
             return rows;
         }
 
-        /// <summary>The latest run time per test (test names case-insensitive).</summary>
-        public static Dictionary<string, DateTime> LatestRuns(IEnumerable<ClashRun> runs)
+        /// <summary>The latest run record per test (test names case-insensitive).</summary>
+        public static Dictionary<string, ClashRun> LatestRuns(IEnumerable<ClashRun> runs)
         {
-            var d = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            var d = new Dictionary<string, ClashRun>(StringComparer.OrdinalIgnoreCase);
             foreach (var r in runs ?? Enumerable.Empty<ClashRun>())
-                if (r?.Test != null && (!d.TryGetValue(r.Test, out var t) || r.Time > t)) d[r.Test] = r.Time;
+                if (r?.Test != null && (!d.TryGetValue(r.Test, out var t) || r.Time > t.Time)) d[r.Test] = r;
             return d;
         }
 
         /// <summary>
-        /// Whether the latest run of the clash's test looked at it (it was found, or marked resolved, at that run's time). A
-        /// stored result from another model, level or scope keeps an older time: it stays stored but is never counted as
-        /// open. A test without a run record (an import, or no record yet) counts as rechecked.
+        /// Whether the latest run of the clash's test looked at it: found by it, or in its scope (models, level, categories)
+        /// and not found, so still resolved or approved as of that run. A run record from 1.12.9 on (Exact) matches the time
+        /// it stamped exactly; an older record, saved a little after its merge, within 2 minutes. A stored result from another
+        /// model, level or scope keeps an older time: it stays stored but is never counted. A test without a run record (an
+        /// import, or no record yet) counts as rechecked.
         /// </summary>
-        public static bool Rechecked(Clash c, IDictionary<string, DateTime> latestRuns) =>
-            latestRuns == null || c.Test == null || !latestRuns.TryGetValue(c.Test, out var t) || c.LastSeen >= t.AddMinutes(-2);   // older run records were saved a little after the merge
+        public static bool Rechecked(Clash c, IDictionary<string, ClashRun> latestRuns)
+        {
+            if (latestRuns == null || c.Test == null || !latestRuns.TryGetValue(c.Test, out var run) || run == null) return true;
+            if (run.Exact) return c.Checked == run.Time || c.LastSeen == run.Time;
+            return c.LastSeen >= run.Time.AddMinutes(-2) || (c.Checked.HasValue && c.Checked.Value >= run.Time.AddMinutes(-2));
+        }
 
         /// <summary>The stored results a run did not look at: { count, open, models } (the models they come from).</summary>
         public static (int Count, int Open, List<string> Models) Stored(IEnumerable<Clash> notRechecked)
@@ -109,8 +115,8 @@ namespace AceRevitMcp.Coordination
                 ["open"] = re.Count(r => r.Status == "new" || r.Status == "active" || r.Status == "reopened"),
             };
             foreach (var s in new[] { "new", "active", "reopened", "approved", "resolved" }) d[s] = re.Count(r => r.Status == s);
-            d["stored"] = rows.Count - re.Count;
-            return d;
+            return d;   // stored results (rechecked: false rows) are counted once, in the answer's top-level stored
+
         }
 
         /// <summary>The run's date: the latest stored run of these tests, else the latest time a clash was seen (yyyy-MM-ddTHH:mm:ss).</summary>

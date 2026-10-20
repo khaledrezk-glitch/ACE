@@ -35,9 +35,9 @@ export function orderLine(r, req, merged = {}) {
   const from = source === "vault" ? whereText(merged.from?.order, merged.files ?? {}) ?? "the rules file" : source === "request" ? "the request" : "ACE's default";
   const scope = r?.scope ?? req?.scope ?? "clashing";
   const sSource = r?.scopeSource ?? req?.scope_source ?? (req?.scope ? "request" : "default");
-  const sFrom = req?.scope_source ? whereText(merged.from?.scope, merged.files ?? {}) ?? "the rules file" : sSource === "request" ? "the request" : "ACE's default";
+  const sFrom = req?.narrowed === "keys" ? "the call's keys" : req?.scope_source ? whereText(merged.from?.scope, merged.files ?? {}) ?? "the rules file" : sSource === "request" ? "the request" : "ACE's default";
   return `Join order (one category priority list, strongest cuts; from ${from}): ${order.map(niceCategory).join(" > ")}. Same category: the larger element cuts.\n` +
-    `Scope (from ${sFrom}): ${scope === "all-touching" ? "every touching pair of the categories" : "only the clashing pairs"}${req?.selection ? ", in the current selection" : ""}. Trim to face: ${req?.trim_to_face ? `on (allowed by ${whereText(merged.from?.trimAllowed, merged.files ?? {}) ?? "the rules"}${req.trim_to_face.max_mm ? `, at most ${req.trim_to_face.max_mm} mm` : ""})` : "off"}.`;
+    `Scope (from ${sFrom}): ${scope === "all-touching" ? "every touching pair of the categories" : "only the clashing pairs"}${req?.selection ? ", in the current selection" : ""}${req?.narrowed === "keys" ? " (the rules say all-touching; the call names clash keys, so only those clashing pairs)" : req?.narrowed ? ` (all-touching, narrowed to the call's ${req.narrowed === "level" ? `level ${req.level}` : `test ${req.test}`})` : ""}${req?.same_category === false ? "; same-category joins off" : ""}${req?.max_pairs ? `; at most ${req.max_pairs} touching pairs` : ""}. Trim to face: ${req?.trim_to_face ? `on (allowed by ${whereText(merged.from?.trimAllowed, merged.files ?? {}) ?? "the rules"}${req.trim_to_face.max_mm ? `, at most ${req.trim_to_face.max_mm} mm` : ""})` : "off"}.`;
 }
 
 /** The plan per category pair and kind: "Floors x Structural Columns: join 25, switch-join 3" (all-touching can be large). */
@@ -62,8 +62,15 @@ export function trimLine(p) {
 export const trimsOf = (plan = []) => [...plan.filter((p) => p.kind === "trim"), ...plan.map((p) => p.trim).filter((t) => t && typeof t === "object")];
 export const droppedOf = (r) => Number(r?.dropped?.notTouching ?? r?.droppedNotTouching ?? 0) || 0;
 /** All-touching scope: what the add-in looked at. */
+/** Above the touching-pair cap: the add-in reports only. */
+export function capLine(r) {
+  const t = r?.touching, ro = (r?.reportOnly ?? []).find((x) => x.code === "too-many-pairs");
+  if (!t?.capped && !ro) return "";
+  const n = t?.capped ? (t.join ?? 0) + (t.switchJoin ?? 0) || t.pairs : ro.pairs, cap = t?.capped ? t.maxPairs ?? t.max_pairs : ro.max_pairs ?? ro.maxPairs;
+  return `${n ?? "?"} touching pairs to join, above the ${cap ?? "?"} cap; nothing touching planned. ${t?.advice || "Narrow by level or selection."}`;
+}
 export function touchingLine(t) {
-  if (!t) return "";
+  if (!t || t.capped) return "";
   const by = Array.isArray(t.byPair) ? t.byPair.map((x) => `${x.pair ?? `${x.a} x ${x.b}`} ${x.count ?? x.pairs ?? ""}`.trim()) : Object.entries(t.byPair ?? {}).map(([k, v]) => `${k} ${typeof v === "object" ? JSON.stringify(v) : v}`);
   return `All touching: ${t.candidates ?? "?"} candidate pair(s), ${t.pairs ?? "?"} touching, ${t.right ?? 0} already right; join ${t.join ?? 0}, switch join ${t.switchJoin ?? 0}${by.length ? ` (${by.slice(0, 8).join(", ")}${by.length > 8 ? ", ..." : ""})` : ""}.`;
 }
@@ -93,7 +100,20 @@ export function readRules(text, file) {
   try { o = JSON.parse(String(text).replace(/^\uFEFF/, "")); } catch (e) { throw new Error(`${file} is not valid JSON (${e.message}): fix it or remove it.`); }
   if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error(`${file} must hold an object { order, scope, trim_to_face, steel }.`);
   const steel = o.steel == null ? undefined : steelOf(o.steel, `${file} steel`);
-  return { order: normaliseOrder(o.order, `${file} order`), scope: scopeOf(o.scope, `${file} scope`), trim: trimOf(o.trim_to_face, `${file} trim_to_face`), steel };
+  return { order: normaliseOrder(o.order, `${file} order`), scope: scopeOf(o.scope, `${file} scope`), trim: trimOf(o.trim_to_face, `${file} trim_to_face`), steel,
+    maxPairs: maxPairsOf(o.max_pairs, `${file} max_pairs`), sameCategory: sameCategoryOf(o.same_category, `${file} same_category`) };
+}
+
+export function maxPairsOf(v, where = "max_pairs") {
+  if (v == null) return undefined;
+  if (!Number.isInteger(v) || v < 1 || v > 100000) throw new Error(`${where} must be a whole number of pairs from 1 to 100000.`);
+  return v;
+}
+/** same_category: joins between elements of one category (wall with wall) are part of the office method; false opts out. */
+export function sameCategoryOf(v, where = "same_category") {
+  if (v == null) return undefined;
+  if (typeof v !== "boolean") throw new Error(`${where} must be true (default: same-category joins are part of the method) or false (opt out).`);
+  return v;
 }
 
 /**
@@ -104,7 +124,7 @@ export function readRules(text, file) {
 export function mergeRules(office, project) {
   const o = office?.rules ?? {}, p = project?.rules ?? {};
   const from = {}, rules = {};
-  for (const k of ["order", "scope"]) {
+  for (const k of ["order", "scope", "maxPairs", "sameCategory"]) {
     if (p[k] != null) { rules[k] = p[k]; from[k] = "project"; } else if (o[k] != null) { rules[k] = o[k]; from[k] = "office"; }
   }
   for (const k of ["trim", "steel"]) {
@@ -130,7 +150,11 @@ function trimOf(t, where) {
   const out = {};
   for (const [k, v] of Object.entries(t)) {
     if (k.startsWith("_")) continue;
-    if (k === "allowed" || k === "preview_required") { if (typeof v !== "boolean") throw new Error(`${where}.${k} must be true or false.`); out[k] = v; }
+    if (k === "allowed" || k === "preview_required") {
+      if (typeof v !== "boolean") throw new Error(`${where}.${k} must be true or false.`);
+      if (k === "preview_required" && v === false) throw new Error(`${where}.preview_required cannot be false: every apply already needs the identical dry run first, so a trim is always previewed. Remove the key or set it to true.`);
+      out[k] = v;
+    }
     else if (k === "max_mm") { if (typeof v !== "number" || !(v > 0)) throw new Error(`${where}.max_mm must be a positive number of millimetres.`); out.max_mm = v; }
     else throw new Error(`${where}: "${k}" is not a setting ACE knows (allowed, preview_required, max_mm).`);
   }
@@ -154,8 +178,14 @@ function steelOf(s, where) {
  */
 export function buildRequest(a, rules = {}, version) {
   const order = a.order ? normaliseOrder(a.order) : rules.order;
-  const scope = scopeOf(a.scope, "scope") ?? rules.scope;
-  const scopeSource = a.scope ? null : rules.scope ? "vault" : null;
+  let scope = scopeOf(a.scope, "scope") ?? rules.scope;
+  let scopeSource = a.scope ? null : rules.scope ? "vault" : null;
+  // Narrowing: keys mean the clashing pairs only (all-touching would reach past them); level / test narrow the touching.
+  let narrowed = null;
+  if (scope === "all-touching" && !a.scope && a.keys?.length) { scope = "clashing"; scopeSource = null; narrowed = "keys"; }
+  else if (scope === "all-touching" && (a.level || (a.test && a.test.trim().toLowerCase() !== DEFAULT_TEST.toLowerCase()))) narrowed = a.level ? "level" : "test";
+  const maxPairs = maxPairsOf(a.max_pairs) ?? rules.maxPairs;
+  const sameCategory = sameCategoryOf(a.same_category) ?? rules.sameCategory;
   // Trim to a face is approved in the vault only; a call can switch it off, never on.
   if (a.trim_to_face === true && !rules.trim?.allowed) {
     const w = rules.from?.trimAllowed === "office" ? `the office file ${rules.files?.office}` : rules.from?.trimAllowed === "project" ? `the vault's rules/${RULES_FILE}` : null;
@@ -183,6 +213,9 @@ export function buildRequest(a, rules = {}, version) {
     ...(orderSource ? { order_source: orderSource } : {}),
     ...(scope ? { scope } : {}),
     ...(scopeSource ? { scope_source: scopeSource } : {}),
+    ...(maxPairs ? { max_pairs: maxPairs } : {}),
+    ...(sameCategory === false ? { same_category: false } : {}),
+    ...(narrowed ? { narrowed } : {}),
     ...(a.selection ? { selection: true } : {}),
     ...(trim ? { trim_to_face: trim } : {}),
     ...(Object.keys(steel).length ? { steel } : {}),
@@ -213,6 +246,9 @@ export const previewOk = (r) => r?.success === true && !(r?.blocked?.length) && 
 const pairLine = (byPair) => (Array.isArray(byPair) ? byPair.map((p) => [p.pair ?? `${p.a ?? "?"} x ${p.b ?? "?"}`, p.clashes ?? p.count]) : Object.entries(byPair ?? {}))
   .sort((x, y) => (y[1] ?? 0) - (x[1] ?? 0)).map(([k, n]) => `${k} ${n}`).join(", ");
 const ids = (x) => `${x.a} x ${x.b}`;
+
+const SKIP = { "hosts-openings": "hosts openings", "one-trim-per-end": "one trim per end, the smallest kept", "trim-too-long": "the trim is longer than the limit" };
+export const skipReason = (s) => s.reason ?? SKIP[s.code] ?? s.code ?? "skipped";
 
 /** Report-only clashes grouped by reason: [{ why, recommendation, count, samples }]. */
 export function groupReportOnly(list = []) {
@@ -254,6 +290,7 @@ export function replyText(r, { mode, model, test, rolledBack = false, forced = f
   const pairs = pairSummary(plan);
   if (pairs.length > 1 || plan.length > 10) lines.push(`By category pair:\n${pairs.slice(0, 15).map((x) => `- ${x}`).join("\n")}${pairs.length > 15 ? `\n- ... ${pairs.length - 15} more (run record)` : ""}`);
   if (touchingLine(r?.touching)) lines.push(touchingLine(r.touching));
+  if (capLine(r)) lines.push(capLine(r));
   if (droppedOf(r)) lines.push(`Not touching, dropped: ${droppedOf(r)} pair(s) in scope that do not touch (no join needed).`);
   if (Number(r?.dropped?.trim)) lines.push(`Trims dropped: ${r.dropped.trim}.`);
   const trims = trimsOf(plan);
@@ -276,7 +313,7 @@ export function replyText(r, { mode, model, test, rolledBack = false, forced = f
     else lines.push(`Changes: ${kindText(doneCounts(r?.done))} done.`);
   }
   const skipped = r?.skipped ?? [];
-  if (skipped.length) lines.push(`Skipped:\n${skipped.slice(0, 10).map((s) => `- ${s.id ? `${s.id} ` : ""}${ids(s)}: ${s.reason ?? "skipped"}`).join("\n")}${skipped.length > 10 ? `\n- ... ${skipped.length - 10} more (run record)` : ""}`);
+  if (skipped.length) lines.push(`Skipped:\n${skipped.slice(0, 10).map((s) => `- ${s.id ? `${s.id} ` : ""}${ids(s)}: ${skipReason(s)}`).join("\n")}${skipped.length > 10 ? `\n- ... ${skipped.length - 10} more (run record)` : ""}`);
   return lines.join("\n");
 }
 
@@ -310,7 +347,7 @@ export function evidenceMarkdown({ model, test, when = localDate(new Date(), { t
   section("New warnings", (w.new ?? []).map((x) => typeof x === "string" ? x : x.text ?? x.message ?? JSON.stringify(x)));
   section("Remaining clashes", (rb ? [] : r.after?.remaining ?? []).map((x) => `${ids(x)}: ${x.why ?? "not auto-fixable"}`));
   section("Report only (needs a person)", (r.reportOnly ?? []).map((x) => `${ids(x)} (${[x.aCategory, x.bCategory].filter(Boolean).join(" x ")}): ${x.why ?? ""}${x.recommendation ? `; ${x.recommendation}` : ""}`));
-  section("Skipped", (r.skipped ?? []).map((s) => `${s.id ? `${s.id} ` : ""}${ids(s)}: ${s.reason ?? ""}`));
+  section("Skipped", (r.skipped ?? []).map((s) => `${s.id ? `${s.id} ` : ""}${ids(s)}: ${skipReason(s)}`));
   section("Blocked", (r.blocked ?? []).map(blockLine));
   if (!rb && r.success !== false) out.push("Next: re-run run_clash_test with the same test so the fixed clashes show as resolved.", "");
   return out.join("\n");

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
-import { asDate, matchDelivered, nearMatches, reportText, sha, splitIds, updateRegister } from "../lib/registerupdate.js";
+import { asDate, checkTemplate, matchDelivered, nearMatches, reportText, resolveRegisterFile, sha, splitIds, templateArgs, updateRegister } from "../lib/registerupdate.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-reg-"));
 const wb = new ExcelJS.Workbook();
@@ -163,6 +163,30 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   const t5 = reportText(r5, { mode: "check" });
   assert.match(t5, /TST-P1-ST-ZZ-RP-900400 \(x2 in register\) ~ TST-P1-ST-XX1-RP-900400\.pdf/);
   assert.match(t5, /In the register but not delivered: 23: TST-P1-AR-ZZ-DR-100002; TST-P1-AR-ZZ-DR-100009 \(x2 in register\); TST-P1-AR-ZZ-DR-100010;/);
+}
+
+// 1.12.9: the project template (vault rules/register.json): discipline, stage name -> columns, validation.
+{
+  const ex = JSON.parse(fs.readFileSync(new URL("../bep/register.example.json", import.meta.url), "utf8"));
+  checkTemplate(ex, "example");
+  const tdir = path.join(tmp, "tpl", "ACE Vault");
+  fs.mkdirSync(path.join(tmp, "tpl", "TST_Registers"), { recursive: true });
+  fs.writeFileSync(path.join(tmp, "tpl", "TST_Registers", "TST-MIDP-R03.xlsx"), "x");
+  fs.mkdirSync(tdir, { recursive: true });
+  const t = templateArgs(ex, { discipline: "ar", stage: "ifc" }, { file: "register.json", baseDir: tdir });
+  assert.equal(t.discipline, "AR");
+  assert.equal(t.args.register, path.join(tmp, "tpl", "TST_Registers", "TST-MIDP-R03.xlsx"), "the glob finds the one register");
+  assert.deepEqual([t.args.sheet, t.args.header_row, t.args.id_column], ["TST_ARCHITECTURE", 4, "Document Number"], "a discipline overrides headerRow");
+  assert.deepEqual(t.args.stage, ["Planned Date#10", "Actual Date#10"], "a stage name becomes its columns");
+  assert.equal(t.args.stage_columns.length, 4);
+  assert.throws(() => templateArgs(ex, { discipline: "ME", stage: "IFC" }, { file: "register.json", baseDir: tdir }), /Discipline "ME" is not in register\.json: known ST, AR\./);
+  assert.throws(() => templateArgs(ex, { discipline: "ST", stage: "TENDER" }, { file: "register.json", baseDir: tdir }), /Stage "TENDER" is not in register\.json for ST: known CONCEPT, IFC\./);
+  assert.ok(!("stage" in templateArgs(ex, { discipline: "ST", stage: "Actual Date#10" }, { file: "f", baseDir: tdir }).args), "a column name stays the call's own");
+  assert.throws(() => checkTemplate({ ...ex, sheets: 1 }, "f"), /unknown key "sheets"/);
+  assert.throws(() => checkTemplate({ disciplines: { ST: {} } }, "f"), /disciplines\.ST needs sheet/);
+  assert.throws(() => checkTemplate({ ...ex, stages: { IFC: "Actual" } }, "f"), /stages\.IFC must be a list of column names/);
+  fs.writeFileSync(path.join(tmp, "tpl", "TST_Registers", "TST-MIDP-R04.xlsx"), "x");
+  assert.throws(() => resolveRegisterFile("../TST_Registers/TST-MIDP-*.xlsx", tdir), /matches 2 files/);
 }
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("registerupdate test passed");

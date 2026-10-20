@@ -1,0 +1,16 @@
+{
+  "_about": "ACE register_update template for one project: <ACE Vault>\\rules\\register.json. The general method is in the tool (revit_guide methods/midp-register-update); this file says where the project's register is and how it is laid out. file: a path or a glob (* in the name) relative to the ACE Vault folder, matching one file. A discipline can override file, headerRow, idColumn, idPattern, stages and dateColumns. stages: the stage name -> the columns that get the submission date. dateColumns: every stage date column (later dates are cleared there); default: every stage's columns.",
+  "file": "../TST_Registers/TST-MIDP-*.xlsx",
+  "headerRow": 3,
+  "idColumn": "Document Number",
+  "idPattern": "^TST-[A-Z0-9]+-[A-Z]{2,3}-",
+  "disciplines": {
+    "ST": { "sheet": "TST_STRUCTURE" },
+    "AR": { "sheet": "TST_ARCHITECTURE", "headerRow": 4 }
+  },
+  "stages": {
+    "CONCEPT": ["Planned Date#1", "Actual Date#1"],
+    "IFC": ["Planned Date#10", "Actual Date#10"]
+  },
+  "dateColumns": ["Planned Date#1", "Actual Date#1", "Planned Date#10", "Actual Date#10"]
+}

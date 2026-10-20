@@ -104,6 +104,7 @@ function measureLine(g) {
 /** The model's annotation counts before -> after (start and stop): only the kinds that changed, else "unchanged". */
 export function annotationLine(a) {
   if (!a || typeof a !== "object") return "";
+  if (a.available === false) return "Annotation: not available (the counts failed on one side; nothing compared).";
   const NAME = { dimensions: "dimensions", spotDimensions: "spot dimensions", spotElevations: "spot elevations", tags: "tags", constraints: "constraints" };
   const all = Object.entries(a).filter(([, v]) => v && typeof v === "object" && "before" in v);
   const changed = all.filter(([, v]) => v.before !== v.after);

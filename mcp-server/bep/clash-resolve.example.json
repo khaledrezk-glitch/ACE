@@ -1,7 +1,23 @@
 {
-  "_about": "ACE clash_resolve rules. Office copy: %APPDATA%\\ACE-RevitMCP\\clash-resolve.json (or config.json \"clashResolveRules\": a path). Project copy: <ACE Vault>\\rules\\clash-resolve.json, which wins key by key; trim_to_face merges per sub-key. order: one category priority list, strongest cuts (foundation, column, wall, slab, beam, stair, ramp or OST_ names). scope: clashing | all-touching. trim_to_face: a beam or wall end trimmed to the face it runs into, only when allowed (a call can switch it off, never on).",
-  "order": ["foundation", "column", "wall", "slab", "beam", "stair"],
+  "_about": "ACE clash_resolve rules. Office copy: %APPDATA%\\ACE-RevitMCP\\clash-resolve.json (or config.json \"clashResolveRules\": a path). Project copy: <ACE Vault>\\rules\\clash-resolve.json, which wins key by key; trim_to_face merges per sub-key. order: one category priority list, strongest cuts (foundation, column, wall, slab, beam, stair, ramp or OST_ names). scope: clashing | all-touching. trim_to_face: a beam or wall end trimmed to the face it runs into, only when allowed (a call can switch it off, never on). max_pairs: all-touching cap (above it: report only, narrow by level or selection). same_category: true by default (same-category joins are part of the office method); false opts out. preview_required is always true: every apply needs the identical dry run; false is refused.",
+  "order": [
+    "foundation",
+    "column",
+    "wall",
+    "slab",
+    "beam",
+    "stair"
+  ],
   "scope": "clashing",
-  "trim_to_face": { "allowed": false, "preview_required": true, "max_mm": 1000 },
-  "steel": { "cutback": true, "coping": true }
+  "trim_to_face": {
+    "allowed": false,
+    "preview_required": true,
+    "max_mm": 1000
+  },
+  "steel": {
+    "cutback": true,
+    "coping": true
+  },
+  "max_pairs": 500,
+  "same_category": true
 }

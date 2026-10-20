@@ -80,7 +80,7 @@ namespace AceRevitMcp.Commands
                     {
                         ["success"] = true, ["aceVersion"] = aceVersion, ["model"] = rec.Model, ["label"] = rec.Label, ["startedAt"] = rec.StartedAt,
                         ["journal"] = rec.Journal, ["elements"] = rec.Elements.Count,
-                        ["annotation"] = CaptureLogic.AnnotationDiff(rec.Annotation, null),
+                        ["annotation"] = CaptureLogic.AnnotationDiff(rec.Annotation, null, atStop: false),
                         ["categories"] = new JsonArray(rec.Categories.Select(c => (JsonNode)c).ToArray()),
                         ["parameters"] = new JsonArray(rec.Parameters.Select(p => (JsonNode)p).ToArray()),
                     };
@@ -93,7 +93,7 @@ namespace AceRevitMcp.Commands
                         return Fail($"the capture was started on {current.Model}, the active model is {doc.Title}: switch to that model, then stop");
                     var cats = current.Categories.Select(n => Args.ResolveCategory(doc, n)).Where(c => c != null).ToList();
                     var after = Snapshot(doc, cats.Select(c => c.Id).ToList(), current.Parameters, out var annotationNow);
-                    var diffs = CaptureLogic.Diff(current.Elements, after);
+                    var diffs = CaptureLogic.Diff(current.Elements, after, annotations: current.Annotation != null && annotationNow != null);
                     string journalNow = null;
                     try { journalNow = app.Application.RecordingJournalFilename; } catch { }
                     var (lines, truncated) = CaptureLogic.JournalLines(JournalSince(current.Journal, current.JournalOffset, journalNow), MaxJournalLines);
@@ -202,7 +202,8 @@ namespace AceRevitMcp.Commands
             var list = new List<S>();
             var dims = new Dictionary<long, int>(); var tagged = new Dictionary<long, int>();
             annotation = null;
-            try { annotation = Annotations(doc, dims, tagged); } catch (Exception ex) { Log.Warn($"Capture annotation counts: {ex.Message}"); }
+            try { annotation = Annotations(doc, dims, tagged); }
+            catch (Exception ex) { Log.Warn($"Capture annotation counts: {ex.Message}"); dims.Clear(); tagged.Clear(); }   // unavailable: no annotation diffs
             if (categories.Count == 0) return list;
             var table = doc.IsWorkshared ? doc.GetWorksetTable() : null;
             foreach (var e in new FilteredElementCollector(doc).WherePasses(new ElementMulticategoryFilter(categories)).WhereElementIsNotElementType())

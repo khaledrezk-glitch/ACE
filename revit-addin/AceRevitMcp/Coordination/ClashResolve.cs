@@ -19,7 +19,9 @@ namespace AceRevitMcp.Coordination
     /// ONE undo step) with the clash test re-run inside the transaction and a guard before it is kept: locations, types,
     /// tags, dimensions and Revit warnings of every touched element must be unchanged, or the whole change rolls back.
     /// { test, a_categories, b_categories, tolerance_mm, level, keys, order, steel: { cutback, coping }, block_on_borrowed,
-    /// check_only, dry_run, expect_model, expect_version, max_ids, max_elements, test_force_verify_mismatch }
+    /// scope (clashing | all-touching), selection, same_category (default true), max_pairs (default 500),
+    /// trim_to_face: { allowed, max_mm } | true, check_only, dry_run, expect_model, expect_version, expect_plan, max_ids,
+    /// max_elements, test_force_verify_mismatch }
     /// </summary>
     internal static class ClashResolve
     {
@@ -161,35 +163,48 @@ namespace AceRevitMcp.Coordination
             var trimArgs = args["trim_to_face"] as JsonObject;
             var trimOn = trimArgs != null && Args.Bool(trimArgs, "allowed", true) || (args["trim_to_face"] is JsonValue tv && tv.TryGetValue<bool>(out var tb) && tb);
             var trimMaxMm = trimArgs?["max_mm"] is JsonValue mv && mv.TryGetValue<double>(out var mm) && mm > 0 ? Math.Min(mm, ClashResolveLogic.TrimCeilingMm) : ClashResolveLogic.DefaultTrimMaxMm;
+            var blockCache = new Dictionary<long, (string Code, string Holder, string Detail)?>();
+            (string Code, string Holder, string Detail)? Held(long id) =>
+                blockCache.TryGetValue(id, out var bc) ? bc : (blockCache[id] = BlockOf(doc, doc.GetElement(new ElementId(id))));
             if (trimOn)
+            {
+                var cands = new List<(Step Join, Step Trim, Element Member, Element Cutter)>();
                 foreach (var st in steps.Where(x => (x.Kind == "join" || x.Kind == "switch-join") && x.HasWinner).ToList())
                 {
+                    if (Held(st.A) != null || Held(st.B) != null) continue;   // a blocked join gets no trim either
                     var cutterEl = doc.GetElement(new ElementId(st.A)); var member = doc.GetElement(new ElementId(st.B));
-                    var tr = TrimFor(st, cutterEl, member, geometry, Lengths.Ft(trimMaxMm), out var tooLong);
-                    if (tr != null)
-                    {
-                        st.Fallback = tr;
-                        planJson.Add(TrimJson(tr, member, cutterEl));
-                    }
-                    else if (tooLong != null)
-                    {
-                        var c = targeted.First(x => x.Key == st.ClashKey);
-                        reportOnly.Add(ReportItem(c, member.Id.Value, cutterEl.Id.Value, member.Category?.Name, cutterEl.Category?.Name, "trim-too-long",
-                            $"trim too long: the end would be shortened {tooLong} mm (more than {trimMaxMm} mm)", "Check the member's end by hand; the join stays planned."));
-                    }
+                    var tr = TrimFor(st, cutterEl, member, geometry, Lengths.Ft(trimMaxMm), trimMaxMm, out var skip);
+                    if (tr != null) cands.Add((st, tr, member, cutterEl));
+                    else if (skip != null)
+                        reportOnly.Add(ReportItem(targeted.First(x => x.Key == st.ClashKey), member.Id.Value, cutterEl.Id.Value, member.Category?.Name, cutterEl.Category?.Name,
+                            skip.Value.Code, skip.Value.Why, skip.Value.Recommendation));
                 }
+                // At most one trim per member end: the smallest is kept (it is the face the end enters first).
+                var keepTrims = new HashSet<int>(ClashResolveLogic.OneTrimPerEnd(cands.Select(x => (x.Trim.A, x.Trim.End, x.Trim.Cut)).ToList()));
+                for (var i = 0; i < cands.Count; i++)
+                {
+                    var (st, tr, member, cutterEl) = cands[i];
+                    if (keepTrims.Contains(i)) { st.Fallback = tr; planJson.Add(TrimJson(tr, member, cutterEl)); continue; }
+                    reportOnly.Add(ReportItem(targeted.First(x => x.Key == st.ClashKey), member.Id.Value, cutterEl.Id.Value, member.Category?.Name, cutterEl.Category?.Name,
+                        "one-trim-per-end", $"one trim per member end: a smaller trim of this {(tr.End == 0 ? "start" : "end")} is planned, this one ({Math.Round(Lengths.Mm(tr.Cut))} mm) is not",
+                        "The join stays planned; run again after the fix if the clash remains."));
+                }
+            }
 
             // R2 scope all-touching: every touching pair of concrete elements in the priority categories gets the join order,
             // not only the clashing pairs (joins only; a pair Revit cannot join is dropped quietly as not touching).
             var scope = (Args.Str(args, "scope") ?? "clashing").Trim().ToLowerInvariant();
             if (scope != "clashing" && scope != "all-touching") throw new CommandException("scope must be clashing or all-touching.");
             JsonObject touching = null;
-            if (scope == "all-touching")
+            if (scope == "all-touching" && keys.Count > 0)
+                notes.Add("scope all-touching applies only without keys: only the clashes named by keys are planned.");
+            else if (scope == "all-touching")
             {
                 var clashPairs = new HashSet<(long, long)>(found.Select(c => (Math.Min(c.IdA, c.IdB), Math.Max(c.IdA, c.IdB))));
                 ICollection<ElementId> selection = null;
                 if (Args.Bool(args, "selection")) selection = app.ActiveUIDocument?.Selection?.GetElementIds() ?? new List<ElementId>();
-                touching = Touching(doc, order, selection, clashPairs, geometry, steps, planJson, ids);
+                var maxPairs = Math.Max(1, Args.Int(args, "max_pairs", ClashResolveLogic.DefaultMaxPairs));
+                touching = Touching(doc, order, selection, clashPairs, geometry, steps, planJson, ids, test, level, Args.Bool(args, "same_category", true), maxPairs);
             }
 
             // The plan's fingerprint: an apply (or the Apply card, which replays the same args) must find the plan it previewed.
@@ -206,8 +221,7 @@ namespace AceRevitMcp.Coordination
             var heldIds = new Dictionary<long, string>();
             foreach (var id in steps.SelectMany(s => s.Kind == "join" || s.Kind == "switch-join" ? new[] { s.A, s.B } : new[] { s.A }).Distinct())
             {
-                var e = doc.GetElement(new ElementId(id));
-                var block = BlockOf(doc, e);
+                var block = Held(id);
                 if (block == null) continue;
                 held.Add((id, block.Value.Code, block.Value.Holder, block.Value.Detail));
                 heldIds[id] = ClashResolveLogic.Explain(block.Value.Code, block.Value.Holder, block.Value.Detail).Why;
@@ -257,8 +271,10 @@ namespace AceRevitMcp.Coordination
             var guardIds = steps.Where(s => !s.Blocked).SelectMany(s => new[] { s.A, s.B }).Distinct().ToList();
             // The fix-made-it-worse rule watches the clashing pairs' elements only (all-touching joins are not clash fixes).
             var touched = new HashSet<long>(steps.Where(s => !s.Blocked && !s.Touching).SelectMany(s => new[] { s.A, s.B }));
-            var relocated = new Dictionary<long, Step>();                                       // members trimmed to a face (R3)
-            var beforeStates = checkOnly ? new List<ClashResolveLogic.ElementState>() : Snapshot(doc, guardIds).Values.ToList();
+            var relocated = new Dictionary<long, List<Step>>();                                 // members trimmed to a face (R3), by member
+            // Walls that may be trimmed: the elements they host are counted before and after (a trim must not lose one).
+            var hostedFor = new HashSet<long>(steps.Where(s => !s.Blocked && s.Fallback != null && doc.GetElement(new ElementId(s.Fallback.A)) is Wall).Select(s => s.Fallback.A));
+            var beforeStates = checkOnly ? new List<ClashResolveLogic.ElementState>() : Snapshot(doc, guardIds, hostedFor).Values.ToList();
             var existingWarnings = Warnings(doc);
             var forceMismatch = Args.Bool(args, "test_force_verify_mismatch") && !Args.Bool(args, "dry_run");
             var worse = new List<(long Element, string What, string Before, string After)>();   // set by the body's after-run
@@ -311,18 +327,16 @@ namespace AceRevitMcp.Coordination
                 return r;
             }, verifyWithWarnings: (d, r, posted) =>
             {
-                var after = Snapshot(d, guardIds);
+                var after = Snapshot(d, guardIds, hostedFor);
                 var (mismatches, changedValues) = ClashResolveLogic.Compare(beforeStates, after, trimmed, relocated.Keys);
-                // A member trimmed to a face: only its trimmed end may move, and only to the planned point.
+                // A member trimmed to a face: every trimmed end at its planned point, every other end unchanged (all trims together).
                 foreach (var kv in relocated)
                 {
                     var b0 = beforeStates.FirstOrDefault(x => x.Id == kv.Key)?.Location; after.TryGetValue(kv.Key, out var a0);
                     var a1 = a0?.Location;
                     if (b0 == null || a1 == null || b0.Length != 6 || a1.Length != 6) { mismatches.Add((kv.Key, "location", "a line", "not a line")); continue; }
-                    var keep = kv.Value.End == 1 ? 0 : 3; var moved = kv.Value.End == 1 ? 3 : 0;
-                    var keptOk = Enumerable.Range(0, 3).All(i => Math.Abs(b0[keep + i] - a1[keep + i]) <= 1e-6);
-                    var endOk = Enumerable.Range(0, 3).All(i => Math.Abs(kv.Value.NewEnd[i] - a1[moved + i]) <= 1e-4);
-                    if (!keptOk || !endOk) mismatches.Add((kv.Key, "location (trim)", "only the trimmed end moves, to the face", $"start {a1[0]:0.###},{a1[1]:0.###},{a1[2]:0.###} end {a1[3]:0.###},{a1[4]:0.###},{a1[5]:0.###}"));
+                    if (!ClashResolveLogic.TrimmedEndsOk(b0, a1, kv.Value.Select(t => (t.End, t.NewEnd))))
+                        mismatches.Add((kv.Key, "location (trim)", "only the trimmed ends move, each to its face", $"start {a1[0]:0.###},{a1[1]:0.###},{a1[2]:0.###} end {a1[3]:0.###},{a1[4]:0.###},{a1[5]:0.###}"));
                 }
                 mismatches.AddRange(worse);
                 var (warnAfter, fresh, warnOk) = ClashResolveLogic.Warnings(existingWarnings, Warnings(d), posted.ToList());
@@ -555,7 +569,7 @@ namespace AceRevitMcp.Coordination
         /// reason (counted in dropped), and the rest of the plan goes on. Deterministic: the dry run and the apply drop the same.
         /// </summary>
         private static void Execute(Document d, List<Step> steps, JsonObject done, JsonObject dropped, JsonArray skipped, Dictionary<string, string> ran, double toleranceMm,
-            Dictionary<long, Step> relocated)
+            Dictionary<long, List<Step>> relocated)
         {
             void Count(JsonObject o, string key) => o[key] = o[key].GetValue<int>() + 1;
             string Key(string kind) => kind == "switch-join" ? "switchJoin" : kind;
@@ -565,7 +579,7 @@ namespace AceRevitMcp.Coordination
                 foreach (var s in group) { skipped.Add(SkipItem(s, reason)); ran[s.ClashKey] = "skipped: " + reason; }
             }
             // quiet: record nothing on failure (the caller decides); returns the reason it failed, or null when kept.
-            string TryWhy(IList<Step> group, Action act, bool checkDepth, bool quiet)
+            string TryWhy(IList<Step> group, Action act, bool checkDepth, bool quiet, bool regenerate = true)
             {
                 using (var st = new SubTransaction(d))
                 {
@@ -574,7 +588,7 @@ namespace AceRevitMcp.Coordination
                     {
                         st.Start();
                         act();
-                        d.Regenerate();
+                        if (regenerate || checkDepth) d.Regenerate();
                         if (checkDepth)
                             foreach (var s in group)
                             {
@@ -600,26 +614,20 @@ namespace AceRevitMcp.Coordination
             }
             bool Try(IList<Step> group, Action act) => TryWhy(group, act, true, false) == null;
 
-            foreach (var s in steps.Where(s => s.Kind == "join" || s.Kind == "switch-join"))
+            Action JoinAct(Step s) => () =>
             {
-                Action joinAct = () =>
+                var a = El(s.A); var b = El(s.B);
+                if (s.Kind == "join")
                 {
-                    var a = El(s.A); var b = El(s.B);
-                    if (s.Kind == "join")
-                    {
-                        if (!JoinGeometryUtils.AreElementsJoined(d, a, b)) JoinGeometryUtils.JoinGeometry(d, a, b);
-                        if (s.HasWinner && !JoinGeometryUtils.IsCuttingElementInJoin(d, a, b)) JoinGeometryUtils.SwitchJoinOrder(d, a, b);
-                    }
-                    else JoinGeometryUtils.SwitchJoinOrder(d, a, b);
-                    if (s.HasWinner && !JoinGeometryUtils.IsCuttingElementInJoin(d, a, b)) throw new InvalidOperationException("the join order did not take");
-                };
-                if (s.Touching)
-                {
-                    // Not a clash fix: no depth to clear. A pair Revit cannot join (it does not touch) is dropped quietly.
-                    if (TryWhy(new[] { s }, joinAct, false, true) == null) { Count(done, Key(s.Kind)); ran[s.ClashKey] = s.Kind; }
-                    else { Count(dropped, "notTouching"); ran[s.ClashKey] = "skipped: not touching"; }
-                    continue;
+                    if (!JoinGeometryUtils.AreElementsJoined(d, a, b)) JoinGeometryUtils.JoinGeometry(d, a, b);
+                    if (s.HasWinner && !JoinGeometryUtils.IsCuttingElementInJoin(d, a, b)) JoinGeometryUtils.SwitchJoinOrder(d, a, b);
                 }
+                else JoinGeometryUtils.SwitchJoinOrder(d, a, b);
+                if (s.HasWinner && !JoinGeometryUtils.IsCuttingElementInJoin(d, a, b)) throw new InvalidOperationException("the join order did not take");
+            };
+            foreach (var s in steps.Where(s => (s.Kind == "join" || s.Kind == "switch-join") && !s.Touching))
+            {
+                var joinAct = JoinAct(s);
                 if (s.Fallback == null)
                 {
                     if (Try(new[] { s }, joinAct)) { Count(done, Key(s.Kind)); ran[s.ClashKey] = s.Kind; }
@@ -633,11 +641,24 @@ namespace AceRevitMcp.Coordination
                 var trimWhy = TryWhy(new[] { t }, () => Trim(d, El(t.A), t, note), true, true);
                 if (trimWhy == null)
                 {
-                    Count(done, "trim"); ran[s.ClashKey] = "trim"; relocated[t.A] = t;
+                    Count(done, "trim"); ran[s.ClashKey] = "trim";
+                    if (!relocated.TryGetValue(t.A, out var mine)) relocated[t.A] = mine = new List<Step>();
+                    mine.Add(t);
                     if (note.Count > 0) skipped.Add(new JsonObject { ["id"] = t.Id, ["a"] = t.A, ["b"] = t.B, ["kind"] = "trim", ["reason"] = "applied; " + string.Join("; ", note) });
                 }
                 else { Skip(new[] { s }, why + "; the trim to face did not help either: " + trimWhy); Count(dropped, Key(s.Kind)); Count(dropped, "trim"); }
             }
+            // All-touching joins (not clash fixes, no depth to clear): each in its own sub-transaction, so a pair Revit cannot
+            // join (it does not touch) is dropped quietly on its own; the model is regenerated once per batch, not per join.
+            const int batch = 50;
+            var pending = 0;
+            foreach (var s in steps.Where(s => (s.Kind == "join" || s.Kind == "switch-join") && s.Touching))
+            {
+                if (TryWhy(new[] { s }, JoinAct(s), false, true, regenerate: false) == null) { Count(done, Key(s.Kind)); ran[s.ClashKey] = s.Kind; }
+                else { Count(dropped, "notTouching"); ran[s.ClashKey] = "skipped: not touching"; }
+                if (++pending >= batch) { d.Regenerate(); pending = 0; }
+            }
+            if (pending > 0) d.Regenerate();
             // One cutback per member end: the deepest overlap at that end. An end that is not joined takes a negative
             // extension; a joined end (Revit drives the extension) a larger join cutback. The location line never moves.
             foreach (var g in steps.Where(s => s.Kind == "cutback").GroupBy(s => (s.A, s.End)))
@@ -686,12 +707,17 @@ namespace AceRevitMcp.Coordination
         /// <summary>
         /// The touching pairs of concrete elements in the priority categories (in the model, or in the selection) that are not
         /// joined, or joined in the wrong order, and not already a clash: a join or switch-join step each, added to the plan.
-        /// Answer: { candidates, pairs, right, join, switchJoin, byPair }.
+        /// Narrowed like the clash test: its A / B categories (one element on each side) and the level (of the pair's contact).
+        /// Same-category pairs take part unless same_category is false (the larger element cuts). Above maxPairs nothing is
+        /// planned: report-only, with the counts per category pair.
+        /// Answer: { candidates, pairs, right, join, switchJoin, byPair } (+ capped, maxPairs, advice when capped).
         /// </summary>
         private static JsonObject Touching(Document doc, List<string> order, ICollection<ElementId> selection, HashSet<(long, long)> clashPairs,
-            Clashes.SolidCache geometry, List<Step> steps, JsonArray planJson, Dictionary<string, int> ids)
+            Clashes.SolidCache geometry, List<Step> steps, JsonArray planJson, Dictionary<string, int> ids, Clashes.TestSpec test, string level, bool sameCategory, int maxPairs)
         {
-            var cats = TouchCategories.Where(c => ClashResolveLogic.Rank(order, c) >= 0)
+            var aCats = new HashSet<string>(test.A.Categories.Select(c => c.ToString()), StringComparer.OrdinalIgnoreCase);
+            var bCats = new HashSet<string>(test.B.Categories.Select(c => c.ToString()), StringComparer.OrdinalIgnoreCase);
+            var cats = TouchCategories.Where(c => ClashResolveLogic.Rank(order, c) >= 0 && (aCats.Contains(c) || bCats.Contains(c)))
                 .Select(c => Enum.TryParse<BuiltInCategory>(c, out var b) ? new ElementId(b) : null).Where(x => x != null).ToList();
             var summary = new JsonObject { ["candidates"] = 0, ["pairs"] = 0, ["right"] = 0, ["join"] = 0, ["switchJoin"] = 0, ["byPair"] = new JsonObject() };
             if (cats.Count == 0) return summary;
@@ -699,6 +725,8 @@ namespace AceRevitMcp.Coordination
                 ? (selection.Count == 0 ? null : new FilteredElementCollector(doc, selection))
                 : new FilteredElementCollector(doc);
             if (collector == null) { summary["note"] = "selection: nothing is selected"; return summary; }
+            var levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.ProjectElevation).ToList();
+            string LevelAt(double zFeet) => levels.LastOrDefault(l => l.ProjectElevation <= zFeet + 0.01)?.Name ?? levels.FirstOrDefault()?.Name;
             var els = new Dictionary<long, Element>();
             var boxes = new List<(long Id, double[] Min, double[] Max)>();
             foreach (var e in collector.WherePasses(new ElementMulticategoryFilter(cats)).WhereElementIsNotElementType())
@@ -711,16 +739,27 @@ namespace AceRevitMcp.Coordination
                 boxes.Add((e.Id.Value, new[] { bb.Min.X, bb.Min.Y, bb.Min.Z }, new[] { bb.Max.X, bb.Max.Y, bb.Max.Z }));
             }
             summary["candidates"] = els.Count;
+            var boxOf = boxes.ToDictionary(x => x.Id);
             var pairs = ClashResolveLogic.TouchingPairs(boxes, Lengths.Ft(5));
-            summary["pairs"] = pairs.Count;
             var volume = new Dictionary<long, double>();
             double Vol(Element e) => volume.TryGetValue(e.Id.Value, out var v) ? v : (volume[e.Id.Value] = geometry.Of(e).Sum(x => x.Volume));
             var byPair = (JsonObject)summary["byPair"];
+            var planned = new List<(Step Step, JsonObject Item, string PairKey)>();
+            var inScope = 0;
             foreach (var (ia, ib) in pairs)
             {
                 if (clashPairs.Contains((Math.Min(ia, ib), Math.Max(ia, ib)))) continue;
                 var ea = els[ia]; var eb = els[ib];
                 var catA = ea.Category.BuiltInCategory.ToString(); var catB = eb.Category.BuiltInCategory.ToString();
+                if (!ClashResolveLogic.TouchPairAllowed(catA, catB, aCats, bCats, sameCategory)) continue;
+                if (level != null)
+                {
+                    // The level of the contact: the middle of the two boxes' common part, as the clash test places a clash.
+                    var za = boxOf[ia]; var zb = boxOf[ib];
+                    var z = (Math.Max(za.Min[2], zb.Min[2]) + Math.Min(za.Max[2], zb.Max[2])) / 2;
+                    if (!string.Equals(LevelAt(z), level, StringComparison.OrdinalIgnoreCase)) continue;
+                }
+                inScope++;
                 var sa = new ClashResolveLogic.Side { Id = ia, Category = catA, Material = "concrete" };
                 var sb = new ClashResolveLogic.Side { Id = ib, Category = catB, Material = "concrete" };
                 if (catA == catB) { sa.Volume = Vol(ea); sb.Volume = Vol(eb); }
@@ -736,33 +775,52 @@ namespace AceRevitMcp.Coordination
                 }
                 else kind = "join";
                 var (a, b) = winner == "B" ? (eb, ea) : (ea, eb);
-                var id = ClashResolveLogic.PlanId(kind, a.Id.Value, b.Id.Value, -1);
-                ids[id] = ids.TryGetValue(id, out var n) ? n + 1 : 1;
-                if (ids[id] > 1) id += "#" + ids[id];
-                var step = new Step { Id = id, Kind = kind, ClashKey = "touch:" + id, A = a.Id.Value, B = b.Id.Value, HasWinner = winner != null, Method = kind, Touching = true };
-                steps.Add(step);
-                planJson.Add(new JsonObject
+                var step = new Step { Kind = kind, A = a.Id.Value, B = b.Id.Value, HasWinner = winner != null, Method = kind, Touching = true };
+                var item = new JsonObject
                 {
-                    ["id"] = id, ["kind"] = kind, ["scope"] = "touching", ["a"] = step.A, ["b"] = step.B, ["aCategory"] = a.Category?.Name, ["bCategory"] = b.Category?.Name,
+                    ["kind"] = kind, ["scope"] = "touching", ["a"] = step.A, ["b"] = step.B, ["aCategory"] = a.Category?.Name, ["bCategory"] = b.Category?.Name,
                     ["cutter"] = winner != null ? (JsonNode)step.A : null, ["cut"] = winner != null ? (JsonNode)step.B : null,
                     ["cutterCategory"] = winner != null ? a.Category?.Name : null, ["cutCategory"] = winner != null ? b.Category?.Name : null, ["material"] = "concrete",
-                });
-                var key = kind == "join" ? "join" : "switchJoin";
+                };
+                planned.Add((step, item, $"{a.Category?.Name} x {b.Category?.Name}"));
+            }
+            summary["pairs"] = inScope;
+            foreach (var (step, _, pk) in planned)
+            {
+                var key = step.Kind == "join" ? "join" : "switchJoin";
                 summary[key] = summary[key].GetValue<int>() + 1;
-                var pk = $"{a.Category?.Name} x {b.Category?.Name}";
                 byPair[pk] = (byPair[pk]?.GetValue<int>() ?? 0) + 1;
             }
+            if (planned.Count > maxPairs)
+            {
+                // Too many to change in one go: nothing is planned, the counts show where they are.
+                summary["capped"] = true; summary["maxPairs"] = maxPairs;
+                summary["advice"] = $"{planned.Count} touching pairs need a join, above the {maxPairs} cap: narrow by level or selection (or raise max_pairs).";
+                return summary;
+            }
+            foreach (var (step, item, _) in planned)
+            {
+                var id = ClashResolveLogic.PlanId(step.Kind, step.A, step.B, -1);
+                ids[id] = ids.TryGetValue(id, out var n) ? n + 1 : 1;
+                if (ids[id] > 1) id += "#" + ids[id];
+                step.Id = id; step.ClashKey = "touch:" + id;
+                item["id"] = id;
+                steps.Add(step);
+                planJson.Add(item);
+            }
+            summary["capped"] = false; summary["maxPairs"] = maxPairs;
             return summary;
         }
 
         /// <summary>
         /// The trim to face for a join step: the cut element (a beam or a wall on a straight location line) whose one end lies
-        /// in the cutting element, shortened at that end to the face its axis enters through. Null when not eligible; tooLong
-        /// (mm) when the trim would exceed the limit.
+        /// in the cutting element's solid, shortened at that end to the face its axis enters through. Null when not eligible;
+        /// skip (report-only) when the trim would exceed the limit or a wall hosts an opening in the stretch it would remove.
         /// </summary>
-        private static Step TrimFor(Step join, Element cutter, Element member, Clashes.SolidCache geometry, double maxFt, out string tooLong)
+        private static Step TrimFor(Step join, Element cutter, Element member, Clashes.SolidCache geometry, double maxFt, double maxMm,
+            out (string Code, string Why, string Recommendation)? skip)
         {
-            tooLong = null;
+            skip = null;
             if (cutter == null || member == null) return null;
             var cat = member.Category?.BuiltInCategory;
             if (cat != BuiltInCategory.OST_StructuralFraming && cat != BuiltInCategory.OST_Walls) return null;
@@ -770,12 +828,21 @@ namespace AceRevitMcp.Coordination
             var solids = geometry.Of(cutter);
             if (solids.Count == 0) return null;
             var p0 = line.GetEndPoint(0); var p1 = line.GetEndPoint(1); var u = (p1 - p0).Normalize();
-            bool Inside(XYZ p) => solids.Any(sol =>
-            {
-                try { var (mn, mx) = ViewTools.Box(sol, Transform.Identity); var t = Lengths.Ft(1); return p.X >= mn.X - t && p.X <= mx.X + t && p.Y >= mn.Y - t && p.Y <= mx.Y + t && p.Z >= mn.Z - t && p.Z <= mx.Z + t; }
-                catch { return false; }
-            });
-            var in0 = Inside(p0); var in1 = Inside(p1);
+            // Where the member's axis runs inside the cutter's solid (not its box): the end is in it when a stretch reaches it.
+            var inside = new List<(double From, double To)>();
+            var axis = Line.CreateBound(p0 - u * Lengths.Ft(10), p1 + u * Lengths.Ft(10));
+            foreach (var sol in solids)
+                try
+                {
+                    var hitsIn = sol.IntersectWithCurve(axis, new SolidCurveIntersectionOptions { ResultType = SolidCurveIntersectionMode.CurveSegmentsInside });
+                    for (var i = 0; i < hitsIn.SegmentCount; i++)
+                    {
+                        var seg = hitsIn.GetCurveSegment(i);
+                        inside.Add(((seg.GetEndPoint(0) - p0).DotProduct(u), (seg.GetEndPoint(1) - p0).DotProduct(u)));
+                    }
+                }
+                catch { /* a solid Revit cannot intersect: no stretch */ }
+            var in0 = ClashResolveLogic.EndInside(0, inside, Lengths.Ft(1)); var in1 = ClashResolveLogic.EndInside(line.Length, inside, Lengths.Ft(1));
             if (in0 == in1) return null;   // neither end, or both: not an end running into a face
             var end = in1 ? 1 : 0;
             var hits = new List<(double T, XYZ Normal)>();
@@ -793,9 +860,33 @@ namespace AceRevitMcp.Coordination
                 if (reason == "trim too long")
                 {
                     var all = ClashResolveLogic.TrimTarget(line.Length, hits.Select(h => h.T), end, double.MaxValue, Lengths.Ft(1), out _);
-                    if (all != null) tooLong = Math.Round(Lengths.Mm(all.Value.Trim)).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (all != null)
+                        skip = ("trim-too-long", $"trim too long: the end would be shortened {Math.Round(Lengths.Mm(all.Value.Trim)).ToString(System.Globalization.CultureInfo.InvariantCulture)} mm (more than {maxMm} mm)",
+                            "Check the member's end by hand; the join stays planned.");
                 }
                 return null;
+            }
+            if (member is Wall wall)
+            {
+                // A wall that hosts a door, window or opening in the stretch the trim removes is left for a person.
+                var ranges = new List<(double From, double To)>();
+                try
+                {
+                    foreach (var iid in wall.FindInserts(true, true, true, true))
+                    {
+                        var bb = member.Document.GetElement(iid)?.get_BoundingBox(null);
+                        if (bb == null) continue;
+                        var ts = new[] { bb.Min.X, bb.Max.X }.SelectMany(x => new[] { bb.Min.Y, bb.Max.Y }.SelectMany(y => new[] { bb.Min.Z, bb.Max.Z }.Select(z => (new XYZ(x, y, z) - p0).DotProduct(u)))).ToList();
+                        ranges.Add((ts.Min(), ts.Max()));
+                    }
+                }
+                catch { ranges.Add((0, line.Length)); }   // inserts could not be read: treat the whole wall as hosting
+                if (ClashResolveLogic.InsertInTrimmedStretch(line.Length, target.Value.T, end, ranges))
+                {
+                    skip = ("hosts-openings", "hosts openings: the wall has a door, window or opening in the stretch the trim would remove",
+                        "Check the wall's end by hand; the join stays planned.");
+                    return null;
+                }
             }
             var hit = hits.OrderBy(h => Math.Abs(h.T - target.Value.T)).First();
             var np = p0 + u * target.Value.T;
@@ -828,6 +919,9 @@ namespace AceRevitMcp.Coordination
             if (!(member.Location is LocationCurve lc) || !(lc.Curve is Line line)) throw new InvalidOperationException("the member has no straight location line");
             var p0 = line.GetEndPoint(0); var p1 = line.GetEndPoint(1);
             var np = new XYZ(t.NewEnd[0], t.NewEnd[1], t.NewEnd[2]);
+            // Only a shortening: the new end must lie strictly inside the line as it is now (another trim may have run first).
+            if (!ClashResolveLogic.StrictlyInside(new[] { p0.X, p0.Y, p0.Z }, new[] { p1.X, p1.Y, p1.Z }, t.NewEnd, 1e-6))
+                throw new InvalidOperationException("the new end is not inside the member's current line: a trim only shortens");
             var target = t.End == 1 ? Line.CreateBound(p0, np) : Line.CreateBound(np, p1);
             bool Holds() => member.Location is LocationCurve now && now.Curve is Line l && l.GetEndPoint(t.End).IsAlmostEqualTo(np, 1e-4) && l.GetEndPoint(1 - t.End).IsAlmostEqualTo(t.End == 1 ? p0 : p1, 1e-6);
             void SetJoin(bool allow)
@@ -874,8 +968,8 @@ namespace AceRevitMcp.Coordination
             return list;
         }
 
-        /// <summary>Existence, type, location, tag count and the dimensions referencing each element (tags and dimensions collected once).</summary>
-        private static Dictionary<long, ClashResolveLogic.ElementState> Snapshot(Document doc, IList<long> ids)
+        /// <summary>Existence, type, location, tag count, the dimensions referencing each element (tags and dimensions collected once), and for walls that may be trimmed the elements they host.</summary>
+        private static Dictionary<long, ClashResolveLogic.ElementState> Snapshot(Document doc, IList<long> ids, ICollection<long> hostedFor = null)
         {
             var map = new Dictionary<long, ClashResolveLogic.ElementState>();
             if (ids.Count == 0) return map;
@@ -887,6 +981,8 @@ namespace AceRevitMcp.Coordination
                 {
                     st.TypeId = e.GetTypeId().Value;
                     st.Location = Location(e);
+                    if (hostedFor != null && hostedFor.Contains(id) && e is Wall w)
+                        try { st.Hosted = w.FindInserts(true, true, true, true).Count; } catch { st.Hosted = null; }
                 }
                 map[id] = st;
             }

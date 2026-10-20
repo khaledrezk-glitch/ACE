@@ -19,6 +19,7 @@ namespace AceRevitMcp.Coordination
         public bool Approved;            // approved once: stays approved if it disappears and comes back
         public string Cause, CausedBy;   // for new clashes: what changed since the last snapshot, and by whom
         public DateTime FirstSeen, LastSeen;
+        public DateTime? Checked;        // the time of the last run that looked at it (found, or in its scope and not found)
     }
 
     /// <summary>
@@ -34,6 +35,7 @@ namespace AceRevitMcp.Coordination
         public Dictionary<string, int> Filtered = new Dictionary<string, int>();
         public int Clashes, Open;
         public bool Complete = true;
+        public bool Exact;               // 1.12.9 on: the clashes this run looked at carry its time exactly (Clash.Checked)
     }
 
     /// <summary>One coordination issue: an element and everything it clashes with (e.g. one duct run through 8 beams).</summary>
@@ -113,31 +115,56 @@ namespace AceRevitMcp.Coordination
         /// </summary>
         public static string DisplayStatus(Clash c) => c.Status == "new" && c.Reopened > 0 ? "reopened" : c.Status;
 
+        private static string FileNameOf(string p)
+        {
+            if (string.IsNullOrWhiteSpace(p)) return null;
+            var t = p.Trim().TrimEnd('/', '\\');
+            var i = Math.Max(t.LastIndexOf('/'), t.LastIndexOf('\\'));
+            if (i >= 0) t = t.Substring(i + 1);
+            return t.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase) ? t.Substring(0, t.Length - 4) : t;
+        }
+
+        private static string SafeName(string name)
+        {
+            var bad = System.IO.Path.GetInvalidFileNameChars().Concat("<>:\"/\\|?*").ToArray();   // Windows' set on every platform
+            return string.Concat((name ?? "model").Select(ch => bad.Contains(ch) || ch < ' ' ? '_' : ch));
+        }
+
+        /// <summary>
+        /// The clash store's key, "&lt;name&gt;-&lt;hash&gt;". A workshared model: the central model's file name and a short hash
+        /// of the central path (a cloud model: of its project and model GUIDs, cloudId), so every local copy of one central
+        /// shares the store and two centrals with the same name do not. Otherwise (or when the central is unknown): the title and
+        /// a hash of the file path, as the model's snapshots are kept.
+        /// </summary>
+        public static string StoreKey(bool workshared, string centralPath, string cloudId, string pathName, string title)
+        {
+            if (workshared && (!string.IsNullOrWhiteSpace(cloudId) || !string.IsNullOrWhiteSpace(centralPath)))
+            {
+                var name = FileNameOf(centralPath) ?? title ?? "model";
+                var id = !string.IsNullOrWhiteSpace(cloudId) ? "cloud:" + cloudId.Trim().ToLowerInvariant() : centralPath.Trim().ToLowerInvariant();
+                return $"{SafeName(name)}-{Util.Compat.Sha1Hex(id).Substring(0, 8)}";
+            }
+            var local = string.IsNullOrEmpty(pathName) ? title : pathName.ToLowerInvariant();
+            return $"{SafeName(title)}-{Util.Compat.Sha1Hex(local).Substring(0, 8)}";
+        }
+
+        /// <summary>The 1.12.8 store key (the central's or the file's name, no hash): read once to copy its results over.</summary>
+        public static string LegacyStoreKey(bool workshared, string centralPath, string pathName, string title) =>
+            SafeName((workshared ? FileNameOf(centralPath) : null) ?? FileNameOf(pathName) ?? FileNameOf(title) ?? "model");
+
+        /// <summary>
+        /// The files to copy from an old store into the new one: every relative path the old store has and the new one does
+        /// not (an existing file in the new store is never overwritten).
+        /// </summary>
+        public static List<string> FilesToCopy(IEnumerable<string> oldFiles, ICollection<string> newFiles) =>
+            (oldFiles ?? Enumerable.Empty<string>()).Where(f => !(newFiles?.Contains(f) ?? false)).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(f => f, StringComparer.Ordinal).ToList();
+
         /// <summary>
         /// Merges a new run with the stored one: new / active / resolved, keeping approvals and notes.
         /// Only stored clashes inside the run's scope can become resolved (a run on one level, or one cut short by
         /// max_elements, says nothing about the rest); out-of-scope ones are kept as they were.
         /// A resolved clash that comes back is new again (and counted as reopened).
         /// </summary>
-        /// <summary>
-        /// The clash store's key: the central model's file name for a workshared model, else the model file's name (the title
-        /// for an unsaved model); without the extension and safe as a folder name.
-        /// </summary>
-        public static string StoreKey(bool workshared, string centralPath, string pathName, string title)
-        {
-            string NameOf(string p)
-            {
-                if (string.IsNullOrWhiteSpace(p)) return null;
-                var t = p.Trim().TrimEnd('/', '\\');
-                var i = Math.Max(t.LastIndexOf('/'), t.LastIndexOf('\\'));
-                if (i >= 0) t = t.Substring(i + 1);
-                return t.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase) ? t.Substring(0, t.Length - 4) : t;
-            }
-            var name = (workshared ? NameOf(centralPath) : null) ?? NameOf(pathName) ?? NameOf(title) ?? "model";
-            var bad = System.IO.Path.GetInvalidFileNameChars().Concat("<>:\"/\\|?*").ToArray();   // Windows' set on every platform
-            return string.Concat(name.Select(ch => bad.Contains(ch) || ch < ' ' ? '_' : ch));
-        }
-
         public static List<Clash> Merge(List<Clash> previous, List<Clash> now, Func<Clash, bool> inScope, DateTime time)
         {
             var before = new Dictionary<string, Clash>();
@@ -158,12 +185,13 @@ namespace AceRevitMcp.Coordination
                     else c.Status = "active";
                     if (c.Status != "new") { c.Cause = p.Cause; c.CausedBy = p.CausedBy; }   // a reopened clash gets a fresh cause
                 }
-                c.LastSeen = time;
+                c.LastSeen = time; c.Checked = time;
                 result.Add(c);
             }
             foreach (var p in before.Values.Where(p => !nowKeys.Contains(p.Key)))
             {
                 if (inScope != null && !inScope(p)) { result.Add(p); continue; }     // not looked at this time
+                p.Checked = time;                                                     // looked at: still resolved / approved now
                 if (p.Status == "resolved")
                 {
                     if (time - p.LastSeen < TimeSpan.FromDays(30)) result.Add(p);      // keep a while to show progress

@@ -126,6 +126,87 @@ namespace AceRevitMcp.Coordination
             return list.OrderBy(p => p.Item1).ThenBy(p => p.Item2).ToList();
         }
 
+        /// <summary>
+        /// At most one trim per member end: of the trims planned for the same (member, end), the smallest is kept. Returns the
+        /// indices of the trims kept, in input order.
+        /// </summary>
+        public static List<int> OneTrimPerEnd(IList<(long Member, int End, double Trim)> trims)
+        {
+            var keep = new List<int>();
+            if (trims == null) return keep;
+            foreach (var g in Enumerable.Range(0, trims.Count).GroupBy(i => (trims[i].Member, trims[i].End)))
+                keep.Add(g.OrderBy(i => trims[i].Trim).ThenBy(i => i).First());
+            keep.Sort();
+            return keep;
+        }
+
+        /// <summary>
+        /// Whether a straight member's location line (before, after: start x, y, z, end x, y, z) shows exactly the planned
+        /// trims: every trimmed end at its planned point (within endTol), every other end unchanged (within keepTol).
+        /// </summary>
+        public static bool TrimmedEndsOk(double[] before, double[] after, IEnumerable<(int End, double[] NewEnd)> trims, double keepTol = 1e-6, double endTol = 1e-4)
+        {
+            if (before == null || after == null || before.Length != 6 || after.Length != 6) return false;
+            var planned = new Dictionary<int, double[]>();
+            foreach (var (end, p) in trims ?? Enumerable.Empty<(int, double[])>()) if (end == 0 || end == 1) planned[end] = p;
+            for (var end = 0; end <= 1; end++)
+            {
+                var o = end * 3;
+                var want = planned.TryGetValue(end, out var np) ? np : new[] { before[o], before[o + 1], before[o + 2] };
+                var tol = planned.ContainsKey(end) ? endTol : keepTol;
+                for (var i = 0; i < 3; i++) if (want == null || Math.Abs(want[i] - after[o + i]) > tol) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Whether a new end point lies strictly inside the line p0..p1 (on the line within tol, and more than tol from both
+        /// ends): a trim may only shorten.
+        /// </summary>
+        public static bool StrictlyInside(double[] p0, double[] p1, double[] np, double tol)
+        {
+            var d = new[] { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+            var len = Math.Sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (len < 1e-12) return false;
+            var u = new[] { d[0] / len, d[1] / len, d[2] / len };
+            var w = new[] { np[0] - p0[0], np[1] - p0[1], np[2] - p0[2] };
+            var t = w[0] * u[0] + w[1] * u[1] + w[2] * u[2];
+            var off = new[] { w[0] - t * u[0], w[1] - t * u[1], w[2] - t * u[2] };
+            var dist = Math.Sqrt(off[0] * off[0] + off[1] * off[1] + off[2] * off[2]);
+            return dist <= tol && t > tol && t < len - tol;
+        }
+
+        /// <summary>
+        /// Whether a member's end (t = 0 or length along its axis) lies in one of the stretches of the axis inside a solid
+        /// (from / to along the axis, any order), within tol.
+        /// </summary>
+        public static bool EndInside(double tEnd, IEnumerable<(double From, double To)> insideStretches, double tol) =>
+            (insideStretches ?? Enumerable.Empty<(double, double)>()).Any(r => tEnd >= Math.Min(r.From, r.To) - tol && tEnd <= Math.Max(r.From, r.To) + tol);
+
+        /// <summary>
+        /// Whether a hosted element (its extent along the wall's axis, from / to) lies, even in part, in the stretch a trim
+        /// removes: t from newEnd to length (end 1), or 0 to newEnd (end 0).
+        /// </summary>
+        public static bool InsertInTrimmedStretch(double length, double newEndT, int end, IEnumerable<(double From, double To)> inserts)
+        {
+            var (lo, hi) = end == 1 ? (newEndT, length) : (0.0, newEndT);
+            return (inserts ?? Enumerable.Empty<(double, double)>()).Any(r => Math.Max(r.From, r.To) > lo && Math.Min(r.From, r.To) < hi);
+        }
+
+        /// <summary>
+        /// Whether a touching pair takes part in all-touching: one element in the test's A categories and the other in its B
+        /// categories (either way round), and a same-category pair only when same_category is on (the default).
+        /// </summary>
+        public static bool TouchPairAllowed(string catA, string catB, ICollection<string> aCats, ICollection<string> bCats, bool sameCategory)
+        {
+            if (!sameCategory && string.Equals(catA, catB, StringComparison.OrdinalIgnoreCase)) return false;
+            bool In(ICollection<string> set, string c) => set == null || set.Count == 0 || set.Contains(c);
+            return (In(aCats, catA) && In(bCats, catB)) || (In(aCats, catB) && In(bCats, catA));
+        }
+
+        /// <summary>Default cap on the touching pairs all-touching changes in one run; above it the run is report-only.</summary>
+        public const int DefaultMaxPairs = 500;
+
         /// <summary>A trim's plan id: "trim:&lt;trimmed id&gt;&gt;&lt;face owner id&gt;:&lt;end&gt;".</summary>
         public static string TrimId(long trimmed, long faceOwner, int end) => $"trim:{trimmed}>{faceOwner}:{end}";
 
@@ -483,6 +564,7 @@ namespace AceRevitMcp.Coordination
             public long TypeId;
             public double[] Location;    // point x, y, z, rotation, or curve start x, y, z, end x, y, z; null = no location
             public int Tags;             // tags referencing it
+            public int? Hosted;          // a trimmed wall: the elements it hosts (doors, windows, openings); null = not counted
             public Dictionary<long, string> Dimensions = new Dictionary<long, string>();   // dimension id -> "refs|element ids|values"
         }
 
@@ -508,6 +590,7 @@ namespace AceRevitMcp.Coordination
                 if (a.TypeId != b.TypeId) list.Add((b.Id, "type", b.TypeId.ToString(), a.TypeId.ToString()));
                 if (!SameLocation(b.Location, a.Location) && !(relocated != null && relocated.Contains(b.Id))) list.Add((b.Id, "location", Text(b.Location), Text(a.Location)));
                 if (a.Tags != b.Tags) list.Add((b.Id, "tags", b.Tags.ToString(), a.Tags.ToString()));
+                if (b.Hosted.HasValue && a.Hosted != b.Hosted) list.Add((b.Id, "hosted", b.Hosted.ToString(), a.Hosted?.ToString() ?? "unknown"));
                 foreach (var kv in b.Dimensions)
                 {
                     if (!a.Dimensions.TryGetValue(kv.Key, out var now)) list.Add((b.Id, $"dimension {kv.Key}", kv.Value, "lost (deleted or no longer references the element)"));

@@ -507,7 +507,7 @@ class P {
     double[] P(double x) => new[] { x, 0.0, 3000.0 };
     var capBefore = EL(ES(10, "T1", P(0), P(5000), 0, (90, true)), ES(11, "T1", P(0), P(4000), 0, (91, true)), ES(12, "T1", P(0), P(3000)), ES(13, "T1", P(0), P(2000)));
     var capAfter = EL(ES(10, "T1", P(0), P(5000.3), -25, (90, false)), ES(11, "T2", P(100), P(4000), 0), ES(13, "T1", P(0), P(2000), 0, (92, false)), ES(14, "T1", P(0), P(1000)));
-    var diffs = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Invoke(null, new object[] { capBefore, capAfter });
+    var diffs = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Invoke(null, new object[] { capBefore, capAfter, true });
     string Whats(int i) => string.Join(",", diffs[i]!["changes"]!.AsArray().Select(c => c!["what"]!.ToString()));
     Check(diffs.Count == 5 && (string)diffs[4]!["changes"]![0]!["what"]! == "created" && (long)diffs[0]!["id"]! == 10 && Whats(0) == "extension,join-order" && (long)diffs[0]!["changes"]![1]!["cutter"]! == 90 && diffs[0]!["changes"]![0]!["end"]!.ToString() == "start",
       $"capture: a 0.3 mm move is noise; an extension and a switched join order are changes, cutter = the element that cuts now ({Whats(0)})");
@@ -515,7 +515,7 @@ class P {
       $"capture: moved, type changed, join removed (cutter = who cut before, other's category) ({Whats(1)})");
     Check(Whats(2) == "deleted" && (long)diffs[2]!["id"]! == 12 && Whats(3) == "join-added" && (long)diffs[3]!["changes"]![0]!["cutter"]! == 92 && (long)diffs[4 - 1]!["id"]! == 13,
       $"capture: deleted and join-added (cutter = the other element when it cuts) ({Whats(2)} / {Whats(3)})");
-    var created = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Invoke(null, new object[] { EL(), EL(ES(14, "T1", P(0), P(1000))) });
+    var created = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic).Invoke(null, new object[] { EL(), EL(ES(14, "T1", P(0), P(1000))), true });
     Check(created.Count == 1 && created[0]!["changes"]![0]!["what"]!.ToString() == "created", "capture: a new element is created");
     var jlines = cl.GetMethod("JournalLines", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
     var jr = jlines.Invoke(null, new object[] { new[] { "' comment", "Jrn.Command \"Ribbon\" , \"x\"", "", "' 0:< timing", "Jrn.Data \"y\"" }, 2 });
@@ -610,11 +610,49 @@ class P {
       (7, new[] { 5.0, 10.02, 0 }, new[] { 8.0, 12, 10 }), (8, new[] { 2.0, 2, 2 }, new[] { 3.0, 3, 3 }) };
     var tp = (List<(long A, long B)>)R("TouchingPairs").Invoke(null, new object[] { tboxes, 0.005 });
     Check(tp.SequenceEqual(new List<(long, long)> { (3, 5), (5, 8) }), $"touching pairs: overlap or within tol on every axis, each pair once (low id, high id), in id order ({string.Join(" ", tp)})");
+    // 1.12.9: one trim per member end (the smallest), the combined trim check, shorten only, the end inside the solid,
+    // openings in the trimmed stretch, the touching filters, and the hosted-elements guard.
+    var kept1 = (List<int>)R("OneTrimPerEnd").Invoke(null, new object[] { new List<(long, int, double)> { (7, 1, 300), (7, 1, 120), (7, 0, 500), (8, 1, 50), (7, 1, 120) } })!;
+    Check(kept1.SequenceEqual(new[] { 1, 2, 3 }), $"trim: at most one per member end, the smallest kept (ties: the first) ({string.Join(",", kept1)})");
+    bool TEO(double[] b, double[] a, params (int, double[])[] tr) => (bool)R("TrimmedEndsOk").Invoke(null, new object[] { b, a, tr.ToList(), 1e-6, 1e-4 })!;
+    var line0 = new[] { 0.0, 0, 0, 10, 0, 0 };
+    Check(TEO(line0, new[] { 1.0, 0, 0, 9, 0, 0 }, (0, new[] { 1.0, 0, 0 }), (1, new[] { 9.0, 0, 0 })) && TEO(line0, new[] { 0.0, 0, 0, 9, 0, 0 }, (1, new[] { 9.0, 0, 0 }))
+      && !TEO(line0, new[] { 0.5, 0, 0, 9, 0, 0 }, (1, new[] { 9.0, 0, 0 })) && !TEO(line0, new[] { 1.0, 0, 0, 9, 0, 0 }, (0, new[] { 1.0, 0, 0 })) && !TEO(line0, new[] { 0.0, 0, 0, 10, 0, 0 }, (1, new[] { 9.0, 0, 0 })),
+      "trim verify: both trims of one member together; every trimmed end at its point, every other end unchanged");
+    bool SI(double[] np) => (bool)R("StrictlyInside").Invoke(null, new object[] { new[] { 0.0, 0, 0 }, new[] { 10.0, 0, 0 }, np, 1e-6 })!;
+    Check(SI(new[] { 4.0, 0, 0 }) && !SI(new[] { 10.0, 0, 0 }) && !SI(new[] { 11.0, 0, 0 }) && !SI(new[] { -1.0, 0, 0 }) && !SI(new[] { 4.0, 0.01, 0 }), "trim: the new end must lie strictly inside the current line (shorten only)");
+    bool EI(double t, params (double, double)[] r) => (bool)R("EndInside").Invoke(null, new object[] { t, r.ToList(), 0.003 })!;
+    Check(EI(10, (9.6, 10.4)) && EI(10, (10.002, 10.5)) && !EI(10, (9.0, 9.9)) && !EI(0, (9.6, 10.4)) && EI(0, (0.5, -0.4)), "trim: an end is inside the cutter when the axis runs inside its solid at that end (not its box)");
+    bool IT(double len, double tn, int end, params (double, double)[] r) => (bool)R("InsertInTrimmedStretch").Invoke(null, new object[] { len, tn, end, r.ToList() })!;
+    Check(IT(10, 9, 1, (8.5, 9.2)) && !IT(10, 9, 1, (2, 3)) && IT(10, 1, 0, (0.2, 0.6)) && !IT(10, 1, 0, (1.0, 2.0)) && !IT(10, 9, 1),
+      "trim: a wall hosting an opening in the stretch the trim removes is report-only (hosts openings)");
+    bool TPA(string x, string y, string[] aa, string[] bb, bool same) => (bool)R("TouchPairAllowed").Invoke(null, new object[] { x, y, new HashSet<string>(aa), new HashSet<string>(bb), same })!;
+    var stAll = new[] { "OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming" };
+    Check(TPA("OST_Walls", "OST_Walls", stAll, stAll, true) && TPA("OST_StructuralColumns", "OST_StructuralColumns", stAll, stAll, true) && !TPA("OST_Walls", "OST_Walls", stAll, stAll, false)
+      && TPA("OST_Floors", "OST_Walls", new[] { "OST_Walls" }, new[] { "OST_Floors" }, true) && !TPA("OST_Floors", "OST_StructuralColumns", new[] { "OST_Walls" }, new[] { "OST_Floors" }, true),
+      "all-touching: same-category pairs (walls too) unless same_category: false; one element on each side of the test");
+    Check((int)rl.GetField("DefaultMaxPairs", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.GetValue(null)! == 500, "all-touching: max_pairs defaults to 500");
+    var hb = (IList)Activator.CreateInstance(stateListT)!; var hw = State(41, new[] { 0.0, 0, 0, 10, 0, 0 }, 0); Set(hw, ("Hosted", (int?)2)); hb.Add(hw);
+    var ha = (IDictionary)Activator.CreateInstance(stateDictT)!; var hw2 = State(41, new[] { 0.0, 0, 0, 9, 0, 0 }, 0); Set(hw2, ("Hosted", (int?)1)); ha[41L] = hw2;
+    var hres = R("Compare").Invoke(null, new object[] { hb, ha, new HashSet<long> { 41 }, new HashSet<long> { 41 } })!;
+    var hm = ((IList)hres.GetType().GetField("Item1")!.GetValue(hres)!).Cast<object>().Select(W).ToList();
+    Check(hm.SequenceEqual(new[] { "hosted" }), $"guard: a trimmed wall that lost a hosted element is a mismatch ({string.Join(",", hm)})");
     var clg = a.GetType("AceRevitMcp.Coordination.ClashLogic");
-    string SK(bool ws, string central, string path, string title) => (string)clg.GetMethod("StoreKey", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { ws, central, path, title });
-    Check(SK(true, "\\\\srv\\TST\\TST_CENTRAL.rvt", "C:\\local\\TST_CENTRAL_user.rvt", "TST_CENTRAL_user") == "TST_CENTRAL" && SK(false, null, "C:\\p\\TST_MODEL.rvt", "TST_MODEL") == "TST_MODEL"
-      && SK(false, null, "", "TST_Unsaved") == "TST_Unsaved" && SK(true, null, "C:\\p\\TST_DETACHED.rvt", "x") == "TST_DETACHED" && SK(false, null, null, "a:b") == "a_b",
-      "store key: the central model's name when workshared, else the file name, else the title; safe as a folder name");
+    MethodInfo CLG(string n) => clg.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!;
+    string SK(bool ws, string central, string cloud, string path, string title) => (string)CLG("StoreKey").Invoke(null, new object[] { ws, central, cloud, path, title })!;
+    string H8(string x) { using var h = System.Security.Cryptography.SHA1.Create(); return string.Concat(h.ComputeHash(System.Text.Encoding.UTF8.GetBytes(x)).Select(b => b.ToString("X2"))).Substring(0, 8); }
+    var skC1 = SK(true, "\\\\srv\\TST\\TST_CENTRAL.rvt", null, "C:\\local\\TST_CENTRAL_user1.rvt", "TST_CENTRAL_user1");
+    var skC2 = SK(true, "\\\\srv\\TST\\TST_CENTRAL.rvt", null, "D:\\other\\TST_CENTRAL_user2.rvt", "TST_CENTRAL_user2");
+    var skC3 = SK(true, "\\\\srv2\\TST\\TST_CENTRAL.rvt", null, "C:\\local\\TST_CENTRAL_user1.rvt", "TST_CENTRAL_user1");
+    var skCloud = SK(true, "Autodesk Docs://TST/TST_CENTRAL.rvt", "AAAA-1111/BBBB-2222", "C:\\cache\\TST_CENTRAL.rvt", "TST_CENTRAL");
+    Check(skC1 == skC2 && skC1 != skC3 && skC1.StartsWith("TST_CENTRAL-") && skC1.Length == "TST_CENTRAL-".Length + 8 && skCloud == "TST_CENTRAL-" + H8("cloud:aaaa-1111/bbbb-2222"),
+      $"store key: the central's name and a hash of its path (cloud: of its GUIDs), the same for every local copy, different for another central ({skC1} / {skC3})");
+    Check(SK(false, null, null, "C:\\p\\TST_MODEL.rvt", "TST_MODEL") == "TST_MODEL-" + H8("c:\\p\\tst_model.rvt") && SK(false, null, null, "", "TST_Unsaved") == "TST_Unsaved-" + H8("TST_Unsaved")
+      && SK(true, null, null, "C:\\p\\TST_DETACHED.rvt", "TST_DETACHED") == "TST_DETACHED-" + H8("c:\\p\\tst_detached.rvt") && SK(false, null, null, "C:\\p\\a.rvt", "a:b").StartsWith("a_b-"),
+      "store key: otherwise the title and a hash of the file path (as the snapshots are kept); safe as a folder name");
+    Check((string)CLG("LegacyStoreKey").Invoke(null, new object[] { true, "\\\\srv\\TST\\TST_CENTRAL.rvt", "C:\\x\\y.rvt", "y" })! == "TST_CENTRAL", "store key: the 1.12.8 key (name only) is still known, to copy its results");
+    var toCopy = (List<string>)CLG("FilesToCopy").Invoke(null, new object[] { new[] { "ST_vs_ST.json", "runs/ST_vs_ST.json", "STR_vs_MEP.json" }, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "st_vs_st.json" } })!;
+    Check(toCopy.SequenceEqual(new[] { "STR_vs_MEP.json", "runs/ST_vs_ST.json" }), $"store migration: file by file, never over a file the new store has ({string.Join(",", toCopy)})");
     var runsS = (IList)Activator.CreateInstance(runListT); runsS.Add(Run("T", t0.AddDays(2)));
     var latest = IL("LatestRuns").Invoke(null, new object[] { runsS });
     object SC(string key, string status, DateTime seen, string model) => Set(C(key, status, "u" + key, "v" + key, "Walls", "Floors", "L1"), ("LastSeen", seen), ("SourceA", model), ("SourceB", model));
@@ -624,21 +662,43 @@ class P {
     var cntS = (Dictionary<string, int>)IL("Counts").Invoke(null, new object[] { rlS });
     var notRe = List(mixed[2], mixed[3]);
     var st = IL("Stored").Invoke(null, new object[] { notRe });
-    Check(cntS["clashes"] == 2 && cntS["open"] == 2 && cntS["stored"] == 2 && rowsS.Count == 4 && !(bool)RF(rowsS[3], "Rechecked") && (bool)RF(rowsS[0], "Rechecked")
+    Check(cntS["clashes"] == 2 && cntS["open"] == 2 && !cntS.ContainsKey("stored") && rowsS.Count == 4 && !(bool)RF(rowsS[3], "Rechecked") && (bool)RF(rowsS[0], "Rechecked")
       && (int)FW(st, "Item1") == 2 && (int)FW(st, "Item2") == 1 && ((List<string>)FW(st, "Item3")).SequenceEqual(new[] { "TST_B" }),
       "stored results: only clashes the latest run looked at count as open; the others are listed last, rechecked: false, with their models");
     var noRuns = (IList)IL("Rows").Invoke(null, new object[] { mixed, (0.0, 0.0, 0.0), null, null });
     Check(noRuns.Cast<object>().All(r => (bool)RF(r, "Rechecked")), "stored results: without run records everything counts as rechecked");
+    // 1.12.9: a run record from 1.12.9 on matches its time exactly; in-scope resolved clashes not found again are looked at too.
+    var tRun = t0.AddDays(4).AddSeconds(0.25);
+    var exactRun = Run("T", tRun); runT.GetField("Exact").SetValue(exactRun, true);
+    var exRuns = (IList)Activator.CreateInstance(runListT); exRuns.Add(exactRun);
+    var exLatest = IL("LatestRuns").Invoke(null, new object[] { exRuns });
+    bool RC(object c, object lr) => (bool)IL("Rechecked").Invoke(null, new object[] { c, lr })!;
+    var prevResolved = SC("m1", "resolved", t0.AddDays(3), "TST_A"); var prevApproved = SC("m2", "approved", t0.AddDays(3), "TST_A"); var prevActive = SC("m3", "active", t0.AddDays(3), "TST_A");
+    var foundNow = SC("m4", "new", t0, "TST_A");
+    var mergedM = (IList)CLG("Merge").Invoke(null, new object[] { List(prevResolved, prevApproved, prevActive), List(foundNow), null, tRun })!;
+    object MK(string k) => mergedM.Cast<object>().First(c => (string)F(c, "Key") == k);
+    Check(RC(MK("m1"), exLatest) && (string)F(MK("m1"), "Status") == "resolved" && RC(MK("m2"), exLatest) && (string)F(MK("m2"), "Status") == "resolved" && (bool)F(MK("m2"), "Approved")
+      && RC(MK("m3"), exLatest) && (string)F(MK("m3"), "Status") == "resolved" && RC(MK("m4"), exLatest) && (DateTime)F(MK("m1"), "LastSeen") == t0.AddDays(3),
+      "rechecked: an in-scope resolved or approved clash not found again counts in this run (resolved / approved), its last-seen time kept");
+    var nearMiss = SC("m5", "new", tRun.AddSeconds(-1), "TST_A");
+    var legacyRuns = (IList)Activator.CreateInstance(runListT); legacyRuns.Add(Run("T", tRun));
+    Check(!RC(nearMiss, exLatest) && RC(nearMiss, IL("LatestRuns").Invoke(null, new object[] { legacyRuns })),
+      "rechecked: exact time for 1.12.9 run records; the 2-minute window only for older records");
     object ESA(long id, double? area, double? vol, int dims, int tags) { var e = ES(id, "T1", P(0), P(1000)); esT.GetField("Area").SetValue(e, area); esT.GetField("Volume").SetValue(e, vol); esT.GetField("Dimensions").SetValue(e, dims); esT.GetField("Tags").SetValue(e, tags); return e; }
     var dA = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] {
-      EL(ESA(1, 20.0, 5.0, 2, 1), ESA(2, 10.0, 2.0, 0, 0)), EL(ESA(1, 18.5, 4.6, 1, 1), ESA(2, 10.0004, 2.00005, 0, 0)) });
+      EL(ESA(1, 20.0, 5.0, 2, 1), ESA(2, 10.0, 2.0, 0, 0)), EL(ESA(1, 18.5, 4.6, 1, 1), ESA(2, 10.0004, 2.00005, 0, 0)), true });
     string WA2(int i) => string.Join(",", dA[i]!["changes"]!.AsArray().Select(c => c!["what"]!.ToString()));
     Check(dA.Count == 1 && WA2(0) == "area,volume,annotation" && (double)dA[0]!["changes"]![0]!["before"]! == 20 && (int)dA[0]!["changes"]![2]!["after"]!["dimensions"]! == 1,
       $"capture: area and volume changes (noise ignored) and a lost dimension are reported ({(dA.Count > 0 ? WA2(0) + " " + dA[0]!.ToJsonString() : "")})");
     var anT = a.GetType("AceRevitMcp.Commands.CaptureLogic+Annotation");
     object AN(int d, int s, int t) => Set(Activator.CreateInstance(anT, true)!, ("Dimensions", d), ("SpotDimensions", s), ("Tags", t));
-    var ad = (System.Text.Json.Nodes.JsonObject)cl.GetMethod("AnnotationDiff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { AN(10, 2, 30), AN(9, 2, 31) });
-    Check((int)ad["dimensions"]!["before"]! == 10 && (int)ad["dimensions"]!["after"]! == 9 && (int)ad["tags"]!["after"]! == 31 && (int)ad["spotDimensions"]!["before"]! == 2, "capture: annotation counts at start and stop");
+    var ad = (System.Text.Json.Nodes.JsonObject)cl.GetMethod("AnnotationDiff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { AN(10, 2, 30), AN(9, 2, 31), true });
+    var dNoAnn = (System.Text.Json.Nodes.JsonArray)cl.GetMethod("Diff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] {
+      EL(ESA(1, 20.0, 5.0, 2, 1)), EL(ESA(1, 20.0, 5.0, 0, 0)), false });
+    var adNull = (System.Text.Json.Nodes.JsonObject)cl.GetMethod("AnnotationDiff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { AN(1, 0, 1), null, true })!;
+    var adStart = (System.Text.Json.Nodes.JsonObject)cl.GetMethod("AnnotationDiff", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(null, new object[] { AN(1, 0, 1), null, false })!;
+    Check(dNoAnn.Count == 0 && !(bool)adNull["available"]! && (bool)adStart["available"]!, "capture: when the annotation counts failed on either side, they are unavailable and no annotation diffs are made");
+    Check((bool)ad["available"]! && (int)ad["dimensions"]!["before"]! == 10 && (int)ad["dimensions"]!["after"]! == 9 && (int)ad["tags"]!["after"]! == 31 && (int)ad["spotDimensions"]!["before"]! == 2, "capture: annotation counts at start and stop");
     // The journal is still open for writing by Revit: read through a shared stream to EOF, never from its length.
     var jPath = Path.Combine(Path.GetTempPath(), "TST_journal_" + Guid.NewGuid().ToString("N") + ".txt");
     try

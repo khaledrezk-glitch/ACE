@@ -470,41 +470,66 @@ namespace AceRevitMcp.Coordination
         // ---- status between runs -------------------------------------------------------------------------------
 
         /// <summary>
-        /// The key the clash store is kept under: the central model's name for a workshared model (so a local copy
-        /// "&lt;name&gt;_&lt;user&gt;" and the central share one store), else the file's name; both without the extension.
+        /// The key the clash store is kept under (ClashLogic.StoreKey): the central model's name and a hash of its path (a cloud
+        /// model: of its project and model GUIDs) for a workshared model, so a local copy and the central share one store;
+        /// else the title and a hash of the file path.
         /// </summary>
         public static string StoreKey(Document host)
         {
-            string central = null;
-            try
-            {
-                if (host.IsWorkshared && host.GetWorksharingCentralModelPath() is ModelPath mp)
-                    central = ModelPathUtils.ConvertModelPathToUserVisiblePath(mp);
-            }
-            catch { central = null; }
-            return ClashLogic.StoreKey(host.IsWorkshared, central, host.PathName, host.Title);
+            var (central, cloud) = Central(host);
+            return ClashLogic.StoreKey(host.IsWorkshared, central, cloud, host.PathName, host.Title);
         }
 
-        /// <summary>A note when this run moved a store from its old (local file) key to the store key; null otherwise. Read once.</summary>
+        private static (string Path, string CloudId) Central(Document host)
+        {
+            try
+            {
+                if (!host.IsWorkshared || !(host.GetWorksharingCentralModelPath() is ModelPath mp)) return (null, null);
+                string cloud = null;
+                try { if (mp.CloudPath) cloud = $"{mp.GetProjectGUID()}/{mp.GetModelGUID()}"; } catch { cloud = null; }
+                return (ModelPathUtils.ConvertModelPathToUserVisiblePath(mp), cloud);
+            }
+            catch { return (null, null); }
+        }
+
+        /// <summary>A note when this run copied stored results from an older store key; null otherwise. Read once.</summary>
         public static string TakeMigrationNote() { var n = _migrationNote; _migrationNote = null; return n; }
         private static string _migrationNote;
+        private static readonly HashSet<string> Migrated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
-        /// The model's store folder. A store kept under the old key (the local file's title and path) moves once to the
-        /// store key when the new folder does not exist yet; an existing new store is never overwritten.
+        /// The model's store folder. Once per session, results kept under an older key (the local file's key, or the 1.12.8
+        /// name-only key) are copied file by file into it: only files the store does not have yet, never overwriting one.
+        /// The old files stay where they are.
         /// </summary>
         private static string StoreDir(Document host)
         {
             var root = Path.Combine(AceConfig.Directory, "clashes");
             var key = StoreKey(host);
             var dir = Path.Combine(root, key);
-            if (!Directory.Exists(dir))
-            {
-                var old = Path.Combine(root, Tracking.Snapshots.ModelKey(host));
-                if (!string.Equals(old, dir, StringComparison.OrdinalIgnoreCase) && Directory.Exists(old))
-                    try { Directory.Move(old, dir); _migrationNote = $"The clash results stored for this model were moved to the store key '{key}' (the central model's name), so local copies and the central share them."; }
-                    catch (Exception ex) { Log.Warn($"Clash store not migrated: {ex.Message}"); return old; }
-            }
+            if (!Migrated.Add(dir)) return dir;
+            var (central, _) = Central(host);
+            var olds = new[] { Tracking.Snapshots.ModelKey(host), ClashLogic.LegacyStoreKey(host.IsWorkshared, central, host.PathName, host.Title) }
+                .Select(k => Path.Combine(root, k)).Where(o => !string.Equals(o, dir, StringComparison.OrdinalIgnoreCase) && Directory.Exists(o))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var copied = 0;
+            foreach (var old in olds)
+                try
+                {
+                    string Rel(string f, string baseDir) => f.Substring(baseDir.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var have = Directory.Exists(dir) ? new HashSet<string>(Directory.GetFiles(dir, "*.json", SearchOption.AllDirectories).Select(f => Rel(f, dir)), StringComparer.OrdinalIgnoreCase) : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var rel in ClashLogic.FilesToCopy(Directory.GetFiles(old, "*.json", SearchOption.AllDirectories).Select(f => Rel(f, old)), have))
+                    {
+                        var to = Path.Combine(dir, rel);
+                        Directory.CreateDirectory(Path.GetDirectoryName(to));
+                        if (File.Exists(to)) continue;
+                        File.Copy(Path.Combine(old, rel), to, false);
+                        copied++;
+                    }
+                }
+                catch (Exception ex) { Log.Warn($"Clash store not copied from {old}: {ex.Message}"); }
+            if (copied > 0)
+                _migrationNote = $"{copied} stored clash file(s) were copied from an older store key to '{key}' (the central model's name and path), so local copies and the central share them. The old files were left in place.";
             return dir;
         }
 

@@ -48,14 +48,24 @@ namespace AceRevitMcp.Coordination
                 bool Loaded(Clash c) => loaded.Contains(c.SourceA ?? "") && loaded.Contains(c.SourceB ?? "");
                 // An element the material filter left out was not tested: its stored clashes stay as they are.
                 bool Tested(Clash c) => !filtered.UniqueIds.Contains(c.UA ?? "") && !filtered.UniqueIds.Contains(c.UB ?? "");
-                Func<Clash, bool> scope = !complete ? (c => false) : (c => Loaded(c) && InLevel(c) && InModel(c) && Tested(c));
+                // A category the test no longer has (a custom test redefined) was not tested: its stored clashes stay as they are.
+                var catNames = new HashSet<string>(t.A.Categories.Concat(t.B.Categories).Select(b => { try { return Category.GetCategory(host, b)?.Name; } catch { return null; } }).Where(n => n != null), StringComparer.OrdinalIgnoreCase);
+                bool InCategories(Clash c) => catNames.Count == 0 || (catNames.Contains(c.CatA ?? "") && catNames.Contains(c.CatB ?? ""));
+                Func<Clash, bool> scope = !complete ? (c => false) : (c => Loaded(c) && InLevel(c) && InModel(c) && Tested(c) && InCategories(c));
                 if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
                 var stored = Clashes.Load(host, t.Name);
                 DateTime? previousRun = stored.Count > 0 ? stored.Max(c => c.LastSeen) : (DateTime?)null;
                 var now = DateTime.Now;   // the run's time: the merge stamps what it looked at with it, the run record keeps it
                 var kept = ClashLogic.Merge(stored, found, scope, now);
-                // Only what this run looked at counts (found now, or marked resolved now); other stored results stay stored, apart.
-                var runTime = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase) { [t.Name] = now };
+                // Only what this run looked at counts (found now, or in its scope and not found); other stored results stay stored, apart.
+                var record = new ClashRun
+                {
+                    Test = t.Name, Time = now, Level = level, ToleranceMm = t.ToleranceMm, ClearanceMm = t.ClearanceMm, Exact = true,
+                    ACategories = t.A.Categories.Select(c => c.ToString()).ToArray(), BCategories = t.B.Categories.Select(c => c.ToString()).ToArray(),
+                    AMaterials = t.A.Materials, BMaterials = t.B.Materials, ExcludeMaterials = t.A.ExcludeMaterials,
+                    Filtered = new Dictionary<string, int>(filtered.Counts), Clashes = found.Count, Complete = complete,
+                };
+                var runTime = new Dictionary<string, ClashRun>(StringComparer.OrdinalIgnoreCase) { [t.Name] = record };
                 var merged = kept.Where(c => InterferenceLogic.Rechecked(c, runTime)).ToList();
                 var notRechecked = kept.Where(c => !InterferenceLogic.Rechecked(c, runTime)).ToList();
                 storedAll.AddRange(notRechecked);
@@ -64,13 +74,8 @@ namespace AceRevitMcp.Coordination
                 var testIssues = ClashLogic.Issues(merged);
                 Clashes.Save(host, t.Name, kept);
                 // The run itself, also when it found nothing: a report can then say "0 clashes" instead of "never run".
-                Clashes.SaveRun(host, new ClashRun
-                {
-                    Test = t.Name, Time = now, Level = level, ToleranceMm = t.ToleranceMm, ClearanceMm = t.ClearanceMm,
-                    ACategories = t.A.Categories.Select(c => c.ToString()).ToArray(), BCategories = t.B.Categories.Select(c => c.ToString()).ToArray(),
-                    AMaterials = t.A.Materials, BMaterials = t.B.Materials, ExcludeMaterials = t.A.ExcludeMaterials,
-                    Filtered = new Dictionary<string, int>(filtered.Counts), Clashes = found.Count, Open = merged.Count(ClashLogic.IsOpen), Complete = complete,
-                });
+                record.Open = merged.Count(ClashLogic.IsOpen);
+                Clashes.SaveRun(host, record);
                 all.AddRange(merged);
                 notes.AddRange(testNotes.Select(n => $"{t.Name}: {n}"));
                 perTest.Add(new JsonObject
@@ -86,7 +91,7 @@ namespace AceRevitMcp.Coordination
                     ["byPair"] = Group(merged.Where(ClashLogic.IsOpen), c => $"{c.CatA} x {c.CatB}"),
                     ["materials"] = t.A.FiltersMaterial || t.B.FiltersMaterial ? MaterialFilter(t) : null,
                     ["filtered"] = t.A.FiltersMaterial || t.B.FiltersMaterial ? Counts(filtered) : null,
-                    ["stored"] = StoredJson(notRechecked),
+                    ["storedInTest"] = notRechecked.Count,   // the count only: the stored results themselves are in the top-level stored
                     ["notes"] = new JsonArray(testNotes.Select(n => (JsonNode)n).ToArray()),
                 });
             }

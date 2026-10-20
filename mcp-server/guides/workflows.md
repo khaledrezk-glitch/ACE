@@ -59,7 +59,12 @@ it came from the request, the vault or the default. Scope: "clashing" (default: 
 not-touching pairs are dropped and counted. Trim to a face (a beam or wall end trimmed to the face it runs into) is
 used only when the vault allows it (trim_to_face { "allowed": true, "preview_required": true, "max_mm": n }); a call can
 pass trim_to_face: false, never switch it on. Read every trim to the user (element, end, length before and after, the
-face) before the apply. With all-touching the plan can hold hundreds of joins: report it per category pair. The order and the steel
+face) before the apply. With all-touching the plan can hold hundreds of joins: report it per category pair.
+max_pairs caps the touching pairs (above it nothing is planned for them: narrow by level or selection); same_category is
+true by default (wall with wall, slab with slab joins are part of the office method), false opts out. A call with keys
+works on those clashing pairs only, even when the rules say all-touching; a level or test narrows the touching pairs.
+preview_required is always effectively true: every apply needs the identical dry run (false is refused). A trim is
+skipped when the member hosts openings, and only one trim per end is kept (the smallest). The order and the steel
 switches come from the project vault (`rules/clash-resolve.json`: { "order": [...], "scope": "...", "trim_to_face": {...},
 "steel": { "cutback": true, "coping": true } }) over the office file (`%APPDATA%\ACE-RevitMCP\clash-resolve.json`, or
 config.json "clashResolveRules"; example in bep/clash-resolve.example.json): the project wins key by key, trim_to_face
@@ -129,6 +134,11 @@ for "put things on the right worksets", "workset check", "set up worksets" use a
 With a rules file in place, model_dashboard also reports "Elements on the wrong workset (BEP)" (the same rules), so
 the check runs every time the model is checked, not only when asked.
 
+Rules in force (D3): the project's project-requirements.json section "worksets" first (its rules are tried first, its
+default_workset and naming win key by key), the office worksets.json after it; "inheritOffice": false in the project's
+section uses the project's rules alone. project_rules section "worksets" shows the result and its files; the audit's
+naming rule is the same merged section. Office method: revit_guide methods/workset-cleanup.
+
 Workset housekeeping ("clean up the worksets", "which worksets are empty", "rename the worksets to the BEP names"):
 assign_worksets action audit first (read-only): every user workset with its element count by category, owner and
 whether it is open, flagged empty, naming (breaks the project's rule), near-duplicate ("ST_Columns" vs "ST-COLUMNS")
@@ -143,6 +153,14 @@ elements is kept and listed unless the user names it in worksets AND gives move_
 Both run like clash_resolve: dry_run: true (the plan, the self-check: element count per category the same before and
 after), then the identical call (ONE undo step). Shared Levels and Grids and the system worksets are never renamed or
 deleted; borrowed, closed or changed-in-central worksets block with what, why, who and how.
+The audit is model-aware: an empty workset whose name says what it should hold (LINKS = RVT links and CAD imports,
+CAD, COLUMN, BEAM/FRAMING, WALL, FLOOR/SLAB, FOUNDATION, GRID/LEVEL and MEP/arch words) while those elements sit on
+another workset is flagged "empty, but N elements look like they belong here (on <workset>)": move them there with the
+rules, do not delete it. naming.categoryTokens ({ "PCC": ["Structural Foundations"] }) extends or overrides the
+word-to-category table. Workset1, or Shared Levels and Grids holding more than datums, is flagged "default workset holds
+N elements (M structural); assign them by rules" with its top categories. Without BEP rules the wrong-workset count is
+"not checked: no rules", never 0. delete_empty without names sends only the truly empty worksets and lists the
+expected-to-hold ones it kept, with why.
 
 ## Parameter requirements (AIS, LOIN, Model Checker, shared parameter files)
 
@@ -230,6 +248,9 @@ the register, not delivered, cleared, ambiguous); then the identical call with c
 CSV. The register itself is never written. Columns are found by header text first (a column letter only when no
 header matches). A later date computed by a formula is reported and left. Merged cells in the id or stage columns stop
 the write (allow_merged: true only after the user checked); defined names and validations into dropped tabs are warnings.
+The project's layout lives in the vault's rules/register.json (see bep/register.example.json and revit_guide
+methods/midp-register-update): with it the call is vault, discipline, stage (a stage name, e.g. IFC: its columns get the
+date), submission_date, label, delivered and output; explicit arguments win, and the reply says which came from where.
 Rows whose id cell is not an id (section headings) are skipped and listed (id_pattern, or the vault's rules/naming.json
 "idPattern"). stage can be a list (e.g. the stage's planned and actual columns). "Probably the same, confirm" pairs
 (same final number block, one naming field different) are never set by themselves: ask the user, then pass

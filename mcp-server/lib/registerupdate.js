@@ -295,3 +295,70 @@ export function reportText(rep, { mode, output }) {
     `Formulas: ${rep.formulas.renamed} now name "${rep.label}"; ${rep.formulas.toValues} pointed into other tabs and became their values${rep.formulas.cells.length ? ` (${rep.formulas.cells.join(", ")})` : ""}. Other tabs are dropped from the copy.`,
   ].filter(Boolean).join("\n");
 }
+
+// ---- the project template (vault rules/register.json) ---------------------------------------------------------------
+
+export const TEMPLATE_FILE = "register.json";
+const TEMPLATE_KEYS = new Set(["file", "headerRow", "idColumn", "idPattern", "disciplines", "stages", "dateColumns"]);
+const DISCIPLINE_KEYS = new Set(["sheet", "file", "headerRow", "idColumn", "idPattern", "stages", "dateColumns"]);
+
+/** Checks a template: known keys, stages as lists of column names, disciplines with a sheet. Problems -> error. */
+export function checkTemplate(t, file) {
+  const bad = [];
+  if (!t || typeof t !== "object" || Array.isArray(t)) throw new Error(`${file} must hold an object { file, headerRow, idColumn, idPattern, disciplines, stages, dateColumns }.`);
+  for (const k of Object.keys(t)) if (!TEMPLATE_KEYS.has(k) && !k.startsWith("_")) bad.push(`unknown key "${k}"`);
+  const stagesOk = (s, where) => { if (s == null) return; if (typeof s !== "object" || Array.isArray(s)) { bad.push(`${where} must be { "<stage>": ["<column>", ...] }`); return; }
+    for (const [k, v] of Object.entries(s)) if (!Array.isArray(v) || !v.length || v.some((x) => typeof x !== "string" || !x.trim())) bad.push(`${where}.${k} must be a list of column names`); };
+  stagesOk(t.stages, "stages");
+  if (!t.disciplines || typeof t.disciplines !== "object" || !Object.keys(t.disciplines).length) bad.push("disciplines is missing: { \"<code>\": { \"sheet\": \"<tab>\" } }");
+  for (const [code, d] of Object.entries(t.disciplines ?? {})) {
+    if (!d || typeof d !== "object" || !d.sheet) { bad.push(`disciplines.${code} needs sheet`); continue; }
+    for (const k of Object.keys(d)) if (!DISCIPLINE_KEYS.has(k) && !k.startsWith("_")) bad.push(`disciplines.${code}: unknown key "${k}"`);
+    stagesOk(d.stages, `disciplines.${code}.stages`);
+  }
+  if (t.headerRow != null && !(Number.isInteger(t.headerRow) && t.headerRow >= 1)) bad.push("headerRow must be a row number");
+  if (t.idPattern) { try { new RegExp(t.idPattern, "i"); } catch (e) { bad.push(`idPattern is not a valid regex (${e.message})`); } }
+  if (bad.length) throw new Error(`${file}: ${bad.join("; ")}.`);
+  return t;
+}
+
+/** The register file: a path or a glob ("*" in the name) relative to the template's folder; exactly one match. */
+export function resolveRegisterFile(spec, baseDir) {
+  const full = path.resolve(baseDir, String(spec));
+  if (!path.basename(full).includes("*")) return full;
+  const re = new RegExp("^" + path.basename(full).split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$", "i");
+  const d = path.dirname(full);
+  const hits = fs.existsSync(d) ? fs.readdirSync(d).filter((f) => re.test(f) && !f.startsWith("~$")) : [];
+  if (hits.length !== 1) throw new Error(`The template's file "${spec}" matches ${hits.length ? `${hits.length} files (${hits.join(", ")})` : "no file"} in ${d}: give register, or make the pattern match one file.`);
+  return path.join(d, hits[0]);
+}
+
+/**
+ * The call's arguments from the template for one discipline and stage: { args, from: [keys from the file] }.
+ * A stage that is a template stage name becomes its columns; stage_columns are dateColumns, else every stage's columns.
+ */
+export function templateArgs(t, { discipline, stage }, { file, baseDir }) {
+  const codes = Object.keys(t.disciplines);
+  if (!discipline) throw new Error(`Give discipline: one of ${codes.join(", ")} (from ${file}).`);
+  const code = codes.find((c) => c.toLowerCase() === String(discipline).toLowerCase());
+  if (!code) throw new Error(`Discipline "${discipline}" is not in ${file}: known ${codes.join(", ")}.`);
+  const d = t.disciplines[code];
+  const stages = { ...(t.stages ?? {}), ...(d.stages ?? {}) };
+  const args = {}, from = [];
+  const set = (k, v) => { if (v != null) { args[k] = v; from.push(k); } };
+  const reg = d.file ?? t.file;
+  set("register", reg ? resolveRegisterFile(reg, baseDir) : null);
+  set("sheet", d.sheet);
+  set("header_row", d.headerRow ?? t.headerRow);
+  set("id_column", d.idColumn ?? t.idColumn);
+  set("id_pattern", d.idPattern ?? t.idPattern);
+  const cols = d.dateColumns ?? t.dateColumns ?? [...new Set(Object.values(stages).flat())];
+  set("stage_columns", cols.length ? cols : null);
+  if (stage != null && !Array.isArray(stage)) {
+    const name = Object.keys(stages).find((s) => s.toLowerCase() === String(stage).toLowerCase());
+    if (name) set("stage", stages[name]);
+    else if (cols.some((c) => c.toLowerCase() === String(stage).toLowerCase())) { /* a column name: the call's own stage */ }
+    else if (Object.keys(stages).length) throw new Error(`Stage "${stage}" is not in ${file} for ${code}: known ${Object.keys(stages).join(", ")}.`);
+  }
+  return { args, from, discipline: code };
+}

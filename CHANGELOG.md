@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.12.9 (20 Oct 2026)
+- **General method in the tool, template per project in the vault:** register_update reads the project's register
+  template from the vault's rules/register.json (file or glob, headerRow, idColumn, idPattern, disciplines with their
+  tab and overrides, stages with their columns, dateColumns; example bep/register.example.json), so a call needs only
+  vault, discipline, stage, submission_date, label, the delivered files and output; explicit arguments win, the reply
+  says what came from the file and what from the call, and an unknown discipline or stage is refused with the known
+  ones. Office methods midp-register-update (register_update) and workset-cleanup (assign_worksets) added; each method
+  says its scope. Workset rules in force documented: the project's first, the office worksets.json after them.
+- **1.12.8 review fixes:** stored clash results counted once (the top-level total; the interference report uses either
+  the not-rechecked rows or that total); clash_resolve narrows all-touching to the clashing pairs when the call gives
+  keys and to a level or test when given, passes max_pairs and same_category (default true, false opts out; from the
+  call or the rules files, validated) and prints the add-in's "above the cap" result; trim_to_face.preview_required
+  false is refused (every apply already needs the identical dry run); the trim skip reasons are printed.
+- **Workset audit, model-aware (from a live audit):** an empty workset whose name matches elements on another workset
+  (LINKS = RVT links + CAD imports, COLUMN, BEAM, WALL, FLOOR, FOUNDATION, GRID, MEP/arch words; vault
+  naming.categoryTokens extends it) is "empty, but N elements look like they belong here" and delete_empty keeps it
+  (only the truly empty ones are sent, the kept ones listed with the reason); Workset1, or Shared Levels and Grids
+  holding non-datum elements, is flagged with its element count, structural share and top categories; without rules
+  the wrong-workset count reads "not checked: no rules" in the text, HTML and CSV. clash_resolve's cap line prints
+  the joins above the cap (join + switch-join) and the add-in's advice; capture says when annotation counts are not
+  available.
+
 ## 1.12.8 (20 Oct 2026)
 - **Trim limit:** trim_to_face.max_mm defaults to 1000 mm; a rules file may raise it up to 3000 mm (longer trims are report-only, "trim too long").
 - **From a recorded manual solve:** clash_resolve reads the vault's order as one category priority list (e.g.

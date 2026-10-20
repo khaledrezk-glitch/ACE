@@ -133,12 +133,9 @@ export const stem = (model, test, stamp) => fileStem("interference", `${safeName
  * its models; kept out of the open totals by the add-in, said on their own line here.
  */
 export function storedOf(r) {
-  let count = 0;
-  const models = new Set();
-  const take = (x) => { const s = x?.stored ?? x?.notRechecked; if (s && typeof s === "object") { count += Number(s.count) || 0; for (const m of s.models ?? []) models.add(m); } };
-  take(r);
-  for (const t of [...(r?.tests ?? []), ...(r?.models ?? [])]) take(t);
-  return { count, models: [...models] };
+  // The top-level total only: each test's storedInTest is part of it (counting both doubled it).
+  const s = r?.stored ?? r?.notRechecked;
+  return s && typeof s === "object" ? { count: Number(s.count) || 0, models: [...new Set(s.models ?? [])] } : { count: 0, models: [] };
 }
 export function storedLine(r) {
   const s = storedOf(r);

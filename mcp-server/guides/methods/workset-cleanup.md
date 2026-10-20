@@ -1,0 +1,17 @@
+# Office method: workset cleanup (version 1)
+
+Scope: general method in the tool, template per project in the vault.
+
+Audit first, then change. The workset list, the naming rule and the assignment rules come from the project vault
+(project-requirements.json, section "worksets": rules, default_workset, naming { pattern, allowed, rename }); the office
+worksets.json applies below it (project rules first, office rules after them; "inheritOffice": false in the project
+section uses the project's alone). project_rules section "worksets" shows what is in force and where it came from.
+
+## With ACE's tools
+
+- assign_worksets action audit (out_dir for the HTML / CSV table): empty, off the naming rule, near-duplicate, elements
+  on the wrong workset. Let the user review the table.
+- action rename (the rule's suggestions, or renames) and action delete_empty (move_to only for a workset the user
+  named): check_only, then dry_run, then the identical call: ONE undo step, self-checked.
+- assign_worksets (action assign): check_only, dry_run, then apply, to put elements on the right worksets.
+- Shared Levels and Grids is never renamed or deleted; borrowed worksets block with who holds them.

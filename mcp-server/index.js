@@ -403,7 +403,8 @@ function interferenceReport(answer, a, outDir) {
   const out = sets.map((m) => {
     // Rows this run did not re-check (rechecked: false) stay out of the report and its totals; counted on their own.
     const rows = (m.rows ?? []).filter((x) => x.rechecked !== false);
-    const notRechecked = (m.rows ?? []).length - rows.length + (Interference.storedOf(m).count || 0);
+    // Either the rows marked rechecked: false or the add-in's stored total, never both.
+    const notRechecked = (m.rows ?? []).length - rows.length || Interference.storedOf(m).count || (sets.length === 1 ? Interference.storedOf(answer).count : 0);
     const model = m.model ?? answer?.model ?? "model", test = m.test ?? answer?.test ?? a.test ?? "all";
     const name = Interference.stem(m.storeKey ?? answer?.storeKey ?? model, test, stamp);
     const o = { model, test, when, run: m.run, filters, filtered: m.filtered, brand: b };
@@ -961,7 +962,7 @@ async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan,
   }
 
   // rename / delete_empty: the request, then the same stages as clash_resolve (check, dry run, identical apply).
-  let req, early = [];
+  let req, early = [], keptNote = "";
   if (action === "rename") {
     let renames = a.renames, src = "request";
     if (!renames?.length) {
@@ -977,6 +978,17 @@ async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan,
     if (dupTo.length) early.push({ what: `rename to ${dupTo[0]}`, why: "two worksets would get the same name", code: "exists" });
     req = { action, renames, renamesFrom: src };
   } else {
+    // No names: only the truly empty ones; a workset whose name says it should hold elements that sit elsewhere is kept.
+    if (!a.worksets?.length && !a.move_to) {
+      const au = Worksets.audit(await auditNow(), naming);
+      const keep = au.rows.filter((r) => r.expected);
+      if (keep.length) {
+        const truly = au.rows.filter((r) => r.flags.includes("empty")).map((r) => r.name);
+        keptNote = `Kept (empty, but elements look like they belong there; move them rather than delete): ${keep.map((r) => `${r.name}: ${r.expected.elements} on ${Object.keys(r.expected.on).join(", ")}`).join("; ")}.`;
+        if (!truly.length) return text(`Nothing to delete: no workset is truly empty.\n${keptNote}`);
+        a = { ...a, worksets: truly };
+      }
+    }
     if (a.worksets?.some(Worksets.isProtected)) early.push({ what: "delete Shared Levels and Grids", why: "it is never deleted", code: "system" });
     if (a.move_to && !a.worksets?.length) early.push({ what: "move_to", why: "a non-empty workset is emptied only when it is named in worksets: move_to never applies to every workset", how: "name the worksets to empty in worksets" });
     req = { action, ...(a.worksets?.length ? { worksets: a.worksets } : {}), ...(a.move_to ? { move_to: a.move_to } : {}) };
@@ -987,7 +999,7 @@ async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan,
     name: `worksets ${action}`, command: "workset_admin", req: { ...bridgeReq, ...base, expect_version: VERSION }, ident: { ...bridgeReq, rules: base.rules ?? null },
     check_only, dry_run, explanation, plan, step, state: adminState, timeout, a, folder: { sub: "worksets", reports: "worksets" },
     planOf: Worksets.planOf, identity: Worksets.planIdentity, blocksOf: (r) => Worksets.blocksOf(r).map(Worksets.blockWithHow), rolledBackOf: Worksets.rolledBackOf,
-    render: (r, mode, model, rolledBack) => Worksets.planText(r, { action, model, mode, rolledBack }) + (renamesFrom !== "request" && action === "rename" ? `\nRenames from ${renamesFrom}.` : ""),
+    render: (r, mode, model, rolledBack) => Worksets.planText(r, { action, model, mode, rolledBack }) + (renamesFrom !== "request" && action === "rename" ? `\nRenames from ${renamesFrom}.` : "") + (keptNote ? `\n${keptNote}` : ""),
     nothing: (model) => `Nothing to ${action === "rename" ? "rename" : "delete"} in ${model}.`,
   });
 }
@@ -1286,19 +1298,20 @@ tool("register_update", {
   title: "Update a deliverables register for a submission (xlsx, no Revit)",
   description: "MIDP-style register: copies the register sheet into a new workbook named by label (formulas naming the sheet follow; formulas into other tabs become values; other tabs dropped), sets the stage date of delivered rows to the submission date and clears later dates. Delivered = file names or a folder; an id matches when the file name contains it (or id_pattern, the vault naming regex). Without confirm it only checks (writes nothing); confirm: true writes output after the identical check. Never writes the register itself.",
   inputSchema: {
-    register: z.string().describe("The register .xlsx"),
+    register: z.string().optional().describe("The register .xlsx (default: the vault template's file)"),
+    discipline: z.string().max(20).optional().describe("With vault rules/register.json: the discipline (its tab, header row, id column, stages)"),
     sheet: z.string().max(31).optional().describe("Default: the first sheet"),
     header_row: z.number().int().min(1).max(100).optional(),
-    id_column: z.string().max(80).describe("Header name or column letter"),
-    stage_columns: z.array(z.string().max(80)).min(1).max(20).describe("Every stage date column (later dates are cleared in all of them)"),
-    stage: z.union([z.string().max(80), z.array(z.string().max(80)).max(20)]).optional().describe("The stage column(s) that get the submission date, e.g. planned and actual (default: the only one)"),
+    id_column: z.string().max(80).optional().describe("Header name or column letter (default: the template's)"),
+    stage_columns: z.array(z.string().max(80)).min(1).max(40).optional().describe("Every stage date column (later dates are cleared in all of them; default: the template's)"),
+    stage: z.union([z.string().max(80), z.array(z.string().max(80)).max(20)]).optional().describe("A template stage name (e.g. IFC), or the stage column(s) that get the submission date"),
     delivered: z.array(z.string().max(300)).max(20000).optional().describe("Delivered file names"),
     delivered_dir: z.string().optional().describe("Folder whose files were delivered (recursive)"),
     submission_date: z.string().max(20).describe("YYYY-MM-DD"),
     label: z.string().max(31).describe("The submission's name: the new sheet's name"),
     output: z.string().describe("The new .xlsx (never the register itself)"),
     id_pattern: z.string().max(300).optional().describe("Naming regex: rows it does not find are skipped; in file names its first group (or the match) is the id. Default: vault rules/naming.json idPattern"),
-    vault: z.string().optional().describe("Project folder or its ACE Vault (for the naming rule)"),
+    vault: z.string().optional().describe("Project folder or its ACE Vault (template rules/register.json, naming rule)"),
     accept_near: z.array(z.string().max(200)).max(2000).optional().describe("Ids of near matches the user confirmed"),
     force_id_column: z.boolean().optional().describe("Use the id column although it looks wrong"),
     overwrite: z.boolean().optional(),
@@ -1307,6 +1320,25 @@ tool("register_update", {
   },
   annotations: benign,
 }, async ({ confirm, ...a }) => {
+  // The project's template (vault rules/register.json): the discipline's tab, header row, id column and stages; the
+  // call's own arguments win. Without a template the arguments work alone.
+  let fromTemplate = [], tplFile = null;
+  const tplPath = a.vault ? path.join(Vault.vaultDir(a.vault), "rules", RegisterUpdate.TEMPLATE_FILE) : null;
+  if (tplPath && fs.existsSync(tplPath)) {
+    tplFile = tplPath;
+    let t;
+    try {
+      const tpl = RegisterUpdate.checkTemplate(JSON.parse(fs.readFileSync(tplPath, "utf8").replace(/^\uFEFF/, "")), tplPath);
+      t = RegisterUpdate.templateArgs(tpl, { discipline: a.discipline, stage: a.stage }, { file: tplPath, baseDir: Vault.vaultDir(a.vault) });
+    } catch (e) { throw new RevitError(e instanceof SyntaxError ? `${tplPath} is not valid JSON (${e.message}).` : e.message); }
+    const given = Object.fromEntries(Object.entries(a).filter(([, v]) => v !== undefined));
+    if (t.from.includes("stage")) delete given.stage;   // a stage name, now its columns
+    fromTemplate = t.from.filter((k) => !(k in given));
+    a = { ...t.args, ...given, discipline: t.discipline };
+  } else if (a.discipline) throw new RevitError(`discipline needs the project's template: ${tplPath ? `${tplPath} does not exist` : "give vault (the project folder)"}; or give register, sheet, id_column and stage_columns.`);
+  const missing = ["register", "id_column", "stage_columns"].filter((k) => !a[k]);
+  if (missing.length) throw new RevitError(`Give ${missing.join(", ")}${tplFile ? "" : " (or vault with rules/register.json and discipline)"}.`);
+  const sourceLine = tplFile ? `From the project template (${tplFile}): ${fromTemplate.join(", ") || "nothing"}; from the call: ${Object.keys(a).filter((k) => !fromTemplate.includes(k) && !["vault", "discipline", "files"].includes(k)).join(", ")}.` : "";
   if (!fs.existsSync(a.register)) throw new RevitError(`File not found: ${a.register}`);
   const same = (x, y) => process.platform === "win32" || /^[A-Za-z]:[\\/]/.test(x) ? path.resolve(x).toLowerCase() === path.resolve(y).toLowerCase() : path.resolve(x) === path.resolve(y);
   if (same(a.output, a.register)) throw new RevitError("Blocked for safety: output is the register itself. The register is never written: give another output path.");
@@ -1328,7 +1360,7 @@ tool("register_update", {
   if (!confirm) {
     registerChecks.add(key);
     const out = text(res.report);
-    out.content.push({ type: "text", text: `${RegisterUpdate.reportText(res.report, { mode: "check" })}${idPatternFrom ? `\nId pattern from the vault: ${idPatternFrom}.` : ""}\nNothing written. Show the user this report; to write ${a.output}, repeat the identical call with confirm: true.` });
+    out.content.push({ type: "text", text: `${RegisterUpdate.reportText(res.report, { mode: "check" })}${sourceLine ? `\n${sourceLine}` : ""}${idPatternFrom ? `\nId pattern from the vault: ${idPatternFrom}.` : ""}\nNothing written. Show the user this report; to write ${a.output}, repeat the identical call with confirm: true.` });
     return out;
   }
   if (!registerChecks.has(key)) throw new RevitError("Blocked for safety: this exact update has not been checked (the inputs, the register file or the delivered list differ). Run the same call without confirm, show the user the report, then confirm.");
@@ -1977,6 +2009,8 @@ tool("clash_resolve", {
     scope: z.enum(["clashing", "all-touching"]).optional().describe("Default: the vault's, else clashing"),
     selection: z.boolean().optional().describe("Only the current selection"),
     trim_to_face: z.boolean().optional().describe("false switches the vault-approved trim off; true only where the vault allows it"),
+    max_pairs: z.number().int().min(1).max(100000).optional().describe("All-touching: cap on touching pairs (above it: report only)"),
+    same_category: z.boolean().optional().describe("Default true (same-category joins are part of the office method); false opts out"),
     steel: z.object({ cutback: z.boolean().optional(), coping: z.boolean().optional(), allowUnjoin: z.boolean().optional().describe("Only after the user agrees: a steel end joined to a column may be unjoined (join state changes) to cut it back") }).optional(),
     vault: z.string().optional().describe("Project folder or its ACE Vault (default: the open model's)"),
     report_dir: z.string().optional().describe("Folder for the evidence and run record"),

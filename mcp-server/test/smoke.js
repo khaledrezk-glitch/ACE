@@ -111,7 +111,9 @@ const bridge = http.createServer((req, res) => {
         const blocked = keys.includes("TST_BORROW") ? [{ what: "2 element(s) to join", why: "borrowed by another user", elements: 2, sampleIds: [201, 301], holder: "jane", how: "ask jane to synchronise and relinquish, then run again", code: "borrowed" }] : [];
         const filtered = args.materials?.length || args.exclude_materials?.length ? { filtered: { steel: 12, unknown: 1 } } : {};
         const base = { model: "Test", ...filtered, aceVersion: keys.includes("TST_OLDADDIN") ? "1.9.0" : SERVER_VERSION, before, plan, planHash: `ph-${keys.join(",")}-${args.test_force_verify_mismatch ? "f" : ""}`, reportOnly, blocked, echo: args,
-          ...(args.scope === "all-touching" ? { dropped: { notTouching: 40, trim: 0 }, scope: "all-touching", scopeSource: args.scope_source ?? "request", touching: { candidates: 120, pairs: 80, right: 38, join: 30, switchJoin: 12, byPair: { "Floors x Structural Columns": 25 } } } : {}),
+          ...(keys.includes("TST_SKIPTRIM") ? { skipped: [{ id: "trim:211>302:end", a: 211, b: 302, code: "hosts-openings" }, { id: "trim:212>302:start", a: 212, b: 302, code: "one-trim-per-end" }] } : {}),
+          ...(args.scope === "all-touching" && args.max_pairs === 5 ? { touching: { capped: true, pairs: 80, join: 60, switchJoin: 12, maxPairs: 5, advice: "TST narrow by level or selection." } } : {}),
+          ...(args.scope === "all-touching" && args.max_pairs !== 5 ? { dropped: { notTouching: 40, trim: 0 }, scope: "all-touching", scopeSource: args.scope_source ?? "request", touching: { candidates: 120, pairs: 80, right: 38, join: 30, switchJoin: 12, byPair: { "Floors x Structural Columns": 25 } } } : {}),
           storeKey: keys.includes("TST_STORE") ? "TST_Central" : "Test", orderSource: args.order_source ?? (args.order ? "request" : "default"),
           order: args.order ?? ["OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming", "OST_Stairs"] };
         if (args.check_only) return reply({ ok: true, result: { success: true, checkOnly: true, ...base, after: null, guard: null, warnings: { before: 10, after: null, new: [] } } });
@@ -144,6 +146,15 @@ const bridge = http.createServer((req, res) => {
           { id: 5, name: "TST_Empty", elements: 0, byCategory: {}, owner: "", open: true, editable: false, wrongWorkset: 0 },
           { id: 6, name: "Workset1", elements: 3, byCategory: { Walls: 3 }, owner: "", open: false, editable: false, wrongWorkset: 3 },
           { id: 7, name: "tst_beams", elements: 4, byCategory: { "Structural Framing": 4 }, owner: "", open: true, editable: false, wrongWorkset: 0 }];
+        // max_ids 7: a model without assignment rules whose links sit on Workset1 (1.12.9 audit gaps).
+        if (args.max_ids === 7) {
+          ws.length = 0;
+          ws.push({ id: 1, name: "Shared Levels and Grids", elements: 12, byCategory: { Levels: 10, Walls: 2 }, wrongWorkset: null },
+            { id: 2, name: "TST RVT LINKS", elements: 0, byCategory: {}, wrongWorkset: null }, { id: 3, name: "TST CAD LINKS", elements: 0, byCategory: {}, wrongWorkset: null },
+            { id: 4, name: "TST OLD", elements: 0, byCategory: {}, wrongWorkset: null }, { id: 6, name: "TST PCC", elements: 0, byCategory: {}, wrongWorkset: null },
+            { id: 5, name: "Workset1", elements: 60, byCategory: { "RVT Links": 4, "TST site.dwg": 2, "Structural Columns": 30, Floors: 20, "Structural Foundations": 4 }, wrongWorkset: null });
+          if (args.action === "audit") return reply({ ok: true, result: { model: "Test", aceVersion: SERVER_VERSION, workshared: true, rules: null, worksets: ws } });
+        }
         if (args.action === "audit") return reply({ ok: true, result: { model: "Test", aceVersion: SERVER_VERSION, workshared: true, worksets: ws } });
         let plan = [], blocked = [];
         if (args.action === "rename") {
@@ -246,7 +257,7 @@ const bridge = http.createServer((req, res) => {
           { issue: "I-2", issueTitle: "Wall W1 overlaps wall W2", clashKey: "k3", status: "active", aId: 401, aCategory: "Walls", aFamily: "Basic Wall", aType: "RC 200", bId: 402, bCategory: "Walls", bFamily: "Basic Wall", bType: "RC 200", level: "L1", depthMm: 200, x: 1.5, y: 2.25, z: 0, responsible: "STR" },
           { issue: "I-1", issueTitle: `Beam B7 into columns (${model})`, clashKey: "k1", status: "new", aId: 202, aCategory: "Structural Framing", aFamily: "BU <250>", aType: "BU 250", bId: 302, bCategory: "Structural Columns", bFamily: "Concrete-Rectangular-Column", bType: "400x400", level: "Roof", depthMm: 83.4, x: 10.1234, y: 5, z: 12.5, responsible: "STR" },
           { issue: "I-1", issueTitle: `Beam B7 into columns (${model})`, clashKey: "k2", status: "new", aId: 202, aCategory: "Structural Framing", aFamily: "BU <250>", aType: "BU 250", bId: 303, bCategory: "Structural Columns", bFamily: "Concrete-Rectangular-Column", bType: "400x400", level: "Roof", depthMm: 80, x: 14, y: 5, z: 12.5, responsible: "STR" }];
-        const one = (model) => ({ model, test: args.test ?? "all", run: { id: "run-1", at: "2026-10-20T10:00:00Z" }, counts: { clashes: 3 },
+        const one = (model) => ({ model, test: args.test ?? "all", run: { id: "run-1", at: "2026-10-20T10:00:00Z" }, counts: { clashes: 3 }, ...(args.test === "TST_STORED" ? { stored: { count: 1, models: [] } } : {}),
           rows: [...rows(model), ...(args.test === "TST_STORED" ? [{ ...rows(model)[0], clashKey: "k9", rechecked: false }] : [])], ...(args.exclude_materials?.length ? { filtered: { steel: 12 } } : {}) });
         if (args.test === "EMPTY") return reply({ ok: true, result: { model: "Test", test: "EMPTY", run: { id: "run-2" }, counts: { clashes: 0 }, rows: [], filtered: { steel: 40 } } });
         if (args.test === "OLDADDIN") return reply({ ok: true, result: { htmlReport: "C:/x/old.html", issues: 0 } });
@@ -262,7 +273,9 @@ const bridge = http.createServer((req, res) => {
       case "model_changes":
         return reply({ ok: true, result: { since: args.since || "last", models: [{ model: "Test", relation: "this model", added: 3, moved: 2 }, { model: "Test-STR", relation: "link", moved: 12 }] } });
       case "run_clash_test":
-        return reply({ ok: true, result: { storeKey: "Test", tests: [{ test: args.test || "all", open: 4, byResponsible: { "MEP (HVAC)": 3, "ARC": 1 }, ...(args.test === "TST_STORED" ? { stored: { count: 1340, models: ["TST_Other"] } } : {}) }] } });
+        // 1.12.9: the top-level stored is the only total; each test carries storedInTest (part of it).
+        return reply({ ok: true, result: { storeKey: "Test", ...(args.test === "TST_STORED" ? { stored: { count: 1340, open: 1200, models: ["TST_Other"] } } : {}),
+          tests: [{ test: args.test || "all", open: 4, byResponsible: { "MEP (HVAC)": 3, "ARC": 1 }, ...(args.test === "TST_STORED" ? { storedInTest: { count: 1340 } } : {}) }] } });
       case "get_model_insights":
         return reply({ ok: true, result: { model: "Test", score: 81, grade: "Fair", checks: [{ check: "Revit warnings", status: "warn" }], htmlReport: "C:/Users/x/Documents/ACE Insights/Test/Test - Insights.html", shown: !!args.show } });
       case "backup_model":
@@ -911,6 +924,20 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(tt, /Not touching, dropped: 40 pair\(s\) in scope that do not touch/);
   assert.match(tt, /Trims to a face \(1; a trim on a join runs only if the join does not clear\):\n- trim 211 \(Structural Framing\) end: 4833 -> 3822 mm \(trim 1011 mm\) to Structural Columns 302 near face \(only if join:201>301 does not clear\)/, "each trim, one by one");
   assert.match(tt, /Scope \(from the project vault \(.*\)\): every touching pair of the categories\. Trim to face: on \(allowed by the project vault \(.*clash-resolve\.json\)\)\./);
+  // 1.12.9: keys narrow all-touching to the clashing pairs; a level narrows the touching; max_pairs / same_category.
+  const kn = await call("clash_resolve", { vault: tv, keys: ["k1"] });
+  assert.ok(crs().at(-1).args.scope === "clashing" && !crs().at(-1).args.scope_source, "keys: clashing pairs only");
+  assert.match(kn.content.at(-1).text, /Scope \(from the call's keys\): only the clashing pairs \(the rules say all-touching; the call names clash keys, so only those clashing pairs\)/);
+  const ln = await call("clash_resolve", { vault: tv, level: "L1", max_pairs: 5, same_category: false });
+  const la = crs().at(-1).args;
+  assert.ok(la.scope === "all-touching" && la.narrowed === "level" && la.level === "L1" && la.max_pairs === 5 && la.same_category === false);
+  assert.match(ln.content.at(-1).text, /every touching pair of the categories \(all-touching, narrowed to the call's level L1\); same-category joins off; at most 5 touching pairs\./);
+  assert.match(ln.content.at(-1).text, /72 touching pairs to join, above the 5 cap; nothing touching planned\. TST narrow by level or selection\./, "the cap's report-only result");
+  await call("clash_resolve", { vault: tv });
+  assert.ok(!("same_category" in crs().at(-1).args) && !("max_pairs" in crs().at(-1).args), "same_category defaults to true (not sent)");
+  const sk = await call("clash_resolve", { vault: tv, keys: ["TST_SKIPTRIM"] });
+  assert.match(sk.content.at(-1).text, /Skipped:\n- trim:211>302:end 211 x 302: hosts openings\n- trim:212>302:start 212 x 302: one trim per end, the smallest kept/);
+  assert.match((await call("clash_resolve", { vault: tv, max_pairs: 0 })).content[0].text, /max_pairs|Too small|>=1/i);
   await call("clash_resolve", { vault: tv, trim_to_face: false, scope: "clashing", selection: true });
   assert.ok(!("trim_to_face" in crs().at(-1).args) && crs().at(-1).args.scope === "clashing" && !crs().at(-1).args.scope_source && crs().at(-1).args.selection === true, "the call switches trim off and narrows the scope");
   const tdr = await call("clash_resolve", { vault: tv, action: "fix", dry_run: true, explanation: "TST trims", report_dir: path.join(tmp, "trimrun") });
@@ -923,6 +950,15 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const n4 = crs().length;
   assert.ok(/trim_to_face is not allowed for this project: the vault's rules\/clash-resolve\.json has trim_to_face\.allowed: false/.test((await call("clash_resolve", { vault: tv, trim_to_face: true })).content[0].text) && crs().length === n4, "a call never switches trim on");
   assert.ok(!("trim_to_face" in (await call("clash_resolve", { vault: tv }), crs().at(-1).args)), "allowed: false sends no trim");
+  tvRules({ trim_to_face: { allowed: true, preview_required: false } });
+  assert.match((await call("clash_resolve", { vault: tv })).content[0].text, /preview_required cannot be false: every apply already needs the identical dry run first/);
+  tvRules({ max_pairs: 2.5 });
+  assert.match((await call("clash_resolve", { vault: tv })).content[0].text, /max_pairs must be a whole number of pairs from 1 to 100000/);
+  tvRules({ same_category: "yes" });
+  assert.match((await call("clash_resolve", { vault: tv })).content[0].text, /same_category must be true \(default: same-category joins are part of the method\) or false \(opt out\)/);
+  tvRules({ max_pairs: 300, same_category: false });
+  await call("clash_resolve", { vault: tv });
+  assert.ok(crs().at(-1).args.max_pairs === 300 && crs().at(-1).args.same_category === false, "both from the rules file");
   tvRules({ scope: "everything" });
   assert.match((await call("clash_resolve", { vault: tv })).content[0].text, /scope: "everything" is not a scope ACE knows/);
   tvRules({ trim_to_face: { allowed: true, depth: 3 } });
@@ -1061,7 +1097,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(at, /\nShared Levels and Grids \| 30 \| Grids 20, Levels 10 \| - \| yes \| ok \(protected\)/, "Shared Levels and Grids is exempt");
   assert.match(at, /\nTST-COLUMNS \| 2 \| Structural Columns 2 \| jane \| yes \| naming, near-duplicate -> TST_Columns\?/);
   assert.match(at, /\nTST_Empty \| 0 \| - \| - \| yes \| empty/);
-  assert.match(at, /\nWorkset1 \| 3 \| Walls 3 \| - \| no \| naming, wrong-workset -> TST_Walls\?/);
+  assert.match(at, /\nWorkset1 \| 3 \| Walls 3 \| - \| no \| default-workset, naming, wrong-workset -> TST_Walls\?/);
   assert.match(at, /\nNear-duplicates: TST_Columns \/ TST-COLUMNS\.\n/);
   assert.match(at, /Rename suggestions \(none applied\): tst_beams -> TST_Beams \(breaks the naming rule\)\./, "a target that exists already is not suggested");
   const af = [...at.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
@@ -1264,6 +1300,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(lines.includes("Walls: volume changed on 1 (ends or profile changed), total -0.500 m3 (e.g. 601)"));
   assert.ok(lines.includes("Floors: annotation referencing them changed on 1 (dimensions -1) (e.g. 701)"));
   assert.equal(Cap.annotationLine({ dimensions: { before: 120, after: 119 }, tags: { before: 3, after: 3 } }), "Annotation: dimensions 120 -> 119.");
+  assert.match(Cap.annotationLine({ available: false }), /^Annotation: not available/);
   // A plan step that names its cutter: the person's direction is compared with it, not with "a".
   const plan = [{ kind: "join", a: 11, b: 12, cutter: 12, cut: 11, cutterCategory: "Structural Columns", cutCategory: "Floors" },
     { kind: "join", a: 13, b: 14, aCategory: "Floors", bCategory: "Structural Columns" }];
@@ -1279,14 +1316,36 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const desc = (n) => listed.find((t) => t.name === n).description;
   for (const n of ["clash_resolve", "run_clash_test", "coordination_report", "capture_method"])
     assert.ok(desc(n).endsWith(" Office method: revit_guide methods/structural-interference-solving."), `${n} names its office method`);
-  assert.ok(!/Office method:/.test(desc("register_update")), "only linked tools");
-  assert.match((await call("revit_guide", { topic: "methods" })).content[0].text, /Office methods \(read one with revit_guide methods\/<name>\):\n- methods\/structural-interference-solving \(v1, 2026-10-20\): tools clash_resolve, run_clash_test, coordination_report, capture_method\./);
+  assert.ok(!/Office method:/.test(desc("set_parameters")), "only linked tools");
+  assert.ok(desc("register_update").endsWith(" Office method: revit_guide methods/midp-register-update.") && desc("assign_worksets").endsWith(" Office method: revit_guide methods/workset-cleanup."));
+  for (const m of ["structural-interference-solving", "midp-register-update", "workset-cleanup"])
+    assert.match((await call("revit_guide", { topic: `methods/${m}` })).content[0].text, m === "structural-interference-solving" ? /\nScope: office-wide\.\n/ : /\nScope: general method in the tool, template per project in the vault\.\n/);
+  assert.match((await call("revit_guide", { topic: "methods" })).content[0].text, /Office methods \(read one with revit_guide methods\/<name>\):\n- methods\/structural-interference-solving \(v1, 2026-10-20\): tools clash_resolve, run_clash_test, coordination_report, capture_method\.[\s\S]*\n- methods\/midp-register-update \(v1[\s\S]*\n- methods\/workset-cleanup \(v1/);
   assert.match((await call("revit_guide", { topic: "methods/structural-interference-solving" })).content[0].text, /Join priority Foundation > Column > Wall > Slab > Beam\. Join all touching concrete, not only clashing pairs\./);
   assert.match((await call("revit_guide", { topic: "methods/none" })).content[0].text, /No office method 'methods\/none'/);
   const Cap = await import("../lib/capture.js");
   const md = Cap.caseMarkdown({ label: "TST", model: "Test", startedAt: "a", stoppedAt: "b", diffs: [], journal: { sequence: [], totals: {} }, methods: [{ name: "structural-interference-solving", version: 1 }],
     actions: [{ label: "Floors x Structural Columns: join added", count: 3, ids: ["1 x 2"], rule: { text: "Structural Columns cut Floors", count: 3, of: 3 }, exceptions: [] }] });
   assert.match(md, /Would update office method structural-interference-solving \(v1\) once confirmed \(revit_guide methods\/structural-interference-solving\)\./);
+}
+// --- 1.12.9 workset audit: empty but expected, the default workset, no rules = not checked; delete_empty keeps the expected ---
+{
+  const au = await call("assign_worksets", { action: "audit", max_ids: 7, out_dir: path.join(tmp, "wsa") });
+  const at = au.content.at(-1).text;
+  assert.match(at, /; 2 empty, 2 empty but expected to hold elements, .* elements on the wrong workset not checked: no rules\./);
+  assert.match(at, /TST RVT LINKS: empty, but 4 element\(s\) look like they belong here \(4 on Workset1\)\. Move them here/);
+  assert.match(at, /TST CAD LINKS: empty, but 2 element\(s\) look like they belong here \(2 on Workset1\)/, "CAD: the imports only");
+  assert.match(at, /Workset1: default workset holds 60 element\(s\) \(34 structural\); assign them by rules\. Top: Structural Columns 30, Floors 20, RVT Links 4, Structural Foundations 4, TST site\.dwg 2\./);
+  assert.match(at, /Shared Levels and Grids: default workset holds 2 element\(s\) \(0 structural\)/, "non-datum elements on Shared Levels and Grids");
+  const csv = fs.readFileSync(fs.readdirSync(path.join(tmp, "wsa")).filter((f) => f.endsWith(".csv")).map((f) => path.join(tmp, "wsa", f))[0], "utf8");
+  assert.ok(/not checked: no rules/.test(csv) && /empty, but 4 element/.test(csv));
+  const W = await import("../lib/worksets.js");
+  const tok = W.audit({ rules: null, worksets: [{ name: "TST PCC", elements: 0, byCategory: {} }, { name: "Workset1", elements: 4, byCategory: { "Structural Foundations": 4 } }] }, W.namingOf({ naming: { categoryTokens: { PCC: ["Structural Foundations"] } } }));
+  assert.ok(tok.rows[0].flags.includes("empty-but-expected"), "naming.categoryTokens extends the table");
+  assert.deepEqual(W.expectedCategories("TST EL RVT LINKS"), ["RVT Links"]);
+  const de = await call("assign_worksets", { action: "delete_empty", max_ids: 7, explanation: "x", check_only: true });
+  assert.deepEqual(seen.filter((x) => x.command === "workset_admin").at(-1).args.worksets, ["TST OLD", "TST PCC"], "only the truly empty ones are sent");
+  assert.match(de.content.at(-1).text, /Kept \(empty, but elements look like they belong there; move them rather than delete\): TST RVT LINKS: 4 on Workset1; TST CAD LINKS: 2 on Workset1\./);
 }
 // --- register_update (no Revit): check first, write with confirm after the identical check, never the register ---
 {
@@ -1338,6 +1397,21 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   fs.writeFileSync(path.join(rv, "ACE Vault", "rules", "naming.json"), JSON.stringify({ idPattern: "^TST-00[1]$" }));
   const vt = (await call("register_update", { ...ru, vault: rv, stage: ["Stage 1"] })).content.at(-1).text;
   assert.ok(/Headings\/skipped \(not ids\): 1: row 3 "TST-002"/.test(vt) && /Id pattern from the vault: .*naming\.json/.test(vt), "the vault's id pattern");
+  // 1.12.9: the project template in the vault: the call needs only vault, discipline, stage, date, label, delivered, output.
+  const tv2 = path.join(rDir, "tplproj");
+  fs.mkdirSync(path.join(tv2, "ACE Vault", "rules"), { recursive: true });
+  fs.copyFileSync(reg, path.join(tv2, "TST register.xlsx"));
+  fs.writeFileSync(path.join(tv2, "ACE Vault", "rules", "register.json"), JSON.stringify({ file: "../TST register*.xlsx", headerRow: 1, idColumn: "Doc No",
+    disciplines: { ST: { sheet: "TST_REG" } }, stages: { IFC: ["Stage 1"] } }));
+  const tr = { vault: tv2, discipline: "ST", stage: "IFC", submission_date: "2026-10-20", label: "SUB 09", delivered_dir: path.join(rDir, "cde"), output: path.join(rDir, "tpl-out.xlsx") };
+  const trt = (await call("register_update", tr)).content.at(-1).text;
+  assert.match(trt, /Matched \(delivered, date set\): 2: TST-001 <- TST-001_A\.pdf; TST-002 <- TST-002\.pdf\./);
+  assert.match(trt, /From the project template \(.*register\.json\): register, sheet, header_row, id_column, stage_columns, stage; from the call: .*submission_date/);
+  const tro = (await call("register_update", { ...tr, id_column: "A" })).content.at(-1).text;
+  assert.match(tro, /From the project template \(.*\): register, sheet, header_row, stage_columns, stage; from the call: id_column,/, "an explicit argument wins over the file");
+  assert.match((await call("register_update", { ...tr, discipline: "AR" })).content[0].text, /Discipline "AR" is not in .*register\.json: known ST\./);
+  assert.match((await call("register_update", { ...tr, stage: "CONCEPT" })).content[0].text, /Stage "CONCEPT" is not in .* for ST: known IFC\./);
+  assert.match((await call("register_update", { ...ru, discipline: "ST" })).content[0].text, /discipline needs the project's template/);
   const wrong = await call("register_update", { ...ru, id_column: "Stage 1", force_id_column: false });
   assert.ok(wrong.isError && /The id column looks wrong/.test(wrong.content[0].text));
 }
