@@ -2495,6 +2495,8 @@ tool("clash_resolve", {
     chunk_size: z.number().int().min(1).max(100000).optional().describe("All-touching: pairs per chunk (default max_pairs, 500); each chunk is its own dry run, apply and undo"),
     chunk: z.number().int().min(1).optional().describe("Which chunk to plan (default 1)"),
     flips: z.array(z.string().max(120)).max(2000).optional().describe("Ids from the plan's \"Flip, confirm\" list to switch"),
+    exclude_ids: z.array(z.number().int().positive()).max(2000).optional().describe("Element ids left alone: no step changing them is planned (report-only, \"excluded\")"),
+    drop_failing_steps: z.boolean().optional().describe("Default true: steps behind a Revit commit error or a new warning are dropped (report-only, with Revit's message) and the chunk runs again; false fails the whole chunk instead"),
     same_category: z.boolean().optional().describe("Default true (same-category joins are part of the office method); false opts out"),
     steel: z.object({ cutback: z.boolean().optional(), coping: z.boolean().optional(), allowUnjoin: z.boolean().optional().describe("Only after the user agrees: a steel end joined to a column may be unjoined (join state changes) to cut it back") }).optional(),
     vault: z.string().optional().describe("Project folder or its ACE Vault (default: the open model's)"),

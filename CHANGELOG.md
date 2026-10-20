@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.13.7 (20 Oct 2026)
+- **clash_resolve no longer loses whole chunks on commit:** a dry run whose commit Revit refuses now fails (every native
+  command: a refused commit was counted as success), so errors such as "Can't cut joined element" show in the preview.
+  Steps behind a commit error, or behind new warnings only (e.g. a shape-edited floor), are found by the failure's
+  element ids (else by halving, at most 24 trial runs, always rolled back), dropped, and the chunk runs again (3 rounds);
+  dropped steps are report-only (`dropped-failing`, Revit's message and ids). The apply drops the same steps as its dry
+  run; anything new is marked "differs from preview". `drop_failing_steps: false` keeps the old behaviour.
+  `exclude_ids` takes steps out before the plan (report-only `excluded`).
+- **export_deliverables:** DWFx runs inside a rolled-back transaction ("requires that document is modifiable").
+
 ## 1.13.6 (20 Oct 2026)
 - **export_deliverables:** IFC setups saved in the model (the exporter's extensible storage) are read and used by name,
   model first then vault; `list_ifc_setups`. DWFx: one combined file named as the model, only the listed sheets or

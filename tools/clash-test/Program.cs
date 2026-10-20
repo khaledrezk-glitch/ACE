@@ -814,6 +814,37 @@ class P {
       && !(bool)R("IsNotIntersecting").Invoke(null, new object[] { "Highlighted walls overlap." })!,
       "guard: a warning names only the steps joining both its elements (others are listed as near, never dropped); \"joined but do not intersect\" is recognised");
 
+    // 1.13.7 drop_failing_steps / exclude_ids (synthetic ids).
+    var fsSteps = new List<(string, long, long)> { ("join:10>11", 10, 11), ("join:10>12", 10, 12), ("join:20>21", 20, 21) };
+    var fsExact = (Dictionary<string, List<int>>?)R("FailingSteps").Invoke(null, new object[] { new List<long[]> { new long[] { 11, 10 } }, fsSteps });
+    var fsNear = (Dictionary<string, List<int>>?)R("FailingSteps").Invoke(null, new object[] { new List<long[]> { new long[] { 10 } }, fsSteps });
+    var fsNone = R("FailingSteps").Invoke(null, new object[] { new List<long[]> { new long[] { 99 } }, fsSteps });
+    var fsNoIds = R("FailingSteps").Invoke(null, new object[] { new List<long[]> { new long[0] }, fsSteps });
+    Check(fsExact != null && fsExact.Keys.SequenceEqual(new[] { "join:10>11" }) && fsNear != null && fsNear.Keys.OrderBy(k => k).SequenceEqual(new[] { "join:10>11", "join:10>12" })
+      && fsNone == null && fsNoIds == null,
+      "drop failing steps: a failure's elements name the steps joining both, else the steps changing one; no ids or no step = find them by trial runs");
+    List<int>? Bis(int n, HashSet<int> bad, int max, out int trials)
+    {
+      var args = new object?[] { n, new Func<List<int>, bool>(set => set.Any(bad.Contains)), max, 0 };
+      var res = (List<int>?)R("Bisect").Invoke(null, args);
+      trials = (int)args[3]!;
+      return res;
+    }
+    var b1 = Bis(8, new HashSet<int> { 5 }, 24, out var bt1);
+    var b2 = Bis(8, new HashSet<int> { 1, 6 }, 24, out var t2);
+    var b3 = Bis(1, new HashSet<int> { 0 }, 24, out var t3);
+    var b4 = Bis(500, new HashSet<int> { 7, 300, 499 }, 4, out _);
+    var bTogether = (List<int>?)R("Bisect").Invoke(null, new object?[] { 4, new Func<List<int>, bool>(set => set.Count == 4), 24, 0 });
+    var b2again = Bis(8, new HashSet<int> { 1, 6 }, 24, out var t2b);
+    Check(b1 != null && b1.SequenceEqual(new[] { 5 }) && bt1 == 6 && b2 != null && b2.SequenceEqual(new[] { 1, 6 }) && b2again!.SequenceEqual(b2) && t2b == t2
+      && b3 != null && b3.SequenceEqual(new[] { 0 }) && t3 == 0 && b4 == null && bTogether == null,
+      $"drop failing steps: halving finds the failing steps deterministically ({bt1} and {t2} trial runs); null over the trial cap or when steps fail only together");
+    long[] Ids(string t) => (long[])R("IdsInText").Invoke(null, new object[] { t })!;
+    Check(Ids("Can't cut joined element. (elements: 101, 202)").SequenceEqual(new long[] { 101, 202 }) && Ids("Can't cut joined element.").Length == 0,
+      "drop failing steps: the element ids of a Revit error as the model guard writes it");
+    bool TE(long a, long b, ICollection<long> ex) => (bool)R("TouchesExcluded").Invoke(null, new object[] { a, b, ex })!;
+    Check(TE(1, 2, new HashSet<long> { 2 }) && !TE(1, 2, new HashSet<long> { 3 }) && !TE(1, 2, new HashSet<long>()), "exclude_ids: a step changing an excluded element is not planned");
+
     Check((string)WP("KeptWhy").Invoke(null, new object[] { 3, 3 })! == "holds 3 types (a plan moves instances only)" && ((string)WP("KeptWhy").Invoke(null, new object[] { 5, 2 })!).StartsWith("not empty after the moves (5 elements, 2 of them types")
       && (string)WP("KeptWhy").Invoke(null, new object[] { 1, 0 })! == "not empty after the moves (1 element)", "workset plan: a workset holding only types is kept (\"holds N types\"), never a plan-wide rollback");
 

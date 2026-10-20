@@ -32,8 +32,13 @@ namespace AceRevitMcp.Commands
         /// As verify, with the warnings Revit posted while the transaction committed (ModelGuard deletes them, so the
         /// model's own warning list does not show them): description and element ids. Used instead of verify when given.
         /// </param>
+        /// <param name="trial">
+        /// A trial run inside a command (e.g. clash_resolve finding the step behind a warning): always rolled back like a dry
+        /// run, never an Apply card, never marked as applied, whatever dry_run says.
+        /// </param>
         public static JsonObject Run(UIApplication app, JsonObject args, string kind, string title, Func<Document, bool, JsonObject> body, string rules = null,
-            Func<Document, JsonObject, bool> verify = null, Func<Document, JsonObject, IReadOnlyList<(string Text, long[] Ids)>, bool> verifyWithWarnings = null)
+            Func<Document, JsonObject, bool> verify = null, Func<Document, JsonObject, IReadOnlyList<(string Text, long[] Ids)>, bool> verifyWithWarnings = null,
+            bool trial = false)
         {
             if (verifyWithWarnings != null) verify = null;
             var doc = Args.RequireDoc(app);
@@ -52,7 +57,7 @@ namespace AceRevitMcp.Commands
                 return plan;
             }
 
-            var dryRun = Args.Bool(args, "dry_run");
+            var dryRun = trial || Args.Bool(args, "dry_run");
             var fromPanel = Args.Bool(args, "_fromPanel");
             var hash = Companion.ActivityHub.Fingerprint(kind, args);
             if (!dryRun && !fromPanel && Companion.ActivityHub.Decided(hash, $"this change ({title})") is { } earlier)
@@ -67,6 +72,7 @@ namespace AceRevitMcp.Commands
             JsonObject result;
             string status = null;
             var verifyFailed = false;
+            var commitFailed = false;   // Revit refused the commit (errors): a failure for a dry run too, not a preview that rolled back
             var recording = ChangeTracker.Begin(title);
             using (var guard = new ModelGuard(app))
             using (var group = new TransactionGroup(doc, title))
@@ -81,7 +87,7 @@ namespace AceRevitMcp.Commands
                     result = body(doc, false);
                     var committed = t.Commit();
                     recording.CaptureNames(doc);
-                    if (committed != TransactionStatus.Committed) { group.RollBack(); status = committed.ToString(); }
+                    if (committed != TransactionStatus.Committed) { group.RollBack(); status = committed.ToString(); commitFailed = true; }
                     else if ((verify != null && !Verified(verify, doc, result))
                              || (verifyWithWarnings != null && !Verified((d, r) => verifyWithWarnings(d, r, guard.WarningDetails), doc, result)))
                     {
@@ -99,7 +105,7 @@ namespace AceRevitMcp.Commands
                     if (group.HasStarted() && !group.HasEnded()) group.RollBack();
                     ChangeTracker.End(recording, kept);
                 }
-                var ok = status == nameof(TransactionStatus.Committed) || (dryRun && status == nameof(TransactionStatus.RolledBack));
+                var ok = !commitFailed && (status == nameof(TransactionStatus.Committed) || (dryRun && status == nameof(TransactionStatus.RolledBack)));
                 result["success"] = ok;
                 result["transaction"] = status;
                 result["dryRun"] = dryRun;
@@ -115,7 +121,7 @@ namespace AceRevitMcp.Commands
                     : dryRun ? "Preview only: the model is unchanged. Apply it from the Apply card in the ACE panel, or confirm to Claude."
                     : $"Applied as ONE undo step named '{title}'.";
                 var anything = (summary?["modified"]?.ToString() ?? "0") + (summary?["added"]?.ToString() ?? "0") + (summary?["deleted"]?.ToString() ?? "0") != "000";
-                if (ok && dryRun && anything && !fromPanel)   // a preview in an ACE window is applied there, not from a card
+                if (ok && dryRun && anything && !fromPanel && !trial)   // a preview in an ACE window is applied there, not from a card
                 {
                     // An Apply card in the Companion, titled for people (the title is not part of the change's identity).
                     var cardArgs = (JsonObject)args.DeepClone();

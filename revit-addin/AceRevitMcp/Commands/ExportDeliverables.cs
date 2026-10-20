@@ -14,8 +14,8 @@ namespace AceRevitMcp.Commands
 {
     /// <summary>
     /// Bridge "export_deliverables": { out_dir, overwrite, check_only, nwc?: { view, file }, ifc?: { view?, setup?, config?,
-    /// file }, dwfx?: { sheets?, sheet_set?, file } }. Writes files, never changes the model (the IFC export runs inside a
-    /// transaction that is rolled back, as Revit requires one). check_only answers the pre-flight only; an export refuses
+    /// file }, dwfx?: { sheets?, sheet_set?, file } }. Writes files, never changes the model (the IFC and DWFx exports run inside a
+    /// transaction that is rolled back, as Revit requires a modifiable document: no undo step). check_only answers the pre-flight only; an export refuses
     /// when anything is blocked (no Navisworks exporter, a view or sheet missing, a file that exists without overwrite).
     /// </summary>
     internal static class ExportDeliverables
@@ -26,6 +26,20 @@ namespace AceRevitMcp.Commands
             public View View;
             public List<ViewSheet> Sheets;
             public IFCExportOptions Ifc;
+        }
+
+        /// <summary>
+        /// Runs an export that needs a modifiable document inside a transaction that is always rolled back: the model is unchanged
+        /// and no undo step is left. The files the export writes stay.
+        /// </summary>
+        private static bool RolledBack(Document doc, string name, Func<bool> export)
+        {
+            using (var t = new Transaction(doc, name))
+            {
+                t.Start();
+                try { return export(); }
+                finally { if (t.HasStarted() && !t.HasEnded()) t.RollBack(); }
+            }
         }
 
         /// <summary>
@@ -259,12 +273,7 @@ namespace AceRevitMcp.Commands
                                 doc.Export(temp, baseName, new NavisworksExportOptions { ExportScope = NavisworksExportScope.View, ViewId = job.View.Id });
                                 break;
                             case "ifc":
-                                using (var t = new Transaction(doc, "ACE: IFC export"))
-                                {
-                                    t.Start();
-                                    try { if (!doc.Export(temp, baseName, job.Ifc)) warnings.Add("Revit reported the IFC export as not successful."); }
-                                    finally { if (t.HasStarted() && !t.HasEnded()) t.RollBack(); }
-                                }
+                                if (!RolledBack(doc, "ACE: IFC export", () => doc.Export(temp, baseName, job.Ifc))) warnings.Add("Revit reported the IFC export as not successful.");
                                 break;
                             case "dwfx":
                                 var set = new ViewSet();
@@ -275,7 +284,9 @@ namespace AceRevitMcp.Commands
                                     MergedViews = true, PaperFormat = ExportPaperFormat.Default, ExportObjectData = true, CropBoxVisible = false, ExportingAreas = false,
                                     ImageQuality = DWFImageQuality.High, ImageFormat = DWFImageFormat.Lossless,
                                 };
-                                if (!doc.Export(temp, baseName, set, dwfxOptions)) warnings.Add("Revit reported the DWFx export as not successful.");
+                                // Like the IFC exporter, the DWFx export needs a modifiable document: inside a transaction that is
+                                // always rolled back (no undo step, the model is unchanged).
+                                if (!RolledBack(doc, "ACE: DWFx export", () => doc.Export(temp, baseName, set, dwfxOptions))) warnings.Add("Revit reported the DWFx export as not successful.");
                                 break;
                         }
                         foreach (var w in guard.Warnings.Concat(guard.Errors).Concat(guard.Dialogs).Distinct().Take(20)) warnings.Add(w);

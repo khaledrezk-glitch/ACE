@@ -225,6 +225,7 @@ export function buildRequest(a, rules = {}, version) {
   const chunkSize = chunkSizeOf(a.chunk_size) ?? rules.chunkSize;
   if (a.chunk != null && (!Number.isInteger(a.chunk) || a.chunk < 1)) throw new Error("chunk must be a whole number from 1 (the chunk list says how many there are).");
   const flips = [...new Set((a.flips ?? []).map((x) => String(x).trim()).filter(Boolean))].sort();
+  const excludeIds = [...new Set((a.exclude_ids ?? []).map(Number).filter((x) => Number.isInteger(x) && x > 0))].sort((x, y) => x - y);
   // Trim to a face is approved in the vault only; a call can switch it off, never on.
   if (a.trim_to_face === true && !rules.trim?.allowed) {
     const w = rules.from?.trimAllowed === "office" ? `the office file ${rules.files?.office}` : rules.from?.trimAllowed === "project" ? `the vault's rules/${RULES_FILE}` : null;
@@ -257,6 +258,8 @@ export function buildRequest(a, rules = {}, version) {
     ...(chunkSize ? { chunk_size: chunkSize } : {}),
     ...(a.chunk ? { chunk: a.chunk } : {}),
     ...(flips.length ? { flips } : {}),
+    ...(excludeIds.length ? { exclude_ids: excludeIds } : {}),
+    ...(a.drop_failing_steps === false ? { drop_failing_steps: false } : {}),
     ...(narrowed ? { narrowed } : {}),
     ...(a.selection ? { selection: true } : {}),
     ...(trim ? { trim_to_face: trim } : {}),

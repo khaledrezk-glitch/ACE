@@ -20,7 +20,10 @@ namespace AceRevitMcp.Coordination
     /// tags, dimensions and Revit warnings of every touched element must be unchanged, or the whole change rolls back.
     /// { test, a_categories, b_categories, tolerance_mm, level, keys, order, steel: { cutback, coping }, block_on_borrowed,
     /// scope (clashing | all-touching), selection, same_category (default true), max_pairs (default 500), chunk_size (default
-    /// max_pairs), chunk (1-based), flips: [plan ids of wrong-order joins confirmed to switch],
+    /// max_pairs), chunk (1-based), flips: [plan ids of wrong-order joins confirmed to switch], exclude_ids: [element ids whose
+    /// steps are not planned (report-only "excluded")], drop_failing_steps (default true: a run that Revit's commit refuses, or
+    /// whose guard fails only on new warnings, drops the steps behind the failure, by its element ids or by halving in trial
+    /// runs, and runs again, at most 3 rounds; the dry run's drops are reused by its apply, see droppedSteps),
     /// trim_to_face: { allowed, max_mm } | true, check_only, dry_run, expect_model, expect_version, expect_plan, max_ids,
     /// max_elements, test_force_verify_mismatch }
     /// </summary>
@@ -51,7 +54,18 @@ namespace AceRevitMcp.Coordination
             public double LengthBefore;  // trim: the location line's length before (feet)
             public string Face;          // trim: "<category> <id> <face>"
             public bool Excluded;        // left out after a run showed "joined but do not intersect" for it (dropped as not touching)
+            public string Dropped;       // drop_failing_steps: left out, the warning or error behind it (null: runs)
         }
+
+        /// <summary>
+        /// drop_failing_steps: the steps a successful dry run dropped, by model and plan hash, so the apply of the same plan
+        /// drops exactly the same steps (without trying again) and keeps the step the preview showed.
+        /// </summary>
+        private static readonly Dictionary<string, Dictionary<string, (string Why, JsonArray Failures)>> DroppedByPreview =
+            new Dictionary<string, Dictionary<string, (string, JsonArray)>>(StringComparer.Ordinal);
+
+        /// <summary>Most trial runs drop_failing_steps spends finding the failing steps by halving (each re-runs the clash test).</summary>
+        private const int MaxBisectTrials = 24;
 
         public static JsonNode Run(UIApplication app, JsonObject args)
         {
@@ -212,6 +226,28 @@ namespace AceRevitMcp.Coordination
                     chunkSize, Args.Int(args, "chunk", 0), flips);
             }
 
+            // exclude_ids: no step that changes one of these elements is planned; each is listed as report-only ("excluded").
+            var excludeIds = new HashSet<long>(Args.Ids(args, "exclude_ids").Select(i => i.Value));
+            if (excludeIds.Count > 0)
+            {
+                var gone = steps.Where(s => ClashResolveLogic.TouchesExcluded(s.A, s.B, excludeIds) || (s.Fallback != null && ClashResolveLogic.TouchesExcluded(s.Fallback.A, s.Fallback.B, excludeIds))).ToList();
+                var goneIds = new HashSet<string>(gone.SelectMany(s => s.Fallback == null ? new[] { s.Id } : new[] { s.Id, s.Fallback.Id }), StringComparer.Ordinal);
+                foreach (var s in gone)
+                {
+                    steps.Remove(s);
+                    var which = new[] { s.A, s.B }.Where(excludeIds.Contains).ToList();
+                    if (which.Count == 0 && s.Fallback != null) which = new[] { s.Fallback.A, s.Fallback.B }.Where(excludeIds.Contains).ToList();
+                    var item = StepReport(doc, s, "excluded", $"excluded: element {string.Join(", ", which)} is in exclude_ids", "Fix it by hand, or run again without it in exclude_ids.");
+                    item["level"] = planJson.OfType<JsonObject>().FirstOrDefault(o => o["id"]?.ToString() == s.Id)?["level"]?.DeepClone();
+                    var clash = found.FirstOrDefault(c => c.Key == s.ClashKey);
+                    if (clash != null) { item["level"] = clash.Level; item["depthMm"] = clash.DepthMm; reportWhy[s.ClashKey] = item["why"]?.ToString(); }
+                    reportOnly.Add(item);
+                }
+                for (var i = planJson.Count - 1; i >= 0; i--)
+                    if (planJson[i]?["id"]?.ToString() is string pid && goneIds.Contains(pid)) planJson.RemoveAt(i);
+                notes.Add($"exclude_ids: {gone.Count} step{(gone.Count == 1 ? "" : "s")} changing {string.Join(", ", excludeIds.OrderBy(x => x))} not planned (report only, \"excluded\").");
+            }
+
             // The plan's fingerprint: an apply (or the Apply card, which replays the same args) must find the plan it previewed.
             var planHash = ClashResolveLogic.PlanHash(steps.SelectMany(s => s.Fallback == null ? new[] { s } : new[] { s, s.Fallback }).Select(s =>
             {
@@ -233,8 +269,10 @@ namespace AceRevitMcp.Coordination
             }
             var blocked = ClashResolveLogic.Blocks(held, maxIds);
             foreach (var m in modelBlocks) blocked.Insert(0, m?.DeepClone());
+            var droppedSteps = new JsonArray();   // drop_failing_steps: the steps left out for a warning or a commit error
             JsonObject Common(JsonObject r)
             {
+                r["droppedSteps"] = droppedSteps.DeepClone();
                 r["model"] = doc.Title; r["aceVersion"] = aceVersion; r["test"] = test.Name; r["planHash"] = planHash;
                 r["order"] = new JsonArray(order.Select(x => (JsonNode)x).ToArray());
                 r["storeKey"] = Clashes.StoreKey(doc);
@@ -287,15 +325,18 @@ namespace AceRevitMcp.Coordination
             var worse = new List<(long Element, string What, string Before, string After)>();   // set by the body's after-run
             var trimmed = new HashSet<long>();                                                  // members cut back or coped
 
-            JsonObject result = null;
-            for (var attempt = 1; ; attempt++)
-            {
-            retryDrop.Clear();
-            result = NativeChange.Run(app, args, "clash_resolve", Title, (d, plan) =>
+            var dropFailing = Args.Bool(args, "drop_failing_steps", true);
+            var dryRunMode = Args.Bool(args, "dry_run");
+            var trialOff = new HashSet<string>(StringComparer.Ordinal);   // drop_failing_steps: steps left out of one trial run
+            var lastOthersOk = true; var lastWarnOk = true;               // set by the guard of the last run
+            var lastFresh = new List<(string Text, long[] Ids)>();
+            bool Runs(Step s) => !s.Blocked && s.Dropped == null && !trialOff.Contains(s.Id);
+
+            Func<Document, bool, JsonObject> body = (d, plan) =>
             {
                 var r = Common(new JsonObject());
                 var done = new JsonObject { ["join"] = 0, ["switchJoin"] = 0, ["cutback"] = 0, ["cope"] = 0, ["trim"] = 0 };
-                var dropped = new JsonObject { ["join"] = 0, ["switchJoin"] = 0, ["cutback"] = 0, ["cope"] = 0, ["trim"] = 0, ["notTouching"] = 0 };
+                var dropped = new JsonObject { ["join"] = 0, ["switchJoin"] = 0, ["cutback"] = 0, ["cope"] = 0, ["trim"] = 0, ["notTouching"] = 0, ["failing"] = 0 };
                 var skipped = (JsonArray)preSkipped.DeepClone();
                 r["done"] = done; r["dropped"] = dropped; r["skipped"] = skipped;
                 r["warnings"] = new JsonObject { ["before"] = existingWarnings.Count, ["after"] = null, ["new"] = new JsonArray() };
@@ -304,9 +345,15 @@ namespace AceRevitMcp.Coordination
 
                 worse.Clear(); trimmed.Clear(); relocated.Clear();
                 var ran = new Dictionary<string, string>(StringComparer.Ordinal);   // clash key -> kind done, or the skip reason
-                Execute(d, steps.Where(s => !s.Blocked).ToList(), done, dropped, skipped, ran, test.ToleranceMm, relocated);
+                Execute(d, steps.Where(Runs).ToList(), done, dropped, skipped, ran, test.ToleranceMm, relocated);
                 foreach (var id in relocated.Keys) trimmed.Add(id);
                 foreach (var s in steps.Where(s => s.Blocked)) ran[s.ClashKey] = "skipped: blocked";
+                foreach (var s in steps.Where(s => !s.Blocked && s.Dropped != null))
+                {
+                    skipped.Add(SkipItem(s, "dropped: " + s.Dropped)); ran[s.ClashKey] = "skipped: dropped (" + s.Dropped + ")";
+                    dropped["failing"] = dropped["failing"].GetValue<int>() + 1;
+                }
+                foreach (var s in steps.Where(s => !s.Blocked && s.Dropped == null && trialOff.Contains(s.Id))) ran[s.ClashKey] = "skipped: left out of this trial run";
                 foreach (var s in steps.Where(s => !s.Blocked && (s.Kind == "cutback" || s.Kind == "cope") && ran.TryGetValue(s.ClashKey, out var k) && k == s.Kind)) trimmed.Add(s.A);
                 d.Regenerate();
 
@@ -336,7 +383,8 @@ namespace AceRevitMcp.Coordination
                          .Select(s => (s.ClashKey, s.A, s.DepthMm, nowByKey.TryGetValue(s.ClashKey, out var dep) ? dep : (double?)null)).ToList()));
                 r["after"] = new JsonObject { ["clashes"] = now.Count, ["issues"] = ClashLogic.Issues(now).Count, ["byPair"] = ByPair(now), ["remaining"] = remaining };
                 return r;
-            }, verifyWithWarnings: (d, r, posted) =>
+            };
+            Func<Document, JsonObject, IReadOnlyList<(string Text, long[] Ids)>, bool> verify = (d, r, posted) =>
             {
                 var after = Snapshot(d, guardIds, hostedFor);
                 var (mismatches, changedValues) = ClashResolveLogic.Compare(beforeStates, after, trimmed, relocated.Keys);
@@ -353,7 +401,8 @@ namespace AceRevitMcp.Coordination
                 var othersOk = mismatches.Count == 0;
                 var (warnAfter, fresh, warnOk) = ClashResolveLogic.WarningsWithIds(existingWarnings, Warnings(d), posted.ToList(), out var freshItems);
                 // Each new warning with the plan items behind it (the steps whose elements it names).
-                var ranSteps = steps.Where(x => !x.Blocked && !x.Excluded).SelectMany(x => x.Fallback == null ? new[] { x } : new[] { x, x.Fallback }).Select(x => (x.Id, x.A, x.B)).ToList();
+                lastOthersOk = othersOk; lastWarnOk = warnOk; lastFresh = freshItems;
+                var ranSteps = steps.Where(x => Runs(x) && !x.Excluded).SelectMany(x => x.Fallback == null ? new[] { x } : new[] { x, x.Fallback }).Select(x => (x.Id, x.A, x.B)).ToList();
                 var byItem = freshItems.Select(w => (w.Text, w.Ids, Items: ClashResolveLogic.PlanItemsFor(w.Ids, ranSteps), Near: ClashResolveLogic.PlanItemsNear(w.Ids, ranSteps))).ToList();
                 r["warnings"] = new JsonObject
                 {
@@ -387,10 +436,113 @@ namespace AceRevitMcp.Coordination
                     }).ToArray()),
                 };
                 return mismatches.Count == 0;
-            });
-            if (checkOnly || attempt >= 3 || retryDrop.Count == 0 || result["transaction"]?.ToString() != "VerifyFailed") break;
-            foreach (var s in steps.Where(x => retryDrop.Contains(x.Id))) s.Excluded = true;
-            notes.Add($"Revit reported \"joined but do not intersect\" for {string.Join(", ", retryDrop.OrderBy(x => x, StringComparer.Ordinal))}: left out (dropped as not touching) and the change was run again without them.");
+            };
+            JsonObject RunOnce(bool trial)
+            {
+                retryDrop.Clear(); lastOthersOk = true; lastWarnOk = true; lastFresh = new List<(string Text, long[] Ids)>();
+                return NativeChange.Run(app, args, "clash_resolve", Title, body, verifyWithWarnings: verify, trial: trial);
+            }
+            // The failures of a run that drop_failing_steps can act on: Revit errors that rolled the commit back, or new warnings
+            // that alone failed the guard (every other check passed). Null: none (the run passed, or failed for another reason).
+            List<(string Text, long[] Ids)> StepFailures(JsonObject res)
+            {
+                if (res["guard"] == null && res["revitErrors"] is JsonArray errs && errs.Count > 0)
+                    return errs.Select(e =>
+                    {
+                        var t = e?.ToString() ?? "";
+                        var cut = t.LastIndexOf(" (elements:", StringComparison.Ordinal);
+                        return (cut > 0 ? t.Substring(0, cut) : t, ClashResolveLogic.IdsInText(t));
+                    }).ToList();
+                if (res["transaction"]?.ToString() == "VerifyFailed" && lastOthersOk && !lastWarnOk && lastFresh.Count > 0) return lastFresh.ToList();
+                return null;
+            }
+            JsonArray FailuresJson(IEnumerable<(string Text, long[] Ids)> f) => new JsonArray(f.Select(x => (JsonNode)new JsonObject
+            {
+                ["message"] = x.Text, ["elements"] = new JsonArray((x.Ids ?? new long[0]).Select(i => (JsonNode)i).ToArray()),
+            }).ToArray());
+            void Drop(Step s, string why, JsonArray failures, string foundBy, bool differs)
+            {
+                s.Dropped = why;
+                var item = StepReport(doc, s, "dropped-failing", "dropped: " + why,
+                    "Revit refuses this step together with the rest: fix the elements named by hand (e.g. a shape-edited floor), or leave them; the rest was run without it.");
+                if (planJson.OfType<JsonObject>().FirstOrDefault(o => o["id"]?.ToString() == s.Id) is JsonObject pj) { pj["dropped"] = why; item["level"] = pj["level"]?.DeepClone(); }
+                item["failures"] = failures.DeepClone(); item["foundBy"] = foundBy;
+                if (differs) item["differsFromPreview"] = true;
+                reportOnly.Add(item);
+                if (found.Any(c => c.Key == s.ClashKey)) reportWhy[s.ClashKey] = "dropped: " + why;
+                droppedSteps.Add(new JsonObject
+                {
+                    ["id"] = s.Id, ["kind"] = s.Kind, ["a"] = s.A, ["b"] = s.B, ["why"] = why, ["failures"] = failures.DeepClone(), ["foundBy"] = foundBy,
+                    ["differsFromPreview"] = differs ? true : null,
+                });
+            }
+            string WhyOf(IList<(string Text, long[] Ids)> f) =>
+                f.Count == 0 ? "Revit refused it" : $"Revit: \"{f[0].Text}\" (elements {string.Join(", ", f[0].Ids ?? new long[0])})" + (f.Count > 1 ? $" and {f.Count - 1} more" : "");
+
+            // drop_failing_steps: the apply drops what its preview dropped, before it runs (the same steps, the same plan hash).
+            var previewKey = doc.Title + "|" + planHash;
+            var fromPreview = false;
+            if (!checkOnly && !dryRunMode && dropFailing && DroppedByPreview.TryGetValue(previewKey, out var preview))
+            {
+                fromPreview = true;
+                foreach (var s in steps) if (preview.TryGetValue(s.Id, out var pv)) Drop(s, pv.Why, pv.Failures, "the preview", false);
+                if (preview.Count > 0) notes.Add($"drop_failing_steps: {preview.Count} step{(preview.Count == 1 ? "" : "s")} the preview dropped {(preview.Count == 1 ? "is" : "are")} left out up front.");
+            }
+
+            JsonObject result = null;
+            var dropRounds = 0;
+            for (var attempt = 1; ; attempt++)
+            {
+                result = RunOnce(false);
+                if (checkOnly) break;
+                if (attempt < 3 && retryDrop.Count > 0 && result["transaction"]?.ToString() == "VerifyFailed")
+                {
+                    foreach (var s in steps.Where(x => retryDrop.Contains(x.Id))) s.Excluded = true;
+                    notes.Add($"Revit reported \"joined but do not intersect\" for {string.Join(", ", retryDrop.OrderBy(x => x, StringComparer.Ordinal))}: left out (dropped as not touching) and the change was run again without them.");
+                    continue;
+                }
+                if (!dropFailing || dropRounds >= ClashResolveLogic.MaxDropRounds) break;
+                var failures = StepFailures(result);
+                if (failures == null) break;
+                dropRounds++;
+                var active = steps.Where(s => Runs(s) && !s.Excluded).ToList();
+                var map = ClashResolveLogic.FailingSteps(failures.Select(f => f.Ids).ToList(), active.Select(s => (s.Id, s.A, s.B)).ToList());
+                Dictionary<string, List<(string Text, long[] Ids)>> because = null;
+                var foundBy = "the failure's elements";
+                if (map != null) because = map.ToDictionary(kv => kv.Key, kv => kv.Value.Select(i => failures[i]).ToList(), StringComparer.Ordinal);
+                else
+                {
+                    // The ids do not tell: halve the steps in trial runs (always rolled back) until the failing ones are found.
+                    foundBy = "trial runs";
+                    var singles = new Dictionary<string, List<(string Text, long[] Ids)>>(StringComparer.Ordinal);
+                    var idx = ClashResolveLogic.Bisect(active.Count, subset =>
+                    {
+                        var keep = new HashSet<string>(subset.Select(i => active[i].Id), StringComparer.Ordinal);
+                        trialOff.Clear();
+                        foreach (var s in active) if (!keep.Contains(s.Id)) trialOff.Add(s.Id);
+                        var f = StepFailures(RunOnce(true));
+                        if (f != null && subset.Count == 1) singles[active[subset[0]].Id] = f;
+                        return f != null;
+                    }, MaxBisectTrials, out var trials);
+                    trialOff.Clear();
+                    notes.Add($"drop_failing_steps: Revit's failure named no planned step; {trials} trial run{(trials == 1 ? "" : "s")} (rolled back) searched for the failing steps.");
+                    if (idx != null) because = idx.ToDictionary(i => active[i].Id, i => singles.TryGetValue(active[i].Id, out var f) ? f : failures, StringComparer.Ordinal);
+                }
+                if (because == null || because.Count == 0)
+                {
+                    notes.Add($"drop_failing_steps: the steps behind \"{failures[0].Text}\" could not be found (they fail only together, or more than {MaxBisectTrials} trial runs would be needed): nothing was dropped.");
+                    break;
+                }
+                foreach (var s in active) if (because.TryGetValue(s.Id, out var f)) Drop(s, WhyOf(f), FailuresJson(f), foundBy, fromPreview);
+                notes.Add($"drop_failing_steps: {because.Count} step{(because.Count == 1 ? "" : "s")} dropped for Revit's \"{failures[0].Text}\" (found by {foundBy}"
+                    + (fromPreview ? "; differs from the preview: the preview did not meet this failure" : "") + "), and the change was run again without them (see droppedSteps).");
+            }
+            // The preview's drops, for its apply (in this session: an apply needs a dry run of exactly this change first).
+            if (dryRunMode && !checkOnly && dropFailing && result["success"] is JsonValue sv && sv.TryGetValue<bool>(out var dryOk) && dryOk)
+            {
+                if (DroppedByPreview.Count > 50) DroppedByPreview.Clear();
+                DroppedByPreview[previewKey] = steps.Where(s => s.Dropped != null).ToDictionary(s => s.Id,
+                    s => (s.Dropped, (JsonArray)(droppedSteps.OfType<JsonObject>().FirstOrDefault(o => o["id"]?.ToString() == s.Id)?["failures"]?.DeepClone() ?? new JsonArray())), StringComparer.Ordinal);
             }
 
             if (checkOnly) result["success"] = true;
@@ -494,6 +646,14 @@ namespace AceRevitMcp.Coordination
                     catch { /* degenerate pair of solids */ }
             return Math.Round(Lengths.Mm(depth));
         }
+
+        /// <summary>A planned step listed as report-only instead (excluded, or dropped for a warning): the report item's fields.</summary>
+        private static JsonObject StepReport(Document doc, Step s, string code, string why, string recommendation) => new JsonObject
+        {
+            ["id"] = s.Id, ["kind"] = s.Kind, ["a"] = s.A, ["b"] = s.B,
+            ["aCategory"] = doc.GetElement(new ElementId(s.A))?.Category?.Name, ["bCategory"] = doc.GetElement(new ElementId(s.B))?.Category?.Name,
+            ["code"] = code, ["why"] = why, ["recommendation"] = recommendation, ["clashKey"] = s.ClashKey, ["level"] = null, ["depthMm"] = s.DepthMm,
+        };
 
         private static JsonObject SkipItem(Step s, string reason) => new JsonObject { ["id"] = s.Id, ["a"] = s.A, ["b"] = s.B, ["kind"] = s.Kind, ["reason"] = reason };
 

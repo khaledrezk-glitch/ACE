@@ -267,6 +267,72 @@ namespace AceRevitMcp.Coordination
             return (steps ?? Enumerable.Empty<(string, long, long)>()).Where(s => ids.Contains(s.A) || ids.Contains(s.B)).Select(s => s.Id).Distinct().ToList();
         }
 
+        /// <summary>drop_failing_steps: at most this many rounds of dropping the failing steps and running the chunk again.</summary>
+        public const int MaxDropRounds = 3;
+
+        /// <summary>
+        /// drop_failing_steps: the steps behind the warnings or errors that failed a run, by their element ids. Per failure, the
+        /// steps changing both of its elements, else the steps changing one of them. Answer: step id -> the failures (indices)
+        /// that named it; null when a failure has no ids or names no step (then the steps are found by bisecting).
+        /// </summary>
+        public static Dictionary<string, List<int>> FailingSteps(IList<long[]> failureIds, IList<(string Id, long A, long B)> steps)
+        {
+            if (failureIds == null || failureIds.Count == 0) return null;
+            var map = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+            for (var i = 0; i < failureIds.Count; i++)
+            {
+                var ids = failureIds[i];
+                if (ids == null || ids.Length == 0) return null;
+                var items = PlanItemsFor(ids, steps);
+                if (items.Count == 0) items = PlanItemsNear(ids, steps);
+                if (items.Count == 0) return null;
+                foreach (var it in items) { if (!map.TryGetValue(it, out var l)) map[it] = l = new List<int>(); l.Add(i); }
+            }
+            return map;
+        }
+
+        /// <summary>
+        /// drop_failing_steps when the ids do not tell: the failing items of a set that fails as a whole (0 .. count-1), found
+        /// by halving: each half is tried alone (fails(subset) = true when that run fails) and a failing half is halved again
+        /// down to single items. Null when no half fails alone (the items fail only together) or more than maxTrials runs would
+        /// be needed. Deterministic: the same items, in the same order, give the same runs.
+        /// </summary>
+        public static List<int> Bisect(int count, Func<List<int>, bool> fails, int maxTrials, out int trials)
+        {
+            trials = 0;
+            if (count <= 0 || fails == null) return null;
+            var found = new List<int>();
+            var ok = true;
+            var used = 0;
+            void Go(List<int> set)
+            {
+                if (!ok) return;
+                if (set.Count == 1) { found.Add(set[0]); return; }
+                if (used + 2 > maxTrials) { ok = false; return; }
+                var left = set.Take(set.Count / 2).ToList(); var right = set.Skip(set.Count / 2).ToList();
+                used += 2;
+                var fl = fails(left); var fr = fails(right);
+                if (!fl && !fr) { ok = false; return; }
+                if (fl) Go(left);
+                if (fr) Go(right);
+            }
+            Go(Enumerable.Range(0, count).ToList());
+            trials = used;
+            return ok ? found : null;
+        }
+
+        /// <summary>The element ids in a Revit failure text as ModelGuard writes it ("... (elements: 12, 34)"); empty when none.</summary>
+        public static long[] IdsInText(string text)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(text ?? "", @"\(elements:\s*([0-9,\s]+)\)\s*$");
+            if (!m.Success) return new long[0];
+            return m.Groups[1].Value.Split(',').Select(s => long.TryParse(s.Trim(), out var v) ? v : 0).Where(v => v > 0).ToArray();
+        }
+
+        /// <summary>exclude_ids: whether a step (its two elements) touches an excluded element.</summary>
+        public static bool TouchesExcluded(long a, long b, ICollection<long> excluded) =>
+            excluded != null && excluded.Count > 0 && (excluded.Contains(a) || excluded.Contains(b));
+
         /// <summary>A trim's plan id: "trim:&lt;trimmed id&gt;&gt;&lt;face owner id&gt;:&lt;end&gt;".</summary>
         public static string TrimId(long trimmed, long faceOwner, int end) => $"trim:{trimmed}>{faceOwner}:{end}";
 
