@@ -17,17 +17,31 @@ namespace AceRevitMcp.Util
     {
         private static string _dir;
 
-        public static void Register()
+        /// <param name="dir">ACE's folder (the ACE loader loads ACE from bytes, so the assembly has no Location).</param>
+        public static void Register(string dir)
         {
             if (_dir != null) return;
-            _dir = Path.GetDirectoryName(typeof(DependencyResolver).Assembly.Location);
+            _dir = dir;
             AppDomain.CurrentDomain.AssemblyResolve += Resolve;
+        }
+
+        /// <summary>Payload Stop: an old build stays loaded on Revit 2024, but no longer answers for its folder.</summary>
+        public static void Unregister()
+        {
+            if (_dir == null) return;
+            AppDomain.CurrentDomain.AssemblyResolve -= Resolve;
+            _dir = null;
         }
 
         private static Assembly Resolve(object sender, ResolveEventArgs e)
         {
+            var dir = _dir;
+            if (dir == null) return null;
             var wanted = new AssemblyName(e.Name);
-            var file = Path.Combine(_dir, wanted.Name + ".dll");
+            // ACE itself: always this copy (the loader loads ACE from bytes; another copy may be loaded too).
+            var self = typeof(DependencyResolver).Assembly;
+            if (string.Equals(wanted.Name, self.GetName().Name, StringComparison.OrdinalIgnoreCase)) return self;
+            var file = Path.Combine(dir, wanted.Name + ".dll");
             if (!File.Exists(file)) return null;   // not one of ours: leave it to Revit and the other add-ins
             var loaded = AppDomain.CurrentDomain.GetAssemblies()
                 .Where(a => !a.IsDynamic && string.Equals(a.GetName().Name, wanted.Name, StringComparison.OrdinalIgnoreCase))

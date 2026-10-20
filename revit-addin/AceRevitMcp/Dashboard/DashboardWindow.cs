@@ -104,6 +104,13 @@ namespace AceRevitMcp.Dashboard
         private readonly Func<State> _state;
         private string _path;
 
+        /// <summary>Closes every open report window (payload Stop: a newer ACE build is taking over).</summary>
+        internal static void CloseAll()
+        {
+            foreach (var w in Open.Values.ToList()) w.Close();
+            Open.Clear();
+        }
+
         public static void ShowOrRefresh(IntPtr owner, string title, string refreshCommand, Func<State> state)
         {
             if (!Open.TryGetValue(title, out var w))

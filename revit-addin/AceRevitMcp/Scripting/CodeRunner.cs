@@ -425,8 +425,9 @@ public static class AceScript
 #else
             var assemblyNameOf = $"AceScript_{Interlocked.Increment(ref _counter)}";
 
-            // Collectible context so thousands of scripts don't leak memory; Revit/our types resolve from the default context.
-            var alc = _scriptContext = new AssemblyLoadContext(assemblyNameOf, isCollectible: true);
+            // Collectible context so thousands of scripts don't leak memory; Revit types resolve from the default context and
+            // ACE's own from the context ACE runs in (the ACE loader's payload context, or the default one).
+            var alc = _scriptContext = new ScriptLoadContext(assemblyNameOf);
             using var ms = new MemoryStream(bytes);
             return (alc.LoadFromStream(ms), Array.Empty<string>(), risks ?? Array.Empty<string>());
 #endif
@@ -434,7 +435,7 @@ public static class AceScript
 
         private static MethodInfo LoadCompiler()
         {
-            var addinDir = Path.GetDirectoryName(typeof(CodeRunner).Assembly.Location)!;
+            var addinDir = PayloadEntry.Directory ?? Path.GetDirectoryName(typeof(CodeRunner).Assembly.Location)!;
             var compilerDir = Path.Combine(addinDir, "Compiler");
             var path = Path.Combine(compilerDir, "AceRevitMcp.Compiler.dll");
             if (!File.Exists(path))
@@ -442,9 +443,25 @@ public static class AceScript
 #if NETFRAMEWORK
             throw new CommandException(NotOnThisRevit);
 #else
-            var alc = new CompilerLoadContext(compilerDir);
+            var alc = _compilerContext = new CompilerLoadContext(compilerDir);
             var asm = alc.LoadFromAssemblyPath(path);
             return asm.GetType("AceRevitMcp.Compiler.ScriptCompiler")!.GetMethod("Compile")!;
+#endif
+        }
+
+        /// <summary>
+        /// Payload Stop: forget the compiler and, when ACE runs in the ACE loader's collectible context, unload the
+        /// compiler's context too (a non-collectible one would keep this ACE build in memory for good).
+        /// </summary>
+        public static void Shutdown()
+        {
+            lock (CompilerGate) _compile = null;
+            _references = null;
+            lock (Compiled) Compiled.Clear();
+#if !NETFRAMEWORK
+            var alc = _compilerContext;
+            _compilerContext = null;
+            if (alc != null && alc.IsCollectible) alc.Unload();
 #endif
         }
 
@@ -495,7 +512,11 @@ public static class AceScript
                 try { location = asm.Location; } catch { continue; }
                 if (string.IsNullOrEmpty(location)) continue;
 #if !NETFRAMEWORK
-                if (AssemblyLoadContext.GetLoadContext(asm) is CompilerLoadContext) continue;
+                var context = AssemblyLoadContext.GetLoadContext(asm);
+                if (context is CompilerLoadContext) continue;
+                // Another collectible context's assembly (a previous ACE build after reload_addin, an old script) would
+                // give the script two copies of the same types.
+                if (asm.IsCollectible && context != OwnContext) continue;
 #endif
                 paths.Add(location);
             }
@@ -521,10 +542,29 @@ public static class AceScript
         }
 
 #if !NETFRAMEWORK
+        private static CompilerLoadContext _compilerContext;
+
+        /// <summary>The context ACE runs in: the default one (loaded directly) or the ACE loader's collectible one.</summary>
+        private static AssemblyLoadContext OwnContext => AssemblyLoadContext.GetLoadContext(typeof(CodeRunner).Assembly) ?? AssemblyLoadContext.Default;
+
+        /// <summary>A script's context: ACE's own assemblies come from the context ACE runs in, the rest from the default.</summary>
+        private sealed class ScriptLoadContext : AssemblyLoadContext
+        {
+            public ScriptLoadContext(string name) : base(name, isCollectible: true) { }
+
+            protected override Assembly Load(AssemblyName name)
+            {
+                var own = OwnContext;
+                if (own == Default) return null;
+                return own.Assemblies.FirstOrDefault(a => string.Equals(a.GetName().Name, name.Name, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        /// <summary>Roslyn, isolated. Collectible when ACE itself is (under the ACE loader), so a reload can let both go.</summary>
         private sealed class CompilerLoadContext : AssemblyLoadContext
         {
             private readonly string _dir;
-            public CompilerLoadContext(string dir) : base("AceRevitMcp.Compiler") { _dir = dir; }
+            public CompilerLoadContext(string dir) : base("AceRevitMcp.Compiler", isCollectible: OwnContext.IsCollectible) { _dir = dir; }
 
             protected override Assembly Load(AssemblyName name)
             {

@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, forgetInstances, preferredInstance, localDate, pinSession, preferInstance, readConfig, sessionKey, sessionLabel, text } from "./lib/core.js";
+import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, forgetInstances, healthAtPort, preferredInstance, localDate, pinSession, preferInstance, readConfig, sessionKey, sessionLabel, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
 import * as Report from "./lib/report.js";
 import * as ParamList from "./lib/paramlist.js";
@@ -2615,6 +2615,34 @@ tool("check_setup", {
   const lines = checks.map((c) => `${{ ok: "OK  ", warn: "WARN", fail: "FAIL", info: "INFO" }[c.status]} ${c.name}: ${c.detail}${c.fix ? `\n     fix: ${c.fix}` : ""}`);
   const bad = checks.filter((c) => c.status === "fail").length;
   return text(`${bad ? `${bad} problem(s) found.` : "Everything essential works."}\n\n${lines.join("\n")}`);
+});
+
+tool("reload_addin", {
+  title: "Load a new ACE build into Revit (no restart)",
+  description: "After install.ps1 put a new ACE build in place while Revit was open (it prints 'no Revit restart needed'): loads it into the running Revit. The ACE loader swaps it when Revit is idle (no command, transaction or dialog); the bridge restarts on the same port and the Companion panel reloads. Waits for the swap and reports loaderVersion, payloadVersion, previous, ok and why; on a failure the previous build runs again. Previews made before the reload must be made again. force reloads even when the installed build already runs. Without the ACE loader (an older install) Revit must restart instead.",
+  inputSchema: { force: z.boolean().optional().describe("Reload even when the installed build is the one running") },
+  annotations: benign,
+}, async ({ force }) => {
+  const session = await pinSession();
+  const before = (await healthAtPort(session?.port, 3000))?.loader?.lastReload?.at ?? null;
+  const asked = await callRevit("reload_addin", { force: !!force }, 30);
+  if (!asked?.scheduled) return text(asked);
+  const deadline = Date.now() + (Number(process.env.ACE_RELOAD_WAIT_MS) || 90_000);
+  let h = null;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, Number(process.env.ACE_RELOAD_POLL_MS) || 1000));
+    h = await healthAtPort(session?.port, 2000);
+    const last = h?.ok ? h.loader?.lastReload : null;
+    if (!last?.at || last.at === before) continue;
+    forgetInstances();
+    // A preview proves what the build that ran it would do: after a swap, every change is previewed again.
+    let cleared = 0;
+    for (const [key, p] of previews) if (!session || p.session === sessionKey(session)) { previews.delete(key); cleared++; }
+    return text({ ...last, ...(cleared ? { previewsCleared: cleared, note: "Previews made before the reload must be made again." } : {}) });
+  }
+  return text({ ok: false, scheduled: true, loaderVersion: asked.loaderVersion, payloadVersion: asked.payloadVersion,
+    why: "Revit did not report the swap in time. It runs when Revit is idle (no command, no open dialog, mouse moved over Revit): call revit_status in a moment.",
+    lastHealth: h?.ok ? h.loader : h?.error ?? null });
 });
 
 tool("report_issue", {

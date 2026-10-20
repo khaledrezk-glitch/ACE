@@ -8,7 +8,9 @@ if (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) { Write-Host "Close
 foreach ($year in '2024', '2025') {
     $addinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$year"
     Remove-Item (Join-Path $addinRoot 'AceRevitMcp.addin') -Force -ErrorAction SilentlyContinue
+    # The whole ACE folder: the ACE loader, current.json, every payload\<version>-<hash> build (and an older flat install).
     Remove-Item (Join-Path $addinRoot 'AceRevitMcp') -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $addinRoot 'AceRevitMcp')) { Write-Host "Could not remove everything in $(Join-Path $addinRoot 'AceRevitMcp') (a file is in use?)." -ForegroundColor Yellow }
 }
 $reg = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\mcp-server\lib\register.js'
 if ((Test-Path $reg) -and (Get-Command node -ErrorAction SilentlyContinue)) { & node $reg remove }

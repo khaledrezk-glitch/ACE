@@ -131,25 +131,44 @@ namespace AceRevitMcp.Ribbon
             if (item is RibbonButton b) Buttons.Add(new Button { Panel = panel, Item = b, Icon = icon, Tip = b.ToolTip });
         }
 
-        /// <summary>The mode selector at the start of the ACE tab.</summary>
+        private static EventHandler<Autodesk.Revit.UI.Events.ComboBoxCurrentChangedEventArgs> _comboChanged;
+
+        /// <summary>The mode selector at the start of the ACE tab (after a reload: the one the first build made).</summary>
         internal static void CreateSelector(RibbonPanel panel)
         {
             RegisterPanel(panel);
-            var data = new ComboBoxData("AceWorkMode") { ToolTip = "Working mode: shows the tools for the task you are doing, dims the rest and hides unrelated panels. Claude and the Companion follow the mode." };
-            _combo = panel.AddItem(data) as ComboBox;
-            if (_combo == null) return;
-            foreach (var m in All)
+            _combo = RibbonSlots.Find(panel, "AceWorkMode") as ComboBox;
+            if (_combo == null)
             {
-                var member = new ComboBoxMemberData("AceMode_" + m.Key, m.Label) { ToolTip = m.Summary };
-                try { member.Image = Icons.Line(16, m.Glyph, planned: false); } catch { }
-                _combo.AddItem(member);
+                var data = new ComboBoxData("AceWorkMode") { ToolTip = "Working mode: shows the tools for the task you are doing, dims the rest and hides unrelated panels. Claude and the Companion follow the mode." };
+                _combo = panel.AddItem(data) as ComboBox;
+                if (_combo == null) return;
+                foreach (var m in All)
+                {
+                    var member = new ComboBoxMemberData("AceMode_" + m.Key, m.Label) { ToolTip = m.Summary };
+                    try { member.Image = Icons.Line(16, m.Glyph, planned: false); } catch { }
+                    _combo.AddItem(member);
+                }
             }
-            _combo.CurrentChanged += (s, e) =>
+            _comboChanged = (s, e) =>
             {
                 if (_updating) return;
                 var key = e.NewValue?.Name?.Replace("AceMode_", "");
                 if (key != null) Apply(key);
             };
+            _combo.CurrentChanged += _comboChanged;
+        }
+
+        /// <summary>Lets go of the ribbon (payload Stop): the selector's handler, the panels and buttons, the listeners.</summary>
+        internal static void Detach()
+        {
+            if (_combo != null && _comboChanged != null)
+                try { _combo.CurrentChanged -= _comboChanged; } catch { }
+            _combo = null;
+            _comboChanged = null;
+            Panels.Clear();
+            Buttons.Clear();
+            Changed = null;
         }
 
         /// <summary>Restores the last mode (after the ribbon is built).</summary>

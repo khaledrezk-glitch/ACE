@@ -68,8 +68,42 @@ namespace AceRevitMcp.Bridge
             _registry = registry;
         }
 
-        /// <summary>Must be called from a valid Revit API context (e.g. OnStartup).</summary>
-        public void Initialize() => _event = ExternalEvent.Create(this);
+        private bool _ownEvent;
+
+        /// <summary>
+        /// Must be called from a valid Revit API context (e.g. OnStartup). Under the ACE loader the loader's one
+        /// ExternalEvent is used (it forwards to this handler); loaded directly, ACE creates its own.
+        /// </summary>
+        public void Initialize()
+        {
+            var shared = PayloadEntry.Get<ExternalEvent>("externalEvent");
+            var target = PayloadEntry.Get<Action<IExternalEventHandler>>("setEventHandler");
+            if (shared != null && target != null) { target(this); _event = shared; return; }
+            _event = ExternalEvent.Create(this);
+            _ownEvent = true;
+        }
+
+        /// <summary>
+        /// Payload Stop: no more runs. Requests that have not started get a clear error (nothing ran), the loader's event
+        /// no longer reaches this handler, and an event of our own is disposed.
+        /// </summary>
+        public void Shutdown()
+        {
+            try { PayloadEntry.Get<Action<IExternalEventHandler>>("setEventHandler")?.Invoke(null); } catch { }
+            var ev = _event;
+            _event = null;
+            while (_queue.TryDequeue(out var p))
+            {
+                if (Interlocked.Exchange(ref p.Abandoned, 1) != 0) continue;
+                p.Completion.TrySetException(new CommandException(Reloading));
+                p.Started.TrySetResult(false);
+            }
+            if (_ownEvent) try { (ev as IDisposable)?.Dispose(); } catch { }
+            Busy = null;
+            _current = null;
+        }
+
+        private const string Reloading = "ACE is stopping or loading a new build, so this request was not run (nothing changed). Send it again in a few seconds.";
 
         public async Task<JsonNode> EnqueueAsync(string command, JsonObject args, TimeSpan timeout, string id = null)
         {
@@ -89,8 +123,13 @@ namespace AceRevitMcp.Bridge
 
         private async Task<JsonNode> Wait(Pending pending, string command, TimeSpan timeout)
         {
-
-            var request = _event.Raise();
+            var ev = _event;
+            if (ev == null)
+            {
+                if (Interlocked.Exchange(ref pending.Abandoned, 1) == 0) throw new CommandException(Reloading);
+                return await pending.Completion.Task.ConfigureAwait(false);
+            }
+            var request = ev.Raise();
             if (request != ExternalEventRequest.Accepted && request != ExternalEventRequest.Pending)
                 Log.Warn($"ExternalEvent.Raise returned {request}");
 

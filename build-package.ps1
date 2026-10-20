@@ -5,7 +5,8 @@
   The package contains the PREBUILT add-in and bundled Node dependencies, so team PCs need
   neither the .NET SDK nor npm access. Requires (on the build machine only): .NET 8+ SDK, Node.js 18+.
   The add-in is built for Revit 2024 (bin\addin\2024, .NET Framework 4.8, no script compiler yet) and Revit 2025
-  (bin\addin\2025, .NET 8, with the compiler).
+  (bin\addin\2025, .NET 8, with the compiler). Each year also gets the ACE loader (bin\addin\<year>\loader), the only DLL
+  named in the .addin manifest: install.ps1 puts the add-in (the payload) into its own version folder next to it.
   Put a team.json next to this script (copy team.example.json) to bake team settings into the package.
 #>
 param([string]$Out = (Join-Path $PSScriptRoot 'dist'))
@@ -23,9 +24,12 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 $addinOut = Join-Path (Join-Path $stage 'bin') 'addin'
 $addinProj = Join-Path $Root (Join-Path 'revit-addin' (Join-Path 'AceRevitMcp' 'AceRevitMcp.csproj'))
+$loaderProj = Join-Path $Root (Join-Path 'revit-addin' (Join-Path 'AceRevitMcp.Loader' 'AceRevitMcp.Loader.csproj'))
 foreach ($t in @(@('2024', 'net48'), @('2025', 'net8.0-windows'))) {
     & dotnet publish $addinProj -c Release -f $t[1] -o (Join-Path $addinOut $t[0]) --nologo -v quiet
     if ($LASTEXITCODE -ne 0) { throw "Add-in build for Revit $($t[0]) failed" }
+    & dotnet publish $loaderProj -c Release -f $t[1] -o (Join-Path (Join-Path $addinOut $t[0]) 'loader') --nologo -v quiet
+    if ($LASTEXITCODE -ne 0) { throw "ACE loader build for Revit $($t[0]) failed" }
 }
 & dotnet publish (Join-Path $Root (Join-Path 'revit-addin' (Join-Path 'AceRevitMcp.Compiler' 'AceRevitMcp.Compiler.csproj'))) -c Release -o (Join-Path (Join-Path $addinOut '2025') 'Compiler') --nologo -v quiet
 if ($LASTEXITCODE -ne 0) { throw 'Compiler build failed' }

@@ -99,6 +99,7 @@ notifications (section 8). Each suggestion has a one-click action.
 | Lessons + learning report + benchmark | telemetry, lessons | improvements | every tool |
 | Requirements vault (`vault`, V1/V2) | client documents (DOCX, XLSX, PDF) | register, requirement records with quotes, decisions, index.html | rules engine (project-requirements.json), compliance, report |
 | Compliance (C1+) | model check results, vault records and decisions, project rules | status per requirement, run record in `04 Audits/<model>/runs` | status store, master report, Claude (`vault compliance`) |
+| ACE loader (G8, platform) | `current.json` and `payload\<version>-<hash>\` in its own install folder, `signing.json` | the running ACE build (Start / Stop by reflection), ribbon proxy commands, the one ExternalEvent, the Companion pane host, `reload_addin` outcome in `/health` | install.ps1 (writes the builds and asks for the reload), doctor, MCP server (`reload_addin`, `check_setup`) |
 | Master report (V4) | vault, latest run record, last report's record | HTML + DOCX + actions CSV in `04 Audits`, trend since the last audit; optional summary in the model (extensible storage, only when asked) | vault index, auditors, the model itself |
 
 ## 4. Duplications found, and merge recommendations
@@ -120,6 +121,7 @@ Each item is a recommendation. None is applied yet.
 | D11 | *Submission Check* (planned), the Submission mode, "Submission readiness" checks | Submission check = the requirements monitor at the issue stage | No separate tool to build | S |
 | D13 | Presentation rules could have become an eighth settings file | Kept in the office check set (`presentation`): one reader (`PresentationStandard`) feeds the model check and the fix, so they never disagree | No new file; check and fix agree | S · **done (1.7.0)** |
 | D14 | Three HTML report renderers: model dashboard (`DashboardHtml.cs`), coordination report (`CoordinationReport.cs`), master report (`mcp-server/lib/report.js`) | The master report is built in the server because the vault lives there and it must work without Revit; share one brand stylesheet and one table/badge vocabulary between them before adding a fourth | Consistent look, one place to restyle | S |
+| D15 | Two ways to start ACE: the ACE loader (installed) and `App` loaded directly (development, old manifests); both register an ExternalEvent, a pane and ribbon commands | Kept on purpose: both run the same `App.StartServices` / `StopServices`; only the host differs (`PayloadEntry`). Retire the direct path when no install without the loader is left | One start path to test | S |
 | D12 | *Design Check* / *Code Packs* (planned) and the rules engine | The same rules engine with different rule packs (design, code, client) | One engine, many packs | M |
 
 ## 5. The bigger circle: the BIM requirements hub
@@ -505,3 +507,42 @@ These go into the build order (section 10) when development resumes:
 - G4 before the family checker and the requirements monitor;
 - G6 with the Project Hub.
 
+## 16. Stable loader (G8, built 20 Oct, studied with the integration rule)
+
+Every ACE update used to replace the DLL Revit had loaded, so Revit had to close, restart and ask again about the
+unsigned add-in. The **ACE loader** (`revit-addin/AceRevitMcp.Loader`, own version 1.0.0, Revit 2024 and 2025 builds)
+is now the only DLL in the `.addin` manifest. It changes rarely; the ACE build (the payload) changes with every release.
+
+- **What the loader owns** (what Revit can't hand back): the IExternalApplication, a fixed pool of 64 proxy commands
+  (`Cmd00`..`Cmd63`) that ribbon buttons point at, mapped at run time to payload command classes by name; the one
+  ExternalEvent (it forwards to the running build's dispatcher); the Companion dockable pane (the build supplies the
+  content). The payload's entry is `AceRevitMcp.PayloadEntry.Start(UIControlledApplication, IDictionary<string, object>)`
+  / `Stop()`, found by reflection; the host dictionary holds only framework and Revit types, so there is no shared
+  contracts assembly.
+- **Selection and trust:** `current.json` (written by install.ps1) names `{ version, path, sha256, previous }`. The
+  loader loads only a folder directly inside its own `payload\`, checks the DLL's SHA-256, and with signing on
+  (`signing.json`) that every ACE DLL of the build is signed by the loader's own certificate. A build that fails falls
+  back to `previous`. Pure logic in `PayloadSelection.cs`, tested offline in `tools/tracker-test`.
+- **Load and reload:** Revit 2025: a collectible AssemblyLoadContext per build (dependencies from the build folder;
+  Revit, WPF and the framework from the default context); the script compiler's context is collectible too while ACE
+  is, and scripts see ACE's types from the build's context. Revit 2024: `Assembly.Load(bytes)`; an old copy cannot be
+  unloaded and stays in memory, inactive, until Revit closes. `reload_addin` (bridge, answered by the running build,
+  done by the loader) runs the swap in Idling: no command, no open transaction. Stop releases the bridge port, the
+  request queue, Revit events, the change tracker, the instance file, the Companion content, open ACE windows and the
+  compiler; then the new build starts, or the old one starts again. The outcome `{loaderVersion, payloadVersion,
+  previous, ok, why}` is in `/health` (`loader.lastReload`). With no model open, the loader also switches by itself
+  when `current.json` changes.
+
+### Integration rule answers
+
+1. **Engine:** platform (bridge + ExternalEvent). No new engine: the loader hosts the existing one.
+2. **Rules:** `current.json` from the installer, `signing.json` from trust-ace.ps1. Nothing from the bridge.
+3. **Publishes:** its status (versions, pending build, last reload) in `/health` and in the instance file
+   (`loaderVersion`); `check_setup` and doctor show it.
+4. **Connects to:** installer, doctor, signing, MCP server (`reload_addin` clears previews: a preview proves what the
+   build that ran it would do). New circle: **build → install → reload, without closing Revit**, which shortens the
+   learning loop (section "Prove") to minutes.
+5. **Replaces or merges:** the restart after every install; see D15 for the direct start path that stays.
+6. **Project Hub:** none.
+7. **Notifications:** a pending reload appears in doctor and `check_setup`.
+8. **Proactive:** the installer asks Revit to reload by itself; with no model open the loader does it alone.

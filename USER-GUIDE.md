@@ -7,7 +7,8 @@ model. This guide is for everyone on the team. No programming knowledge needed.
 
 ## 1. Install (once per PC, about 5 minutes)
 
-1. **Close Revit.**
+1. Revit may stay open. The very first install of this version replaces an older ACE's start file, so Revit then
+   needs **one** restart (the installer says so); after that, updates load into the running Revit.
 2. Unzip the package `ACE-RevitMCP-<version>.zip` anywhere, e.g. `Downloads`.
 3. Double-click **`install.cmd`** and wait for **Done!** (It installs Node.js automatically if it's missing.)
 4. Start **Revit 2025**. When it asks about the add-in **ACE Revit MCP**, click **Always Load**.
@@ -27,7 +28,9 @@ afterwards: a copy is kept for repairs.
 
 ### Stop the Unsigned Add-In prompt (optional)
 
-The ACE DLLs are not signed, so Revit asks about them as an "Unsigned Add-In" (again after each update).
+Revit asks about ACE as an "Unsigned Add-In". Revit only sees one small file, the **ACE loader**, which changes
+rarely, so the question comes back only when the loader itself changes (the installer then says a restart is needed),
+not with every update.
 To stop that on your PC, sign them with a certificate of your own:
 
 1. In the package folder, run once: `powershell -ExecutionPolicy Bypass -File .\trust-ace.ps1`
@@ -219,5 +222,11 @@ Ideas for new capabilities are welcome too: *"Create an improvement report: I of
 
 ## 6. Updating and removing
 
-- **Update:** unzip the new package, close Revit, run `install.cmd`. Your settings and scripts are kept.
-- **Remove:** run `uninstall.ps1` from the package folder (`-Purge` also deletes settings, scripts and journals).
+- **Update:** unzip the new package and run `install.cmd`; Revit may stay open. Your settings and scripts are kept.
+  The installer puts the new ACE build next to the one Revit runs and asks Revit to switch to it as soon as Revit is
+  idle (no command, no open dialog). You can also ask Claude *"reload ACE"* (`reload_addin`), or close all models:
+  ACE then switches by itself. Any change Claude previewed before the switch must be previewed again. If the new build
+  fails to start, the previous one keeps running. Only a new ACE loader (rare; the installer says so) needs a restart.
+  On Revit 2024 the old build stays in memory, inactive, until Revit closes.
+- **Remove:** close Revit, then run `uninstall.ps1` from the package folder. It removes the loader, every ACE build
+  folder and the Revit start file (`-Purge` also deletes settings, scripts and journals).

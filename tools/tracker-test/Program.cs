@@ -46,6 +46,7 @@ class P {
     Expect("yesterday", new DateTime(2026, 9, 29));
     Expect("2026-09-01", new DateTime(2026, 9, 1));
     Expect("whenever", null);
+    LoaderTests.Run();
     Console.WriteLine("tracker test passed");
   }
 }

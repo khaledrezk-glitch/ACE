@@ -122,6 +122,9 @@ namespace AceRevitMcp.Bridge
                         ["port"] = Port,
                         ["pid"] = InstanceRegistry.ProcessId,
                         ["busy"] = RequestDispatcher.Busy is { } b ? $"{b.Command} since {b.Since:HH:mm:ss}" : null,
+                        ["aceVersion"] = typeof(BridgeServer).Assembly.GetName().Version?.ToString(3),
+                        // Under the ACE loader: loaderVersion, payloadVersion, previous, pending, lastReload (null when loaded directly).
+                        ["loader"] = LoaderLink.LoaderStatus(),
                     });
                     return;
                 }
