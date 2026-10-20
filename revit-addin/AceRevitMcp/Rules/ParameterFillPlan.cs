@@ -242,7 +242,7 @@ namespace AceRevitMcp.Rules
         /// The shared parameter file setting (an application setting the user sees): changed only for a real bind, never
         /// in a look-only plan, and restored afterwards; Restored says whether the restore took.
         /// </summary>
-        private sealed class FileSession
+        internal sealed class FileSession
         {
             private readonly Autodesk.Revit.ApplicationServices.Application _app;
             private string _original;
@@ -442,7 +442,7 @@ namespace AceRevitMcp.Rules
         /// The parameter group: General when not given; a GroupTypeId property name (IdentityData, Data, ...) or a
         /// ForgeTypeId string. Null when unknown (reported, never a silent General).
         /// </summary>
-        private static (ForgeTypeId Id, string Label)? GroupFor(string text)
+        internal static (ForgeTypeId Id, string Label)? GroupFor(string text)
         {
             if (string.IsNullOrWhiteSpace(text) || string.Equals(text, "General", StringComparison.OrdinalIgnoreCase)) return (GroupTypeId.General, "General");
             if (text.StartsWith("autodesk.", StringComparison.OrdinalIgnoreCase))

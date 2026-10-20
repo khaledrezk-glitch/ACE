@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.12.6 (20 Oct 2026)
+- **view_membership_fill:** one text parameter set from what a view shows: value_in on the elements the view shows,
+  value_out on the rest (e.g. an export status from the Navisworks view). The reply says per reason why elements are out
+  (section box, hidden, category, view filter, phase, workset). A parameter missing in the model is bound only from the
+  vault's shared parameter files (never an invented GUID; otherwise blocked); a likely misspelling against the vault, an
+  approved spelling rule, near-duplicate names in the model and every rule / IFC settings / requirement file that names
+  the parameter are said before anything changes. Binding needs categories (a shared parameter file holds none);
+  only model views are accepted, and a view that shows none of the elements blocks. Linked models are not filled. Check > dry run > identical apply (planHash), ONE undo step,
+  self-checked; a run record is written.
+- **export_deliverables:** NWC, IFC and DWFx in one call, each optional, into a required out_dir (an existing file is
+  replaced only with overwrite). File names from the vault's rules/export.json nameTemplate ({model}, {date}, {format})
+  or the model name; IFC settings from a JSON file or a named setup kept in the vault (rules/export.json ifc.setups or
+  rules/ifc/<setup>.json; exporter keys are translated). check_only gives the pre-flight; every block (no Navisworks
+  exporter, view / setup / sheets missing, file exists) is reported and nothing is exported. The reply is a table of
+  file, size, time, count and warnings, plus a run record. The model is not changed.
+- **register_update** (no Revit, xlsx): a deliverables register updated for one submission. The register sheet is
+  copied into a new workbook named by the submission's label (formulas naming the sheet follow, formulas into other tabs
+  become values), delivered rows get the submission date in the stage column, later dates are cleared, and the report
+  lists matched, delivered but not in the register, not delivered and cleared. A check writes nothing; the write needs
+  confirm after the identical check; the register itself is never written. Columns are found by header text first
+  (a header "ID" or "IFC" is never read as a column letter); dates are compared by whole day; a later date computed by
+  a formula is reported and left; merged cells in the id or stage columns stop the write unless allow_merged; defined
+  names and data validations into dropped tabs are warned about; an existing report CSV is refused like the workbook.
+  New dependency: exceljs.
+
 ## 1.12.5 (20 Oct 2026)
 - **Worksets audit, rename, delete empty** (assign_worksets action audit / rename / delete_empty): a reviewable table of
   every user workset (elements by category, owner, open) flagged empty, off the naming rule, near-duplicate or holding

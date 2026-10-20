@@ -22,6 +22,9 @@ import * as ClashResolve from "./lib/clashresolve.js";
 import * as Interference from "./lib/interference.js";
 import * as Worksets from "./lib/worksets.js";
 import * as Capture from "./lib/capture.js";
+import * as RegisterUpdate from "./lib/registerupdate.js";
+import * as ViewFill from "./lib/viewfill.js";
+import * as Deliverables from "./lib/deliverables.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
@@ -1032,6 +1035,135 @@ async function planExecute(o) {
   return out;
 }
 
+// view_membership_fill: one text parameter set from what a view shows (value_in) and does not (value_out). A missing
+// parameter is bound only from the vault's shared parameter files (never invented); spelling, model near-misses and the
+// files that mention the parameter (rules, IFC settings, requirements) are said before anything changes.
+const viewFillState = new Map();
+
+/** The vault's shared parameter files (given, else the mapping's sources) and its normalised mapping. */
+async function vaultParameterFiles(a) {
+  let mapping;
+  try { mapping = await mappingFile({ ...a, create_mapping: false }); } catch { mapping = undefined; }
+  const src = ParamSources.sourcesFromMapping({ project_parameters: a.project_parameters, shared_parameters: a.shared_parameters, mapping });
+  const files = [];
+  const add = (f, kind) => { try { files.push({ file: f, kind, buf: fs.readFileSync(f) }); } catch { throw new RevitError(`Cannot read the shared parameter file ${f}.`); } };
+  if (src.project_parameters) add(src.project_parameters, "project");
+  for (const f of [].concat(src.shared_parameters ?? [])) add(f, "client");
+  let map = {};
+  try { map = mapping ? ParamSources.normaliseMapping(ParamSources.readJsonFile(mapping)) ?? {} : {}; } catch { map = {}; }
+  return { files, mapping: map, mappingFile: mapping };
+}
+
+/** Which project rules and vault files mention the parameter: changing its values changes what they select. */
+async function parameterMentions(name, a) {
+  const out = [];
+  try { const r = await callRevit("project_rules", { include_rules: true }, 30); if (JSON.stringify(r?.rules ?? r ?? {}).includes(name)) out.push(`the project rules (${r?.source ?? "project_rules"})`); } catch { /* Revit not reachable: the vault still says */ }
+  const dir = await projectVaultDir(a);
+  for (const f of dir ? ViewFill.mentions(name, dir) : []) out.push(`${f}${/ifc/i.test(f) ? " (IFC export settings)" : /requirement|loin|ais|checker/i.test(f) ? " (parameter requirements)" : ""}`);
+  return out;
+}
+
+tool("view_membership_fill", {
+  title: "Set a parameter from what a view shows",
+  description: "Sets one text parameter to value_in on the elements a view shows and value_out on the rest (categories, default: model categories), e.g. an export status from the Navisworks view; the reply says per reason why elements are out (section box, hidden, category, filter, phase). A missing parameter is bound only from the vault's shared parameter files (else blocked). Says a likely misspelling against the vault, near-duplicate names in the model, and which rules / IFC settings / requirement files mention it. check_only, then dry_run, then the identical call: ONE undo step, self-checked.",
+  inputSchema: {
+    view: z.string().max(200), parameter: z.string().max(200),
+    value_in: z.string().max(200), value_out: z.string().max(200),
+    categories: z.array(z.string().max(80)).max(100).optional(),
+    include_links: z.boolean().optional().describe("Not supported (linked elements are never written)"),
+    project_parameters: z.string().optional().describe("The project's shared parameter file (default: the vault mapping's)"),
+    shared_parameters: z.array(z.string()).max(50).optional(),
+    mapping: z.string().optional(), vault: z.string().optional(), report_dir: z.string().optional(),
+    check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().optional(),
+    plan: z.string().optional(), step: z.string().optional(),
+    max_ids: z.number().int().min(0).max(500).optional(), timeout_seconds: z.number().int().min(10).max(3600).optional(),
+  },
+  annotations: writes,
+}, async ({ check_only, dry_run, explanation, plan, step, timeout_seconds, ...a }) => {
+  if (a.include_links) throw new RevitError("include_links is not supported: elements in linked models cannot be written from the host. Fill each linked model when it is open.");
+  if (a.value_in === a.value_out) throw new RevitError("value_in and value_out are the same: nothing would tell the elements apart.");
+  const { files, mapping } = await vaultParameterFiles(a);
+  const d = ViewFill.definitionFor(a.parameter, files, mapping);
+  const mentioned = await parameterMentions(d.use, a);
+  const definition = d.definition ? { name: d.definition.name, guid: d.definition.guid, dataType: d.definition.dataType, group: d.definition.group, instance: true, categories: a.categories ?? [] } : undefined;
+  const ident = { view: a.view, parameter: d.use, value_in: a.value_in, value_out: a.value_out, categories: a.categories ?? [], definition: definition ?? null };
+  const extra = (r) => {
+    const near = ViewFill.modelNearMisses(d.use, r?.modelNames ?? []);
+    return [...d.notes,
+      near.length ? `Near-duplicate names in the model: ${near.join(", ")} (check which one is meant; only "${d.use}" is written).` : "",
+      d.definition && r?.parameter?.bound === false ? `Definition from the vault: ${path.basename(d.definition.file ?? "")} (GUID ${d.definition.guid}, ${d.definition.dataType}).` : "",
+      mentioned.length ? `Impact: "${d.use}" is named in ${mentioned.join("; ")}: what they select or export follows these values.` : `Impact: no project rule or vault file names "${d.use}".`].filter(Boolean);
+  };
+  return planExecute({
+    name: `view membership fill ${d.use}`, command: "view_membership_fill", ident,
+    req: { ...ident, definition, max_ids: a.max_ids ?? 20, expect_version: VERSION },
+    check_only, dry_run, explanation, plan, step, state: viewFillState, timeout: timeout_seconds ?? 900, a, folder: { sub: "parameters", reports: "view-membership" },
+    planOf: ViewFill.planOf, identity: ViewFill.planIdentity, blocksOf: (r) => ViewFill.blocksFor(r, { definition, categories: a.categories }), rolledBackOf: ViewFill.rolledBackOf,
+    render: (r, mode, model, rolledBack) => ViewFill.planText(r, { model, mode, rolledBack, a: { ...a, parameter: d.use }, extra: extra(r), blocks: ViewFill.blocksFor(r, { definition, categories: a.categories }) }),
+    nothing: (model) => `Every element in ${model} already has the right value.`,
+  });
+});
+
+// export_deliverables: NWC / IFC / DWFx in one call. Writes files only (the model is not changed); out_dir is required,
+// an existing file is replaced only with overwrite; every pre-flight block is reported, a run record is kept.
+tool("export_deliverables", {
+  title: "Export NWC, IFC and DWFx",
+  description: "Exports the open model's deliverables in one call: nwc (a 3D view), ifc (the model or a view; settings from config, a JSON file, or setup, a name looked up in the vault: rules/export.json ifc.setups or rules/ifc/<setup>.json), dwfx (sheets or a sheet set); each optional. File names: file, else the vault's rules/export.json nameTemplate ({model}, {date}, {format}), else the model name. out_dir required; an existing file is replaced only with overwrite: true. check_only: the pre-flight only. Blocks (no Navisworks exporter, missing view / setup / sheets, file exists) are reported and nothing is exported. Reply: a table of file, size, time, count, warnings; a run record is written. The model is not changed.",
+  inputSchema: {
+    out_dir: z.string().min(1),
+    overwrite: z.boolean().optional(), check_only: z.boolean().optional(),
+    nwc: z.object({ view: z.string().max(200), file: z.string().max(200).optional() }).optional(),
+    ifc: z.object({ view: z.string().max(200).optional(), setup: z.string().max(200).optional(), config: z.string().optional().describe("IFC settings .json"), file: z.string().max(200).optional() }).optional(),
+    dwfx: z.object({ sheets: z.array(z.string().max(50)).max(2000).optional(), sheet_set: z.string().max(200).optional(), file: z.string().max(200).optional() }).optional(),
+    vault: z.string().optional(), report_dir: z.string().optional(),
+    timeout_seconds: z.number().int().min(30).max(7200).optional(),
+  },
+  annotations: benign,
+}, async ({ check_only, overwrite, timeout_seconds, ...a }) => {
+  const formats = ["nwc", "ifc", "dwfx"].filter((f) => a[f]);
+  if (!formats.length) throw new RevitError("Give at least one of nwc, ifc or dwfx.");
+  const model = (await callRevit("project_rules", {}, 30))?.model;
+  if (!model) throw new RevitError("Revit answered without a model: open the model and run again.");
+  const vaultDir = await projectVaultDir(a);
+  let rules, rulesFile;
+  try { ({ rules, file: rulesFile } = Deliverables.readRules(vaultDir)); } catch (e) { throw new RevitError(e.message); }
+  const early = [], notes = [], names = {};
+  for (const f of formats) {
+    if (a[f].file?.trim()) { names[f] = Deliverables.fileFor(f, a[f].file); continue; }
+    const { base, problem } = Deliverables.baseName({ model, template: rules.nameTemplate, format: f });
+    if (problem) early.push({ what: `${f} file name`, why: `${problem} (${rulesFile})`, how: "fix nameTemplate in the vault's rules/export.json, or give file", code: "out-dir" });
+    else names[f] = Deliverables.fileFor(f, null, base);
+  }
+  if (rules.nameTemplate) notes.push(`File names from the vault's naming rule ${rules.nameTemplate} (${rulesFile}).`);
+  let ifc;
+  if (a.ifc) {
+    ifc = Deliverables.resolveIfc(a.ifc, { vaultDir, rules, rulesFile });
+    if (ifc.problem) early.push({ what: `ifc setup ${a.ifc.setup ?? a.ifc.config}`, why: ifc.problem, code: "setup-not-found" });
+    else if (ifc.source) notes.push(`IFC settings: ${ifc.source}${ifc.renamed?.length ? ` (exporter keys read as ${ifc.renamed.join(", ")})` : ""}.`);
+  }
+  if (early.length) return blockedReply(Deliverables.blocksOf({ blocked: early }).map((b) => ({ what: b.what, why: b.why, how: b.how })), "Blocked before Revit was asked; nothing exported:");
+  const req = { out_dir: a.out_dir, overwrite: !!overwrite, check_only: !!check_only,
+    ...(a.nwc ? { nwc: { view: a.nwc.view, file: names.nwc } } : {}),
+    ...(a.ifc ? { ifc: { ...(a.ifc.view ? { view: a.ifc.view } : {}), ...(ifc.setup ? { setup: ifc.setup } : {}), ...(ifc.config ? { config: ifc.config } : {}), file: names.ifc } } : {}),
+    ...(a.dwfx ? { dwfx: { ...(a.dwfx.sheets ? { sheets: a.dwfx.sheets } : {}), ...(a.dwfx.sheet_set ? { sheet_set: a.dwfx.sheet_set } : {}), file: names.dwfx } } : {}) };
+  const r = await callRevit("export_deliverables", req, timeout_seconds ?? 3600);
+  const out = text(r);
+  const blocked = Deliverables.blocksOf(r).length > 0;
+  const lines = [Deliverables.resultText(r, { mode: check_only ? "check" : "export", outDir: a.out_dir, names, notes })];
+  if (check_only) lines.push(blocked ? "Clear the blocks above before exporting." : "Ready: the same call without check_only exports.");
+  else {
+    const { dir, note } = await auditFolder(a, r?.model ?? model, { sub: "exports", reports: "exports" });
+    const stamp = localDate(new Date(), { time: true });
+    const outcome = blocked ? "blocked, nothing exported" : r?.success ? `${(r?.files ?? []).length} file(s) exported` : "export incomplete";
+    const runFile = writeOut(dir, `${ParamExec.fileStem("export-run", r?.model ?? model, stamp)}.json`, JSON.stringify({ at: stamp, model: r?.model ?? model, request: req, outcome, preflight: r?.preflight, blocked: r?.blocked, files: r?.files, notes: [...notes, ...(r?.notes ?? [])] }, null, 1));
+    journal({ title: `Export deliverables from ${r?.model ?? model}: ${formats.join(", ")}`, outcome, details: { files: (r?.files ?? []).map((f) => ({ file: f.file, bytes: f.bytes, warnings: f.warnings })), blocked: r?.blocked } });
+    lines.push(`Run record: ${runFile}${note ? `\n${note}` : ""}`);
+  }
+  out.content.push({ type: "text", text: lines.join("\n") });
+  if (blocked || (!check_only && r?.success !== true)) out.isError = true;
+  return out;
+});
+
 // capture_method: record how a person solves something (start, then the person works in Revit, then stop). The add-in
 // keeps the per-element state; the server groups the diff into actions, reads the journal commands, compares with the
 // latest clash_resolve plan of the model and writes the case record (never rules).
@@ -1113,6 +1245,68 @@ tool("capture_method", {
     `Case: ${json}\n${md}${note ? `\n${note}` : ""}`,
     `Add-in archive of the raw diff: ${archive ?? "not reported"}.`,
     "Proposed rules are in the case file and need the owner's confirmation; nothing was changed in the vault rules."].filter(Boolean).join("\n") });
+  return out;
+});
+
+// register_update: a deliverables register (xlsx) updated for one submission, no Revit. A check writes nothing; the write
+// needs confirm: true and the identical check first (same inputs, same register bytes, same delivered list).
+const registerChecks = new Set();
+tool("register_update", {
+  title: "Update a deliverables register for a submission (xlsx, no Revit)",
+  description: "MIDP-style register: copies the register sheet into a new workbook named by label (formulas naming the sheet follow; formulas into other tabs become values; other tabs dropped), sets the stage date of delivered rows to the submission date and clears later dates. Delivered = file names or a folder; an id matches when the file name contains it (or id_pattern, the vault naming regex). Without confirm it only checks (writes nothing); confirm: true writes output after the identical check. Never writes the register itself.",
+  inputSchema: {
+    register: z.string().describe("The register .xlsx"),
+    sheet: z.string().max(31).optional().describe("Default: the first sheet"),
+    header_row: z.number().int().min(1).max(100).optional(),
+    id_column: z.string().max(80).describe("Header name or column letter"),
+    stage_columns: z.array(z.string().max(80)).min(1).max(20).describe("Every stage date column (later dates are cleared in all of them)"),
+    stage: z.string().max(80).optional().describe("The stage column that gets the submission date (default: the only one)"),
+    delivered: z.array(z.string().max(300)).max(20000).optional().describe("Delivered file names"),
+    delivered_dir: z.string().optional().describe("Folder whose files were delivered (recursive)"),
+    submission_date: z.string().max(20).describe("YYYY-MM-DD"),
+    label: z.string().max(31).describe("The submission's name: the new sheet's name"),
+    output: z.string().describe("The new .xlsx (never the register itself)"),
+    id_pattern: z.string().max(300).optional().describe("Naming regex; its first group (or the match) is the id"),
+    overwrite: z.boolean().optional(),
+    confirm: z.boolean().optional().describe("Write the output (after the user saw the check)"),
+    allow_merged: z.boolean().optional().describe("Write although the id or stage columns hold merged cells"),
+  },
+  annotations: benign,
+}, async ({ confirm, ...a }) => {
+  if (!fs.existsSync(a.register)) throw new RevitError(`File not found: ${a.register}`);
+  const same = (x, y) => process.platform === "win32" || /^[A-Za-z]:[\\/]/.test(x) ? path.resolve(x).toLowerCase() === path.resolve(y).toLowerCase() : path.resolve(x) === path.resolve(y);
+  if (same(a.output, a.register)) throw new RevitError("Blocked for safety: output is the register itself. The register is never written: give another output path.");
+  if (!/\.xlsx$/i.test(a.output)) throw new RevitError("output must be an .xlsx file.");
+  let files;
+  try { files = RegisterUpdate.deliveredFiles(a); } catch (e) { throw new RevitError(e.message); }
+  if (!files.length) throw new RevitError("Give the delivered files: delivered (file names) or delivered_dir (a folder).");
+  const buf = fs.readFileSync(a.register);
+  const { overwrite, allow_merged, ...ident } = a;
+  const key = fingerprint("register_update", { ...ident, files: [...files].sort(), register: RegisterUpdate.sha(buf) });
+  let res;
+  try { res = await RegisterUpdate.updateRegister(buf, { ...a, files }); } catch (e) { throw new RevitError(e.message); }
+  if (!confirm) {
+    registerChecks.add(key);
+    const out = text(res.report);
+    out.content.push({ type: "text", text: `${RegisterUpdate.reportText(res.report, { mode: "check" })}\nNothing written. Show the user this report; to write ${a.output}, repeat the identical call with confirm: true.` });
+    return out;
+  }
+  if (!registerChecks.has(key)) throw new RevitError("Blocked for safety: this exact update has not been checked (the inputs, the register file or the delivered list differ). Run the same call without confirm, show the user the report, then confirm.");
+  const csv = a.output.replace(/\.xlsx$/i, " - report.csv");
+  const r = res.report;
+  // Every refusal before anything is written: existing files (the workbook and its report), merged id / stage cells.
+  for (const f of [a.output, csv]) if (fs.existsSync(f) && !overwrite) throw new RevitError(`${f} exists: give another output path, or overwrite: true after the user agreed. Nothing was written.`);
+  if (r.merged.length && !allow_merged) throw new RevitError(`Blocked: merged cells in the id or stage columns (${r.merged.join(", ")}): dates could land in the wrong row. Unmerge them in the register, or repeat with allow_merged: true after the user checked. Nothing was written.`);
+  fs.mkdirSync(path.dirname(path.resolve(a.output)), { recursive: true });
+  await res.wb.xlsx.writeFile(a.output);
+  registerChecks.delete(key);
+  fs.writeFileSync(csv, Report.toCsv([["result", "id or file", "column", "date / files"],
+    ...r.matched.map((x) => ["matched", x.id, x.column, x.files.join("; ")]), ...r.deliveredNotInRegister.map((f) => ["delivered, not in register", f, "", ""]),
+    ...r.notDelivered.map((id) => ["not delivered", id, "", ""]), ...r.cleared.map((x) => ["date cleared (later than the submission)", x.id, x.column, x.was]),
+    ...r.formulaDates.map((x) => ["formula date later than submission, left", x.id, x.column, x.was])]));
+  journal({ title: `Register update: ${r.sheet} -> ${r.label}`, outcome: `Written ${a.output}`, details: { matched: r.matched.length, notInRegister: r.deliveredNotInRegister.length, notDelivered: r.notDelivered.length, cleared: r.cleared.length } });
+  const out = text({ ...r, output: a.output, report: csv });
+  out.content.push({ type: "text", text: `${RegisterUpdate.reportText(r, { mode: "write", output: a.output })}\nReport: ${csv}\nThe register itself was not changed.` });
   return out;
 });
 

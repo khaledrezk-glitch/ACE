@@ -58,6 +58,8 @@ namespace AceRevitMcp.Commands
                 ["open_model"] = ModelFileCommands.Open,
                 ["close_model"] = ModelFileCommands.Close,
                 ["capture_method"] = CaptureMethod.Run,
+                ["view_membership_fill"] = Rules.ViewMembership.Run,
+                ["export_deliverables"] = ExportDeliverables.Run,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

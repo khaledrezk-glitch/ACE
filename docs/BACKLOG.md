@@ -134,6 +134,14 @@ A1, A3 and A4 have build-ready specs and are no longer blocked by open decisions
 | N3 | **Two-way status:** approvals and notes made in ACE written back to Navisworks (and the reverse), so one status lives in both | M | open, after N2 |
 | N4 | **Batch runs:** Navisworks Automation runs the federated tests overnight and drops the XML for N1 | M | open, after N2 |
 
+## 3c. Submission tools (owner, 20 Oct; DP04 next-tools spec, items 2, 3 and 5)
+
+| # | Item | Effort | Status |
+|---|---|---|---|
+| D2 | **view_membership_fill:** a text parameter set from what a view shows (value_in / value_out), reasons per element out of the view, definition only from the vault's shared parameter files, spelling and impact said first; check > dry run > identical apply | M | built (1.12.6); live check in Revit |
+| D3 | **export_deliverables:** NWC / IFC / DWFx in one call, names from the vault naming rule, IFC settings from the vault, pre-flight blocks reported, files table and run record | M | built (1.12.6); live check in Revit (Navisworks exporter installed) |
+| D5 | **register_update:** deliverables register (xlsx) updated for a submission, no Revit; check, then confirm | S | built (1.12.6); check with a real register |
+
 ## 4. Platform gaps (concept section 13)
 
 | # | Item | Effort | Status |

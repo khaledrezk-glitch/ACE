@@ -173,6 +173,47 @@ Blocks are never silent: an unapproved NA policy or derive section, a missing pr
 source file, another ACE version, borrowed elements: say what, why and how to clear it, as the reply gives it.
 parameter_check fill_plan: true still counts what a plain NA fill would set (read-only).
 
+## A parameter from what a view shows (view_membership_fill)
+
+for "set the export status from the Navisworks view", "mark what this view shows": view_membership_fill with view,
+parameter, value_in (the elements the view shows) and value_out (the rest of categories; default: model categories).
+1. check_only: true first. Read the reply to the user: the counts in / out, why elements are out (first reason found:
+   outside the section box, hidden in the view, category hidden, a view filter, phase, workset), the plan (bind, set in,
+   set out) and the notes.
+2. Spelling: the parameter name is checked against the vault's shared parameter files (project file, client files,
+   mapping). An approved spelling rule (mapping nameAliases spellingRule) or alias writes the vault's spelling; otherwise
+   a "Likely spelling issue" is said and nothing is renamed: ask the user. Near-duplicate names in the model are listed.
+3. A parameter missing in the model is bound only with the definition (GUID, TEXT) from the vault's shared parameter
+   file; with no definition the run is blocked ("no-definition"). Never invent a GUID; ask for the file or for the
+   parameter to be bound by a person. Only text parameters are created. Binding needs categories (the shared
+   parameter file holds none): ask the user which. Only model views are accepted; linked models are not filled.
+4. Impact: the reply names the project rules and the vault files (IFC export settings, requirement lists) that mention
+   the parameter: their selection follows the new values. Say so before the dry run.
+5. dry_run: true, show the plan and the self-check, then the identical call after the user's OK (ONE undo step;
+   expect_plan). A failed self-check rolls back: report "would have been", never done.
+
+## Deliverables: export and register
+
+export_deliverables writes NWC (a 3D view), IFC (the model or a view) and DWFx (sheets or a sheet set) in one call, each
+optional; the model is not changed. out_dir is required; an existing file is replaced only with overwrite: true after
+the user agreed. File names: file per format, else the vault's rules/export.json "nameTemplate" ({model}, {date} as
+YYYYMMDD, {format}), else the model name. IFC settings: ifc.config (a JSON file: ACE's keys FileVersion,
+ExportBaseQuantities, WallAndColumnSplitting, SpaceBoundaryLevel, other keys passed as options; an exporter's saved setup
+works, its IFCVersion / SplitWallsAndColumns / SpaceBoundaries keys are read), or ifc.setup (a name in rules/export.json
+"ifc": { "setups": { name: "file.json" or { ...settings } } }, else rules/ifc/<name>.json). Revit's own named setups
+cannot be read by the add-in: keep the setup in the vault. Run check_only first for the pre-flight (exporter installed,
+views, setup, sheets, existing files); every block is reported with how to clear it and nothing is exported. Show the
+files table (file, size, time, count, warnings) and the run record.
+
+register_update (no Revit) updates a deliverables register (xlsx) for one submission: the register sheet is copied into
+a new workbook named by label, the stage column of delivered rows gets submission_date, later dates in stage_columns
+are cleared. Delivered = file names or a folder (e.g. the export out_dir); an id matches when the file name contains it,
+or id_pattern (the vault naming regex). Without confirm it only checks: show the report (matched, delivered but not in
+the register, not delivered, cleared, ambiguous); then the identical call with confirm: true writes output and a report
+CSV. The register itself is never written. Columns are found by header text first (a column letter only when no
+header matches). A later date computed by a formula is reported and left. Merged cells in the id or stage columns stop
+the write (allow_merged: true only after the user checked); defined names and validations into dropped tabs are warnings.
+
 ## Requirements vault and audits
 
 The project's client documents (EIR, BEP, LOIN, MIDP, client comments) live in its vault (`vault`). Start with

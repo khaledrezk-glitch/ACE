@@ -519,6 +519,36 @@ class P {
     Check(((List<string>)FW(jr, "Item1")).Count == 2 && (bool)FW(jr, "Item2") && ((List<string>)FW(jr, "Item1"))[0].StartsWith("Jrn.Command") && ((List<string>)FW(jr2, "Item1")).Count == 2 && !(bool)FW(jr2, "Item2"),
       "capture journal: all lines up to the cap; above it comments go first and truncated is set");
 
+    // 17. 1.12.6: view_membership_fill (out reasons, section box, targets, plan hash, sample) and export_deliverables (names, IFC config).
+    var vml = a.GetType("AceRevitMcp.Rules.ViewMembershipLogic");
+    MethodInfo VM(string n) => vml.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    string Why(bool ph, bool cat, bool hid, bool fil, bool ws, bool box) => (string)VM("OutReason").Invoke(null, new object[] { ph, cat, hid, fil, ws, box });
+    Check(Why(true, true, true, true, true, true) == "phase" && Why(false, true, true, false, false, true) == "category" && Why(false, false, true, true, false, false) == "hidden"
+      && Why(false, false, false, true, true, true) == "filter" && Why(false, false, false, false, true, true) == "workset" && Why(false, false, false, false, false, true) == "sectionBox"
+      && Why(false, false, false, false, false, false) == "other", "view membership: the first reason found counts (phase, category, hidden, filter, workset, section box, other)");
+    bool Outside(double[][] corners) => (bool)VM("OutsideBox").Invoke(null, new object[] { corners.ToList(), new[] { 0.0, 0.0, 0.0 }, new[] { 10.0, 10.0, 10.0 }, 1e-6 });
+    Check(!Outside(new[] { new[] { 9.0, 9.0, 9.0 }, new[] { 12.0, 12.0, 12.0 } }) && Outside(new[] { new[] { 11.0, 0.0, 0.0 }, new[] { 12.0, 5.0, 5.0 } })
+      && Outside(new[] { new[] { 1.0, 1.0, -5.0 }, new[] { 2.0, 2.0, -1.0 } }) && !Outside(new[] { new[] { 10.0, 1.0, 1.0 }, new[] { 12.0, 2.0, 2.0 } }),
+      "view membership: section box test (partly inside is inside, a touch is inside, wholly beyond one face is outside)");
+    string Tgt(string cur, bool inV) => (string)VM("Target").Invoke(null, new object[] { cur, inV, "TST_IN", "TST_OUT" });
+    Check(Tgt("TST_IN", true) == null && Tgt("TST_OUT", true) == "TST_IN" && Tgt(null, false) == "TST_OUT" && Tgt("TST_OUT", false) == null && Tgt("tst_out", false) == "TST_OUT",
+      "view membership: set only where the value differs (case-sensitive), in -> value_in, out -> value_out");
+    string VH(string bind, long[] i, long[] o) => (string)VM("PlanHash").Invoke(null, new object[] { bind, "TST_IN", "TST_OUT", i, o });
+    Check(VH(null, new long[] { 1, 2 }, new long[] { 3 }) == VH(null, new long[] { 2, 1 }, new long[] { 3 }) && VH(null, new long[] { 1, 2 }, new long[] { 3 }) != VH(null, new long[] { 1 }, new long[] { 2, 3 })
+      && VH("g|1", new long[] { 1 }, new long[0]) != VH(null, new long[] { 1 }, new long[0]), "view membership plan hash: order-free, changes with the side or the binding");
+    var many = Enumerable.Range(1, 100).Select(i => (long)i).ToList();
+    var s1 = (List<long>)VM("Sample").Invoke(null, new object[] { many, 20, "seed" }); var s2 = (List<long>)VM("Sample").Invoke(null, new object[] { many, 20, "seed" });
+    var few = (List<long>)VM("Sample").Invoke(null, new object[] { new List<long> { 5, 3 }, 20, "seed" });
+    Check(s1.Count == 20 && s1.SequenceEqual(s2) && s1.Distinct().Count() == 20 && few.SequenceEqual(new long[] { 3, 5 }), "view membership: a repeatable sample of 20 (all when fewer)");
+    string FN(string g, string ext) { var args = new object[] { g, ext, null }; return (string)VM("FileName").Invoke(null, args); }
+    Check(FN("TST-MODEL", ".nwc") == "TST-MODEL.nwc" && FN("TST-MODEL.IFC", ".ifc") == "TST-MODEL.IFC" && FN("..\\x", ".ifc") == null && FN("", ".dwfx") == null && FN("a:b", ".nwc") == null,
+      "export: plain file names only, the extension added when missing");
+    var cfg = System.Text.Json.Nodes.JsonNode.Parse("{\"FileVersion\":\"IFC2x3CV2\",\"ExportBaseQuantities\":true,\"SpaceBoundaryLevel\":3,\"TST_Option\":\"x\",\"WallAndColumnSplitting\":\"false\"}")!.AsObject();
+    var ic2 = VM("IfcConfig").Invoke(null, new object[] { cfg });
+    Check((string)FW(ic2, "Item1") == "IFC2x3CV2" && (bool?)FW(ic2, "Item2") == true && (bool?)FW(ic2, "Item3") == false && FW(ic2, "Item4") == null
+      && ((Dictionary<string, string>)FW(ic2, "Item5"))["TST_Option"] == "x" && ((List<string>)FW(ic2, "Item6")).Count == 1,
+      "export: IFC config keys map to options; an out-of-range space boundary level is reported");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

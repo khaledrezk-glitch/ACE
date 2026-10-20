@@ -406,7 +406,7 @@ export function classifyName(name, idx, aliases = {}) {
   return { match: "unknown", name };
 }
 
-function editDistance(a, b, max) {
+export function editDistance(a, b, max) {
   if (Math.abs(a.length - b.length) > max) return max + 1;
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {

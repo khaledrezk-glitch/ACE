@@ -108,6 +108,12 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   delete_empty only after the user reviewed it (dry_run, then the identical call). Never delete a workset that holds
   elements unless the user named it and move_to. Recording how a person works: capture_method start, stop; report the
   grouped actions and the plan comparison; proposed rules need the owner's confirmation.
+- A parameter from a view ("mark what the Navisworks view exports"): view_membership_fill check_only first; tell the
+  user why elements are out of the view, any spelling note and the impact (rules, IFC settings that name it), then
+  dry_run and the identical call. A parameter missing in the model is bound only from the vault's shared parameter file:
+  if blocked, never make up a definition. Exports: export_deliverables (check_only for the pre-flight; out_dir required;
+  overwrite only after the user agreed); report the files table and every block. A register for a submission:
+  register_update without confirm, show the report, then confirm.
 - Opening and closing models: open_model (path; detach preserve_worksets for a central or cloud model you must not
   touch; discard_worksets only after the user agreed, with confirm: true; audit; worksets; close_previous) and
   close_model (a non-active model, closed without saving). For a batch of models in one Revit session: open_model each

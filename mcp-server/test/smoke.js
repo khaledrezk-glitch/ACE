@@ -166,6 +166,48 @@ const bridge = http.createServer((req, res) => {
           verify: fail ? { ok: false, checked: 7, mismatches: [{ what: "Walls", before: 7, after: 6 }] } : { ok: true, checked: 7, mismatches: [] },
           done: args.dry_run || fail ? { renamed: 0, deleted: 0, moved: 0 } : done, ...(args.dry_run || fail ? { wouldDo: done } : {}) } });
       }
+      case "view_membership_fill": {
+        // The 1.12.6 contract: the view's elements -> value_in, the rest -> value_out; a missing parameter needs a definition.
+        if (args.expect_model && args.expect_model !== "Test") return reply({ ok: true, result: { success: false, stage: "wrong_model", error: "wrong model" } });
+        const bound = args.parameter === "TST_BOUND_STATUS";
+        const blocked = [];
+        if (args.view === "TST Missing") blocked.push({ what: `view ${args.view}`, why: "no such view", code: "view-not-found" });
+        if (!bound && !args.definition) blocked.push({ what: args.parameter, why: "not bound in the model and no definition was given", code: "no-definition" });
+        if (!bound && args.definition && !(args.categories ?? []).length) blocked.push({ what: `definition ${args.parameter}`, why: "the definition names no model category to bind to", code: "no-definition" });
+        if (args.view === "TST Sheet") blocked.push({ what: `view ${args.view}`, why: `${args.view} is not a model view (a sheet, schedule, legend or other non-model view)`, how: "Check the view name (list_views), then run again.", code: "view-not-found" });
+        if (args.view === "TST Empty") blocked.push({ what: `view ${args.view}`, why: "the view shows none of these 10 elements; check the view name", how: "Check the view name (list_views), then run again.", code: "view-not-found" });
+        const plan = [...(bound ? [] : [{ id: "bind", kind: "bind", count: 1, categories: args.categories }]), { id: "set-in", kind: "set-in", count: 6 }, { id: "set-out", kind: "set-out", count: 4 }];
+        const planHash = `vh-${args.parameter}-${args.value_in}-${args.value_out}`;
+        const base = { model: "Test", aceVersion: SERVER_VERSION, planHash, view: { name: args.view, id: 900, viewType: "ThreeD", sectionBox: true, phase: "New Construction", filters: ["TST filter"], is3d: true },
+          parameter: { name: args.parameter, bound, guid: bound ? "g-bound" : null, storage: "String", instance: true }, modelNames: ["TST_Export_Status", "TST_Other"],
+          counts: { processed: 10, in: 6, out: 4, unchanged: 0, skipped: 1 }, outside: { sectionBox: 3, hidden: 1, category: 0 }, outsideSamples: { sectionBox: [11, 12, 13] },
+          skipped: [{ id: 77, reason: "in a group" }], impact: { schedules: ["TST schedule"], viewFilters: [] }, echo: args };
+        if (blocked.length && !args.check_only) return reply({ ok: true, result: { ...base, success: false, stage: "blocked", blocked, error: "Nothing was changed: blocked" } });
+        if (args.check_only) return reply({ ok: true, result: { ...base, success: true, checkOnly: true, plan, blocked } });
+        if (args.expect_plan && args.expect_plan !== planHash) return reply({ ok: true, result: { success: false, stage: "blocked", code: "plan-changed", model: "Test", error: "plan differs", blocked: [{ what: "the plan", why: "differs", code: "plan-changed" }] } });
+        const fail = !args.dry_run && args.value_out === "TST_FAIL";
+        const done = { bound: !bound, setIn: 6, setOut: 4 };
+        return reply({ ok: true, result: { ...base, success: !fail, plan, blocked: [], rolledBack: !!args.dry_run || fail,
+          verify: fail ? { ok: false, checked: 10, mismatches: [{ id: 12, expected: "TST_FAIL", actual: "" }] } : { ok: true, checked: 10, mismatches: [] },
+          done: args.dry_run || fail ? { bound: false, setIn: 0, setOut: 0 } : done, ...(args.dry_run || fail ? { wouldDo: done } : {}) } });
+      }
+      case "export_deliverables": {
+        // The 1.12.6 contract: pre-flight (exporter, views, IFC setup, sheets, existing files), blocks, then files[].
+        const blocked = [], existing = [], files = [];
+        const nav = !args.out_dir.includes("NONAVIS");
+        const at = (f) => path.join(args.out_dir, f);
+        for (const f of ["nwc", "ifc", "dwfx"]) if (args[f] && fs.existsSync(at(args[f].file))) { existing.push(at(args[f].file)); if (!args.overwrite) blocked.push({ what: `${f} ${args[f].file}`, why: `${at(args[f].file)} exists`, code: "exists" }); }
+        if (args.nwc && !nav) blocked.push({ what: "nwc", why: "the Navisworks exporter is not installed for this Revit", code: "no-exporter" });
+        if (args.nwc && args.nwc.view !== "TST 3D Navis") blocked.push({ what: `nwc view ${args.nwc.view}`, why: `no view is called ${args.nwc.view}`, code: "view-not-found" });
+        if (args.ifc?.setup && !args.ifc.config) blocked.push({ what: `ifc setup ${args.ifc.setup}`, why: "the add-in cannot read the IFC exporter's named setups", code: "setup-not-found" });
+        const preflight = { navisworksExporter: nav, views: { nwc: args.nwc ? args.nwc.view === "TST 3D Navis" : undefined }, ifcSetup: args.ifc ? args.ifc.setup ?? null : null, sheets: args.dwfx ? (args.dwfx.sheets ?? []).length : 0, existing, outDir: args.out_dir };
+        const base = { model: "Test", aceVersion: SERVER_VERSION, preflight, blocked, notes: [], echo: args };
+        if (args.check_only) return reply({ ok: true, result: { ...base, success: true, checkOnly: true, files: [] } });
+        if (blocked.length) return reply({ ok: true, result: { ...base, success: false, stage: "blocked", error: "Nothing was exported", files: [] } });
+        fs.mkdirSync(args.out_dir, { recursive: true });
+        for (const f of ["nwc", "ifc", "dwfx"]) if (args[f]) { fs.writeFileSync(at(args[f].file), "x".repeat(2048)); files.push({ format: f, file: at(args[f].file), bytes: 2048, seconds: 1.5, ...(f === "dwfx" ? { sheets: args.dwfx.sheets.length } : { elements: 120 }), warnings: f === "ifc" ? ["2 elements | not exported"] : [], view: args[f].view }); }
+        return reply({ ok: true, result: { ...base, success: true, files } });
+      }
       case "capture_method": {
         if (args.action === "start" && args.label === "TST busy") return reply({ ok: true, result: { success: false, error: "A capture is already running: TST joins." } });
         if (args.action === "start") return reply({ ok: true, result: { model: "Test", label: args.label, startedAt: "2026-10-20 10:00", journal: "C:/journals/journal.0001.txt", elements: 50, echo: args } });
@@ -240,7 +282,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "register_update", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -1040,6 +1082,145 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(md, /- In order: Join Geometry x2 > Switch Join Order > ID_TST_UNKNOWN_CMD/);
   assert.match(md, /## Proposed rules \(need owner confirmation\)\n\nNothing below is applied\.[\s\S]*- Floors before Structural Columns in the join order \(Floors x Structural Columns: Floors cut Structural Columns in 2 of 3 pair\(s\); 1 exception\(s\)\)\n- Walls before Floors in the join order \(Floors x Walls: Walls cut Floors in 1 of 1 pair\(s\)\)\n$/, "ends with proposed rules, never applied");
   assert.equal(JSON.parse(fs.readFileSync(files[0], "utf8")).comparison.counts.agree, 1);
+}
+// --- view_membership_fill: check, dry run, identical apply; the definition only from the vault's shared parameter files ---
+{
+  const vDir = path.join(tmp, "vfill");
+  fs.mkdirSync(path.join(vDir, "ACE Vault", "rules"), { recursive: true });
+  const sp = path.join(vDir, "TST project parameters.txt");
+  fs.writeFileSync(sp, "*GROUP\tID\tNAME\nGROUP\t1\tTST\n*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\nPARAM\taaaaaaaa-0000-0000-0000-000000000001\tTST_EXPORT_STATUS\tTEXT\t\t1\n");
+  fs.writeFileSync(path.join(vDir, "ACE Vault", "rules", "ifc-export.json"), JSON.stringify({ propertySets: [{ name: "TST_Pset", properties: ["TST_EXPORT_STATUS"] }] }));
+  const vm = () => seen.filter((x) => x.command === "view_membership_fill");
+  const base = { view: "TST Navis", parameter: "TST_EXPORT_STATUS", value_in: "TST_IN", value_out: "TST_OUT", categories: ["Walls"], project_parameters: sp, vault: vDir, report_dir: path.join(tmp, "vfill-out") };
+  assert.match((await call("view_membership_fill", { ...base, value_out: "TST_IN", check_only: true })).content[0].text, /value_in and value_out are the same/);
+  const ck = await call("view_membership_fill", { ...base, check_only: true });
+  const ct = ck.content.at(-1).text;
+  assert.ok(!ck.isError && vm().at(-1).args.check_only === true && vm().at(-1).args.definition.guid === "aaaaaaaa-0000-0000-0000-000000000001", "the definition comes from the vault's file");
+  assert.match(ct, /^VIEW MEMBERSHIP FILL in Test \(check, read-only, nothing changed\): TST_EXPORT_STATUS = "TST_IN" for what view "TST Navis" shows, "TST_OUT" for the rest\./);
+  assert.match(ct, /Why elements are out \(first reason found\):\n- outside the section box: 3 \(e\.g\. 11, 12, 13\)\n- hidden in the view: 1/, "the reasons per kind");
+  assert.match(ct, /Plan: bind the parameter \(1\), set value_in \(6\), set value_out \(4\)\./);
+  assert.match(ct, /Near-duplicate names in the model: TST_Export_Status/);
+  assert.match(ct, /Definition from the vault: TST project parameters\.txt \(GUID aaaaaaaa-0000-0000-0000-000000000001, TEXT\)\./);
+  assert.match(ct, /Impact: "TST_EXPORT_STATUS" is named in .*ifc-export\.json \(IFC export settings\)/, "the IFC settings that name it");
+  assert.match(ct, /In the model it is used by: schedules TST schedule\./);
+  // A misspelled name: flagged against the vault, no definition, so the add-in blocks a missing parameter.
+  const mis = await call("view_membership_fill", { ...base, parameter: "TST_EXPORT_STAUS", dry_run: true, explanation: "x" });
+  assert.ok(mis.isError && !("definition" in vm().at(-1).args && vm().at(-1).args.definition) && vm().at(-1).args.check_only === true, "stopped at the check, before the dry run");
+  const mt = mis.content.map((c) => c.text).join("\n");
+  assert.match(mt, /TST_EXPORT_STAUS: not bound in the model and no definition was given\. How to clear: add the parameter to the project shared parameter file in the vault/, "blocked, never invented");
+  assert.match(mt, /Likely spelling issue: "TST_EXPORT_STAUS" is in no shared parameter file of the vault; close names there: TST_EXPORT_STATUS\./, "a near name in the vault");
+  const sp2 = await call("view_membership_fill", { ...base, parameter: "TST_Export_Status", check_only: true });
+  assert.match(sp2.content.at(-1).text, /Likely spelling issue: the vault has "TST_EXPORT_STATUS", not "TST_Export_Status"/, "a spelling against the vault");
+  const mp = path.join(vDir, "TST mapping.json");
+  fs.writeFileSync(mp, JSON.stringify({ nameAliases: { status: "approved", spellingRule: "case and spaces follow the shared parameter file" } }));
+  const sr = await call("view_membership_fill", { ...base, parameter: "TST_Export_Status", mapping: mp, check_only: true });
+  assert.ok(vm().at(-1).args.parameter === "TST_EXPORT_STATUS" && /Spelling: the vault spells it "TST_EXPORT_STATUS"; the approved spelling rule resolves "TST_Export_Status" to it/.test(sr.content.at(-1).text), "an approved spelling rule writes the vault's spelling");
+  // Gate: no apply without the dry run; dry run; identical apply with expect_plan; a failed self-check rolls back.
+  const ex = { ...base, explanation: "Mark what the Navisworks view exports" };
+  const n0 = vm().length;
+  assert.ok((await call("view_membership_fill", ex)).isError && vm().length === n0, "no apply without its dry run, before Revit is asked");
+  const dr = await call("view_membership_fill", { ...ex, dry_run: true });
+  assert.ok(!dr.isError && vm().at(-1).args.dry_run === true && vm().at(-1).args.expect_model === "Test" && vm().at(-1).args.expect_version === SERVER_VERSION);
+  assert.match(dr.content.at(-1).text, /Self-check: ok \(10 element\(s\) read back; in \+ out = processed\)\.\nChanges: would have been bound 1, set in 6, set out 4; rolled back, nothing changed\.[\s\S]*PREVIEW ONLY/);
+  const ap = await call("view_membership_fill", ex);
+  assert.ok(!ap.isError && vm().at(-1).args.dry_run === false && vm().at(-1).args.expect_plan === "vh-TST_EXPORT_STATUS-TST_IN-TST_OUT");
+  assert.match(ap.content.at(-1).text, /\(applied as ONE undo step\)[\s\S]*Changes: bound 1, set in 6, set out 4 done\.[\s\S]*Run record: .*view-membership-fill-run-Test-/);
+  assert.match((await call("view_membership_fill", ex)).content[0].text, /not been previewed/, "a preview is used once");
+  const fx = { ...ex, value_out: "TST_FAIL" };
+  await call("view_membership_fill", { ...fx, dry_run: true });
+  const fr = await call("view_membership_fill", fx);
+  assert.ok(fr.isError && /NOT applied: rolled back/.test(fr.content.at(-1).text) && /Self-check FAILED: #12: expected "TST_FAIL", found ""; rolled back, nothing changed\./.test(fr.content.at(-1).text));
+  assert.match((await call("view_membership_fill", { ...base, include_links: true, check_only: true })).content[0].text, /include_links is not supported/);
+  const nc = await call("view_membership_fill", { ...base, categories: undefined, dry_run: true, explanation: "x" });
+  const nct = nc.content.map((c) => c.text).join("\n");
+  assert.ok(nc.isError && vm().at(-1).args.check_only === true && /categories for TST_EXPORT_STATUS: TST_EXPORT_STATUS is not bound in the model, and binding it needs categories: the shared parameter file holds no categories\. How to clear: give categories/.test(nct) && !/names no model category/.test(nct), "binding without categories: said plainly, before the dry run");
+  for (const [v, why] of [["TST Sheet", /view TST Sheet: TST Sheet is not a model view \(a sheet, schedule, legend or other non-model view\)\. How to clear: Check the view name/], ["TST Empty", /view TST Empty: the view shows none of these 10 elements; check the view name\. How to clear: Check the view name/]]) {
+    const vb = await call("view_membership_fill", { ...base, view: v, check_only: true });
+    assert.match(vb.content.at(-1).text, why, `the add-in's view block is printed: ${v}`);
+  }
+  const nv = await call("view_membership_fill", { ...base, view: "TST Missing", dry_run: true, explanation: "x" });
+  assert.match(nv.content[0].text, /view TST Missing: no such view\. How to clear: check the view name/);
+}
+// --- export_deliverables: names from the vault's naming rule, IFC settings from the vault, blocks reported, a table ---
+{
+  const eDir = path.join(tmp, "exp");
+  const vRules = path.join(eDir, "ACE Vault", "rules");
+  fs.mkdirSync(path.join(vRules, "ifc"), { recursive: true });
+  fs.writeFileSync(path.join(vRules, "export.json"), JSON.stringify({ nameTemplate: "TST_{model}_{format}", ifc: { setups: { "TST setup": "ifc/tst-setup.json" } } }));
+  fs.writeFileSync(path.join(vRules, "ifc", "tst-setup.json"), JSON.stringify({ Name: "TST setup", IFCVersion: 21, ExportBaseQuantities: true, SpaceBoundaries: 1, TST_Option: "on" }));
+  const ed = () => seen.filter((x) => x.command === "export_deliverables");
+  const out = path.join(eDir, "out");
+  const eb = { out_dir: out, vault: eDir, nwc: { view: "TST 3D Navis" }, ifc: { setup: "TST setup" }, dwfx: { sheets: ["TST-01", "TST-02"] } };
+  assert.match((await call("export_deliverables", { out_dir: out })).content[0].text, /Give at least one of nwc, ifc or dwfx/);
+  const n0 = ed().length;
+  const bad = await call("export_deliverables", { ...eb, ifc: { setup: "TST unknown" } });
+  assert.ok(bad.isError && ed().length === n0 && /no IFC setup "TST unknown" in the vault/.test(bad.content[0].text), "an unknown setup is blocked before Revit is asked");
+  const ck = await call("export_deliverables", { ...eb, check_only: true });
+  const ca = ed().at(-1).args;
+  assert.ok(!ck.isError && ca.check_only === true && ca.nwc.file === "TST_Test_nwc.nwc" && ca.ifc.file === "TST_Test_ifc.ifc" && ca.dwfx.file === "TST_Test_dwfx.dwfx", "names from the vault's naming rule");
+  assert.deepEqual(ca.ifc.config, { FileVersion: 21, ExportBaseQuantities: true, SpaceBoundaryLevel: 1, TST_Option: "on" }, "the setup's file, exporter keys read as the add-in's");
+  assert.ok(ca.ifc.setup === "TST setup" && ca.overwrite === false);
+  assert.match(ck.content.at(-1).text, /\(pre-flight only, nothing written\)[\s\S]*Pre-flight: Navisworks exporter installed; IFC setup TST setup; 2 sheet\(s\)\.[\s\S]*IFC settings: .*tst-setup\.json \(exporter keys read as IFCVersion -> FileVersion, SpaceBoundaries -> SpaceBoundaryLevel\)[\s\S]*Ready: the same call without check_only exports\./);
+  const ex = await call("export_deliverables", eb);
+  const et = ex.content.at(-1).text;
+  assert.ok(!ex.isError && fs.existsSync(path.join(out, "TST_Test_nwc.nwc")));
+  assert.match(et, /\| file \| size \| time \| count \| warnings \|\n\|---\|---\|---\|---\|---\|\n\| TST_Test_nwc\.nwc \| 2 KB \| 1\.5 s \| 120 element\(s\) \| - \|\n\| TST_Test_ifc\.ifc \| 2 KB \| 1\.5 s \| 120 element\(s\) \| 2 elements \/ not exported \|\n\| TST_Test_dwfx\.dwfx \| 2 KB \| 1\.5 s \| 2 sheet\(s\) \| - \|/, "the files table");
+  assert.match(et, /Run record: .*export-run-Test-/);
+  // Existing files and other blocks: reported, nothing exported; overwrite replaces.
+  const again = await call("export_deliverables", { ...eb, nwc: { view: "TST Nope" } });
+  const at = again.content.at(-1).text;
+  assert.ok(again.isError && /Blocked \(nothing exported\):/.test(at) && /TST_Test_nwc\.nwc exists\. How to clear: pass overwrite: true/.test(at) && /nwc view TST Nope: no view is called TST Nope\. How to clear: check the view name/.test(at));
+  const nn = await call("export_deliverables", { out_dir: path.join(eDir, "NONAVIS"), nwc: { view: "TST 3D Navis", file: "TST given" } });
+  assert.ok(nn.isError && ed().at(-1).args.nwc.file === "TST given.nwc" && /Navisworks exporter NOT installed/.test(nn.content.at(-1).text) && /How to clear: install the Navisworks NWC Export Utility/.test(nn.content.at(-1).text));
+  assert.ok(!(await call("export_deliverables", { ...eb, overwrite: true })).isError, "overwrite replaces");
+  // Without a naming rule: the model name.
+  await call("export_deliverables", { out_dir: path.join(eDir, "plain"), vault: path.join(eDir, "none"), ifc: { config: path.join(vRules, "ifc", "tst-setup.json") }, check_only: true });
+  assert.ok(ed().at(-1).args.ifc.file === "Test.ifc" && ed().at(-1).args.ifc.setup === "tst-setup");
+}
+// --- register_update (no Revit): check first, write with confirm after the identical check, never the register ---
+{
+  const ExcelJS = (await import("exceljs")).default;
+  const rDir = path.join(tmp, "register");
+  fs.mkdirSync(path.join(rDir, "cde"), { recursive: true });
+  const wbk = new ExcelJS.Workbook();
+  const sh = wbk.addWorksheet("TST_REG");
+  sh.getRow(1).values = ["Doc No", "Stage 1"];
+  sh.getRow(2).values = ["TST-001", null]; sh.getRow(3).values = ["TST-002", new Date("2026-12-01T00:00:00Z")];
+  const reg = path.join(rDir, "TST register.xlsx");
+  await wbk.xlsx.writeFile(reg);
+  fs.writeFileSync(path.join(rDir, "cde", "TST-001_A.pdf"), "x"); fs.writeFileSync(path.join(rDir, "cde", "TST-999.pdf"), "x");
+  const ru = { register: reg, id_column: "Doc No", stage_columns: ["Stage 1"], delivered_dir: path.join(rDir, "cde"), submission_date: "2026-10-20", label: "SUB 01", output: path.join(rDir, "out.xlsx") };
+  assert.match((await call("register_update", { ...ru, output: reg })).content[0].text, /output is the register itself/, "never the register");
+  assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /has not been checked/, "a write needs the identical check");
+  const chk = (await call("register_update", ru)).content.at(-1).text;
+  assert.match(chk, /\(check, nothing written\)[\s\S]*Matched \(delivered, date set\): 1: TST-001 <- TST-001_A\.pdf\.\nDelivered but not in the register: 1: TST-999\.pdf\.\nIn the register but not delivered: 1: TST-002\.\nDates later than the submission, cleared: 1: TST-002 Stage 1 2026-12-01\./);
+  assert.ok(!fs.existsSync(ru.output), "a check writes nothing");
+  fs.writeFileSync(path.join(rDir, "cde", "TST-002.pdf"), "x");
+  assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /has not been checked/, "a changed delivered folder needs a new check");
+  await call("register_update", ru);
+  const wr = (await call("register_update", { ...ru, confirm: true })).content.at(-1).text;
+  assert.ok(fs.existsSync(ru.output) && /written to .*out\.xlsx/.test(wr) && /Report: .*out - report\.csv/.test(wr));
+  assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /has not been checked/, "a check is used once");
+  await call("register_update", ru);
+  assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /exists: give another output path, or overwrite: true/);
+  // The report CSV follows the same rule, checked before the workbook is written.
+  const ru2 = { ...ru, output: path.join(rDir, "out2.xlsx") };
+  fs.writeFileSync(path.join(rDir, "out2 - report.csv"), "keep");
+  await call("register_update", ru2);
+  const csvNo = (await call("register_update", { ...ru2, confirm: true })).content[0].text;
+  assert.ok(/out2 - report\.csv exists: .*Nothing was written\./.test(csvNo) && !fs.existsSync(ru2.output) && fs.readFileSync(path.join(rDir, "out2 - report.csv"), "utf8") === "keep", "an existing report CSV stops the write before the workbook");
+  // Merged id / stage cells: reported by the check, the write refuses unless allow_merged.
+  const wm = new ExcelJS.Workbook();
+  const shm = wm.addWorksheet("TST_REG");
+  shm.getRow(1).values = ["Doc No", "Stage 1"]; shm.getRow(2).values = ["TST-001", null]; shm.getRow(3).values = ["TST-002", null];
+  shm.mergeCells("B2:B3");
+  const regM = path.join(rDir, "TST merged.xlsx");
+  await wm.xlsx.writeFile(regM);
+  const rm = { ...ru, register: regM, output: path.join(rDir, "outm.xlsx") };
+  assert.match((await call("register_update", rm)).content.at(-1).text, /Merged cells in the id or stage columns: B2:B3/);
+  assert.ok(/Blocked: merged cells in the id or stage columns \(B2:B3\)/.test((await call("register_update", { ...rm, confirm: true })).content[0].text) && !fs.existsSync(rm.output));
+  await call("register_update", rm);
+  assert.ok(!(await call("register_update", { ...rm, confirm: true, allow_merged: true })).isError && fs.existsSync(rm.output), "allow_merged writes after the user checked");
 }
 // A large check goes to report files; the reply stays small.
 const bigRows = Array.from({ length: 210 }, (_, i) => ({ name: `TST_P${i}`, categories: "Levels" }));

@@ -897,6 +897,76 @@
           "value": true
         }
       ]
+    },
+    {
+      "name": "View membership fill (1.12.6): a read-only check counts in / out of the default 3D view and gives the reasons",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "view_membership_fill",
+      "args": {
+        "view": "{3D}",
+        "parameter": "Comments",
+        "value_in": "IN",
+        "value_out": "OUT",
+        "categories": [
+          "Walls",
+          "Doors"
+        ],
+        "check_only": true,
+        "dry_run": false,
+        "max_ids": 5
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "counts.processed",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "planHash",
+          "op": "exists"
+        },
+        {
+          "path": "outside",
+          "op": "exists"
+        },
+        {
+          "path": "view.name",
+          "op": "==",
+          "value": "{3D}"
+        }
+      ]
+    },
+    {
+      "name": "Export deliverables (1.12.6): the pre-flight names a missing view and sheet and writes nothing",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "export_deliverables",
+      "args": {
+        "out_dir": "C:/Temp/ACE bench export",
+        "check_only": true,
+        "nwc": {
+          "view": "ACE bench no such view",
+          "file": "bench.nwc"
+        },
+        "dwfx": {
+          "sheets": [
+            "ACE-BENCH-NONE"
+          ],
+          "file": "bench.dwfx"
+        }
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "preflight",
+          "op": "exists"
+        },
+        {
+          "path": "blocked",
+          "op": "length>=",
+          "value": 2
+        }
+      ]
     }
   ]
 }
