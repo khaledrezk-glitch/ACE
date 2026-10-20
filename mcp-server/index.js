@@ -18,6 +18,7 @@ import * as ParamList from "./lib/paramlist.js";
 import * as ParamSources from "./lib/paramsources.js";
 import * as ParamActions from "./lib/paramactions.js";
 import * as ParamExec from "./lib/paramexec.js";
+import * as ClashResolve from "./lib/clashresolve.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
@@ -787,10 +788,15 @@ const sourceInputs = {
 const MAPPING_NAMES = [path.join("rules", "parameter-mapping.json"), ParamSources.MAPPING_FILE];
 
 /** The project mapping: the one given, else the vault's (given or the open model's); with create_mapping, where to write a draft. */
+/** The project's vault folder: the one given (vault), else the open model's; null when neither is known. */
+async function projectVaultDir(a) {
+  if (a.vault) return Vault.vaultDir(a.vault);
+  try { return (await vaultFolder()).dir; } catch { return null; }
+}
+
 async function mappingFile(a) {
   if (a.mapping) return a.mapping;
-  let dir = a.vault ? Vault.vaultDir(a.vault) : null;
-  if (!dir) { try { dir = (await vaultFolder()).dir; } catch { dir = null; } }
+  const dir = await projectVaultDir(a);
   const found = dir && MAPPING_NAMES.map((n) => path.join(dir, n)).find((f) => fs.existsSync(f));
   if (found) return found;
   if (!a.create_mapping) return undefined;
@@ -963,16 +969,15 @@ function blockedReply(blocks, lead, extra = {}) {
 }
 
 /**
- * Where the register, evidence and run record go: report_dir, else the trusted vault's 04 Audits/<model>/parameters, else
+ * Where the register, evidence and run record go: report_dir, else the trusted vault's 04 Audits/<model>/<sub>, else
  * the reports folder (with a note when a vault was found but is not trusted). -> { dir, note }
  */
-async function auditFolder(a, model) {
+async function auditFolder(a, model, { sub = "parameters", reports = "parameter-fill" } = {}) {
   if (a.report_dir) return { dir: a.report_dir };
-  let dir = a.vault ? Vault.vaultDir(a.vault) : null;
-  if (!dir) { try { dir = (await vaultFolder()).dir; } catch { dir = null; } }
-  const fallback = path.join(REPORTS_DIR, "parameter-fill");
+  const dir = await projectVaultDir(a);
+  const fallback = path.join(REPORTS_DIR, reports);
   if (dir && fs.existsSync(dir)) {
-    if (Vault.trusted(path.dirname(CONFIG_PATH), dir)) return { dir: path.join(dir, "04 Audits", ParamExec.safeName(model), "parameters") };
+    if (Vault.trusted(path.dirname(CONFIG_PATH), dir)) return { dir: path.join(dir, "04 Audits", ParamExec.safeName(model), sub) };
     return { dir: fallback, note: `vault not trusted: files written to ${fallback} (ACE writes into ${dir} once the user allows it: vault with consent: true).` };
   }
   return { dir: fallback };
@@ -1243,6 +1248,145 @@ tool("parameter_fill", {
   if (action !== "fill") return paramCheck(src, a);
   return paramExecute(src, a, { dry_run, explanation, plan, step });
 });
+
+// clash_resolve: the structural self-clash solver (ST vs ST). The same execution stage as parameter_fill: a read-only
+// check first (fails fast on blocks), then a dry run in a rolled-back transaction, then the identical apply as ONE undo
+// step, each naming the model it is for; the add-in guards every annotation of the touched elements and the warnings.
+const clashState = new Map();   // request key -> { key (gate), model, planHash } of its last good dry run
+
+/** The project's rules (rules/clash-resolve.json in the vault: order, steel), when there is one. Invalid -> error. */
+async function clashRules(a) {
+  const dir = await projectVaultDir(a);
+  const file = dir && path.join(dir, "rules", ClashResolve.RULES_FILE);
+  if (!file || !fs.existsSync(file)) return { rules: {} };
+  try { return { rules: ClashResolve.readRules(fs.readFileSync(file, "utf8"), file), file }; } catch (e) { throw new RevitError(e.message); }
+}
+
+async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
+  const { rules, file: rulesFile } = await clashRules(a);
+  let req;
+  try { req = ClashResolve.buildRequest(a, rules, VERSION); } catch (e) { throw new RevitError(e.message); }
+  const rulesNote = rulesFile ? `Project rules: ${rulesFile}${req.order ? ` (join order ${req.order.join(" > ")})` : ""}.` : "";
+  const checkNow = () => callRevit("clash_resolve", { ...req, check_only: true, dry_run: false }, 1800);
+  if (action !== "fix") {
+    const r = await checkNow();
+    const out = text(r);
+    const v = r?.aceVersion;
+    out.content.push({ type: "text", text: [ClashResolve.replyText(r, { mode: "plan", model: r?.model, test: req.test }), rulesNote,
+      v && !sameVersion(v, VERSION) ? `Note: the add-in is ${v}, the server ${VERSION}: a fix is refused until both are one version.` : "",
+      r?.plan?.length && !r?.blocked?.length ? "To fix: clash_resolve action fix with dry_run: true, show the user the result, then the identical call without dry_run." : ""].filter(Boolean).join("\n") });
+    return out;
+  }
+
+  requireExplanation(dry_run, explanation);
+  const { max_ids, ...ident } = req;
+  const reqKey = fingerprint("clash_resolve.request", ident);
+  const prev = dry_run ? null : clashState.get(reqKey);
+  // An apply needs its successful dry run, in the same Revit session: checked before Revit is asked anything.
+  if (!dry_run) {
+    if (!prev) requirePreview(`none:${reqKey}`);
+    requirePreview(prev.key);
+  }
+  const session = await pinSession();
+  if (!dry_run && previews.get(prev.key)?.session !== sessionKey(session)) {
+    const b = [{ what: "the apply", why: `the preview was made in Revit session ${previews.get(prev.key)?.label}, this call would go to ${sessionLabel(session)}`, how: "preview again in the session to change" }];
+    journal({ title: "Blocked: clash resolve", explanation, outcome: "BLOCKED before Revit was asked - nothing changed", details: { blocked: b } });
+    return blockedReply(b, "Blocked before Revit was asked; nothing changed:");
+  }
+
+  // The model as it is now (read-only): the plan, the report-only list and the pre-flight blocks.
+  const pre = await checkNow();
+  const model = pre?.model;
+  if (!model) throw new RevitError("Revit answered without a model: open the model to fix and run again.");
+  const { dir, note: dirNote } = await auditFolder(a, model, { sub: "clashes", reports: "clash-resolve" });
+  const stamp = localDate(new Date(), { time: true });
+  const record = (o) => writeOut(dir, ClashResolve.recordName(model, stamp), JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, request: req, ...o }, null, 1));
+  const stop = (b, lead) => {
+    record({ outcome: "blocked", blocked: b });
+    journal({ title: "Blocked: clash resolve", explanation, outcome: "BLOCKED - nothing changed", details: { blocked: b } });
+    return blockedReply(b, lead, { model });
+  };
+  const version = pre.aceVersion;
+  if (!version || !sameVersion(version, VERSION))
+    return stop([{ what: "the whole plan", why: version ? `the ACE server is ${VERSION}, the add-in in Revit is ${version}` : `the add-in did not report its version (older than ${VERSION}?): install ${VERSION}`,
+      how: "install one ACE version for both (build a package with build-package.ps1, run install.ps1, restart Revit)" }], `Blocked in ${model}; nothing changed:`);
+  // Fail fast: borrowed elements, groups, design options, a read-only model stop the fix before the dry run.
+  if (pre.blocked?.length) return stop(pre.blocked, `Blocked in ${model}; stopped before the dry run, nothing changed:`);
+  if (!pre.plan?.length) {
+    record({ outcome: "nothing to fix", reportOnly: pre.reportOnly });
+    const out = text(pre);
+    out.content.push({ type: "text", text: `${ClashResolve.replyText(pre, { mode: "plan", model, test: req.test })}\nNothing to fix automatically in ${model}: no dry run needed.${rulesNote ? `\n${rulesNote}` : ""}` });
+    return out;
+  }
+  // One gate key per plan: the request and what would change (kind and elements of every step).
+  // One gate key per plan: the request, the add-in's planHash and what would change (every step).
+  const key = fingerprint("clash_resolve.plan", { model, req: ident, plan: ClashResolve.planIdentity(pre) });
+  if (prev && prev.key !== key) return stop([ClashResolve.PLAN_CHANGED], `Blocked in ${model}; nothing changed:`);
+  const expect = dry_run ? model : prev.model;   // the dry run and the apply both name the model they are for
+  // The apply names the plan its dry run showed (expect_plan): the add-in refuses ("plan-changed") when its recomputed plan differs.
+  const result = await gated(key,
+    { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
+    () => callRevit("clash_resolve", { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step, expect_model: expect,
+      ...(!dry_run && prev.planHash ? { expect_plan: prev.planHash } : {}) }, 1800),
+    ClashResolve.previewOk);
+  // After a rollback the add-in moves the in-transaction end state to afterIfKept (done -> wouldDo): read it as "would have been".
+  if (result && result.after == null && result.afterIfKept) result.after = result.afterIfKept;
+  if (dry_run && ClashResolve.previewOk(result)) clashState.set(reqKey, { key, model: result.model ?? model, planHash: result.planHash ?? pre.planHash ?? null });
+  if (!dry_run) clashState.delete(reqKey);
+  if (result?.alreadyApplied) return text(result);
+  if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
+  if (ClashResolve.planChanged(result)) return stop([ClashResolve.PLAN_CHANGED], `Blocked in ${model}: the model changed since the preview: run the dry run again. Nothing changed:`);
+  if (result?.stage === "blocked" || (result?.blocked?.length && result?.success !== true))
+    return stop(result.blocked?.length ? result.blocked : [{ what: "the plan", why: result.error ?? "refused by the add-in" }], `Blocked in ${model}: ${result.error ?? "nothing changed"}`);
+  const rolledBack = !dry_run && ClashResolve.rolledBackOf(result);
+  const outcome = rolledBack ? "guard or self-check failed, rolled back" : outcomeOf(result, dry_run);
+  record({ outcome, before: result?.before, plan: result?.plan, reportOnly: result?.reportOnly, after: result?.after, guard: result?.guard, warnings: result?.warnings, done: result?.done, skipped: result?.skipped });
+  journal({ title: `${dry_run ? "Preview" : "Change"}: clash resolve ${req.test} in ${model} (${result?.plan?.length ?? 0} change(s))`, explanation, outcome,
+    details: { counts: ClashResolve.countsByKind(result?.plan), before: result?.before?.clashes, after: rolledBack ? null : result?.after?.clashes, guard: result?.guard, warnings: result?.warnings, done: result?.done } });
+  let evidence;
+  if (!dry_run) {
+    evidence = writeOut(dir, ClashResolve.evidenceName(model, stamp), ClashResolve.evidenceMarkdown({ model, test: req.test, when: stamp, result, explanation }));
+    if (result?.success && !rolledBack) briefCache.clear();
+  }
+  const out = text(result);
+  const lines = [ClashResolve.replyText(result, { mode: dry_run ? "dry run" : "apply", model, test: req.test, rolledBack, forced: !!a.test_force_verify_mismatch })];
+  if (rulesNote) lines.push(rulesNote);
+  if (dry_run) {
+    const why = [result?.success !== true ? "the dry run failed" : "", result?.guard?.ok === false ? "the annotation guard found differences" : "", result?.verify?.ok === false ? "the self-check failed" : "",
+      result?.warnings?.new?.length ? "it raises new Revit warnings" : ""].filter(Boolean);
+    lines.push(why.length ? `This dry run cannot be applied: ${why.join("; ")}. Narrow it (keys, level) or fix the cause, then run the dry run again.`
+      : "PREVIEW ONLY - the model is unchanged. Show the user the plan, the report-only list and the guard result and ask for confirmation. Apply with the identical call (without dry_run): ONE approval, ONE undo step.");
+  } else if (!rolledBack && result?.success) lines.push(`Next: re-run run_clash_test with test "${req.test}" (the same categories) so the fixed clashes show as resolved.`);
+  lines.push([evidence ? `Evidence: ${evidence}` : "", dirNote ?? ""].filter(Boolean).join("\n"));
+  out.content.push({ type: "text", text: lines.filter(Boolean).join("\n") });
+  if (rolledBack || (dry_run && !ClashResolve.previewOk(result))) out.isError = true;
+  return out;
+}
+
+tool("clash_resolve", {
+  title: "Structural self-clash solver (ST vs ST)",
+  description: "Fixes structure-vs-structure clashes without moving, deleting or recreating anything: only join geometry, switch join order, steel end cutback, cope; the rest is report-only with a reason. Tags, dimensions and locations are guarded, warnings compared. action plan (default): read-only. fix: dry_run: true first, then the identical call (ONE undo step, evidence file). Details: revit_guide workflows.",
+  inputSchema: {
+    action: z.enum(["plan", "fix"]).optional(),
+    test: z.string().max(80).optional().describe("Default \"ST vs ST\""),
+    a_categories: z.array(z.string().max(80)).max(30).optional().describe("Default for \"ST vs ST\": structural columns, framing, walls, floors, foundations, stairs, ramps"),
+    b_categories: z.array(z.string().max(80)).max(30).optional().describe("Default: a_categories"),
+    a_disciplines: z.array(z.string().max(40)).max(10).optional(), b_disciplines: z.array(z.string().max(40)).max(10).optional(),
+    tolerance_mm: z.number().min(0).max(500).optional(),
+    level: z.string().max(120).optional(),
+    keys: z.array(z.string().max(300)).max(2000).optional().describe("Only these clash or issue keys (run_clash_test)"),
+    order: z.array(z.string().max(60)).max(12).optional().describe("Join order, strongest first (default: the vault's rules/clash-resolve.json, else foundation > column > wall > beam > slab > stair)"),
+    steel: z.object({ cutback: z.boolean().optional(), coping: z.boolean().optional() }).optional(),
+    vault: z.string().optional().describe("Project folder or its ACE Vault (default: the open model's)"),
+    report_dir: z.string().optional().describe("Folder for the evidence and run record"),
+    max_ids: z.number().int().min(0).max(500).optional(),
+    test_force_verify_mismatch: z.boolean().optional().describe("Acceptance tests only: the apply's guard fails on purpose and rolls back"),
+    dry_run: z.boolean().optional(),
+    explanation: z.string().max(600).optional(),
+    plan: z.array(z.string().max(120)).max(15).optional(), step: z.number().int().min(1).optional(),
+  },
+  annotations: writes,
+}, async ({ action, dry_run, explanation, plan, step, ...a }) => clashResolve(a, { action, dry_run, explanation, plan, step }));
 
 tool("presentation_standard", {
   title: "Presentation standard (text sizes and annotation types)",

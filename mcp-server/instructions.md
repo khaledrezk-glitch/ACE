@@ -80,6 +80,10 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   clash; "responsible" = who gives way, "caused by" = whose change made it. Walk through with clash_view (key or
   issueKey); approve with set_clash_status; meeting pack with coordination_report. Check the brief's alignment first.
   A Navisworks clash report (.xml / .html) from the user: run_clash_test import_report (the full path).
+- Structure clashing with structure ("ST vs ST", "fix the structural clashes"): clash_resolve. action plan first
+  (read-only), then fix with dry_run, then the identical call. It only joins, switches join order, cuts back steel ends
+  and copes; it never deletes, recreates or moves anything. Report the report-only clashes with their reasons; a guard
+  difference or a new warning means nothing is applied. Afterwards re-run run_clash_test with the same test.
 - What changed: model_changes (since: last, today, yesterday, a weekday, "3 days", a date). Before a clash run that
   should explain causes, pass save_snapshot: false so the baseline is kept.
 - Model health: model_dashboard (score, findings, HTML report); warnings by type with fixes: list_warnings. Worksets per the BEP: assign_worksets (check_only

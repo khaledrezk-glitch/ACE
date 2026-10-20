@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Nodes;
 using AceRevitMcp.Bridge;
@@ -27,9 +28,14 @@ namespace AceRevitMcp.Commands
         /// back (dry run), with the document and the body's result (it may add to it). False rolls the whole group back
         /// and the call fails: nothing is changed. Not called for check_only.
         /// </param>
+        /// <param name="verifyWithWarnings">
+        /// As verify, with the warnings Revit posted while the transaction committed (ModelGuard deletes them, so the
+        /// model's own warning list does not show them): description and element ids. Used instead of verify when given.
+        /// </param>
         public static JsonObject Run(UIApplication app, JsonObject args, string kind, string title, Func<Document, bool, JsonObject> body, string rules = null,
-            Func<Document, JsonObject, bool> verify = null)
+            Func<Document, JsonObject, bool> verify = null, Func<Document, JsonObject, IReadOnlyList<(string Text, long[] Ids)>, bool> verifyWithWarnings = null)
         {
+            if (verifyWithWarnings != null) verify = null;
             var doc = Args.RequireDoc(app);
             if (rules != null)
             {
@@ -75,7 +81,8 @@ namespace AceRevitMcp.Commands
                     var committed = t.Commit();
                     recording.CaptureNames(doc);
                     if (committed != TransactionStatus.Committed) { group.RollBack(); status = committed.ToString(); }
-                    else if (verify != null && !Verified(verify, doc, result))
+                    else if ((verify != null && !Verified(verify, doc, result))
+                             || (verifyWithWarnings != null && !Verified((d, r) => verifyWithWarnings(d, r, guard.WarningDetails), doc, result)))
                     {
                         verifyFailed = true;
                         group.RollBack();

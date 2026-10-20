@@ -53,6 +53,7 @@ namespace AceRevitMcp.Commands
                 ["compliance"] = Rules.ComplianceCommands.Run,
                 ["audit_summary"] = Rules.AuditSummary.Run,
                 ["parameter_fill"] = Rules.ParameterFill.Run,
+                ["clash_resolve"] = Coordination.ClashResolve.Run,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

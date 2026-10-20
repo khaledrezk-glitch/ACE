@@ -20,6 +20,8 @@ namespace AceRevitMcp.Util
         private readonly UIApplication _uiapp;
 
         public List<string> Warnings { get; } = new List<string>();
+        /// <summary>The same warnings as Warnings: the description alone and the failing and additional element ids.</summary>
+        public List<(string Text, long[] Ids)> WarningDetails { get; } = new List<(string Text, long[] Ids)>();
         public List<string> Errors { get; } = new List<string>();
         public List<string> Dialogs { get; } = new List<string>();
 
@@ -49,6 +51,10 @@ namespace AceRevitMcp.Util
                 if (failure.GetSeverity() == FailureSeverity.Warning)
                 {
                     Warnings.Add(text);
+                    var all = new List<long>();
+                    foreach (var id in ids) all.Add(id.Value);
+                    try { foreach (var id in failure.GetAdditionalElementIds()) all.Add(id.Value); } catch { /* none */ }
+                    WarningDetails.Add((failure.GetDescriptionText(), all.ToArray()));
                     accessor.DeleteWarning(failure);
                 }
                 else

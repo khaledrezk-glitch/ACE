@@ -188,6 +188,121 @@ class P {
     Check(Si("p1") == "approved" && Si("p2") == "resolved" && Si("p3") == "active" && Si("p4") == "approved",
       $"import status: ACE approval kept, Navisworks resolved/approved taken, reported active is active ({Si("p1")}, {Si("p2")}, {Si("p3")}, {Si("p4")})");
 
+    // 11. clash_resolve: material, join order, the fix per pair, the framing end, the guard comparison and the warnings rule.
+    var rl = a.GetType("AceRevitMcp.Coordination.ClashResolveLogic");
+    MethodInfo R(string n) => rl.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    var rSideT = rl.GetNestedType("Side", BindingFlags.NonPublic | BindingFlags.Public); var pairT = rl.GetNestedType("Pair", BindingFlags.NonPublic | BindingFlags.Public);
+    var optT = rl.GetNestedType("Options", BindingFlags.NonPublic | BindingFlags.Public); var stateT = rl.GetNestedType("ElementState", BindingFlags.NonPublic | BindingFlags.Public);
+    object Set(object o, params (string, object)[] vals) { foreach (var (n, v) in vals) o.GetType().GetField(n).SetValue(o, v); return o; }
+    string Mat(string cat, string st, string mc) => (string)R("MaterialOf").Invoke(null, new object[] { cat, st, mc });
+    Check(Mat("OST_StructuralColumns", "Steel", null) == "steel" && Mat("OST_StructuralFraming", "Concrete", null) == "concrete" && Mat("OST_StructuralFraming", "PrecastConcrete", null) == "concrete",
+      "material: the family's structural material type first");
+    Check(Mat("OST_Walls", null, null) == "concrete" && Mat("OST_Walls", null, "Masonry") == "other" && Mat("OST_Floors", null, "Generic") == "concrete" && Mat("OST_StructuralColumns", "Undefined", "Metal") == "steel" && Mat("OST_StructuralColumns", "Undefined", null) == "other",
+      "material: then the material class, then the category (walls / floors concrete, unknown columns other)");
+    var order = (string[])rl.GetField("DefaultOrder").GetValue(null);
+    string Win(string x, string y) => (string)R("Winner").Invoke(null, new object[] { order, x, y });
+    Check(Win("OST_StructuralColumns", "OST_StructuralFraming") == "A" && Win("OST_Floors", "OST_Walls") == "B" && Win("OST_Walls", "OST_Walls") == null && Win("OST_Ramps", "OST_Walls") == null,
+      "join order: foundation > column > wall > beam > slab > stair; same category or not in the order = no winner");
+    (int, double) EO(double len, double mMin, double mMax, double iMin, double iMax) { var t = R("EndOverlap").Invoke(null, new object[] { len, mMin, mMax, iMin, iMax, 0.016 }); return ((int)t.GetType().GetField("Item1").GetValue(t), (double)t.GetType().GetField("Item2").GetValue(t)); }
+    var e0 = EO(20, -0.1, 20, -0.1, 0.25); var e1 = EO(20, 0, 20.2, 19.6, 20.2); var em = EO(20, 0, 20, 9, 11); var ew = EO(20, 0, 20, 0, 20);
+    Check(e0.Item1 == 0 && Math.Abs(e0.Item2 - 0.35) < 1e-9 && e1.Item1 == 1 && Math.Abs(e1.Item2 - 0.6) < 1e-9 && em.Item1 == -1 && ew.Item1 == -1,
+      "framing end: the start or end overlap and its cut to the face; mid-span or the whole member = no end");
+    object RSide(string cat, string mat, int end = -2, double cut = 0, double len = 0, double vol = 1, bool host = true) =>
+      Set(Activator.CreateInstance(rSideT, true), ("Category", cat), ("Material", mat), ("End", end), ("Cut", cut), ("Length", len), ("Volume", vol), ("Host", host));
+    object Pair(object sa, object sb, double overlap = 0.01, bool joined = false, bool aCutsB = false, string kind = "hard") =>
+      Set(Activator.CreateInstance(pairT, true), ("A", sa), ("B", sb), ("Overlap", overlap), ("Joined", joined), ("ACutsB", aCutsB), ("ClashKind", kind));
+    var opt = Activator.CreateInstance(optT, true);
+    object Dec(object pr, object o = null) => R("Classify").Invoke(null, new object[] { pr, o ?? opt });
+    string K(object d) => (string)F(d, "Kind"); string Ch(object d) => (string)F(d, "Changed");
+    var dj = Dec(Pair(RSide("OST_StructuralFraming", "concrete"), RSide("OST_StructuralColumns", "concrete")));
+    Check(K(dj) == "join" && Ch(dj) == "B" && (string)F(dj, "Material") == "concrete", "concrete beam x concrete column: join, the column cuts");
+    var ds = Dec(Pair(RSide("OST_Floors", "concrete"), RSide("OST_Walls", "concrete"), joined: true, aCutsB: true));
+    Check(K(ds) == "switch-join" && Ch(ds) == "B", "joined, but the slab cuts the wall: switch-join");
+    Check(K(Dec(Pair(RSide("OST_Walls", "concrete"), RSide("OST_Floors", "concrete"), joined: true, aCutsB: true))) == null, "joined in the right order and still clashing: report only");
+    var dc = Dec(Pair(RSide("OST_StructuralFraming", "steel", 1, 0.27, 20), RSide("OST_StructuralColumns", "concrete")));
+    Check(K(dc) == "cutback" && Ch(dc) == "A" && (int)F(dc, "End") == 1 && (string)F(dc, "Material") == "mixed", "steel beam end into a concrete column: cutback of the beam end (mixed)");
+    var dcope = Dec(Pair(RSide("OST_StructuralFraming", "steel", -1, 0, 20), RSide("OST_StructuralFraming", "steel", 0, 0.27, 10)));
+    Check(K(dcope) == "cope" && Ch(dcope) == "B", "steel member end into a steel beam mid-span: coping of the running member");
+    var noCope = Set(Activator.CreateInstance(optT, true), ("Coping", false));
+    Check(K(Dec(Pair(RSide("OST_StructuralFraming", "steel", -1, 0, 20), RSide("OST_StructuralFraming", "steel", 0, 0.27, 10)), noCope)) == "cutback", "coping off: a cutback to the supporting beam's face instead");
+    Check(K(Dec(Pair(RSide("OST_StructuralFraming", "steel", 0, 0.2, 10), RSide("OST_StructuralFraming", "steel", 1, 0.2, 10)))) == null, "two members ending at one node: report only");
+    Check(K(Dec(Pair(RSide("OST_StructuralFraming", "steel", 0, 3.0, 20), RSide("OST_StructuralColumns", "steel")))) == null, "an overlap deeper than 600 mm is not a trim: report only");
+    Check(K(Dec(Pair(RSide("OST_StructuralFraming", "steel", -1, 0, 20), RSide("OST_Floors", "concrete")))) == null, "steel beam x concrete slab (mixed): report only");
+    Check(K(Dec(Pair(RSide("OST_Walls", "concrete", vol: 2), RSide("OST_Walls", "concrete", vol: 2), overlap: 1.95))) == null, "near-identical geometry (duplicate): report only");
+    Check(K(Dec(Pair(RSide("OST_Walls", "concrete", vol: 10), RSide("OST_StructuralColumns", "concrete", vol: 1), overlap: 1))) == "join", "a column inside a wall: join (the column cuts, it stays)");
+    Check(K(Dec(Pair(RSide("OST_Walls", "concrete", vol: 1), RSide("OST_StructuralColumns", "concrete", vol: 10), overlap: 1))) == null, "a wall inside a column would be cut away: report only");
+    Check(K(Dec(Pair(RSide("OST_Walls", "concrete", host: false), RSide("OST_Walls", "concrete")))) == null, "an element in a linked model: report only");
+    string PId(string k, long cutter, long cut, int end) => (string)R("PlanId").Invoke(null, new object[] { k, cutter, cut, end });
+    Check(PId("join", 42, 7, -1) == "join:42>7" && PId("join", 7, 42, -1) == "join:7>42" && PId("cutback", 9, 5, 1) == "cutback:9>5:1" && PId("cope", 9, 5, 0) == "cope:9>5:0",
+      "plan id: kind, cutter > cut, and the end for a cutback or cope (direction shown, stable across preview and apply)");
+    var uq = (List<string>)R("UniqueIds").Invoke(null, new object[] { new[] { "join:1>2", "cutback:3>4:0", "join:1>2" } });
+    Check(uq.SequenceEqual(new[] { "join:1>2", "cutback:3>4:0", "join:1>2#2" }), "plan id: two steps on the same pair get distinct ids");
+    // 1. Plan hash: the same steps in any order = the same hash; another cut, end, kind or cutter = another hash.
+    string PH(params (string, long, long, int, double, long)[] st) => (string)R("PlanHash").Invoke(null, new object[] { st.ToList() });
+    var ph1 = PH(("join", 1, 2, -1, 0, 0), ("cutback", 9, 5, 1, 82.64, 0));
+    Check(ph1.Length == 64 && ph1 == PH(("cutback", 9, 5, 1, 82.61, 0), ("join", 1, 2, -1, 0, 0)), "plan hash: sha256, independent of step order, cut rounded to 0.1 mm");
+    Check(ph1 != PH(("join", 1, 2, -1, 0, 0), ("cutback", 9, 5, 1, 90, 0)) && ph1 != PH(("join", 1, 2, -1, 0, 0), ("cutback", 9, 5, 0, 82.6, 0))
+      && ph1 != PH(("join", 2, 1, -1, 0, 0), ("cutback", 9, 5, 1, 82.6, 0)) && ph1 != PH(("join", 1, 2, -1, 0, 0), ("cope", 9, 5, 1, 82.6, 9)) && ph1 != PH(("join", 1, 2, -1, 0, 0)),
+      "plan hash: a changed cut, end, direction, kind or a missing step changes the hash (the apply is refused: plan-changed)");
+    var expl = R("Explain").Invoke(null, new object[] { "plan-changed", null, "the model changed since the preview: run the dry run again" });
+    Check(((string)expl.GetType().GetField("Item1").GetValue(expl)).StartsWith("the model changed since the preview"), "plan-changed block says the model changed since the preview");
+    // 3. A fix must help.
+    (long, string, string, string) Wz(object t) => ((long)t.GetType().GetField("Item1").GetValue(t), (string)t.GetType().GetField("Item2").GetValue(t), (string)t.GetType().GetField("Item3").GetValue(t), (string)t.GetType().GetField("Item4").GetValue(t));
+    List<(long, string, string, string)> Worse(int b, int aft, List<(string, long, long)> now, List<(string, long, double, double?)> trims) =>
+      ((IEnumerable)R("Worse").Invoke(null, new object[] { b, aft, now, new HashSet<string> { "k1", "k2" }, new HashSet<long> { 10, 20 }, trims })).Cast<object>().Select(Wz).ToList();
+    Check(Worse(2, 1, new List<(string, long, long)> { ("k2", 10, 30) }, new List<(string, long, double, double?)> { ("k1", 10, 83, null), ("k2", 10, 83, 40) }).Count == 0,
+      "fix helps: fewer clashes, one gone, one shallower = no mismatch");
+    var wz = Worse(2, 3, new List<(string, long, long)> { ("k1", 10, 30), ("k2", 20, 30), ("k9", 99, 20) }, new List<(string, long, double, double?)> { ("k1", 10, 83, 83) });
+    Check(wz.Count == 3 && wz.All(x => x.Item2.StartsWith("fix made it worse")) && wz.Any(x => x.Item1 == 20 && x.Item2.Contains("new clash")) && wz.Any(x => x.Item1 == 10 && x.Item2.Contains("as deeply")),
+      $"fix made it worse: more clashes, a new clash on a touched element, a trimmed member as deep as before ({wz.Count})");
+    Check(Worse(1, 1, new List<(string, long, long)> { ("k7", 55, 66) }, null).Count == 0, "a new clash between untouched elements is not blamed on the fix (count not risen)");
+
+    // Guard: before vs after.
+    var stateListT = typeof(List<>).MakeGenericType(stateT); var stateDictT = typeof(Dictionary<,>).MakeGenericType(typeof(long), stateT);
+    object State(long id, double[] loc, int tags, long type = 5, bool exists = true, params (long, string)[] dims) {
+      var st = Set(Activator.CreateInstance(stateT, true), ("Id", id), ("Location", loc), ("Tags", tags), ("TypeId", type), ("Exists", exists));
+      var dd = (IDictionary)F(st, "Dimensions"); foreach (var (k, v) in dims) dd[k] = v; return st; }
+    string DT(int n, long[] ids, double?[] vals) => (string)R("DimensionText").Invoke(null, new object[] { n, ids, vals });
+    var dimA = DT(2, new long[] { 11, 3 }, new double?[] { 10.0 });
+    var bl = (IList)Activator.CreateInstance(stateListT);
+    bl.Add(State(1, new[] { 0.0, 0, 0, 10, 0, 0 }, 2, 5, true, (900L, dimA))); bl.Add(State(2, new[] { 1.0, 1, 0, 0 }, 1)); bl.Add(State(3, null, 0));
+    object CmpT(ICollection<long> trimmed, params object[] after) { var dct = (IDictionary)Activator.CreateInstance(stateDictT); foreach (var st in after) dct[(long)F(st, "Id")] = st;
+      return R("Compare").Invoke(null, new object[] { bl, dct, trimmed }); }
+    IList Cmp(params object[] after) { var t = CmpT(null, after); return (IList)t.GetType().GetField("Item1").GetValue(t); }
+    string W(object m) => (string)m.GetType().GetField("Item2").GetValue(m);
+    Check(Cmp(State(1, new[] { 0.0, 0, 0, 10, 0, 0 }, 2, 5, true, (900L, DT(2, new long[] { 3, 11 }, new double?[] { 10.0000000001 }))), State(2, new[] { 1.0, 1, 0, 0 }, 1), State(3, null, 0)).Count == 0,
+      "guard: nothing moved, same tags and dimensions = no mismatch");
+    var mm = Cmp(State(1, new[] { 0.0, 0, 0, 10.001, 0, 0 }, 1, 5, true), State(2, new[] { 1.0, 1, 0, 0 }, 1, 6), State(3, null, 0, 5, false)).Cast<object>().Select(W).ToList();
+    Check(mm.Contains("location") && mm.Contains("tags") && mm.Contains("dimension 900") && mm.Contains("type") && mm.Contains("element"),
+      $"guard: a moved end, a lost tag, a lost dimension, a new type and a deleted element are mismatches ({string.Join(", ", mm)})");
+    Check(!(bool)R("SameDimension").Invoke(null, new object[] { dimA, DT(2, new long[] { 3, 11 }, new double?[] { 10.1 }) }) && !(bool)R("SameDimension").Invoke(null, new object[] { dimA, DT(1, new long[] { 3 }, new double?[] { 10.0 }) }),
+      "guard: a dimension whose value or references changed is a mismatch");
+    // 4. A changed value on a dimension to a trimmed member is expected (changedValues); a lost reference or a join-only element is not.
+    object S1(string dim) => State(1, new[] { 0.0, 0, 0, 10, 0, 0 }, 2, 5, true, (900L, dim));
+    object S2() => State(2, new[] { 1.0, 1, 0, 0 }, 1); object S3() => State(3, null, 0);
+    var tv = CmpT(new HashSet<long> { 3 }, S1(DT(2, new long[] { 3, 11 }, new double?[] { 9.7 })), S2(), S3());
+    var tvM = (IList)tv.GetType().GetField("Item1").GetValue(tv); var tvC = (IList)tv.GetType().GetField("Item2").GetValue(tv);
+    Check(tvM.Count == 0 && tvC.Count == 1 && (long)tvC[0].GetType().GetField("Item2").GetValue(tvC[0]) == 900, "guard: a cutback member's dimension value change goes to changedValues, not mismatches");
+    var tl = CmpT(new HashSet<long> { 3 }, S1(DT(1, new long[] { 11 }, new double?[] { 9.7 })), S2(), S3());
+    Check(((IList)tl.GetType().GetField("Item1").GetValue(tl)).Count == 1, "guard: a trimmed member's dimension that lost a reference is still a mismatch");
+    var tj = CmpT(new HashSet<long>(), S1(DT(2, new long[] { 3, 11 }, new double?[] { 9.7 })), S2(), S3());
+    Check(((IList)tj.GetType().GetField("Item1").GetValue(tj)).Count == 1 && ((IList)tj.GetType().GetField("Item2").GetValue(tj)).Count == 0, "guard: a changed value for join-only elements stays a mismatch");
+    // 5. Warnings: per (text + ids) count, any rise fails; re-posted (deleted by ModelGuard) is not counted twice; cleared is fine.
+    var wl = new List<(string Text, long[] Ids)> { ("Walls overlap", new long[] { 1, 2 }) };
+    (int, List<string>, bool) Warn(List<(string Text, long[] Ids)> posted, List<(string Text, long[] Ids)> inModel) { var t = R("Warnings").Invoke(null, new object[] { wl, inModel, posted });
+      return ((int)t.GetType().GetField("Item1").GetValue(t), (List<string>)t.GetType().GetField("Item2").GetValue(t), (bool)t.GetType().GetField("Item3").GetValue(t)); }
+    var none0 = new List<(string Text, long[] Ids)>();
+    var w1 = Warn(new List<(string Text, long[] Ids)> { ("Walls overlap", new long[] { 2, 1 }) }, wl);
+    Check(w1.Item3 && w1.Item2.Count == 0 && w1.Item1 == 1, "warnings: a re-posted existing warning is not new (not counted twice)");
+    var w2 = Warn(new List<(string Text, long[] Ids)> { ("Can't keep elements joined", new long[] { 7, 8 }) }, wl);
+    Check(!w2.Item3 && w2.Item2.Count == 1 && w2.Item2[0].StartsWith("Can't keep elements joined") && w2.Item1 == 2, "warnings: a fresh warning on a touched element fails and is listed");
+    var w3 = Warn(new List<(string Text, long[] Ids)> { ("Room not enclosed", new long[] { 50 }) }, none0);
+    Check(!w3.Item3 && w3.Item2.Count == 1 && w3.Item1 == 1, "warnings: any fresh warning fails, even one on an untouched element while another was cleared");
+    var w4 = Warn(none0, none0);
+    Check(w4.Item3 && w4.Item1 == 0, "warnings: a cleared warning is fine");
+    var w5 = Warn(none0, new List<(string Text, long[] Ids)> { ("Walls overlap", new long[] { 1, 2 }), ("Walls overlap", new long[] { 1, 2 }) });
+    Check(!w5.Item3 && w5.Item2.Count == 1, "warnings: a second copy of the same warning is a rise");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

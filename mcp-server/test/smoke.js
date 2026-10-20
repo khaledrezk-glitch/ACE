@@ -93,6 +93,34 @@ const bridge = http.createServer((req, res) => {
         }
         return reply({ ok: true, result: res });
       }
+      case "clash_resolve": {
+        // The clash_resolve contract: check_only plans (no transaction); a dry run and an apply name their model; keys trigger cases.
+        if (args.expect_model && args.expect_model !== "Test") return reply({ ok: true, result: { success: false, stage: "wrong_model", error: `The preview ran in ${args.expect_model}; the active model is Test.` } });
+        const keys = args.keys ?? [];
+        const before = { clashes: 5, issues: 3, byPair: { "Structural Framing x Structural Columns": 3, "Walls x Walls": 1, "Floors x Floors": 1 } };
+        const plan = keys.includes("TST_NOTHING") ? [] : [
+          { id: "join:201>301", kind: "join", a: 201, b: 301, aCategory: "Structural Columns", bCategory: "Structural Framing", material: "Concrete", level: "L1", why: "column before beam" },
+          { id: "switch-join:205>206", kind: "switch-join", a: 205, b: 206, aCategory: "Walls", bCategory: "Floors", material: "Concrete", level: "L1", why: "the slab won; the wall goes first" },
+          { id: "cutback:302>202:end", kind: "cutback", a: 202, b: 302, aCategory: "Structural Framing", bCategory: "Structural Columns", material: "Steel", level: "Roof", why: "beam end runs into the column" },
+          { id: "cope:204>203", kind: "cope", a: 203, b: 204, aCategory: "Structural Framing", bCategory: "Structural Framing", material: "Steel", level: "Roof", why: "secondary into primary" }];
+        const reportOnly = [{ a: 401, b: 402, aCategory: "Walls", bCategory: "Walls", why: "duplicate or overlapping walls", recommendation: "decide which wall stays" }];
+        const blocked = keys.includes("TST_BORROW") ? [{ what: "2 element(s) to join", why: "borrowed by another user", elements: 2, sampleIds: [201, 301], holder: "jane", how: "ask jane to synchronise and relinquish, then run again", code: "borrowed" }] : [];
+        const base = { model: "Test", aceVersion: keys.includes("TST_OLDADDIN") ? "1.9.0" : SERVER_VERSION, before, plan, planHash: `ph-${keys.join(",")}-${args.test_force_verify_mismatch ? "f" : ""}`, reportOnly, blocked, echo: args };
+        if (args.check_only) return reply({ ok: true, result: { success: true, checkOnly: true, ...base, after: null, guard: null, warnings: { before: 10, after: null, new: [] } } });
+        if (args.expect_version !== SERVER_VERSION) return reply({ ok: true, result: { success: false, stage: "blocked", error: "Nothing was changed: version", model: "Test", blocked: [{ what: "the whole plan", why: "version", how: "update" }] } });
+        // expect_plan: the apply's recomputed plan must be the previewed one (TST_DRIFT: the model changed in between).
+        if (!args.dry_run && (keys.includes("TST_DRIFT") || (args.expect_plan && args.expect_plan !== base.planHash)))
+          return reply({ ok: true, result: { success: false, stage: "blocked", code: "plan-changed", model: "Test", error: "Nothing was changed: the plan differs from the preview", blocked: [{ what: "the plan", why: "recomputed plan differs", code: "plan-changed" }] } });
+        const forced = !args.dry_run && !!args.test_force_verify_mismatch;   // assumed, as parameter_fill: the flag fails the apply's guard, not the dry run's
+        return reply({ ok: true, result: { success: !forced, ...base, rolledBack: !!args.dry_run || forced, transaction: forced ? "GuardFailed" : args.dry_run ? "RolledBack" : "Committed",
+          after: forced ? null : { clashes: 1, issues: 1, remaining: [{ a: 401, b: 402, why: "duplicate or overlapping walls" }] },
+          ...(forced ? { afterIfKept: { clashes: 2, issues: 2, remaining: [{ a: 401, b: 402, why: "duplicate or overlapping walls" }] }, wouldDo: { join: 1, switchJoin: 1, cutback: 1, cope: 0 } } : {}),
+          guard: forced ? { ok: false, checked: 8, mismatches: [{ element: 202, what: "tags", before: 2, after: 1 }] }
+            : { ok: true, checked: 8, mismatches: [], changedValues: [{ element: 202, dimension: 9001, before: "6000", after: "5917" }] },
+          warnings: { before: 10, after: 10, new: keys.includes("TST_NEWWARN") ? ["Highlighted elements are joined but do not intersect."] : [] },
+          done: args.dry_run || forced ? { join: 0, switchJoin: 0, cutback: 0, cope: 0 } : { join: 1, switchJoin: 1, cutback: 1, cope: 1 }, skipped: [],
+          [args.dry_run ? "wouldChange" : forced ? "wouldHaveChanged" : "changed"]: { added: 0, modified: 8, deleted: 0 } } });
+      }
       case "presentation_standard":
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
       case "set_parameters":
@@ -135,7 +163,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_resolve", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -623,6 +651,125 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const { report_dir: _rd, ...noDir } = xs;
   const untrusted = await call("parameter_fill", { action: "fill", ...noDir, vault: vu, actions: [rbId], dry_run: true, explanation: "Rebind" });
   assert.match(untrusted.content.at(-1).text, /vault not trusted: files written to .*parameter-fill/, "an untrusted vault is said, the files go to the reports folder");
+}
+// --- clash_resolve: plan read-only; a fix is a check, a dry run, then the identical apply, each naming the model ---
+{
+  const crDir = path.join(tmp, "clash");
+  const crs = () => seen.filter((x) => x.command === "clash_resolve");
+  const ST = ["OST_StructuralColumns", "OST_StructuralFraming", "OST_Walls", "OST_Floors", "OST_StructuralFoundation", "OST_Stairs", "OST_Ramps"];
+  const p = await call("clash_resolve", {});
+  const ps = crs().at(-1).args;
+  assert.ok(!p.isError && ps.check_only === true && ps.dry_run === false && ps.test === "ST vs ST" && ps.block_on_borrowed === true && ps.expect_version === SERVER_VERSION && !ps.order, "plan: a read-only check of the standard test, the add-in's default order");
+  assert.deepEqual([ps.a_categories, ps.b_categories], [ST, ST], "ST vs ST: the same structural set on both sides");
+  await call("clash_resolve", { test: "Arch vs ST", a_disciplines: ["ARC"], b_disciplines: ["STR"] });
+  const os = crs().at(-1).args;
+  assert.ok(os.test === "Arch vs ST" && !os.a_categories && !os.b_categories && os.a_disciplines[0] === "ARC" && os.b_disciplines[0] === "STR", "another test runs as the add-in defines it: no ST categories under its name");
+  const pt = p.content.at(-1).text;
+  assert.match(pt, /^CLASH RESOLVE ST vs ST in Test \(plan, read-only, nothing changed\)\./);
+  assert.match(pt, /Before: 5 clash\(es\) in 3 issue\(s\); by pair: Structural Framing x Structural Columns 3, Walls x Walls 1, Floors x Floors 1\./);
+  assert.match(pt, /Plan: 4 change\(s\): join 1, switch-join 1, cutback 1, cope 1\. Only joins, switched join orders, steel end cutbacks and copes; nothing is deleted, recreated or moved\./);
+  assert.match(pt, /Report only \(needs a person, 1\):\n- duplicate or overlapping walls \(1, e\.g\. 401 x 402\): decide which wall stays/);
+  assert.ok(!/After:/.test(pt), "a plan has no after stage");
+
+  // The gate: an apply without its dry run is refused before Revit is asked; a dry run needs an explanation.
+  const fx = { action: "fix", report_dir: crDir, explanation: "Join and cut back the structural clashes" };
+  const n0 = crs().length;
+  const refused = await call("clash_resolve", fx);
+  assert.ok(refused.isError && /not been previewed/.test(refused.content[0].text) && crs().length === n0, "no apply without its identical dry run");
+  assert.ok((await call("clash_resolve", { action: "fix", dry_run: true })).isError, "a dry run says what it does");
+
+  const dry = await call("clash_resolve", { ...fx, dry_run: true });
+  const [dc, dd] = crs().slice(-2).map((x) => x.args);
+  assert.ok(dc.check_only === true && dd.check_only === false && dd.dry_run === true && dd.expect_model === "Test" && dd.expect_version === SERVER_VERSION, "check first, then the dry run naming the model and the version");
+  const dt = dry.content.at(-1).text;
+  assert.ok(!dry.isError);
+  assert.match(dt, /\(dry run\)\./);
+  assert.match(dt, /After: 1 clash\(es\) would remain in 1 issue\(s\):\n- 401 x 402: duplicate or overlapping walls/);
+  assert.match(dt, /Annotation guard: ok \(8 touched element\(s\): still there with the same type and location, the same tags, dimensions and spot elevations\)\./);
+  assert.match(dt, /Warnings: before 10, after 10, new none\./);
+  assert.match(dt, /Information: 1 dimension value\(s\) on shortened members changed, references intact \(#202 dimension #9001: "6000" -> "5917"\)\./, "changed dimension values are information, not a failure");
+  assert.match(dt, /Changes: would have been join 1, switch-join 1, cutback 1, cope 1; rolled back, nothing changed\./);
+  assert.match(dt, /Apply with the identical call/);
+  assert.match((await call("clash_resolve", { ...fx, level: "L1" })).content[0].text, /not been previewed/, "another request needs its own dry run");
+
+  const app = await call("clash_resolve", fx);
+  const aa = crs().at(-1).args;
+  assert.ok(!app.isError && aa.dry_run === false && aa.check_only === false && aa.expect_model === "Test" && aa.expect_version === SERVER_VERSION, "the apply names the model the dry run ran in");
+  assert.equal(aa.expect_plan, "ph--", "the apply names the plan its dry run showed");
+  assert.ok(!("expect_plan" in dd), "a dry run sends no expect_plan");
+  const at = app.content.at(-1).text;
+  assert.match(at, /\(applied as ONE undo step\)\./);
+  assert.match(at, /After: 1 clash\(es\) remain in 1 issue\(s\)/);
+  assert.match(at, /Changes: join 1, switch-join 1, cutback 1, cope 1 done\./);
+  assert.match(at, /Next: re-run run_clash_test with test "ST vs ST" \(the same categories\) so the fixed clashes show as resolved\./);
+  const evFile = at.match(/Evidence: (.+)/)[1].trim();
+  assert.match(path.basename(evFile), /^evidence-clash-Test-.+\.md$/);
+  const ev = fs.readFileSync(evFile, "utf8");
+  assert.match(ev, /Applied as ONE undo step\./);
+  assert.match(ev, /\| clashes before \| 5 \(3 issue\(s\)\) \|\n\| clashes after \| 1 \|/);
+  assert.match(ev, /\| cutback \| 1 of 1 \|/);
+  assert.match(ev, /- cutback: 202 x 302 \(Structural Framing x Structural Columns, Steel, Roof\): beam end runs into the column/);
+  assert.match(ev, /\| annotation guard \| ok \(8 element\(s\) checked\) \|\n\| warnings \| before 10, after 10, new 0 \|/);
+  assert.match(ev, /## Remaining clashes\n\n- 401 x 402: duplicate or overlapping walls/);
+  assert.match(ev, /## Dimension values changed on shortened members \(references intact; information, not a failure\)\n\n- #202 dimension #9001: "6000" -> "5917"/);
+  assert.ok(fs.readdirSync(crDir).some((f) => /^clash-run-Test-.+\.json$/.test(f)), "a run record");
+  assert.match((await call("clash_resolve", fx)).content[0].text, /not been previewed/, "a preview is used once");
+
+  // The acceptance-test flag: part of the gate key; the apply's guard fails, everything is rolled back and said so.
+  const ff = { ...fx, test_force_verify_mismatch: true };
+  await call("clash_resolve", { ...ff, dry_run: true });
+  assert.equal(crs().at(-1).args.test_force_verify_mismatch, true, "the flag reaches the bridge on the dry run");
+  assert.match((await call("clash_resolve", fx)).content[0].text, /not been previewed/, "the flag is part of the gate key");
+  const forced = await call("clash_resolve", ff);
+  const ft = forced.content.at(-1).text;
+  assert.ok(forced.isError && crs().at(-1).args.test_force_verify_mismatch === true);
+  assert.match(ft, /\(NOT applied: rolled back\)\./);
+  assert.match(ft, /Annotation guard FAILED \(forced by test flag\) - rolled back, nothing changed\./);
+  assert.match(ft, /Changes: would have been join 1, switch-join 1, cutback 1; rolled back, nothing changed\./, "the add-in's wouldDo counts");
+  assert.ok(!/re-run run_clash_test|Changes: join/.test(ft), "a rolled-back apply never reads as done");
+  const fev = fs.readFileSync(ft.match(/Evidence: (.+)/)[1].trim(), "utf8");
+  assert.match(fev, /Rolled back: nothing changed/);
+  assert.match(fev, /\| cutback \| 0 \(1 would have been done; rolled back\) \|\n\| cope \| 0 \(0 would have been done; rolled back\) \|/);
+  assert.match(fev, /\| clashes after \| 5 \(as before: rolled back; would have been 2\) \|/, "afterIfKept is what would have been");
+
+  // The add-in recomputes the plan on the apply: a different one (expect_plan) is refused and said plainly.
+  await call("clash_resolve", { ...fx, keys: ["TST_DRIFT"], dry_run: true });
+  const drift = await call("clash_resolve", { ...fx, keys: ["TST_DRIFT"] });
+  assert.ok(drift.isError && /the model changed since the preview: run the dry run again/.test(drift.content[0].text) && crs().at(-1).args.expect_plan === "ph-TST_DRIFT-");
+  assert.match(fev, /## Annotation guard differences\n\n- #202 tags: 2 -> 1/);
+
+  // Fail fast: a borrowed element or another add-in version stops the fix before the dry run.
+  const n1 = crs().length;
+  const bor = await call("clash_resolve", { ...fx, keys: ["TST_BORROW"], dry_run: true });
+  assert.ok(bor.isError && /stopped before the dry run, nothing changed/.test(bor.content[0].text));
+  assert.match(bor.content[0].text, /- 2 element\(s\) to join: borrowed by another user \(2 element\(s\), e\.g\. 201, 301\); held by jane\. How to clear: ask jane to synchronise and relinquish/);
+  const old = await call("clash_resolve", { ...fx, keys: ["TST_OLDADDIN"], dry_run: true });
+  assert.ok(old.isError && /the add-in in Revit is 1\.9\.0/.test(old.content[0].text));
+  assert.ok(crs().slice(n1).every((x) => x.args.check_only === true), "only the read-only check ran");
+  // A dry run that raises new warnings is not a preview to apply.
+  const nw = await call("clash_resolve", { ...fx, keys: ["TST_NEWWARN"], dry_run: true });
+  assert.ok(nw.isError && /This dry run cannot be applied: it raises new Revit warnings/.test(nw.content.at(-1).text) && /new Highlighted elements are joined/.test(nw.content.at(-1).text));
+  assert.match((await call("clash_resolve", { ...fx, keys: ["TST_NEWWARN"] })).content[0].text, /not been previewed/);
+  const n2 = crs().length;
+  assert.match((await call("clash_resolve", { ...fx, keys: ["TST_NOTHING"], dry_run: true })).content.at(-1).text, /Nothing to fix automatically in Test: no dry run needed/);
+  assert.equal(crs().length, n2 + 1, "nothing to fix: no dry run");
+
+  // The project's order and steel rules come from the vault; the call wins; an unknown category fails closed.
+  const cv = path.join(tmp, "cv", "ACE Vault");
+  fs.mkdirSync(path.join(cv, "rules"), { recursive: true });
+  fs.writeFileSync(path.join(cv, "rules", "clash-resolve.json"), JSON.stringify({ order: ["foundation", "column", "wall", "beam", "slab", "stair"], steel: { coping: false, cutback: false } }));
+  const vr = await call("clash_resolve", { vault: cv, steel: { cutback: true } });
+  const vs = crs().at(-1).args;
+  assert.deepEqual(vs.order, ["OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_StructuralFraming", "OST_Floors", "OST_Stairs"]);
+  assert.deepEqual(vs.steel, { coping: false, cutback: true }, "the call's steel setting over the vault's");
+  assert.match(vr.content.at(-1).text, /Project rules: .*clash-resolve\.json \(join order OST_StructuralFoundation > OST_StructuralColumns/);
+  await call("clash_resolve", { vault: cv, order: ["column", "OST_Walls"] });
+  assert.deepEqual(crs().at(-1).args.order, ["OST_StructuralColumns", "OST_Walls"], "the call's order wins");
+  const n3 = crs().length;
+  assert.match((await call("clash_resolve", { order: ["roof"] })).content[0].text, /"roof" is not a category ACE knows/);
+  fs.writeFileSync(path.join(cv, "rules", "clash-resolve.json"), "{ order: ");
+  const bad = await call("clash_resolve", { vault: cv });
+  assert.ok(bad.isError && /clash-resolve\.json is not valid JSON/.test(bad.content[0].text) && crs().length === n3, "bad rules: refused before Revit is asked");
 }
 // A large check goes to report files; the reply stays small.
 const bigRows = Array.from({ length: 210 }, (_, i) => ({ name: `TST_P${i}`, categories: "Levels" }));

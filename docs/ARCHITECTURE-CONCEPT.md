@@ -85,6 +85,7 @@ notifications (section 8). Each suggestion has a one-click action.
 | Clash engine | sources, clash rules, **Navisworks clash reports** (XML / HTML, imported as "NW:" tests) | clashes, issues, responsibility, cause, status | Clash Browser, clash view, coordination report, dashboard |
 | Clash view (DirectContext3D) | a clash, colours | focused 3D view | Clash Browser, Claude |
 | Coordination report | issues | HTML with pictures, CSV | meetings |
+| Clash solver (`clash_resolve`, ST vs ST) | clash engine (same test, keys), join order and steel switches from the vault (`rules/clash-resolve.json`) | joins, switched joins, steel cutbacks and copes only (previewed, annotation guard, warnings compared), report-only list with reasons, evidence in `04 Audits/<model>/clashes` | clash engine (re-run marks fixed clashes resolved), approvals; execution stage shared with parameter_fill (gate, session pinning, expect_model / expect_version) |
 | Worksets per BEP (native engine) | workset rules file | moves, wrong-workset report | model check (elements on the wrong workset per the BEP), approvals |
 | Presentation standard (window, Claude) | office check set, section `presentation` | text height by scale, one type per kind and size, tag types unified | model check (Annotation), status store, approvals |
 | Test fit, structure from ARC | brief, rules in the script | model changes (previewed) | preview pictures, approvals |

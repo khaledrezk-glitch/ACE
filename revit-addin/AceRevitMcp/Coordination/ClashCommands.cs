@@ -106,7 +106,7 @@ namespace AceRevitMcp.Coordination
             return o;
         }
 
-        private static List<Clashes.TestSpec> PickTests(JsonObject args)
+        internal static List<Clashes.TestSpec> PickTests(JsonObject args)
         {
             var name = Args.Str(args, "test") ?? "all";
             var tol = args["tolerance_mm"] is JsonValue tv && tv.TryGetValue<double>(out var t) ? t : (double?)null;

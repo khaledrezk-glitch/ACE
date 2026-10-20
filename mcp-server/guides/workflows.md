@@ -22,6 +22,29 @@ cannot be shown or selected; name those models (notes) and suggest linking them.
 new / active / resolved; Navisworks Approved and Resolved are kept and approvals made in ACE survive. ACE's own run and
 the Navisworks import can disagree (tolerances, Navisworks rules): present them as two tests, do not merge them.
 
+Structural self-clashes (ST vs ST): for "fix the structural clashes", "interference check ST vs ST" use clash_resolve.
+The default test is "ST vs ST" (structural columns, framing, walls, floors, foundations, stairs, ramps against the same
+set); a_categories / b_categories, level, tolerance_mm and keys (clash or issue keys from run_clash_test) narrow it.
+Only four fix kinds exist, all of them keep every element where it is: join (Join Geometry, concrete with concrete),
+switch-join (the join exists, the wrong element wins), cutback (a steel member end stops at the column face; the
+location line and the analytical connection stay) and cope (steel into steel). It never deletes, recreates or moves an
+element, so ids, tags, dimensions, schedules and sheets stay. Everything else (duplicates, overlaps that need a design
+decision, mixed materials) is report-only with a reason and a recommendation: give those to the user, never "fix" them
+another way. The join order (strongest first; default foundation > column > wall > beam > slab > stair) and the steel
+switches come from the project vault (`rules/clash-resolve.json`: { "order": [...], "steel": { "cutback": true,
+"coping": true } }), a call's order or steel wins. Stages: action plan (read-only: before by pair, the plan by kind, the
+report-only list, blocks), then fix with dry_run: true (in a rolled-back transaction: the clashes that would remain,
+the annotation guard, the warnings before and after), then the identical call after the user's OK (ONE undo step,
+evidence file `evidence-clash-<model>-<stamp>.md` in the vault's 04 Audits/<model>/clashes or report_dir). Borrowed
+elements, groups, design options or a read-only model stop the fix before the dry run, each with what, why, who and how
+to clear it. A guard difference (an element deleted, retyped or moved, or a tag, dimension or spot elevation lost or changed), a failed
+self-check or a new warning means nothing is applied: report it as "would have been ...; rolled back, nothing changed".
+Dimension values that changed on a cut-back member while their references stayed are information, not a failure:
+mention them. If the model changes between the dry run and the apply, the apply is refused ("the model changed since
+the preview"): run the dry run again. Another test name (e.g. "Arch vs ST") runs with the categories and disciplines
+the add-in defines for it, unless a_categories / b_categories are given.
+After an apply, re-run run_clash_test with the same test so the fixed clashes show as resolved.
+
 ## Change tracking and linked models
 
 model_changes compares this model and its linked models with an earlier snapshot (since: last, today, yesterday, week, month, a weekday such as monday, "3 days", or a date): added, deleted, moved, retyped and changed elements, by category and by person. Use it for "what changed", "what did STR change since Monday", and after a link is reloaded. Before a milestone (issue, submission), offer snapshot_model with a label. get_model_brief lists the linked and open discipline models and whether their levels and grids line up: when they don't, say so before any coordination work.

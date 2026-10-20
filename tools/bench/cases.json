@@ -286,6 +286,29 @@
       ]
     },
     {
+      "name": "Structural self-clash plan (ST vs ST, read-only)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "clash_resolve",
+      "args": {
+        "test": "ST vs ST",
+        "a_categories": ["OST_StructuralColumns", "OST_StructuralFraming", "OST_Walls", "OST_Floors", "OST_StructuralFoundation", "OST_Stairs", "OST_Ramps"],
+        "b_categories": ["OST_StructuralColumns", "OST_StructuralFraming", "OST_Walls", "OST_Floors", "OST_StructuralFoundation", "OST_Stairs", "OST_Ramps"],
+        "block_on_borrowed": true,
+        "check_only": true,
+        "dry_run": false,
+        "max_ids": 5
+      },
+      "maxMs": 600000,
+      "expect": [
+        { "path": "model", "op": "exists" },
+        { "path": "aceVersion", "op": "exists" },
+        { "path": "before.clashes", "op": ">=", "value": 0 },
+        { "path": "plan", "op": "exists" },
+        { "path": "reportOnly", "op": "exists" },
+        { "path": "blocked", "op": "exists" }
+      ]
+    },
+    {
       "name": "Clash view opens with both models in colour",
       "command": "clash_view",
       "args": {},

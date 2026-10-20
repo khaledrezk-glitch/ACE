@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.12.0 (20 Oct 2026)
+- **Structural self-clash solver (`clash_resolve`):** runs an ST vs ST clash test on the host model and fixes only what is
+  safe without moving or replacing anything: Join Geometry / Switch Join Order for concrete pairs (join order from the
+  project vault `rules/clash-resolve.json`, default foundation > column > wall > beam > slab > stair), and steel end
+  cutbacks (start / end extension, location line unchanged) or copes against the supporting column or beam. Everything
+  else (mixed material, duplicates, deep overlaps, nodes, links) is report-only with a recommendation.
+- **Same safety as parameter_fill:** `action: "plan"` is read-only; `fix` needs an identical dry run in the same session
+  and the apply is bound to the previewed plan (`planHash` / `expect_plan`, refused as "the model changed since the
+  preview"). Fail fast on groups, design options, borrowed elements and stale central models. Inside the one undo step
+  the clash test runs again and a guard compares every touched element (exists, type, location, tags, dimensions and spot
+  elevations with their references) and the Revit warnings per key; any difference, any fresh warning or a fix that
+  made a clash worse rolls everything back. Changed dimension values on shortened members are reported as information.
+  Evidence file with clashes before and after.
+
 ## 1.11.3 (19 Oct 2026)
 - **Impact shows what is actually written:** for a target a derive rule fills (a literal Project Information value, a copy
   or a join), the title block and label lines show that value or source instead of the NA text.
