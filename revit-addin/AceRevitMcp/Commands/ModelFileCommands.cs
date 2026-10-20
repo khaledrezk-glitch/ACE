@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using AceRevitMcp.Bridge;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Events;
 
 namespace AceRevitMcp.Commands
 {
@@ -17,9 +18,13 @@ namespace AceRevitMcp.Commands
     {
         /// <summary>
         /// open_model { path, detach: none | preserve_worksets | discard_worksets, audit, worksets: all | last_viewed | none,
-        /// close_previous }: opens and activates the file. Refuses a missing file, a file already open (it is activated
-        /// instead) and a file saved in a newer Revit. close_previous closes the previously active model only if it has no
-        /// unsaved changes, never saving.
+        /// close_previous, clear_transmitted, save_as_central_ok }: opens and activates the file. Refuses a missing file, a file
+        /// already open (it is activated instead) and a file saved in a newer Revit. close_previous closes the previously active
+        /// model only if it has no unsaved changes, never saving. Before the open it reads the transmitted flag (transmitted) and
+        /// the external references (unresolvedLinks: files that do not exist); clear_transmitted: true writes the flag off in the
+        /// file (transmittedCleared). A transmitted workshared model is opened detached (worksets kept) unless clear_transmitted or
+        /// save_as_central_ok. Dialogs shown during the open are recorded in dialogs; only known ones are answered (answer null =
+        /// a person was needed).
         /// </summary>
         public static JsonNode Open(UIApplication app, JsonObject args)
         {
@@ -49,8 +54,56 @@ namespace AceRevitMcp.Commands
                 throw new CommandException($"The file was saved in Revit {info.Format}, newer than this Revit {app.Application.VersionNumber}: it cannot be opened here.");
             if (!info.IsSavedInCurrentVersion) notes.Add($"The file is from Revit {info.Format}: Revit upgrades it in memory (nothing is saved).");
 
-            var options = new OpenOptions { Audit = audit };
             var workshared = info.IsWorkshared;
+            var modelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(full);
+            var clearTransmitted = Args.Bool(args, "clear_transmitted");
+            var saveAsCentralOk = Args.Bool(args, "save_as_central_ok");
+
+            // Transmitted flag and external references, read from the file before it opens.
+            TransmissionData td = null;
+            try { td = TransmissionData.ReadTransmissionData(modelPath); }
+            catch (Exception ex) { notes.Add("The transmission data could not be read (" + ex.Message + "): transmitted and unresolvedLinks are unknown."); }
+            var transmitted = td?.IsTransmitted == true;
+            var transmittedCleared = false;
+            if (clearTransmitted && transmitted)
+            {
+                try
+                {
+                    td.IsTransmitted = false;
+                    TransmissionData.WriteTransmissionData(modelPath, td);
+                    transmittedCleared = true;
+                    notes.Add("clear_transmitted: the transmitted flag was cleared in the file itself (the file was written before the open).");
+                }
+                catch (Exception ex) { notes.Add("clear_transmitted: the flag could not be cleared (" + ex.Message + "); the file is opened as it is."); }
+            }
+            else if (clearTransmitted) notes.Add("clear_transmitted was ignored: the file is not marked as transmitted (nothing was written).");
+            var plan = OpenDialogLogic.TransmittedDetach(transmitted && !transmittedCleared, workshared, detach, saveAsCentralOk);
+            if (plan.Note != null) notes.Add(plan.Note);
+            detach = plan.Detach;
+            var unresolvedLinks = new JsonArray();
+            var externalReferences = 0;
+            if (td != null)
+                foreach (var refId in td.GetAllExternalFileReferenceIds())
+                {
+                    ExternalFileReference r = null;
+                    try { r = td.GetDesiredReferenceData(refId) ?? td.GetLastSavedReferenceData(refId); } catch { /* unreadable reference */ }
+                    if (r == null) continue;
+                    externalReferences++;
+                    string refPath = null; bool local = true;
+                    try
+                    {
+                        var abs = r.GetAbsolutePath() ?? r.GetPath();
+                        if (abs != null) { local = !abs.ServerPath && !abs.CloudPath; refPath = ModelPathUtils.ConvertModelPathToUserVisiblePath(abs); }
+                    }
+                    catch { /* no usable path */ }
+                    if (string.IsNullOrWhiteSpace(refPath) || !local) continue; // a server or cloud path cannot be checked from here
+                    bool exists;
+                    try { exists = File.Exists(refPath); } catch { exists = false; }
+                    if (!exists)
+                        unresolvedLinks.Add(new JsonObject { ["type"] = OpenDialogLogic.RefType(r.ExternalFileReferenceType.ToString()), ["path"] = refPath, ["exists"] = false });
+                }
+
+            var options = new OpenOptions { Audit = audit };
             var detached = false;
             if (detach != "none")
             {
@@ -66,10 +119,31 @@ namespace AceRevitMcp.Commands
                     worksets == "none" ? WorksetConfigurationOption.CloseAllWorksets : worksets == "last_viewed" ? WorksetConfigurationOption.OpenLastViewed : WorksetConfigurationOption.OpenAllWorksets));
             if (workshared && !detached && info.IsCentral) notes.Add("This is a central model opened directly (not a local copy): do not save it from here.");
 
+            // Dialogs during the open: a handler only for this call. Known ones are answered, every one is recorded.
+            var dialogs = new JsonArray();
+            void OnDialog(object sender, DialogBoxShowingEventArgs e)
+            {
+                var isTask = e is TaskDialogShowingEventArgs;
+                var message = (e as TaskDialogShowingEventArgs)?.Message ?? (e as MessageBoxShowingEventArgs)?.Message;
+                var answer = OpenDialogLogic.Answer(e.DialogId, message, isTask);
+                var answered = false;
+                if (answer.Result is int result)
+                    try { answered = e.OverrideResult(result); } catch { answered = false; }
+                dialogs.Add(new JsonObject
+                {
+                    ["id"] = e.DialogId, ["message"] = OpenDialogLogic.Clip(message, 200),
+                    ["answer"] = answered ? answer.Answer : null,
+                    ["why"] = answered ? answer.Why : (answer.Result != null ? "Revit did not accept the automatic answer: a person answered it in Revit" : answer.Why),
+                });
+            }
+
             UIDocument opened;
-            try { opened = app.OpenAndActivateDocument(ModelPathUtils.ConvertUserVisiblePathToModelPath(full), options, false); }
-            catch (Exception ex) { throw new CommandException($"Revit could not open {Path.GetFileName(full)}: {ex.Message}"); }
-            var doc = opened?.Document ?? throw new CommandException($"Revit did not open {Path.GetFileName(full)}.");
+            app.DialogBoxShowing += OnDialog;
+            try { opened = app.OpenAndActivateDocument(modelPath, options, false); }
+            catch (Exception ex) { throw new CommandException($"Revit could not open {Path.GetFileName(full)}: {ex.Message}" + DialogText(dialogs)); }
+            finally { app.DialogBoxShowing -= OnDialog; }
+            var doc = opened?.Document ?? throw new CommandException($"Revit did not open {Path.GetFileName(full)}." + DialogText(dialogs));
+            if (dialogs.Any(d => d?["answer"] == null)) notes.Add("A dialog during the open needed a person (see dialogs).");
 
             JsonNode closed = null;
             if (Args.Bool(args, "close_previous") && previous != null && !previous.Equals(doc))
@@ -88,7 +162,9 @@ namespace AceRevitMcp.Commands
             return new JsonObject
             {
                 ["model"] = doc.Title, ["path"] = doc.PathName, ["workshared"] = doc.IsWorkshared, ["detached"] = detached, ["audited"] = audit,
-                ["worksetsOpened"] = worksetsOpened, ["closed"] = closed, ["openDocuments"] = OpenDocuments(app), ["notes"] = notes,
+                ["worksetsOpened"] = worksetsOpened, ["closed"] = closed, ["openDocuments"] = OpenDocuments(app),
+                ["transmitted"] = transmitted, ["transmittedCleared"] = transmittedCleared, ["externalReferences"] = externalReferences,
+                ["unresolvedLinks"] = unresolvedLinks, ["dialogs"] = dialogs, ["notes"] = notes,
             };
         }
 
@@ -144,7 +220,50 @@ namespace AceRevitMcp.Commands
             try { return Path.GetFullPath(p).TrimEnd('\\', '/'); } catch { return p; }
         }
 
+        private static string DialogText(JsonArray dialogs) =>
+            dialogs.Count == 0 ? "" : " Dialogs during the open: " + string.Join("; ", dialogs.Select(d => $"{d?["id"]} ({d?["answer"] ?? "not answered"})")) + ".";
+
         private static JsonArray OpenDocuments(UIApplication app) =>
             new JsonArray(app.Application.Documents.Cast<Document>().Where(d => !d.IsLinked && !d.IsFamilyDocument).Select(d => (JsonNode)d.Title).ToArray());
+    }
+
+    /// <summary>Pure rules for open_model: which dialog gets which answer, and when a transmitted model opens detached.</summary>
+    internal static class OpenDialogLogic
+    {
+        /// <summary>TaskDialogResult.CommandLink2: "Ignore and continue opening the project" in the unresolved-references dialog.</summary>
+        internal const int IgnoreAndContinue = 1002;
+
+        /// <summary>
+        /// The answer to a dialog shown while a model opens: (Result to pass to OverrideResult or null, Answer, Why). Matched by
+        /// dialog id; the message text is a fallback for a task dialog only. Unknown dialogs and the transmitted-model dialog are
+        /// never answered (the transmitted dialog's buttons include "save as central", and their order is not known here).
+        /// </summary>
+        internal static (int? Result, string Answer, string Why) Answer(string dialogId, string message, bool isTaskDialog)
+        {
+            var id = dialogId ?? "";
+            var text = (message ?? "").ToLowerInvariant();
+            if (string.Equals(id, "TaskDialog_Unresolved_References", StringComparison.OrdinalIgnoreCase)
+                || (isTaskDialog && id.Length == 0 && text.Contains("could not find or read") && text.Contains("reference")))
+                return (IgnoreAndContinue, "Ignore and continue opening the project", "unresolved references: the missing files are listed in unresolvedLinks");
+            if (id.IndexOf("transmit", StringComparison.OrdinalIgnoreCase) >= 0 || text.Contains("transmitted"))
+                return (null, null, "the transmitted-model dialog: ACE never chooses here (one option saves the file as central); a person answered it in Revit");
+            return (null, null, "not a dialog ACE knows: a person answered it in Revit");
+        }
+
+        /// <summary>
+        /// How a model opens when it may be transmitted: a transmitted workshared model asked to open attached is opened detached
+        /// (worksets kept), so Revit does not ask about saving it as central, unless save_as_central_ok leaves that to a person.
+        /// </summary>
+        internal static (string Detach, string Note) TransmittedDetach(bool transmitted, bool workshared, string detach, bool saveAsCentralOk)
+        {
+            if (!transmitted || !workshared || detach != "none") return (detach, null);
+            if (saveAsCentralOk) return (detach, "The model is transmitted: opened attached (save_as_central_ok), so Revit may ask how to treat it; that dialog is left to a person.");
+            return ("preserve_worksets", "The model is transmitted: opened detached with worksets kept, so nothing is saved as central (clear_transmitted or save_as_central_ok change this).");
+        }
+
+        /// <summary>The reference type as reported: RevitLink, CAD, or the API's name for the others.</summary>
+        internal static string RefType(string apiName) => apiName == "CADLink" ? "CAD" : apiName;
+
+        internal static string Clip(string s, int max) => s == null ? null : s.Length <= max ? s : s.Substring(0, max);
     }
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.12.4 (20 Oct 2026)
+- **open_model, nothing silent:** reads the transmitted flag and the external references before opening; lists
+  missing links (`unresolvedLinks`); answers the "Unresolved References" dialog with "ignore and continue" and records
+  every dialog with its answer and why (`dialogs`; one that needed a person is a warning). A transmitted workshared
+  model opens detached with worksets kept unless told otherwise; `clear_transmitted` (writes the file, needs confirm)
+  clears the flag first. The transmitted dialog itself is never answered by ACE.
+
 ## 1.12.3 (20 Oct 2026)
 - **open_model / close_model:** open a model in the running Revit and make it active (detach keeping or, with
   confirmation, discarding worksets; audit; all / last viewed / no worksets), optionally closing the previous model

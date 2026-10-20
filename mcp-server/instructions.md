@@ -108,6 +108,8 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   touch; discard_worksets only after the user agreed, with confirm: true; audit; worksets; close_previous) and
   close_model (a non-active model, closed without saving). For a batch of models in one Revit session: open_model each
   path with close_previous: true, run the job, and report per model; say when a previous model was kept open and why.
+  Report every dialog answered while opening, unanswered ones as warnings, unresolved links and the transmitted flag;
+  clear_transmitted writes into the file: working copies only, confirm: true after the user's OK.
 - Several Revit sessions: ACE uses the one with a model open; if several have one, it lists them and asks: ask the
   user which model, then revit_status with instance.
 

@@ -410,6 +410,30 @@ class P {
     Check(emptyRows.Count == 0 && emptyCounts.Values.All(v => v == 0) && emptyCounts.ContainsKey("clashes") && emptyCounts.ContainsKey("issues"), "empty report: rows [] and every count 0");
     Check((string)IL("RunDate").Invoke(null, new object[] { List(), forSt }) == t0.AddDays(5).ToString("yyyy-MM-ddTHH:mm:ss"), "empty report: the run date comes from the stored run");
 
+    // 15. 1.12.4: open_model's dialog answers and transmitted handling.
+    var odl = a.GetType("AceRevitMcp.Commands.OpenDialogLogic");
+    MethodInfo OD(string n) => odl.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    object Ans(string id, string msg, bool task) => OD("Answer").Invoke(null, new object[] { id, msg, task });
+    object AF(object t, string f) => t.GetType().GetField(f).GetValue(t);
+    var unres = Ans("TaskDialog_Unresolved_References", "Revit could not find or read 2 references.", true);
+    Check((int?)AF(unres, "Item1") == 1002 && ((string)AF(unres, "Item2")).StartsWith("Ignore and continue"), "dialogs: unresolved references -> Ignore and continue (CommandLink2)");
+    var unresTxt = Ans("", "Revit could not find or read 3 references. What do you want to do?", true);
+    var unresMb = Ans("", "Revit could not find or read 3 references.", false);
+    Check((int?)AF(unresTxt, "Item1") == 1002 && AF(unresMb, "Item1") == null, "dialogs: message fallback only for a task dialog without an id");
+    var trans = Ans("TaskDialog_Transmitted_File", "This file has been transmitted.", true);
+    var transTxt = Ans("", "This model was transmitted.", true);
+    Check(AF(trans, "Item1") == null && AF(trans, "Item2") == null && AF(transTxt, "Item1") == null && ((string)AF(trans, "Item3")).Contains("person"), "dialogs: the transmitted dialog is never answered automatically");
+    var other = Ans("TaskDialog_Some_Other", "Something else.", true);
+    var otherText = Ans("TaskDialog_Some_Other", "could not find or read references", true);
+    Check(AF(other, "Item1") == null && AF(other, "Item2") == null && AF(otherText, "Item1") == null, "dialogs: an unknown dialog is left to a person (the text fallback never beats a known other id)");
+    object TD(bool t, bool w, string d, bool ok) => OD("TransmittedDetach").Invoke(null, new object[] { t, w, d, ok });
+    Check((string)AF(TD(true, true, "none", false), "Item1") == "preserve_worksets" && AF(TD(true, true, "none", false), "Item2") != null, "transmitted workshared model opens detached with worksets kept");
+    Check((string)AF(TD(true, true, "none", true), "Item1") == "none" && (string)AF(TD(true, true, "discard_worksets", false), "Item1") == "discard_worksets"
+      && (string)AF(TD(false, true, "none", false), "Item1") == "none" && AF(TD(false, true, "none", false), "Item2") == null && (string)AF(TD(true, false, "none", false), "Item1") == "none",
+      "transmitted: save_as_central_ok keeps it attached; an explicit detach, a non-transmitted or non-workshared file is unchanged");
+    Check((string)OD("RefType").Invoke(null, new object[] { "CADLink" }) == "CAD" && (string)OD("RefType").Invoke(null, new object[] { "RevitLink" }) == "RevitLink"
+      && ((string)OD("Clip").Invoke(null, new object[] { new string('x', 300), 200 })).Length == 200, "unresolvedLinks type names; dialog messages clipped to 200 characters");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

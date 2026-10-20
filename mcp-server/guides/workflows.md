@@ -78,6 +78,12 @@ collect one line per model. The reply says which model was closed, or that the p
 (e.g. unsaved changes): report that, never close it another way. A fix (clash_resolve fix, parameter_fill) still needs
 its own dry run and the user's OK per model. A detached copy is not saved by ACE; say so if the user expects files.
 
+The open_model reply lists every dialog Revit raised while opening with the answer ACE gave and why; a dialog that
+"needed a person" (no answer) is a warning: tell the user and check the model before relying on it. It also lists
+unresolved links (type and path) and whether the file was flagged transmitted. Unresolved links belong in the health
+report too: mention them with the model's findings (model_dashboard) and in the batch summary, never only in passing.
+clear_transmitted writes into the file on disk: only on a working copy, with confirm: true after the user's OK.
+
 ## Change tracking and linked models
 
 model_changes compares this model and its linked models with an earlier snapshot (since: last, today, yesterday, week, month, a weekday such as monday, "3 days", or a date): added, deleted, moved, retyped and changed elements, by category and by person. Use it for "what changed", "what did STR change since Monday", and after a link is reloaded. Before a milestone (issue, submission), offer snapshot_model with a label. get_model_brief lists the linked and open discipline models and whether their levels and grids line up: when they don't, say so before any coordination work.

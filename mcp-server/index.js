@@ -593,21 +593,27 @@ function modelSwitched(model) {
 
 tool("open_model", {
   title: "Open a model",
-  description: "Open an .rvt in this Revit session and make it active. detach (a central or cloud copy): preserve_worksets or discard_worksets (needs confirm: true, the user's OK: the opened copy loses its workset information). audit: true audits while opening. worksets: all (default), last_viewed, none. close_previous: true closes the model that was active before, without saving (if it cannot be closed, the reply says why and it stays open). Opening can take minutes.",
+  description: "Open an .rvt in this Revit session and make it active. detach (a central or cloud copy): preserve_worksets or discard_worksets (needs confirm: true, the user's OK: the opened copy loses its workset information). audit: true audits while opening. worksets: all (default), last_viewed, none. close_previous: true closes the model that was active before, without saving (if it cannot be closed, the reply says why and it stays open). Opening can take minutes. clear_transmitted (confirm: true; working copies only) writes into the file on disk: it clears the transmitted flag. save_as_central_ok: allow a model that would need Save As Central. The reply lists every dialog answered, unresolved links and the transmitted flag.",
   inputSchema: {
     path: z.string().min(1).max(1000).describe("Full path of the .rvt"),
+    clear_transmitted: z.boolean().optional().describe("Working copies only: clears the transmitted flag in the file on disk (needs confirm: true)"),
+    save_as_central_ok: z.boolean().optional(),
     detach: z.enum(["none", "preserve_worksets", "discard_worksets"]).optional(),
     audit: z.boolean().optional(),
     worksets: z.enum(["all", "last_viewed", "none"]).optional(),
     close_previous: z.boolean().optional(),
-    confirm: z.boolean().optional().describe("Only after the user agreed: needed for detach discard_worksets"),
+    confirm: z.boolean().optional().describe("Only after the user agreed: needed for detach discard_worksets and clear_transmitted"),
   },
   annotations: benign,
 }, async ({ confirm, ...a }) => {
   if (a.detach === "discard_worksets" && !confirm)
     throw new RevitError("Blocked for safety: detach discard_worksets discards the workset information in the opened copy (every element ends up without its workset). " +
       "Tell the user exactly that; only if they agree, call again with confirm: true. detach preserve_worksets keeps the worksets.");
-  const req = { path: a.path, detach: a.detach ?? "none", audit: !!a.audit, worksets: a.worksets ?? "all", close_previous: !!a.close_previous };
+  if (a.clear_transmitted && !confirm)
+    throw new RevitError("Blocked for safety: clear_transmitted writes into the file on disk (it clears the transmitted flag of that .rvt). Use it only on a working copy, never on " +
+      "the client's issued file or a central. Tell the user exactly that; only if they agree, call again with confirm: true.");
+  const req = { path: a.path, detach: a.detach ?? "none", audit: !!a.audit, worksets: a.worksets ?? "all", close_previous: !!a.close_previous,
+    clear_transmitted: !!a.clear_transmitted, save_as_central_ok: !!a.save_as_central_ok };
   await pinSession();
   const r = await callRevit("open_model", req, 600);
   modelSwitched(r?.model);
@@ -618,9 +624,25 @@ tool("open_model", {
   journal({ title: `Open model ${r?.model ?? a.path}`, outcome: `Opened (${flags})${prev}`, details: { path: a.path, ...req } });
   const out = text(r);
   const open = (r?.openDocuments ?? []).map((d) => typeof d === "string" ? d : d?.title ?? d?.model ?? d?.name).filter(Boolean);
-  out.content.push({ type: "text", text: `Opened ${r?.model ?? a.path} (${flags})${prev}.${open.length ? ` Open now: ${open.join(", ")}.` : ""}${(r?.notes ?? []).length ? ` Notes: ${r.notes.join(" ")}` : ""}` });
+  out.content.push({ type: "text", text: [`Opened ${r?.model ?? a.path} (${flags})${prev}.${open.length ? ` Open now: ${open.join(", ")}.` : ""}${(r?.notes ?? []).length ? ` Notes: ${r.notes.join(" ")}` : ""}`, ...openNotes(r, req)].join("\n") });
   return out;
 });
+
+/** What opening met: every dialog (answer and why; unanswered ones as warnings), unresolved links, the transmitted flag. */
+function openNotes(r, req) {
+  const lines = [];
+  const dialogs = r?.dialogs ?? [];
+  const unanswered = dialogs.filter((d) => d.answer == null);
+  if (unanswered.length) lines.push(`WARNING: ${unanswered.length} dialog(s) needed a person (not answered): ${unanswered.map((d) => `${d.id ?? "?"}: ${d.message ?? ""}${d.why ? ` (${d.why})` : ""}`).join("; ")}. Tell the user and check the model before relying on it.`);
+  const answered = dialogs.filter((d) => d.answer != null);
+  if (answered.length) lines.push(`Dialogs answered:\n${answered.map((d) => `- ${d.id ?? "?"}: ${d.message ?? ""} -> ${d.answer}${d.why ? ` (${d.why})` : ""}`).join("\n")}`);
+  const links = r?.unresolvedLinks ?? [];
+  if (links.length) lines.push(`${links.length} unresolved link(s): ${links.slice(0, 5).map((l) => `${l.type ?? "link"} ${l.path ?? "?"}${l.exists === false ? " (file not found)" : ""}`).join("; ")}${links.length > 5 ? `; ... ${links.length - 5} more` : ""}.`);
+  if (r?.transmitted != null || r?.transmittedCleared != null)
+    lines.push(r?.transmitted ? `Flagged transmitted: yes; ${r.transmittedCleared ? "the flag was cleared in the file on disk" : req.clear_transmitted ? "the flag was NOT cleared" : "the flag was kept (clear_transmitted not asked)"}.`
+      : `Flagged transmitted: no${r?.transmittedCleared ? " (cleared in the file on disk)" : ""}.`);
+  return lines;
+}
 
 tool("close_model", {
   title: "Close a model",

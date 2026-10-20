@@ -128,7 +128,11 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { applied: args.changes.length, failed: 0, dryRun: !!args.dry_run, results: [] } });
       case "open_model": {
         const model = path.basename(args.path).replace(/\.rvt$/i, "");
-        return reply({ ok: true, result: { model, path: args.path, workshared: true, detached: args.detach !== "none", audited: args.audit, worksetsOpened: args.worksets, echo: args,
+        const extra = model.includes("TRANS") ? { transmitted: true, transmittedCleared: !!args.clear_transmitted,
+          unresolvedLinks: Array.from({ length: 7 }, (_, i) => ({ type: i ? "RVT" : "CAD", path: `C:/links/L${i}.rvt`, exists: i !== 1 })),
+          dialogs: [{ id: "TaskDialog_Unresolved_References", message: "Unresolved references", answer: "Ignore and continue opening", why: "links are reported, not fixed while opening" },
+            { id: "TaskDialog_Unknown", message: "Something unusual", answer: null, why: "no rule for this dialog" }] } : { transmitted: false, transmittedCleared: false, unresolvedLinks: [], dialogs: [] };
+        return reply({ ok: true, result: { model, path: args.path, workshared: true, detached: args.detach !== "none", audited: args.audit, worksetsOpened: args.worksets, echo: args, ...extra,
           closed: args.close_previous ? (model.includes("KEEP") ? { model: "Test", closed: false, why: "it has unsaved changes" } : { model: "Test", closed: true }) : null,
           openDocuments: args.close_previous && !model.includes("KEEP") ? [model] : ["Test", model] } });
       }
@@ -860,7 +864,18 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const om = await call("open_model", { path: "C:/Projects/P1/P1-ST-0001.rvt", audit: true, close_previous: true });
   const oa = seen.at(-1);
   assert.ok(oa.command === "open_model" && oa.args.detach === "none" && oa.args.audit === true && oa.args.worksets === "all" && oa.args.close_previous === true, "defaults: no detach, all worksets");
-  assert.match(om.content.at(-1).text, /^Opened P1-ST-0001 \(audited \/ worksets: all\); closed Test\. Open now: P1-ST-0001\.$/);
+  assert.ok(oa.args.clear_transmitted === false && oa.args.save_as_central_ok === false, "both new flags default false");
+  assert.match(om.content.at(-1).text, /^Opened P1-ST-0001 \(audited \/ worksets: all\); closed Test\. Open now: P1-ST-0001\.\nFlagged transmitted: no\.$/);
+  const n0 = seen.length;
+  const ct = await call("open_model", { path: "C:/Projects/P1/P1-TRANS.rvt", clear_transmitted: true });
+  assert.ok(ct.isError && /writes into the file on disk/.test(ct.content[0].text) && /working copy/.test(ct.content[0].text) && seen.length === n0, "clear_transmitted needs the user's OK, before Revit is asked");
+  const tr = (await call("open_model", { path: "C:/Projects/P1/P1-TRANS.rvt", clear_transmitted: true, save_as_central_ok: true, confirm: true })).content.at(-1).text;
+  assert.ok(seen.at(-1).args.clear_transmitted === true && seen.at(-1).args.save_as_central_ok === true);
+  assert.match(tr, /WARNING: 1 dialog\(s\) needed a person \(not answered\): TaskDialog_Unknown: Something unusual \(no rule for this dialog\)/);
+  assert.match(tr, /Dialogs answered:\n- TaskDialog_Unresolved_References: Unresolved references -> Ignore and continue opening \(links are reported, not fixed while opening\)/);
+  assert.match(tr, /7 unresolved link\(s\): CAD C:\/links\/L0\.rvt; RVT C:\/links\/L1\.rvt \(file not found\); RVT C:\/links\/L2\.rvt; RVT C:\/links\/L3\.rvt; RVT C:\/links\/L4\.rvt; \.\.\. 2 more\./);
+  assert.match(tr, /Flagged transmitted: yes; the flag was cleared in the file on disk\./);
+  assert.match((await call("open_model", { path: "C:/Projects/P1/P1-TRANS.rvt" })).content.at(-1).text, /Flagged transmitted: yes; the flag was kept \(clear_transmitted not asked\)\./);
   const kept = await call("open_model", { path: "C:/Projects/P1/P1-KEEP.rvt", detach: "preserve_worksets", close_previous: true });
   assert.match(kept.content.at(-1).text, /^Opened P1-KEEP \(detached, worksets preserved \/ worksets: all\); kept Test open: it has unsaved changes\./);
   const n = seen.length;
