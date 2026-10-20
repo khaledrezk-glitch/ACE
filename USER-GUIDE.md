@@ -25,6 +25,28 @@ irm https://raw.githubusercontent.com/khaledrezk-glitch/ACE/claude/brave-carson-
 Requirements are listed in [REQUIREMENTS.md](REQUIREMENTS.md). You can delete the unzipped folder
 afterwards: a copy is kept for repairs.
 
+### Stop the Unsigned Add-In prompt (optional)
+
+The ACE DLLs are not signed, so Revit asks about them as an "Unsigned Add-In" (again after each update).
+To stop that on your PC, sign them with a certificate of your own:
+
+1. In the package folder, run once: `powershell -ExecutionPolicy Bypass -File .\trust-ace.ps1`
+2. Run `install.cmd` again (it signs the ACE DLLs and reports **Valid** for each).
+3. Start Revit. The dialog now names the publisher **ACE RevitMCP (local, <your PC>)**: click **Always Load**.
+   Revit remembers the publisher, so later updates load without asking.
+
+What it changes (for your Windows user only, no administrator rights):
+- creates a code-signing certificate in your personal certificate store (5 years, RSA 3072). Its private key
+  **cannot be exported: it never leaves this PC**, and it signs nothing but ACE's own DLLs (never third-party ones);
+- adds its public part to your *Trusted Publishers* and *Trusted Root* stores. Windows shows a security warning
+  when it is added to Trusted Root: that is expected, answer **Yes**;
+- saves its thumbprint to `%APPDATA%\ACE-RevitMCP\signing.json`, so `install.cmd` signs after every update.
+
+`doctor.cmd` shows the signing state (certificate present, trusted, DLLs signed and valid). If signing fails,
+the install still finishes, unsigned. **Undo:** `powershell -ExecutionPolicy Bypass -File .\trust-ace.ps1 -Remove`
+removes the certificate from all three stores (Windows asks again for Trusted Root) and turns signing off; the
+next install is unsigned again.
+
 ## 2. How to ask
 
 Just describe the outcome you want, as you would to a colleague:

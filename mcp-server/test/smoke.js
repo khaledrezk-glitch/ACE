@@ -1691,6 +1691,18 @@ assert.ok(fitted.result.rows.length < 5000 && fitted.result.rowsTruncated, "long
 assert.deepEqual(fitted.revitWarnings, ["w"], "short fields are kept");
 assert.equal(fit({ a: 1 }), '{"a":1}', "replies are compact JSON");
 
+// --- 1.13.2: optional local code signing (static checks: the scripts run on Windows only) ---
+{
+  const rootFile = (f) => fs.readFileSync(new URL(`../../${f}`, import.meta.url), "utf8");
+  const trust = rootFile("trust-ace.ps1"), inst = rootFile("install.ps1"), doc = rootFile("doctor.ps1"), pkg = rootFile("build-package.ps1");
+  assert.ok(/'trust-ace\.ps1'/.test(pkg), "the package ships trust-ace.ps1");
+  assert.ok(/-KeyExportPolicy NonExportable/.test(trust) && /-KeyLength 3072/.test(trust) && /CurrentUser\\My/.test(trust) && /'TrustedPublisher', 'Root'/.test(trust) && /\[switch\]\$Remove/.test(trust), "trust-ace: non-exportable RSA 3072 key, trusted per user, -Remove");
+  assert.ok(/Filter 'AceRevitMcp\*\.dll'/.test(inst) && /Sign-AceDlls \$InstallDir/.test(inst) && /Get-AuthenticodeSignature/.test(inst) && /-HashAlgorithm SHA256/.test(inst), "install signs only ACE's own DLLs, SHA256, verified");
+  assert.ok(/Code signing/.test(doc) && /signing\.json/.test(doc), "doctor reports the signing state");
+  for (const [n, t] of Object.entries({ trust, inst, doc, pkg }))
+    assert.ok(!/\?\?/.test(t.replace(/#.*$/gm, "")), `${n}: no ?? (Windows PowerShell 5.1)`);
+}
+
 await client.close();
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`smoke test passed (${seen.length} bridge calls)`);

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.2 (20 Oct 2026)
+- **Optional local code signing:** `trust-ace.ps1` (run once per user, no administrator rights) creates a code-signing
+  certificate in CurrentUser\My (RSA 3072, SHA256, 5 years, private key not exportable), trusts its public part in
+  CurrentUser\TrustedPublisher and Root and saves the thumbprint to signing.json; `-Remove` undoes it. install.ps1 then
+  signs ACE's own DLLs (AceRevitMcp*.dll, never third-party ones; timestamped when the server is reachable) and verifies
+  each; any problem warns and the install carries on unsigned. doctor reports the signing state; the package ships the
+  script; USER-GUIDE "Stop the Unsigned Add-In prompt".
+
 ## 1.13.1 (20 Oct 2026)
 - **workset_plan review fixes:** the plan goes to apply_plan as workset_plan (no longer sharing the panel's plan field);
   saved link-code, zone and type regexes match between underscores ((?<![A-Za-z0-9])...(?![A-Za-z0-9]) instead of \b);

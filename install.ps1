@@ -67,6 +67,38 @@ function Invoke-Quiet([scriptblock]$Command) {
     $ErrorActionPreference = 'Continue'
     try { & $Command 2>$null } finally { $ErrorActionPreference = $old }
 }
+# Optional local code signing (trust-ace.ps1): signs ACE's own DLLs; any problem warns and the install carries on unsigned.
+function Sign-AceDlls($dir) {
+    try {
+        $settingsFile = Join-Path $env:APPDATA 'ACE-RevitMCP\signing.json'
+        if (-not (Test-Path $settingsFile)) { return }
+        $s = Get-Content $settingsFile -Raw | ConvertFrom-Json
+        if (-not $s.enabled -or -not $s.thumbprint) { return }
+        $cert = Get-Item ("Cert:\CurrentUser\My\" + $s.thumbprint) -ErrorAction SilentlyContinue
+        if (-not $cert -or -not $cert.HasPrivateKey) { Warn "Signing is on, but its certificate is not in CurrentUser\My: installed unsigned (run trust-ace.ps1 again)."; return }
+        # Only ACE's own DLLs (the add-in and the script compiler), never third-party ones.
+        $dlls = @(Get-ChildItem $dir -Recurse -File -Filter 'AceRevitMcp*.dll')
+        if (-not $dlls.Count) { return }
+        $ts = 'http://timestamp.digicert.com'
+        $tsOk = $false
+        try { $null = Invoke-WebRequest -Uri $ts -Method Head -UseBasicParsing -TimeoutSec 5; $tsOk = $true } catch { $tsOk = $false }
+        if (-not $tsOk) { Warn "Timestamp server not reachable: signed without a timestamp (the signature stays valid while the certificate is)." }
+        foreach ($f in $dlls) {
+            $sig = $null
+            try {
+                if ($tsOk) { $sig = Set-AuthenticodeSignature -FilePath $f.FullName -Certificate $cert -HashAlgorithm SHA256 -TimestampServer $ts -ErrorAction Stop }
+            } catch { $sig = $null }
+            if (-not $sig -or $sig.Status -ne 'Valid') {
+                try { $sig = Set-AuthenticodeSignature -FilePath $f.FullName -Certificate $cert -HashAlgorithm SHA256 -ErrorAction Stop } catch { Warn "Could not sign $($f.Name): $($_.Exception.Message)" }
+            }
+            $check = Get-AuthenticodeSignature -FilePath $f.FullName
+            $rel = $f.FullName.Substring($dir.Length).TrimStart('\')
+            if ($check.Status -eq 'Valid') { Ok "Signed $rel (Valid)" } else { Warn "$rel is $($check.Status) after signing; Revit will ask about it as an unsigned add-in." }
+        }
+    } catch {
+        Warn "Signing skipped ($($_.Exception.Message)); the add-in is installed unsigned."
+    }
+}
 function Write-Utf8NoBom($path, $content) {
     [IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
 }
@@ -184,6 +216,7 @@ foreach ($year in $RevitYears) {
     $manifest = (Get-Content $template -Raw).Replace('{{ASSEMBLY_PATH}}', (Join-Path $InstallDir 'AceRevitMcp.dll'))
     Write-Utf8NoBom (Join-Path $AddinRoot 'AceRevitMcp.addin') $manifest
     Ok "Add-in for Revit $year installed to $InstallDir"
+    Sign-AceDlls $InstallDir
 }
 
 }

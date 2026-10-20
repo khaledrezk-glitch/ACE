@@ -111,6 +111,37 @@ if ($revitProc) {
     Add-Result 'INFO' 'Revit running' 'Revit is not open (the live connection checks below need it open with a model).'
 }
 
+# --- Code signing (optional: trust-ace.ps1) ------------------------------------------------------
+$SigningFile = Join-Path $DataDir 'signing.json'
+$signing = $null
+if (Test-Path $SigningFile) { try { $signing = Get-Content $SigningFile -Raw | ConvertFrom-Json } catch { $signing = $null } }
+if (-not $signing -or -not $signing.enabled) {
+    Add-Result 'INFO' 'Code signing' 'Off: Revit shows its "Unsigned Add-In" prompt for ACE' 'Optional: run trust-ace.ps1 once (see USER-GUIDE.md, "Stop the Unsigned Add-In prompt").'
+} else {
+    $thumb = [string]$signing.thumbprint
+    $certMy = Get-Item ("Cert:\CurrentUser\My\" + $thumb) -ErrorAction SilentlyContinue
+    $inPub  = [bool](Get-Item ("Cert:\CurrentUser\TrustedPublisher\" + $thumb) -ErrorAction SilentlyContinue)
+    $inRoot = [bool](Get-Item ("Cert:\CurrentUser\Root\" + $thumb) -ErrorAction SilentlyContinue)
+    if (-not $certMy -or -not $certMy.HasPrivateKey) {
+        Add-Result 'WARN' 'Code signing' "On, but certificate $thumb is not in CurrentUser\My" 'Run trust-ace.ps1 again (or trust-ace.ps1 -Remove to turn signing off).'
+    } elseif ($certMy.NotAfter -lt (Get-Date)) {
+        Add-Result 'WARN' 'Code signing' "Certificate $thumb expired on $($certMy.NotAfter.ToString('yyyy-MM-dd'))" 'Run trust-ace.ps1 again (it creates a new one), then install.ps1.'
+    } elseif (-not ($inPub -and $inRoot)) {
+        $missing = @(); if (-not $inPub) { $missing += 'TrustedPublisher' }; if (-not $inRoot) { $missing += 'Root' }
+        Add-Result 'WARN' 'Code signing' "Certificate $thumb present but not trusted (missing from CurrentUser\$($missing -join ', CurrentUser\'))" 'Run trust-ace.ps1 again and answer Yes to the Windows prompt.'
+    } else {
+        Add-Result 'OK' 'Code signing' "Certificate $thumb present and trusted (valid until $($certMy.NotAfter.ToString('yyyy-MM-dd')))"
+    }
+    foreach ($d in $AddinDirs) {
+        if (-not (Test-Path $d)) { continue }
+        $dlls = @(Get-ChildItem $d -Recurse -File -Filter 'AceRevitMcp*.dll' -ErrorAction SilentlyContinue)
+        if (-not $dlls.Count) { continue }
+        $bad = @($dlls | Where-Object { (Get-AuthenticodeSignature -FilePath $_.FullName).Status -ne 'Valid' })
+        if ($bad.Count) { Add-Result 'WARN' "Signed DLLs ($d)" "$($bad.Count) of $($dlls.Count) not signed or not valid: $(($bad | ForEach-Object { $_.Name }) -join ', ')" 'Run install.ps1 again (it signs the ACE DLLs), or doctor.cmd -Fix.' 'addin' }
+        else { Add-Result 'OK' "Signed DLLs ($d)" "$($dlls.Count) ACE DLL(s) signed, Valid" }
+    }
+}
+
 # --- Config & port ------------------------------------------------------------------------------
 $cfg = $null
 if (Test-Path $CfgFile) { try { $cfg = Get-Content $CfgFile -Raw | ConvertFrom-Json } catch { } }
