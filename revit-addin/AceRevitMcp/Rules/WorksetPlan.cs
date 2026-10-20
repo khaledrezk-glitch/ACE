@@ -217,13 +217,13 @@ namespace AceRevitMcp.Rules
 
         // ---- facts ------------------------------------------------------------------------------------------------
 
-        /// <summary>The views to report workset visibility for: the names given, else the 3D views named NAVISWORKS or NWC.</summary>
+        /// <summary>The views to report workset visibility for: the names given, else the 3D views named like NAVISWORKS, NWC, IFC or {3D}.</summary>
         private static List<View> ExportViews(Document doc, JsonObject args, List<string> notes)
         {
             var all = new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>().Where(v => !v.IsTemplate).ToList();
             var given = Args.Strings(args, "views").Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()).ToList();
             if (given.Count == 0)
-                return all.OfType<View3D>().Where(v => v.Name.IndexOf("NAVISWORKS", StringComparison.OrdinalIgnoreCase) >= 0 || v.Name.IndexOf("NWC", StringComparison.OrdinalIgnoreCase) >= 0)
+                return all.OfType<View3D>().Where(v => new[] { "NAVISWORKS", "NWC", "IFC", "{3D}" }.Any(k => v.Name.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0))
                     .Cast<View>().OrderBy(v => v.Name, StringComparer.Ordinal).ToList();
             var list = new List<View>();
             foreach (var n in given.Distinct(StringComparer.OrdinalIgnoreCase))
@@ -385,6 +385,9 @@ namespace AceRevitMcp.Rules
             var pinnedDirect = 0;                              // pinned elements Revit moved without unpinning
             var pinBefore = new Dictionary<long, bool>();      // the pin state of every element the run set: the same after (else roll back)
             var pinFailed = new List<long>();                  // pinned elements whose workset could not be set even unpinned: skipped, pinned again
+            var visHeld = new HashSet<long>();                  // moves held back: they change what a view on a sheet shows
+            var visTypes = new HashSet<long>();                 // link types put back with their held instances
+            bool Left(long id) => pinFailed.Contains(id) || visHeld.Contains(id) || visTypes.Contains(id);   // elements the run leaves where they are
             var retried = new JsonArray();
             var retrySteps = new Dictionary<string, P.Step>(StringComparer.OrdinalIgnoreCase);   // pending_retry answers and steps
             var pending = new JsonArray(); var pendingTotal = 0; var pendingIds = new HashSet<long>();
@@ -840,6 +843,150 @@ namespace AceRevitMcp.Rules
             }
             var created = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             int OnWorkset(Document d, long id) => new FilteredElementCollector(d).WherePasses(new ElementWorksetFilter(new WorksetId((int)id), false)).GetElementCount();
+            // Visibility on sheets: every graphical view placed on a sheet, and the export 3D views, are compared before and after the
+            // moves inside the change (dry run and apply alike), among the moved elements. A change on a sheet view holds those
+            // elements back (they stay where they are, in both runs) unless allow_visibility_change accepts it (true, or names of
+            // views or worksets). Export views are reported only.
+            var allowVisArg = planArg["allow_visibility_change"] ?? args["allow_visibility_change"];
+            var allowVisAll = allowVisArg is JsonValue avv && avv.TryGetValue<bool>(out var avb) && avb;
+            var allowVisNames = allowVisArg is JsonArray ava ? ava.Select(n => n?.ToString()).Where(n => !string.IsNullOrWhiteSpace(n)).ToList() : new List<string>();
+            var sheetOf = new Dictionary<long, string>();
+            foreach (var vp in new FilteredElementCollector(doc).OfClass(typeof(Viewport)).Cast<Viewport>())
+                try { if (!sheetOf.ContainsKey(vp.ViewId.Value) && doc.GetElement(vp.SheetId) is ViewSheet sh) sheetOf[vp.ViewId.Value] = $"{sh.SheetNumber} - {sh.Name}"; } catch { }
+            bool Graphical(View v) => !v.IsTemplate && v.ViewType is ViewType.FloorPlan or ViewType.CeilingPlan or ViewType.Elevation or ViewType.Section or ViewType.ThreeD
+                or ViewType.Detail or ViewType.EngineeringPlan or ViewType.AreaPlan;
+            // One entry per view, in a fixed order (sheet views by sheet and name, then export views), so the dry run and the apply
+            // check the same views; at most visibility_max_views views run the full compare (a view count, not a time, keeps the
+            // two runs identical); the rest are reported as not checked and hold nothing.
+            var checkViews = sheetOf.Keys.Select(id => doc.GetElement(new ElementId(id)) as View).Where(v => v != null && Graphical(v))
+                .Select(v => (Id: v.Id.Value, v.Name, Sheet: sheetOf[v.Id.Value])).OrderBy(v => v.Sheet, StringComparer.Ordinal).ThenBy(v => v.Name, StringComparer.Ordinal)
+                .Concat(views.Where(v => !sheetOf.ContainsKey(v.Id.Value)).Select(v => (Id: v.Id.Value, v.Name, Sheet: (string)null)).OrderBy(v => v.Name, StringComparer.Ordinal))
+                .GroupBy(v => v.Id).Select(g => g.First()).ToList();
+            var visMaxViews = Math.Max(1, Math.Min(5000, Args.Int(args, "visibility_max_views", 400)));
+            // Views whose filters may test the workset: there the full compare always runs (filters can hide by workset).
+            var wsParam = new ElementId(BuiltInParameter.ELEM_PARTITION_PARAM);
+            bool FilterUsesWorkset(ElementFilter f, int depth = 0)
+            {
+                if (f == null || depth > 20) return true;
+                if (f is ElementParameterFilter pf) return pf.GetRules().Any(rule => { try { return rule.GetRuleParameter() == wsParam; } catch { return true; } });
+                if (f is ElementLogicalFilter lf) return lf.GetFilters().Any(x => FilterUsesWorkset(x, depth + 1));
+                return true;   // a filter kind not read here: assume it may
+            }
+            bool ViewFiltersUseWorkset(View v)
+            {
+                try
+                {
+                    var ids = v.GetFilters().ToList();
+                    if (v.ViewTemplateId != ElementId.InvalidElementId && doc.GetElement(v.ViewTemplateId) is View tpl) ids.AddRange(tpl.GetFilters());
+                    return ids.Distinct().Any(id => doc.GetElement(id) is ParameterFilterElement pfe ? FilterUsesWorkset(pfe.GetElementFilter()) : false);
+                }
+                catch { return true; }
+            }
+            var visBefore = new Dictionary<long, HashSet<long>>();
+            HashSet<long> visMoved = null; List<ElementId> visIds = null;
+            var visSkipped = new List<string>(); var visOverCap = new List<string>();
+            bool visSnapped = false, visDone = false;
+            var heldFrom = new HashSet<long>();
+            HashSet<long> Visible(Document dd, long viewId)
+            {
+                try
+                {
+                    // Only the moved ids are tested (with or without a category).
+                    return new HashSet<long>(new FilteredElementCollector(dd, new ElementId(viewId)).WherePasses(new ElementIdSetFilter(visIds))
+                        .ToElementIds().Select(x => x.Value));
+                }
+                catch { return null; }
+            }
+            void VisibilitySnap(Document dd)
+            {
+                visSnapped = true;
+                if (checkViews.Count == 0) return;
+                visMoved = new HashSet<long>(steps.Where(x => x.Kind == "move" && !notPreviewed.Contains(x.Id)).SelectMany(x => x.Ids).Where(id => !notYours.Contains(id)));
+                visIds = visMoved.Select(id => new ElementId(id)).ToList();
+                if (visMoved.Count == 0) return;
+                // The cheap pre-check: a view where every (source, target) workset pair shows alike and no filter tests the workset
+                // cannot change for these moves: no collector runs there.
+                WorksetDefaultVisibilitySettings defs = null;
+                try { defs = WorksetDefaultVisibilitySettings.GetWorksetDefaultVisibilitySettings(dd); } catch { defs = null; }
+                var pairs = steps.Where(x => x.Kind == "move" && !notPreviewed.Contains(x.Id)).SelectMany(x => x.Ids.Where(visMoved.Contains).Select(id => (From: factById[id].WorksetId, To: x.ToId))).Distinct().ToList();
+                var full = 0;
+                foreach (var v in checkViews)
+                {
+                    var view = dd.GetElement(new ElementId(v.Id)) as View;
+                    if (view != null && !ViewFiltersUseWorkset(view) && pairs.All(pr => pr.To != 0 && SafeVisible(view, pr.From, defs) == SafeVisible(view, pr.To, defs))) { visSkipped.Add(v.Name); continue; }
+                    if (full >= visMaxViews) { visOverCap.Add(v.Name); continue; }
+                    full++;
+                    visBefore[v.Id] = Visible(dd, v.Id);
+                }
+            }
+            void VisibilityCheck(Document dd, JsonObject r)
+            {
+                visDone = true;
+                if (visBefore.Count == 0) return;
+                dd.Regenerate();
+                WorksetDefaultVisibilitySettings defs = null;
+                try { defs = WorksetDefaultVisibilitySettings.GetWorksetDefaultVisibilitySettings(dd); } catch { defs = null; }
+                var changes = new JsonArray(); var unchecked_ = new List<string>();
+                foreach (var v in checkViews.Where(x => visBefore.ContainsKey(x.Id)))
+                {
+                    var b = visBefore.TryGetValue(v.Id, out var bb) ? bb : null;
+                    var a = b == null ? null : Visible(dd, v.Id);
+                    if (b == null || a == null) { unchecked_.Add(v.Name); continue; }
+                    var (hidden, shown) = P.VisibilityDiff(visMoved, b, a);
+                    if (hidden.Count == 0 && shown.Count == 0) continue;
+                    var affected = hidden.Concat(shown).ToList();
+                    var held = v.Sheet == null ? new List<long>() : affected.Where(id => !P.VisibilityAllowed(allowVisAll, allowVisNames, v.Name, factById[id].Workset, claimedTo.TryGetValue(id, out var tn) ? tn : null)).ToList();
+                    foreach (var id in held) visHeld.Add(id);
+                    // The cheap reason: the target workset hidden in the view (its own setting or the default), else filters or other settings.
+                    var view = dd.GetElement(new ElementId(v.Id)) as View;
+                    var wsHidden = view != null && affected.Any(id => { var e = dd.GetElement(new ElementId(id)); return e != null && !SafeVisible(view, e.WorksetId.IntegerValue, defs); });
+                    changes.Add(new JsonObject
+                    {
+                        ["view"] = v.Name, ["sheet"] = v.Sheet, ["exportView"] = v.Sheet == null, ["hidden"] = hidden.Count, ["shown"] = shown.Count,
+                        ["held"] = held.Count, ["accepted"] = v.Sheet == null ? 0 : affected.Count - held.Count,
+                        ["why"] = wsHidden ? "the target workset is hidden in this view" : "view filters, phases or other view settings",
+                        ["categories"] = Counts(affected.GroupBy(id => factById[id].Category).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal)),
+                        ["sampleIds"] = new JsonArray(affected.Take(Math.Max(1, maxIds)).Select(i => (JsonNode)i).ToArray()),
+                    });
+                }
+                // Held elements go back where they were (and their sub-elements, and a link type all of whose moved instances are held).
+                var typesAllHeld = new HashSet<long>(visMoved.Where(x => factById[x].TypeId != 0).GroupBy(x => factById[x].TypeId).Where(g => g.All(visHeld.Contains)).Select(g => g.Key));
+                foreach (var id in visHeld.Where(i => !pinFailed.Contains(i)).ToList())
+                {
+                    var f = factById[id];
+                    SetWorkset(dd, id, f.WorksetId);
+                    heldFrom.Add(f.WorksetId);
+                    if (followersOf.TryGetValue(id, out var subs))
+                        foreach (var sub in subs)
+                        {
+                            var se = dd.GetElement(new ElementId(sub));
+                            if (se != null && se.WorksetId.IntegerValue != info.Followers[sub].Ws) { SetWorkset(dd, sub, info.Followers[sub].Ws); heldFrom.Add(info.Followers[sub].Ws); }
+                        }
+                    if (f.TypeId != 0 && f.TypeWorksetId != 0 && typesAllHeld.Contains(f.TypeId) && visTypes.Add(f.TypeId)) { SetWorkset(dd, f.TypeId, f.TypeWorksetId); heldFrom.Add(f.TypeWorksetId); }
+                }
+                if (r["done"] is JsonObject dn0) dn0["moved"] = (int)dn0["moved"] - visHeld.Count(i => !pinFailed.Contains(i) && !notYours.Contains(i));
+                r["visibilityChanges"] = changes;
+                r["visibilityChecked"] = new JsonObject
+                {
+                    ["sheetViews"] = checkViews.Count(v => v.Sheet != null), ["exportViews"] = checkViews.Count(v => v.Sheet == null),
+                    ["compared"] = visBefore.Count, ["skippedSameVisibility"] = visSkipped.Count, ["maxViews"] = visMaxViews,
+                    ["notChecked"] = new JsonArray(unchecked_.Concat(visOverCap).Select(n => (JsonNode)n).ToArray()),
+                };
+                if (visOverCap.Count > 0 && r["notes"] is JsonArray nc)
+                    nc.Add($"visibility check incomplete: {visOverCap.Count} view{(visOverCap.Count == 1 ? "" : "s")} not checked (over visibility_max_views {visMaxViews}); nothing is held for them.");
+                if (visHeld.Count > 0)
+                {
+                    var heldMoves = moveSteps.Where(x => x.Ids.Any(visHeld.Contains)).Select(x => x.Id).ToList();
+                    r["visibilityHeld"] = new JsonObject
+                    {
+                        ["elements"] = visHeld.Count, ["moves"] = new JsonArray(heldMoves.Select(x => (JsonNode)x).ToArray()),
+                        ["sampleIds"] = new JsonArray(visHeld.Take(Math.Max(1, maxIds)).Select(i => (JsonNode)i).ToArray()),
+                    };
+                    var sv = changes.OfType<JsonObject>().Where(c => (int)c["held"] > 0).Select(c => (string)c["view"]).ToList();
+                    if (r["notes"] is JsonArray nn)
+                        nn.Add($"{visHeld.Count} moved element{(visHeld.Count == 1 ? "" : "s")} held: visibility changes on sheet view{(sv.Count == 1 ? "" : "s")} {string.Join(", ", sv.Take(5))}{(sv.Count > 5 ? ", ..." : "")}. They stay where they are; allow_visibility_change (true, or the view or workset names) accepts the change.");
+                }
+            }
             var result = NativeChange.Run(app, args, "workset_admin", "ACE: apply the workset plan", (d, plan) =>
             {
                 var r = Common(new JsonObject());
@@ -847,10 +994,22 @@ namespace AceRevitMcp.Rules
                 r["done"] = done; r["verify"] = null;
                 if (plan) return r;
                 ran.Clear(); created.Clear(); repinned.Clear(); pinBefore.Clear(); pinFailed.Clear(); pinnedDirect = 0;
+                visBefore.Clear(); visHeld.Clear(); visTypes.Clear(); heldFrom.Clear(); visSkipped.Clear(); visOverCap.Clear(); visSnapped = false; visDone = false;
                 void Count(string k, int n) => done[k] = (int)done[k] + n;
                 foreach (var st in steps)
                 {
                     if (notPreviewed.Contains(st.Id)) continue;
+                    if (st.Kind == "move" && !visSnapped) VisibilitySnap(d);
+                    if (st.Kind != "move" && st.Kind != "create" && st.Kind != "rename")
+                    {
+                        if (visSnapped && !visDone) VisibilityCheck(d, r);
+                        if (heldFrom.Contains(st.WorksetId))
+                        {
+                            // Elements held back for visibility stay on this workset: it is kept (in both runs).
+                            if (r["kept"] is JsonArray kj) kj.Add(new JsonObject { ["name"] = st.Workset, ["why"] = "holds elements held back for visibility on sheets", ["elements"] = visHeld.Count(i => factById[i].WorksetId == st.WorksetId) });
+                            continue;
+                        }
+                    }
                     switch (st.Kind)
                     {
                         case "create":
@@ -884,7 +1043,7 @@ namespace AceRevitMcp.Rules
                                 if (e == null || e.WorksetId.IntegerValue == toId) continue;
                                 SetWorkset(d, id, toId);   // direct, or unpin-set-repin when pinned; what stays behind the self-check reports
                             }
-                            Count("moved", st.Ids.Count(id => !notYours.Contains(id) && !pinFailed.Contains(id)));
+                            Count("moved", st.Ids.Count(id => !notYours.Contains(id) && !pinFailed.Contains(id)));   // held ones are taken off after the check
                             break;
                         }
                         default:
@@ -903,11 +1062,12 @@ namespace AceRevitMcp.Rules
                     }
                     ran.Add(st);
                 }
+                if (visSnapped && !visDone) VisibilityCheck(d, r);
                 // Which path Revit took for pinned elements: set directly, or unpin, set and pin again.
                 // A real apply lists what it moved, per element (the server's apply record); dropped again if it rolls back.
                 if (!dryRun)
                 {
-                    var moved = ran.Where(x => x.Kind == "move").SelectMany(x => x.Ids.Where(id => !pinFailed.Contains(id)).Select(id => (id, x.Workset))).ToList();
+                    var moved = ran.Where(x => x.Kind == "move").SelectMany(x => x.Ids.Where(id => !Left(id)).Select(id => (id, x.Workset))).ToList();
                     r["movedElements"] = new JsonArray(moved.Take(20000).Select(m => (JsonNode)new JsonObject { ["id"] = m.id, ["from"] = factById[m.id].Workset, ["to"] = m.Workset }).ToArray());
                     r["movedTotal"] = moved.Count;
                 }
@@ -942,12 +1102,12 @@ namespace AceRevitMcp.Rules
                         case "move":
                         {
                             var toId = st.ToId != 0 ? st.ToId : created.TryGetValue(st.Workset, out var c2) ? c2 : -1;
-                            var checkIds = st.Ids.Concat(st.TypeIds).Where(id => !notYours.Contains(id) && !pinFailed.Contains(id)).ToList();   // the dry run moved only these
+                            var checkIds = st.Ids.Concat(st.TypeIds).Where(id => !notYours.Contains(id) && !Left(id)).ToList();   // the dry run moved only these
                             var off = checkIds.Where(id => { var e = d.GetElement(new ElementId(id)); return e == null || e.WorksetId.IntegerValue != toId; }).ToList();
                             var all = checkIds.Count;
                             if (off.Count > 0) mismatches.Add(($"elements moved to {st.Workset}", all.ToString(), $"{all - off.Count} (not there: {string.Join(", ", off.Take(5))})"));
                             // Sub-elements end with their host (unless the host was not moved: a dry run leaves what is not yours).
-                            var subsChecked = st.Followers.Where(id => !notYours.Contains(id) && !notYours.Contains(info.Followers[id].Host) && !pinFailed.Contains(info.Followers[id].Host) && d.GetElement(new ElementId(id)) != null).ToList();
+                            var subsChecked = st.Followers.Where(id => !notYours.Contains(id) && !notYours.Contains(info.Followers[id].Host) && !Left(info.Followers[id].Host) && d.GetElement(new ElementId(id)) != null).ToList();
                             var subsOff = subsChecked.Where(id => d.GetElement(new ElementId(id)).WorksetId.IntegerValue != toId).ToList();
                             if (subsOff.Count > 0) mismatches.Add(($"sub-elements that follow their host to {st.Workset}", subsChecked.Count.ToString(), $"{subsChecked.Count - subsOff.Count} (not there: {string.Join(", ", subsOff.Take(5))})"));
                             break;
@@ -969,7 +1129,7 @@ namespace AceRevitMcp.Rules
                     foreach (var st in ran.Where(x => x.Kind == "move"))
                     {
                         var toId = st.ToId != 0 ? st.ToId : created.TryGetValue(st.Workset, out var c3) ? c3 : -1;
-                        foreach (var id in st.Ids.Where(i => !notYours.Contains(i) && !pinFailed.Contains(i))) plannedWs[id] = toId;
+                        foreach (var id in st.Ids.Where(i => !notYours.Contains(i) && !Left(i))) plannedWs[id] = toId;
                     }
                     foreach (var st in ran.Where(x => x.Kind == "move-and-delete"))
                         foreach (var k in plannedWs.Where(kv => kv.Value == st.WorksetId).Select(kv => kv.Key).ToList()) plannedWs[k] = st.ToId;

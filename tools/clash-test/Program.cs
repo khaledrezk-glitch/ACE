@@ -838,6 +838,27 @@ class P {
     var rpc = WP("ResetPick").Invoke(null, new object[] { rpEls, (ICollection<long>)new List<long> { 7, 2, 9 }, (ICollection<long>)new HashSet<long> { 11 }, (ICollection<string>)new HashSet<string>(), 20L })!;
     Check(RpF(rpc, "Item1").SequenceEqual(new long[] { 1, 6, 8 }) && RpF(rpc, "Item2").Count == 0,
       "workset plan: borrowed elements a group move already claimed (pending with the group's target) are not picked up again by reset");
+    var vd = WP("VisibilityDiff").Invoke(null, new object[] { new List<long> { 1, 2, 3, 4 }, (ICollection<long>)new HashSet<long> { 1, 2, 9 }, (ICollection<long>)new HashSet<long> { 2, 3, 8 } })!;
+    Check(((List<long>)vd.GetType().GetField("Item1")!.GetValue(vd)!).SequenceEqual(new long[] { 1 }) && ((List<long>)vd.GetType().GetField("Item2")!.GetValue(vd)!).SequenceEqual(new long[] { 3 }),
+      "workset plan visibility: among the moved elements only, hidden = shown before and not after, shown = the reverse");
+    bool VA(bool all, string[]? names, string view, string from, string to) => (bool)WP("VisibilityAllowed").Invoke(null, new object?[] { all, names?.ToList(), view, from, to })!;
+    Check(VA(true, null, "TST_KEY PLAN", "TST_A", "TST_B") && !VA(false, null, "TST_KEY PLAN", "TST_A", "TST_B") && VA(false, new[] { " tst_key plan " }, "TST_KEY PLAN", "TST_A", "TST_B")
+      && VA(false, new[] { "TST_B" }, "TST_V", "TST_A", "TST_B") && VA(false, new[] { "TST_A" }, "TST_V", "TST_A", "TST_B") && !VA(false, new[] { "TST_C" }, "TST_V", "TST_A", "TST_B"),
+      "workset plan visibility: allow_visibility_change true, or naming the view or either workset, accepts a change");
+    var ifcStored = (Dictionary<string, string>)VM("IfcStored").Invoke(null, new object[] { new List<(string, string)> { ("MapField", "{\"Name\":\"TST Setup\",\"IFCVersion\":21,\"SpaceBoundaries\":1,\"SplitWallsAndColumns\":true,\"ExportUserDefinedPsets\":false}"), ("Other", "plain") }, new List<KeyValuePair<string, string>> { new("ExportBaseQuantities", "True") } })!;
+    var ifcCfg = (System.Text.Json.Nodes.JsonObject)VM("IfcSavedConfig").Invoke(null, new object[] { ifcStored })!;
+    Check(ifcStored["Name"] == "TST Setup" && ifcStored["Other"] == "plain" && (string?)ifcCfg["FileVersion"] == "21" && (string?)ifcCfg["SpaceBoundaryLevel"] == "1" && (string?)ifcCfg["WallAndColumnSplitting"] == "true"
+      && (string?)ifcCfg["ExportBaseQuantities"] == "true" && (string?)ifcCfg["ExportUserDefinedPsets"] == "false" && !ifcCfg.ContainsKey("Name"),
+      "IFC setups saved in the model: JSON and map fields read, exporter names mapped onto the IFC options, the rest passed by name");
+    Check((string)VM("PaperName").Invoke(null, new object[] { 841.0, 594.0 })! == "ISO A1" && (string)VM("PaperName").Invoke(null, new object[] { 420.0, 297.5 })! == "ISO A3"
+      && (string)VM("PaperName").Invoke(null, new object[] { 1000.0, 707.0 })! == "1000 x 707 mm" && (string)VM("FileStem").Invoke(null, new object[] { "TST:Model?" })! == "TST_Model_"
+      && (bool)VM("SheetMatches").Invoke(null, new object[] { "tst-101", "TST-101", "GA" })! && (bool)VM("SheetMatches").Invoke(null, new object[] { "ga", "TST-101", "GA" })!,
+      "DWFx: paper named from the sheet's size, file named as the model, sheets by number or name");
+    var ifcEnums = new List<string> { "IFC2x2", "IFC2x3", "IFC2x3CV2", "IFC4RV", "IFC4DTV", "IFC4", "Default" };
+    string? IV(string t) => (string?)VM("IfcVersionName").Invoke(null, new object[] { t, ifcEnums });
+    Check(IV("IFC 2x3 Coordination View 2.0") == "IFC2x3CV2" && IV("ifc4 reference view") == "IFC4RV" && IV("IFC2x3") == "IFC2x3" && IV("IFC 2x3 Coordination View") == "IFC2x3"
+      && IV("IFC-SG") == null && IV("IFC 9") == null && IV("") == null,
+      "IFC version: the exporter's display names map to the enum; an unknown name (or one this Revit lacks) is refused");
 
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");

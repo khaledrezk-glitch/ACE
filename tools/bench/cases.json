@@ -291,8 +291,24 @@
       "command": "clash_resolve",
       "args": {
         "test": "ST vs ST",
-        "a_categories": ["OST_StructuralColumns", "OST_StructuralFraming", "OST_Walls", "OST_Floors", "OST_StructuralFoundation", "OST_Stairs", "OST_Ramps"],
-        "b_categories": ["OST_StructuralColumns", "OST_StructuralFraming", "OST_Walls", "OST_Floors", "OST_StructuralFoundation", "OST_Stairs", "OST_Ramps"],
+        "a_categories": [
+          "OST_StructuralColumns",
+          "OST_StructuralFraming",
+          "OST_Walls",
+          "OST_Floors",
+          "OST_StructuralFoundation",
+          "OST_Stairs",
+          "OST_Ramps"
+        ],
+        "b_categories": [
+          "OST_StructuralColumns",
+          "OST_StructuralFraming",
+          "OST_Walls",
+          "OST_Floors",
+          "OST_StructuralFoundation",
+          "OST_Stairs",
+          "OST_Ramps"
+        ],
         "block_on_borrowed": true,
         "check_only": true,
         "dry_run": false,
@@ -300,12 +316,31 @@
       },
       "maxMs": 600000,
       "expect": [
-        { "path": "model", "op": "exists" },
-        { "path": "aceVersion", "op": "exists" },
-        { "path": "before.clashes", "op": ">=", "value": 0 },
-        { "path": "plan", "op": "exists" },
-        { "path": "reportOnly", "op": "exists" },
-        { "path": "blocked", "op": "exists" }
+        {
+          "path": "model",
+          "op": "exists"
+        },
+        {
+          "path": "aceVersion",
+          "op": "exists"
+        },
+        {
+          "path": "before.clashes",
+          "op": ">=",
+          "value": 0
+        },
+        {
+          "path": "plan",
+          "op": "exists"
+        },
+        {
+          "path": "reportOnly",
+          "op": "exists"
+        },
+        {
+          "path": "blocked",
+          "op": "exists"
+        }
       ]
     },
     {
@@ -972,9 +1007,38 @@
       "name": "Workset facts (1.13.3): read-only; no sketch, sub-element or legend group; levels carry code / phrase",
       "model": "Snowdon Towers Sample Architectural",
       "command": "workset_admin",
-      "args": { "action": "facts", "check_only": true, "max_ids": 2 },
+      "args": {
+        "action": "facts",
+        "check_only": true,
+        "max_ids": 2
+      },
       "maxMs": 120000,
-      "expect": [{ "path": "model", "op": "exists" }, { "path": "levels", "op": "exists" }]
+      "expect": [
+        {
+          "path": "model",
+          "op": "exists"
+        },
+        {
+          "path": "levels",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "IFC setups in the model (1.13.6): read-only list",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "export_deliverables",
+      "args": {
+        "list_ifc_setups": true,
+        "check_only": true
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "ifcSetups",
+          "op": "exists"
+        }
+      ]
     }
   ]
 }

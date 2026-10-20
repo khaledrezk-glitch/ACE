@@ -144,7 +144,8 @@ public static class AceScript
                 {
                     ["success"] = false,
                     ["stage"] = "risky",
-                    ["error"] = $"This code cannot be previewed: not undoable. It {string.Join(", ", notUndoable)}, which a readonly run cannot roll back. Nothing was run.",
+                    ["error"] = $"This code cannot be previewed: not undoable. It {string.Join(", ", notUndoable)}, which a readonly run cannot roll back. Nothing was run." +
+                                (notUndoable.Any(x => x.Contains("files on disk")) ? " Write files with ctx.WriteOutput(name, text) (the ACE output folder, allowed in readonly runs and dry runs)." : ""),
                 };
             if (notUndoable.Length > 0 && dryRun && !compileOnlyRequested)
                 return new JsonObject

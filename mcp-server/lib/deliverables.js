@@ -72,14 +72,15 @@ export function resolveIfc({ config, setup }, { vaultDir, rules = {}, rulesFile 
   if (typeof named === "string") return { setup, ...fromFile(path.resolve(path.dirname(rulesFile ?? path.join(vaultDir ?? ".", EXPORT_RULES)), named)) };
   const guess = vaultDir && path.join(vaultDir, "rules", "ifc", `${String(setup).replace(BAD, "-")}.json`);
   if (guess && fs.existsSync(guess)) return { setup, ...fromFile(guess) };
-  return { setup, problem: `no IFC setup "${setup}" in the vault (${EXPORT_RULES} ifc.setups, or rules/ifc/${setup}.json); the add-in cannot read Revit's named setups` };
+  // Not in the vault: the name goes to the add-in, which looks for the setup saved in the model (it blocks if none).
+  return { setup, renamed: [], modelOnly: true, source: `the IFC setup "${setup}" saved in the model (not in the vault: ${EXPORT_RULES} ifc.setups or rules/ifc/${setup}.json)` };
 }
 
 const size = (n) => n == null ? "-" : n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
 const HOW = {
   "no-exporter": "install the Navisworks NWC Export Utility for this Revit version, restart Revit, run again",
   "view-not-found": "check the view name (list_views)",
-  "setup-not-found": "put the setup in the vault (rules/export.json ifc.setups, or rules/ifc/<setup>.json), or give ifc.config (a JSON file)",
+  "setup-not-found": "check the name (export_deliverables list_ifc_setups: true): the setup saved in the model is used first, then the vault's (rules/export.json ifc.setups, rules/ifc/<setup>.json); or give ifc.config (a JSON file)",
   "no-sheets": "check the sheet numbers or the sheet set's name",
   exists: "pass overwrite: true after the user agreed, or another file name",
   "out-dir": "give out_dir: a folder that exists or can be created",
@@ -94,7 +95,8 @@ export function resultText(r, { mode, outDir, names = {}, notes = [] }) {
   if (want.length) lines.push(`Files: ${want.join(", ")}.`);
   const pre = [];
   if ("nwc" in names) pre.push(`Navisworks exporter ${pf.navisworksExporter ? "installed" : "NOT installed"}`);
-  if (pf.ifcSetup) pre.push(`IFC setup ${pf.ifcSetup}`);
+  // The add-in answers a name (older) or { name, from: model | vault | config | default }.
+  if (pf.ifcSetup) pre.push(typeof pf.ifcSetup === "object" ? (pf.ifcSetup.name ? `IFC setup ${pf.ifcSetup.name}${pf.ifcSetup.from ? ` (from the ${pf.ifcSetup.from})` : ""}` : "IFC: Revit's default settings") : `IFC setup ${pf.ifcSetup}`);
   if ("dwfx" in names) pre.push(`${pf.sheets ?? 0} sheet(s)`);
   if (pf.existing?.length) pre.push(`existing: ${pf.existing.map((f) => path.basename(f)).join(", ")}`);
   if (pre.length) lines.push(`Pre-flight: ${pre.join("; ")}.`);
@@ -108,4 +110,66 @@ export function resultText(r, { mode, outDir, names = {}, notes = [] }) {
   const all = [...notes, ...(r?.notes ?? []).map((n) => typeof n === "string" ? n : JSON.stringify(n))];
   if (all.length) lines.push(`Notes:\n${all.map((n) => `- ${n}`).join("\n")}`);
   return lines.join("\n");
+}
+
+/**
+ * dwfx.same_as_folder: the .dwg / .pdf file stems of a folder matched to the model's sheets
+ * -> { sheets, matched, unmatched, ambiguous: [{ stem, candidates, how }], extra }. Nothing is guessed:
+ * 1. the vault's rules/export.json dwfx.stemPattern (a regex with (?<number>...)), when it matches;
+ * 2. the sheet number as the whole stem, or its start followed by a separator (_, space, ., or - then a non-digit);
+ *    then the same after the project prefix dwfx.stemPrefix (a regex at the start of the stem) when it is set;
+ * 3. the sheet name as consecutive whole tokens of the stem (names whose latin key is under 4 characters are skipped).
+ * More than one candidate at a step: ambiguous, reported, and counted as unmatched.
+ */
+export function matchStems(stems, sheets, { stemPattern, stemPrefix } = {}) {
+  const key = (x) => String(x ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const toks = (x) => String(x ?? "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const re = (src, what) => { try { return new RegExp(String(src).replace(/^\(\?i\)/, ""), "i"); } catch (e) { throw new Error(`dwfx.${what} ${src} is not a valid regular expression (${e.message})`); } };
+  const rx = stemPattern ? re(stemPattern, "stemPattern") : null;
+  const px = stemPrefix ? re(String(stemPrefix).startsWith("^") ? stemPrefix : `^(?:${stemPrefix})`, "stemPrefix") : null;
+  const list = (sheets ?? []).filter((x) => x?.sheetNumber).map((x) => ({ number: String(x.sheetNumber), name: String(x.name ?? "") }));
+  const startsWithNumber = (rest, n) => {
+    const r = rest.toLowerCase(), m = n.toLowerCase();
+    if (r === m) return true;
+    if (!r.startsWith(m)) return false;
+    const after = r.slice(m.length);
+    return /^[_ .]/.test(after) || /^-\D/.test(after);
+  };
+  const matched = [], unmatched = [], ambiguous = [];
+  for (const stem of stems) {
+    let hit = null, how = "", cands = null;
+    const num = rx ? stem.match(rx)?.groups?.number : null;
+    if (num != null) { const c = list.filter((x) => key(x.number) === key(num)); if (c.length === 1) { hit = c[0]; how = "number (stemPattern)"; } else if (c.length > 1) cands = c; }
+    if (!hit && !cands) {
+      const rests = [stem.trim()];
+      const pm = px && stem.match(px);
+      if (pm && pm[0].length && pm.index === 0) rests.push(stem.slice(pm[0].length).trim());
+      for (const [i, rest] of rests.entries()) {
+        const c = list.filter((x) => startsWithNumber(rest, x.number));
+        if (c.length === 1) { hit = c[0]; how = i ? "number (after the prefix)" : "number"; break; }
+        if (c.length > 1) { cands = c; how = "number"; break; }
+      }
+    }
+    if (!hit && !cands) {
+      const st = toks(stem), seq = (nt) => st.some((_, i) => nt.every((t, j) => st[i + j] === t));
+      const c = list.filter((x) => key(x.name).length >= 4 && seq(toks(x.name)));
+      if (c.length === 1) { hit = c[0]; how = "name"; } else if (c.length > 1) { cands = c; how = "name"; }
+    }
+    if (hit) matched.push({ stem, number: hit.number, name: hit.name, how });
+    else { unmatched.push(stem); if (cands) ambiguous.push({ stem, how, candidates: cands.map((x) => `${x.number} ${x.name}`.trim()) }); }
+  }
+  const used = new Set(matched.map((m) => m.number));
+  return { sheets: list.filter((x) => used.has(x.number)).map((x) => x.number), matched, unmatched, ambiguous, extra: list.filter((x) => !used.has(x.number)).map((x) => `${x.number} ${x.name}`.trim()) };
+}
+/** The file stems of a folder's .dwg and .pdf files (one per stem). */
+export function folderStems(dir) {
+  if (!fs.existsSync(dir)) throw new Error(`${dir} does not exist`);
+  return [...new Set(fs.readdirSync(dir).filter((f) => /\.(dwg|pdf)$/i.test(f)).map((f) => f.replace(/\.(dwg|pdf)$/i, "")))].sort();
+}
+/** IFC setups the vault names (rules/export.json ifc.setups and rules/ifc/*.json). */
+export function vaultIfcSetups(vaultDir, rules = {}) {
+  const named = Object.keys(rules?.ifc?.setups ?? {});
+  const d = vaultDir && path.join(vaultDir, "rules", "ifc");
+  const files = d && fs.existsSync(d) ? fs.readdirSync(d).filter((f) => /\.json$/i.test(f)).map((f) => f.replace(/\.json$/i, "")) : [];
+  return [...new Set([...named, ...files])];
 }

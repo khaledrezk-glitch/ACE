@@ -169,6 +169,9 @@ ctx.Level("Level 1"), ctx.Levels(), ctx.Selection(), ctx.El(id), ctx.Str/Num/Boo
 ctx.Mm/M/Cm/ToMm/ToM/SqmFromInternal/Deg, ctx.Transact("name", () => {...}) (mode "manual"), ctx.IsDryRun.
 Workshared model: edit ctx.Editable(list) (skips elements in use by others or changed in central and reports them),
 or check ctx.CanEdit(e, out var why); otherwise one element in use rolls back the whole run.
+Files: write only with ctx.WriteOutput("name.csv", text) (into ctx.OutputFolder, allowed in every mode). Other file
+writes, Save/SaveAs, RenameWorkset, sync and exports cannot be undone: readonly refuses them and a dry run only
+compiles and screens them (not executed), so the real run needs allow_risky and the user's consent.
 Long loops: call ctx.ThrowIfCancelled() now and then, so a cancel in Claude stops the run (everything rolls back).
 Modes: "auto" (default: one transaction) and "manual" (your own transactions) are each merged into ONE
 undo step; "readonly" is always rolled back. compile_only: true checks that code compiles without

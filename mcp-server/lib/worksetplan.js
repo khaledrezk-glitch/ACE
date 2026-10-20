@@ -817,6 +817,8 @@ export function notPreviewedOf(r) {
 }
 /** Pin counts of an apply (the add-in's pinned object, else its top-level counts). */
 export const pinsOf = (r) => ({ touched: Number(r?.pinned?.count ?? r?.pinnedTouched ?? 0), directOk: Number(r?.pinned?.directOk ?? r?.pinnedDirectOk ?? 0), unpinRepin: Number(r?.pinned?.unpinRepin ?? r?.pinnedUnpinRepin ?? r?.pinnedNeededUnpin ?? 0) });
+/** Visibility changes the add-in measured inside the change: [{ view, sheet ("number - name", null for an export view), hidden, shown, held, accepted, why, categories }]. */
+export const visChangesOf = (r) => Array.isArray(r?.visibilityChanges) ? r.visibilityChanges : [];
 export function applyText(r, { model, mode, rolledBack = false }) {
   const plan = planOf(r);
   const head = mode === "check" ? "check, read-only, nothing changed" : mode === "dry run" ? "dry run" : rolledBack ? "NOT applied: rolled back" : "applied as ONE undo step";
@@ -828,6 +830,19 @@ export function applyText(r, { model, mode, rolledBack = false }) {
   if (r?.skipped?.length) lines.push(`Skipped (borrowed by others; ask them to relinquish, then run again for these):\n${r.skipped.map((s) => `- ${s.key}: ${(s.ids ?? []).length} element(s)${s.holder ? `, held by ${s.holder}` : ""}`).join("\n")}`);
   if (r?.changed?.length) lines.push(`Changed since the plan (the whole plan is refused; propose and confirm again):\n${r.changed.map((c) => `- ${c.key}: ${c.expected} planned, ${c.found} found`).join("\n")}`);
   if (r?.visibility?.length) lines.push(`Visibility in the export views (${(r.exportViews ?? []).map(W.q).join(", ") || "none"}):\n${r.visibility.slice(0, 20).map((v) => `- ${v.wouldHide ? `WOULD HIDE ${v.wouldHide}` : ""}${v.wouldHide && v.wouldShow ? ", " : ""}${v.wouldShow ? `would show ${v.wouldShow}` : ""} element(s) in ${W.q(v.view)}: ${v.key ?? v.move} -> ${v.to}`).join("\n")}`);
+  const vc = visChangesOf(r);
+  if (vc.length) {
+    const sheetV = vc.filter((c) => c.sheet), exp = vc.filter((c) => !c.sheet);
+    const one = (c) => `${c.hidden ? `${c.hidden} hidden` : ""}${c.hidden && c.shown ? ", " : ""}${c.shown ? `${c.shown} shown` : ""}${c.held ? `; HELD ${c.held}` : ""}${c.accepted ? `; accepted ${c.accepted}` : ""}${c.categories && typeof c.categories === "object" ? ` (${Object.entries(c.categories).slice(0, 4).map(([k, n]) => `${n} ${k}`).join(", ")})` : ""}${c.why ? `: ${c.why}` : ""}`;
+    const bySheet = new Map();
+    for (const c of sheetV) { if (!bySheet.has(c.sheet)) bySheet.set(c.sheet, []); bySheet.get(c.sheet).push(c); }
+    const vh = r?.visibilityHeld;
+    const heldN = Number(vh?.elements ?? sheetV.reduce((n, c) => n + Number(c.held ?? 0), 0));
+    if (bySheet.size) lines.push(`Visibility on sheets (moved elements a view on a sheet would show differently)${heldN ? `: ${heldN} element(s) HELD${vh?.moves?.length ? ` in ${vh.moves.length} move(s)` : ""}, they stay where they are; after the user agreed: allow_visibility_change: true, or the view / workset names` : ""}:\n${[...bySheet].slice(0, 30).map(([sh, cs]) => `- sheet ${sh}:\n${cs.slice(0, 10).map((c) => `  - view ${W.q(c.view)}: ${one(c)}`).join("\n")}`).join("\n")}${bySheet.size > 30 ? `\n- ... ${bySheet.size - 30} more sheet(s)` : ""}`);
+    if (exp.length) lines.push(`Export views (reported, not held):\n${exp.slice(0, 10).map((c) => `- ${W.q(c.view)}: ${one(c)}`).join("\n")}`);
+  }
+  const nc = r?.visibilityChecked?.notChecked ?? [];
+  if (nc.length) lines.push(`Visibility not checked in: ${nc.slice(0, 10).map(W.q).join(", ")}${nc.length > 10 ? ", ..." : ""}.`);
   if (r?.kept?.length) lines.push(`Kept (not empty after the moves): ${r.kept.map((x) => `${W.q(x.name)} ${x.elements}${x.why ? ` (${x.why})` : Number(x.types) ? ` (holds ${x.types} type(s))` : ""}${Number(x.nonModel) ? `, ${x.nonModel} non-model item(s)` : ""}`).join("; ")}.`);
   const fh = plan.filter((p) => p.kind === "move").reduce((n, p) => n + Number(p.followsHost ?? 0), 0);
   if (fh) lines.push(`${fh} sub-element(s) (stair runs, rails, panels, nested parts) follow their host.`);
@@ -1001,6 +1016,7 @@ export function statusText(s, { files = [] } = {}) {
   lines.push(`Groups: applied by ACE ${st.applied.groups}${la ? ` (last ${la.appliedAt}, plan ${la.planId ?? "?"})` : ""}${differ.length ? `, ${differ.length} of them now differ from the standard` : ""}; changed after apply ${st["changed after apply"].groups}; correct already ${st["correct already"].groups}; still to do ${st["still to do"].groups}.`);
   const wrong = s.rows.filter((r) => r.wrong);
   if (wrong.length) lines.push(`Wrong (where each should go):\n${wrong.slice(0, 30).map((r) => `- ${W.q(r.workset)}: ${r.wrong} wrong: ${r.to.slice(0, 6).map((x) => `${x.elements} ${x.category}${x.level ? ` @ ${x.level}` : ""} -> ${W.q(x.to)} (${x.why})`).join("; ")}`).join("\n")}`);
+  if (wrong.length) lines.push("At apply, a moved element that a view on a sheet would show differently is held (stays) until the user agrees (allow_visibility_change).");
   if (differ.length) lines.push(`Applied by ACE, now differs from the standard:\n${differ.slice(0, 15).map((g) => `- ${g.elements} ${g.category}${g.level ? ` @ ${g.level}` : ""} on ${W.q(g.workset)} (ACE ${g.appliedAt}); the standard says ${W.q(g.target)} (${g.why})`).join("\n")}`);
   const changed = s.groups.filter((g) => g.state === "changed after apply");
   if (changed.length) lines.push(`Changed after apply (ACE moved them; flagged, not re-proposed):\n${changed.slice(0, 15).map((g) => `- ${g.elements} ${g.category}${g.level ? ` @ ${g.level}` : ""}: ACE moved to ${W.q(g.appliedTo)} on ${g.appliedAt}, now on ${W.q(g.workset)}`).join("\n")}`);

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.13.6 (20 Oct 2026)
+- **export_deliverables:** IFC setups saved in the model (the exporter's extensible storage) are read and used by name,
+  model first then vault; `list_ifc_setups`. DWFx: one combined file named as the model, only the listed sheets or
+  `same_as_folder` (the printed DWG/PDF set, unmatched files block), each sheet on its own paper size at 1:1; sheet
+  sizes and scales reported.
+- **workset_plan visibility check:** the dry run and the apply compare every sheet view and the export 3D views before
+  and after; elements that would disappear from or newly appear on a sheet view are held back (their workset is not
+  deleted) unless `allow_visibility_change` (true or view / workset names); export views are reported only.
+- **Scripts:** file writes count as not undoable (readonly refuses them, a dry run does not run them); new
+  `ctx.WriteOutput(name, text)` / `ctx.OutputFolder` writes to ACE's output folder in any mode.
+
 ## 1.13.5 (20 Oct 2026)
 - **Workset rules from the second live run:** a rule applies only in models that already have its workset (no cross-model
   creates unless a row says create or `create_missing`); zone/asset worksets keep their elements (`naming.zoneWins`,

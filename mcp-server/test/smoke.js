@@ -188,7 +188,13 @@ const bridge = http.createServer((req, res) => {
           const skipped = (p.moves ?? []).filter((m) => groups.find((x) => x.key === m.key)?.borrowed).map((m) => { const ids = [501, 502].filter((id) => !retriedOk.includes(id)); return { key: m.key, ids, count: ids.length, holder: "jane", why: "borrowed" }; });
           const planHash = `wp-${steps.map((s) => s.id + (s.to ?? "")).join(",")}`;
           const visibility = (p.moves ?? []).filter((m) => m.to === "TST-ST-STAIRS").map((m) => ({ move: `move:${m.key}`, key: m.key, to: m.to, view: "TST NAVISWORKS", wouldHide: m.elements, wouldShow: 0, sampleIds: [7] }));
-          const baseP = { model: "Test", aceVersion: SERVER_VERSION, planHash, plan: steps, skipped, changed, exportViews: ["TST NAVISWORKS"], visibility, echo: args };
+          // 1.13.6: a moved element a sheet view would show differently is held unless allow_visibility_change (true, or a view / workset name).
+          const allowV = (m) => args.allow_visibility_change === true || (Array.isArray(args.allow_visibility_change) && (args.allow_visibility_change.includes("TST L1 Plan") || args.allow_visibility_change.includes(m.to)));
+          const vm = (p.moves ?? []).filter((m) => m.to === "TST-ST-STAIRS"), vHeld = vm.filter((m) => !allowV(m));
+          const visX = args.check_only || !vm.length ? {} : { visibilityChanges: [{ view: "TST L1 Plan", sheet: "TST-01 - TST Ground Plan", exportView: false, hidden: vm.length, shown: 0, held: vHeld.length, accepted: vm.length - vHeld.length, why: "the target workset is hidden in this view", categories: { Stairs: vm.length }, sampleIds: [7] },
+            { view: "TST NAVISWORKS", sheet: null, exportView: true, hidden: vm.length, shown: 0, held: 0, accepted: 0, why: "the target workset is hidden in this view", categories: { Stairs: vm.length }, sampleIds: [7] }],
+            visibilityChecked: { sheetViews: 1, exportViews: 1, notChecked: ["TST Broken View"] }, ...(vHeld.length ? { visibilityHeld: { elements: vHeld.length, moves: vHeld.map((m) => `move:${m.key}`), sampleIds: [7] } } : {}) };
+          const baseP = { model: "Test", aceVersion: SERVER_VERSION, planHash, plan: steps, skipped, changed, exportViews: ["TST NAVISWORKS"], visibility, ...visX, echo: args };
           if (blockedP.length) return reply({ ok: true, result: { ...baseP, success: false, stage: "blocked", blocked: blockedP, error: "Nothing was changed: blocked" } });
           if (args.check_only) return reply({ ok: true, result: { ...baseP, success: true, checkOnly: true, blocked: [] } });
           if (args.expect_plan && args.expect_plan !== planHash) return reply({ ok: true, result: { success: false, stage: "blocked", code: "plan-changed", model: "Test", blocked: [{ what: "the plan", why: "differs", code: "plan-changed" }] } });
@@ -275,7 +281,13 @@ const bridge = http.createServer((req, res) => {
           verify: fail ? { ok: false, checked: 10, mismatches: [{ id: 12, expected: "TST_FAIL", actual: "" }] } : { ok: true, checked: 10, mismatches: [] },
           done: args.dry_run || fail ? { bound: false, setIn: 0, setOut: 0 } : done, ...(args.dry_run || fail ? { wouldDo: done } : {}) } });
       }
+      case "list_views": {
+        if (args.view_type !== "DrawingSheet") return reply({ ok: true, result: { command, args } });
+        return reply({ ok: true, result: { count: 3, views: [{ id: 801, name: "TST Ground Plan", type: "DrawingSheet", sheetNumber: "TST-01" }, { id: 802, name: "TST Sections", type: "DrawingSheet", sheetNumber: "TST-02" }, { id: 803, name: "TST Roof Plan", type: "DrawingSheet", sheetNumber: "TST-10" }] } });
+      }
       case "export_deliverables": {
+        // 1.13.6: the add-in lists the IFC setups saved in the model, and looks a setup up there first.
+        if (args.list_ifc_setups) return reply({ ok: true, result: { model: "Test", ifcSetups: ["TST model setup", "TST setup"] } });
         // The 1.12.6 contract: pre-flight (exporter, views, IFC setup, sheets, existing files), blocks, then files[].
         const blocked = [], existing = [], files = [];
         const nav = !args.out_dir.includes("NONAVIS");
@@ -283,8 +295,8 @@ const bridge = http.createServer((req, res) => {
         for (const f of ["nwc", "ifc", "dwfx"]) if (args[f] && fs.existsSync(at(args[f].file))) { existing.push(at(args[f].file)); if (!args.overwrite) blocked.push({ what: `${f} ${args[f].file}`, why: `${at(args[f].file)} exists`, code: "exists" }); }
         if (args.nwc && !nav) blocked.push({ what: "nwc", why: "the Navisworks exporter is not installed for this Revit", code: "no-exporter" });
         if (args.nwc && args.nwc.view !== "TST 3D Navis") blocked.push({ what: `nwc view ${args.nwc.view}`, why: `no view is called ${args.nwc.view}`, code: "view-not-found" });
-        if (args.ifc?.setup && !args.ifc.config) blocked.push({ what: `ifc setup ${args.ifc.setup}`, why: "the add-in cannot read the IFC exporter's named setups", code: "setup-not-found" });
-        const preflight = { navisworksExporter: nav, views: { nwc: args.nwc ? args.nwc.view === "TST 3D Navis" : undefined }, ifcSetup: args.ifc ? args.ifc.setup ?? null : null, sheets: args.dwfx ? (args.dwfx.sheets ?? []).length : 0, existing, outDir: args.out_dir };
+        if (args.ifc?.setup && !args.ifc.config && args.ifc.setup !== "TST model setup") blocked.push({ what: `ifc setup ${args.ifc.setup}`, why: "no IFC setup by that name in the model, and no config", code: "setup-not-found" });
+        const preflight = { navisworksExporter: nav, views: { nwc: args.nwc ? args.nwc.view === "TST 3D Navis" : undefined }, ifcSetup: args.ifc ? (args.ifc.setup === "TST model setup" ? { name: "TST model setup", from: "model" } : args.ifc.setup ?? null) : null, sheets: args.dwfx ? (args.dwfx.sheets ?? []).length : 0, existing, outDir: args.out_dir };
         const base = { model: "Test", aceVersion: SERVER_VERSION, preflight, blocked, notes: [], echo: args };
         if (args.check_only) return reply({ ok: true, result: { ...base, success: true, checkOnly: true, files: [] } });
         if (blocked.length) return reply({ ok: true, result: { ...base, success: false, stage: "blocked", error: "Nothing was exported", files: [] } });
@@ -1358,13 +1370,21 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const eb = { out_dir: out, vault: eDir, nwc: { view: "TST 3D Navis" }, ifc: { setup: "TST setup" }, dwfx: { sheets: ["TST-01", "TST-02"] } };
   assert.match((await call("export_deliverables", { out_dir: out })).content[0].text, /Give at least one of nwc, ifc or dwfx/);
   const n0 = ed().length;
+  // 1.13.6: a setup not in the vault goes to the add-in (the model's saved setups come first); unknown there too: blocked.
   const bad = await call("export_deliverables", { ...eb, ifc: { setup: "TST unknown" } });
-  assert.ok(bad.isError && ed().length === n0 && /no IFC setup "TST unknown" in the vault/.test(bad.content[0].text), "an unknown setup is blocked before Revit is asked");
+  assert.ok(bad.isError && ed().length === n0 + 1 && ed().at(-1).args.ifc.setup === "TST unknown" && !ed().at(-1).args.ifc.config, "a setup not in the vault is asked of the model");
+  assert.match(bad.content.at(-1).text, /ifc setup TST unknown: no IFC setup by that name in the model, and no config\. How to clear: check the name \(export_deliverables list_ifc_setups: true\): the setup saved in the model is used first, then the vault's/);
+  const ms = await call("export_deliverables", { ...eb, ifc: { setup: "TST model setup" }, check_only: true });
+  assert.ok(!ms.isError && ed().at(-1).args.ifc.setup === "TST model setup" && !ed().at(-1).args.ifc.config_from, "a setup saved only in the model is used");
+  assert.match(ms.content.at(-1).text, /Pre-flight: .*IFC setup TST model setup \(from the model\)/, "the add-in's setup object is shown with its source");
+  const ls = await call("export_deliverables", { out_dir: out, vault: eDir, list_ifc_setups: true });
+  assert.ok(ed().at(-1).args.list_ifc_setups === true && ed().at(-1).args.check_only === true, "list_ifc_setups is read-only");
+  assert.match(ls.content.at(-1).text, /IFC setups \(read-only; ifc\.setup looks in the model first, then the vault\):\n- in the model Test: TST model setup, TST setup\n- in the vault .*: TST setup, tst-setup/);
   const ck = await call("export_deliverables", { ...eb, check_only: true });
   const ca = ed().at(-1).args;
   assert.ok(!ck.isError && ca.check_only === true && ca.nwc.file === "TST_Test_nwc.nwc" && ca.ifc.file === "TST_Test_ifc.ifc" && ca.dwfx.file === "TST_Test_dwfx.dwfx", "names from the vault's naming rule");
   assert.deepEqual(ca.ifc.config, { FileVersion: 21, ExportBaseQuantities: true, SpaceBoundaryLevel: 1, TST_Option: "on" }, "the setup's file, exporter keys read as the add-in's");
-  assert.ok(ca.ifc.setup === "TST setup" && ca.overwrite === false);
+  assert.ok(ca.ifc.setup === "TST setup" && ca.ifc.config_from === "vault" && ca.overwrite === false, "a vault setup is marked config_from: vault");
   assert.match(ck.content.at(-1).text, /\(pre-flight only, nothing written\)[\s\S]*Pre-flight: Navisworks exporter installed; IFC setup TST setup; 2 sheet\(s\)\.[\s\S]*IFC settings: .*tst-setup\.json \(exporter keys read as IFCVersion -> FileVersion, SpaceBoundaries -> SpaceBoundaryLevel\)[\s\S]*Ready: the same call without check_only exports\./);
   const ex = await call("export_deliverables", eb);
   const et = ex.content.at(-1).text;
@@ -1380,7 +1400,55 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(!(await call("export_deliverables", { ...eb, overwrite: true })).isError, "overwrite replaces");
   // Without a naming rule: the model name.
   await call("export_deliverables", { out_dir: path.join(eDir, "plain"), vault: path.join(eDir, "none"), ifc: { config: path.join(vRules, "ifc", "tst-setup.json") }, check_only: true });
-  assert.ok(ed().at(-1).args.ifc.file === "Test.ifc" && ed().at(-1).args.ifc.setup === "tst-setup");
+  assert.ok(ed().at(-1).args.ifc.file === "Test.ifc" && ed().at(-1).args.ifc.setup === "tst-setup" && !ed().at(-1).args.ifc.config_from, "a given config is not marked from the vault");
+  // 1.13.6 dwfx.same_as_folder: the issued .dwg / .pdf stems matched to sheets (number first, then name).
+  const issued = path.join(eDir, "issued");
+  fs.mkdirSync(issued, { recursive: true });
+  for (const f of ["TST-01_Rev A.dwg", "TST-01_Rev A.pdf", "TST Sections.pdf", "TST unknown sheet.dwg", "notes.txt"]) fs.writeFileSync(path.join(issued, f), "x");
+  const lv = () => seen.filter((x) => x.command === "list_views");
+  const n1 = ed().length;
+  const sf = await call("export_deliverables", { out_dir: out, vault: eDir, dwfx: { same_as_folder: issued }, check_only: true });
+  assert.ok(sf.isError && ed().length === n1 && lv().at(-1).args.view_type === "DrawingSheet", "an unmatched file blocks before the export");
+  assert.match(sf.content[0].text, /^DWFx sheets as in .*issued: 2 of 3 file\(s\) matched[\s\S]*dwfx same_as_folder: 1 file\(s\) match no sheet: TST unknown sheet\. How to clear: rename the files or the sheets, set dwfx\.stemPattern/);
+  const sfa = await call("export_deliverables", { out_dir: path.join(eDir, "out-sf"), vault: eDir, dwfx: { same_as_folder: issued, allow_unmatched: true, combined: true, name: "TST set", paper: "sheet" }, check_only: true });
+  const sa = ed().at(-1).args.dwfx;
+  assert.ok(!sfa.isError && ed().length === n1 + 1, "allow_unmatched exports the matched sheets");
+  assert.deepEqual(sa.sheets, ["TST-01", "TST-02"]);
+  assert.ok(sa.combined === true && sa.file === "TST set.dwfx" && !("name" in sa) && sa.paper === "sheet", "dwfx.name names the file; combined and paper are passed on");
+  // Options given but not honoured: said, or refused.
+  const cf = await call("export_deliverables", { out_dir: out, vault: eDir, dwfx: { sheets: ["TST-01"], combined: false } });
+  assert.ok(cf.isError && /dwfx\.combined: false is not supported: the add-in always writes ONE combined DWFx/.test(cf.content[0].text) && ed().length === n1 + 1, "combined: false is refused before Revit is asked");
+  const both = await call("export_deliverables", { out_dir: path.join(eDir, "out-sf2"), vault: eDir, dwfx: { same_as_folder: issued, allow_unmatched: true, sheets: ["TST-10"], sheet_set: "TST set", name: "TST n", file: "TST f" }, check_only: true });
+  const ba = ed().at(-1).args.dwfx;
+  assert.ok(!both.isError && ba.sheets.join() === "TST-01,TST-02" && !ba.sheet_set && ba.file === "TST f.dwfx", "same_as_folder wins over sheets and sheet_set; file wins over name");
+  assert.match(both.content.at(-1).text, /DWFx: dwfx\.sheets \(1\) IGNORED: same_as_folder wins[\s\S]*DWFx: dwfx\.sheet_set TST set IGNORED[\s\S]*/);
+  assert.match(both.content.at(-1).text, /DWFx: dwfx\.name TST n ignored: dwfx\.file TST f names the file\./);
+  assert.match(sfa.content.at(-1).text, /DWFx sheets as in .*issued: 2 of 3 file\(s\) matched \(1 by number, 1 by name\); NOT matched: TST unknown sheet; sheets in the model not in the folder: 1 \(TST-10 TST Roof Plan\)\./);
+  fs.writeFileSync(path.join(vRules, "export.json"), JSON.stringify({ nameTemplate: "TST_{model}_{format}", ifc: { setups: { "TST setup": "ifc/tst-setup.json" } }, dwfx: { stemPattern: "^X(?<number>TST-\\d+)" } }));
+  const sp = await call("export_deliverables", { out_dir: path.join(eDir, "out-sf"), vault: eDir, dwfx: { same_as_folder: issued, allow_unmatched: true }, check_only: true });
+  assert.ok(!sp.isError && ed().at(-1).args.dwfx.sheets.includes("TST-01"), "the vault's stemPattern is a first try, the number in the stem still matches");
+  const { matchStems } = await import("../lib/deliverables.js");
+  const mN = (stems, sh, o) => matchStems(stems, sh.map(([n, name]) => ({ sheetNumber: n, name: name ?? "" })), o);
+  const got = (m) => m.matched.map((x) => `${x.stem}=${x.number}`);
+  assert.deepEqual(got(mN(["A-102_Rev-1", "1"], [["1"], ["A-102"]])), ["A-102_Rev-1=A-102", "1=1"], "\"1\" never matches A-102_Rev-1; a whole stem matches");
+  assert.deepEqual(mN(["A-102_Rev-1"], [["1"]]).unmatched, ["A-102_Rev-1"]);
+  assert.deepEqual(mN(["A-101"], [["101"]]).unmatched, ["A-101"], "101 does not match A-101 without the vault's prefix rule");
+  assert.deepEqual(got(mN(["A-101"], [["101"]], { stemPrefix: "[A-Z]-" })), ["A-101=101"], "after the vault's project prefix");
+  assert.deepEqual(got(mN(["A-101"], [["101"], ["A-101"]], { stemPrefix: "[A-Z]-" })), ["A-101=A-101"], "the whole number wins over the prefix reading");
+  assert.deepEqual(got(mN(["A-101-2"], [["A-101"]])), [], "a separator - must be followed by a non-digit");
+  assert.deepEqual(got(mN(["A-101-R2", "A-101.pdf x"], [["A-101"]])), ["A-101-R2=A-101", "A-101.pdf x=A-101"]);
+  const amb = mN(["A1.1 Plan"], [["A1"], ["A1.1"]]);
+  assert.ok(!amb.matched.length && amb.unmatched[0] === "A1.1 Plan" && amb.ambiguous[0].candidates.join() === "A1,A1.1", "two numbers fit: ambiguous, not guessed");
+  assert.deepEqual(mN(["TST anything", "x"], [["Z-901", "مخطط الطابق"], ["Z-902", "---"], ["Z-903", "Ab"], ["Z-904", "平面図"]]).unmatched, ["TST anything", "x"], "empty or short name keys (Arabic, CJK, punctuation) match nothing");
+  assert.deepEqual(got(mN(["Plantroom layout"], [["Z-1", "Plan"]])), [], "a name matches whole tokens only");
+  assert.deepEqual(got(mN(["TST 03 ground plan issue"], [["Z-1", "Ground Plan"]])), ["TST 03 ground plan issue=Z-1"]);
+  const ambN = mN(["Ground Plan and Roof Plan"], [["Z-1", "Ground Plan"], ["Z-2", "Roof Plan"]]);
+  assert.ok(!ambN.matched.length && ambN.ambiguous[0].how === "name" && ambN.ambiguous[0].candidates.length === 2, "two names fit: ambiguous");
+  assert.deepEqual(got(mN(["TST0101x"], [["101", "TST Other"]], { stemPattern: "^TST0(?<number>\\d{3})" })), ["TST0101x=101"], "the vault's stemPattern places the number");
+  const empty = path.join(eDir, "empty-issued");
+  fs.mkdirSync(empty, { recursive: true });
+  assert.match((await call("export_deliverables", { out_dir: out, vault: eDir, dwfx: { same_as_folder: empty } })).content[0].text, /no \.dwg or \.pdf in /);
+  assert.match((await call("export_deliverables", { out_dir: out, vault: eDir, dwfx: { same_as_folder: path.join(eDir, "nope") } })).content[0].text, /does not exist/);
 }
 // --- 1.12.8: results this run did not re-check are counted on their own line, out of the open totals ---
 {
@@ -1561,6 +1629,10 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(!dr.isError && /PREVIEW ONLY/.test(dr.content.at(-1).text) && wadm().at(-1).args.action === "apply_plan" && wadm().at(-1).args.dry_run === true);
   assert.ok(wadm().at(-1).args.workset_plan?.moves?.length && !("plan" in wadm().at(-1).args), "1.13.1: the plan travels as workset_plan, never as the panel's plan");
   assert.match(dr.content.at(-1).text, /Kept \(not empty after the moves\): "TST-ST-OLD" 0 \(holds 2 types \(a plan moves instances only\)\)/);
+  // 1.13.6: moves that would hide elements are held, grouped by sheet and view; status names the switch.
+  assert.match(dr.content.at(-1).text, /Visibility on sheets \(moved elements a view on a sheet would show differently\): 1 element\(s\) HELD in 1 move\(s\), they stay where they are; after the user agreed: allow_visibility_change: true, or the view \/ workset names:\n- sheet TST-01 - TST Ground Plan:\n  - view "TST L1 Plan": 1 hidden; HELD 1 \(1 Stairs\): the target workset is hidden in this view\nExport views \(reported, not held\):\n- "TST NAVISWORKS": 1 hidden \(1 Stairs\)/, "held moves grouped by sheet and view");
+  assert.match(dr.content.at(-1).text, /Visibility not checked in: "TST Broken View"\./);
+  assert.ok(!("allow_visibility_change" in wadm().at(-1).args), "nothing sent without allow_visibility_change");
   assert.match(dr.content.at(-1).text, /Would move \(not previewed: not yours yet\): 1 group\(s\), 1 element\(s\), 1 link type\(s\)\. The apply borrows those worksets first\./);
   const ap = await call("workset_plan", { action: "apply", plan_file: planFile, explanation: "TST plan" });
   const apT = ap.content.slice(1).map((c) => c.text).join("\n");
@@ -1578,6 +1650,14 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const drift = path.join(wpDir, "drift.json"); const pj = JSON.parse(JSON.stringify(pj0)); pj.plan.moves[0].elements += 1; fs.writeFileSync(drift, JSON.stringify(pj));
   const dtr = await call("workset_plan", { action: "apply", plan_file: drift, dry_run: true, explanation: "TST plan" });
   assert.ok(dtr.isError && /planned, \d+ found/.test(dtr.content.map((c) => c.text).join("\n")), "a changed count blocks the whole plan");
+  // 1.13.6: allow_visibility_change is passed on and is part of the change identity.
+  const avd = await call("workset_plan", { action: "apply", plan_file: planFile, dry_run: true, allow_visibility_change: ["TST L1 Plan"], explanation: "TST plan" });
+  assert.ok(!avd.isError && JSON.stringify(wadm().at(-1).args.allow_visibility_change) === '["TST L1 Plan"]' && /view "TST L1 Plan": 1 hidden; accepted 1/.test(avd.content.at(-1).text) && !/HELD/.test(avd.content.at(-1).text), "an allowed view: accepted, not held");
+  const nApply = wadm().filter((x) => x.args.action === "apply_plan" && !x.args.dry_run && !x.args.check_only).length;
+  const avx = await call("workset_plan", { action: "apply", plan_file: planFile, allow_visibility_change: true, explanation: "TST plan" });
+  assert.ok(avx.isError && wadm().filter((x) => x.args.action === "apply_plan" && !x.args.dry_run && !x.args.check_only).length === nApply, "another allow_visibility_change needs its own dry run");
+  const wst = (await call("workset_plan", { action: "status", vault: wv })).content.map((c) => c.text).join("\n");
+  assert.match(wst, /At apply, a moved element that a view on a sheet would show differently is held \(stays\) until the user agrees \(allow_visibility_change\)\./);
   // 1.13.1: an xlsx is read on both sheets; on both, the Groups sheet wins per group; unused decisions are said.
   const wbe = new ExcelJS.Workbook(); await wbe.xlsx.readFile(xlsxF);
   const [shW, shG] = wbe.worksheets;
@@ -1696,6 +1776,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
     assert.ok(rq.workset_plan.moves.some((m) => m.key.startsWith("TST-ST-ROOF STEEL|Structural Framing|TST UB") && m.to === "TST-ST-RF BEAMS"), "ROOF STEEL was skipped: its steel beams go where the confirmed rules put them (straight, one move)");
     assert.ok(!rq.workset_plan.moves.some((m) => m.key.startsWith("Workset1|Generic Models")), "what no rule takes and already sits on the default stays");
     assert.match(rsc, /Reset to "TST_Walls" \(end state, each element moves once\): 0 element\(s\) in 0 group\(s\) no rule takes go to the default \(3 already there\); kept: datum 0, manual-only 5/);
+    assert.match(rsc, /Reset to "TST_Walls"[^\n]*\. A moved element that a view on a sheet would show differently is held \(allow_visibility_change, after the user agreed\)\./, "the reset line names the visibility hold");
     const rsu = WP.resetPlan({ plan: { create: [], rename: [], moves: [], delete: [] }, rules: [{ workset: "TST-ST-GF COLUMNS", from: "TST-ST-GF COLUMNS", categories: ["Structural Columns"], levels: [], words: [], codes: [] }] },
       { worksets: [{ name: "Workset1", isDefault: true, elements: 0 }, { name: "TST-ST-GF COLUMNS", elements: 3 }, { name: "TST-ST-ODD", elements: 6 }],
         groups: [{ workset: "TST-ST-ODD", category: "Generic Models", type: "TST X", level: "", elements: 4 }, { workset: "TST-ST-ODD", category: "Structural Columns", type: "TST C", level: "", elements: 2 }] });

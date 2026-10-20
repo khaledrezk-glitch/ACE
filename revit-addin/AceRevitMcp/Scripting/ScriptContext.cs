@@ -55,6 +55,23 @@ namespace AceRevitMcp.Scripting
             else if (_output.Count == 2000) _output.Add("... further output truncated");
         }
 
+        /// <summary>The ACE output folder (%APPDATA%\ACE-RevitMCP\output): the one place a script writes files, also in a readonly run or dry run.</summary>
+        public string OutputFolder => System.IO.Path.Combine(Util.AceConfig.Directory, "output");
+
+        /// <summary>
+        /// Writes a text file into the ACE output folder (a plain file name; folders in it are removed) and returns its full path.
+        /// Direct file writes (File.WriteAllText, StreamWriter...) cannot run in a readonly run or dry run; this can.
+        /// </summary>
+        public string WriteOutput(string fileName, string text)
+        {
+            var name = System.IO.Path.GetFileName((fileName ?? "").Trim());
+            if (string.IsNullOrEmpty(name)) throw new ArgumentException("Give a file name, e.g. report.csv.");
+            System.IO.Directory.CreateDirectory(OutputFolder);
+            var path = System.IO.Path.Combine(OutputFolder, name);
+            System.IO.File.WriteAllText(path, text ?? "");
+            return path;
+        }
+
         // ---- Input helpers ----------------------------------------------------------------------
 
         public string Str(string name, string fallback = null) =>

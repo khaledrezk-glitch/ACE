@@ -212,7 +212,11 @@ applies part of the plan (its own planHash); reset: "default" (rule-level plans 
 element moves once: no rule -> the default workset; datum, manual-only and skipped groups stay. Pinned elements are
 unpinned, moved and re-pinned in the same undo step (counts said). Borrowed elements: the rest moves; they become pending
 actions (vault 04 Audits/<model>/worksets/pending-actions.json, with holder and target), retried first on the next apply.
-Every apply writes worksets-applied.json and shows the status again; moves already done are skipped and said.
+Every apply writes worksets-applied.json and shows the status again; moves already done are skipped and said. Every
+view on a sheet (and the export views) is compared before and after the moves: a moved element that a sheet view would
+show differently is HELD (it stays where it is); the dry run lists the changes by sheet and view (export views are
+reported only). Show them to the user; only after they agreed pass allow_visibility_change: true (or the view / workset
+names) and run the dry run again (it is part of the change, so the apply needs its own dry run).
 
 ## Parameter requirements (AIS, LOIN, Model Checker, shared parameter files)
 
@@ -286,9 +290,17 @@ optional; the model is not changed. out_dir is required; an existing file is rep
 the user agreed. File names: file per format, else the vault's rules/export.json "nameTemplate" ({model}, {date} as
 YYYYMMDD, {format}), else the model name. IFC settings: ifc.config (a JSON file: ACE's keys FileVersion,
 ExportBaseQuantities, WallAndColumnSplitting, SpaceBoundaryLevel, other keys passed as options; an exporter's saved setup
-works, its IFCVersion / SplitWallsAndColumns / SpaceBoundaries keys are read), or ifc.setup (a name in rules/export.json
-"ifc": { "setups": { name: "file.json" or { ...settings } } }, else rules/ifc/<name>.json). Revit's own named setups
-cannot be read by the add-in: keep the setup in the vault. Run check_only first for the pre-flight (exporter installed,
+works, its IFCVersion / SplitWallsAndColumns / SpaceBoundaries keys are read), or ifc.setup (a name: the setup saved in
+the model by Revit's IFC exporter is used first, then the vault's: rules/export.json "ifc": { "setups": { name: "file.json"
+or { ...settings } } }, else rules/ifc/<name>.json). list_ifc_setups: true lists both (read-only). DWFx sheets "as
+issued": dwfx.same_as_folder: <folder with the issued .dwg / .pdf> matches each file to a sheet (the sheet number in the
+file name: "stemPattern" (regex with (?<number>...)) in the vault's rules/export.json "dwfx" when set, else the number
+as the whole file name or its start followed by _, space, . or - and a non-digit, also after "stemPrefix" (a regex for
+the project prefix) when set; then the sheet name as whole words). Nothing is guessed: files that match no sheet, or
+more than one, block the export until they are renamed or allow_unmatched: true (after the user agreed); sheets not in
+the folder are listed; same_as_folder wins over dwfx.sheets / sheet_set (said). The DWFx is always ONE combined file
+(combined: false is refused), named by dwfx.file, else dwfx.name, else the naming rule; dwfx.paper: "sheet" keeps each
+sheet's own paper size. Run check_only first for the pre-flight (exporter installed,
 views, setup, sheets, existing files); every block is reported with how to clear it and nothing is exported. Show the
 files table (file, size, time, count, warnings) and the run record.
 

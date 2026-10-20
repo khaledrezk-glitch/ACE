@@ -78,6 +78,33 @@ namespace AceRevitMcp.Rules
             return (move, borrowed, central);
         }
 
+        /// <summary>
+        /// What a view shows differently after the moves, among the moved elements only: hidden (shown before, not after) and shown
+        /// (not before, shown after).
+        /// </summary>
+        public static (List<long> Hidden, List<long> Shown) VisibilityDiff(IEnumerable<long> moved, ICollection<long> before, ICollection<long> after)
+        {
+            var hidden = new List<long>(); var shown = new List<long>();
+            foreach (var id in (moved ?? Enumerable.Empty<long>()).Distinct())
+            {
+                var b = before != null && before.Contains(id); var a = after != null && after.Contains(id);
+                if (b && !a) hidden.Add(id); else if (!b && a) shown.Add(id);
+            }
+            return (hidden, shown);
+        }
+
+        /// <summary>
+        /// Whether a visibility change is accepted (allow_visibility_change): true accepts every one; a list accepts a change in a
+        /// view it names, or of an element whose source or target workset it names (names compared ignoring case and outer spaces).
+        /// </summary>
+        public static bool VisibilityAllowed(bool all, ICollection<string> names, string view, string fromWorkset, string toWorkset)
+        {
+            if (all) return true;
+            if (names == null || names.Count == 0) return false;
+            bool Named(string n) => n != null && names.Any(x => string.Equals((x ?? "").Trim(), n.Trim(), StringComparison.OrdinalIgnoreCase));
+            return Named(view) || Named(fromWorkset) || Named(toWorkset);
+        }
+
         /// <summary>Why a workset named for deletion is kept: what it still holds after the moves (types are never moved by a plan).</summary>
         public static string KeptWhy(int elements, int types) =>
             types > 0 && elements == types ? $"holds {types} type{(types == 1 ? "" : "s")} (a plan moves instances only)"

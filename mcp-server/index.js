@@ -1254,6 +1254,7 @@ tool("workset_plan", {
     confirm_standard: z.boolean().optional().describe("Mark the vault's worksets-standard.json confirmed (after the user agreed)"),
     only: z.object({ rows: z.array(z.union([z.number(), z.string()])).optional(), worksets: z.array(z.string()).optional(), categories: z.array(z.string()).optional(), models: z.array(z.string()).optional(), keys: z.array(z.string()).optional() }).optional().describe("apply: part of the plan"),
     reset: z.enum(["default"]).optional().describe("apply: everything to the default workset, then the rules (end state: one move per element)"),
+    allow_visibility_change: z.union([z.boolean(), z.array(z.string().max(200)).max(200)]).optional().describe("apply: moves that change what a view on a sheet shows go ahead (true, or view / workset names), after the user agreed"),
     create_missing: z.boolean().optional().describe("confirm: a rule may create its workset in models that lack it"),
     max_ids: z.number().int().min(0).max(500).optional(),
     check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().max(600).optional(),
@@ -1365,7 +1366,7 @@ tool("workset_plan", {
     const vwA = await vaultWorksetsOf(a);
     rs = WorksetPlan.resetPlan(pf, cur.facts, { manualOnly: cur.naming?.manualOnly ?? [], keep: vwA?.keep ?? [], zoneWins: cur.naming?.zoneWins !== false, typeTokens: cur.naming?.typeTokens ?? null });
     plan = rs.plan;
-    lines.push(`Reset to ${Worksets.q(rs.defaultName)} (end state, each element moves once): ${rs.toDefault.elements} element(s) in ${rs.toDefault.groups} group(s) no rule takes go to the default (${rs.stay.onDefault} already there); kept: datum ${rs.stay.datum}, manual-only ${rs.stay.manual}, skipped on the Groups sheet ${rs.stay.skipped}${rs.borrowed ? `; ${rs.borrowed} borrowed by others (pending)` : ""}.`);
+    lines.push(`Reset to ${Worksets.q(rs.defaultName)} (end state, each element moves once): ${rs.toDefault.elements} element(s) in ${rs.toDefault.groups} group(s) no rule takes go to the default (${rs.stay.onDefault} already there); kept: datum ${rs.stay.datum}, manual-only ${rs.stay.manual}, skipped on the Groups sheet ${rs.stay.skipped}${rs.borrowed ? `; ${rs.borrowed} borrowed by others (pending)` : ""}.${a.allow_visibility_change ? "" : " A moved element that a view on a sheet would show differently is held (allow_visibility_change, after the user agreed)."}`);
   }
   const sd = WorksetPlan.skipDone(plan, cur.facts);
   plan = sd.plan;
@@ -1382,10 +1383,11 @@ tool("workset_plan", {
   const keepWorksets = rs ? rs.manualWorksets : undefined;
   const keepKeys = rs ? [...new Set([...rs.keepKeys, ...rs.plan.moves.filter((m) => !sent.has(m.key)).map((m) => m.key)])] : undefined;
   const req = { action: "apply_plan", workset_plan: plan, max_ids: a.max_ids ?? 20, expect_version: VERSION,
-    ...(rs ? { reset_to: rs.defaultName, keep_worksets: keepWorksets, keep_keys: keepKeys } : {}), ...(retry.length ? { pending_retry: retry } : {}) };
+    ...(rs ? { reset_to: rs.defaultName, keep_worksets: keepWorksets, keep_keys: keepKeys } : {}), ...(retry.length ? { pending_retry: retry } : {}),
+    ...(a.allow_visibility_change != null ? { allow_visibility_change: a.allow_visibility_change } : {}) };
   let last = null;
   const res = await planExecute({
-    name: "workset plan", command: "workset_admin", req, ident: { action: "apply_plan", plan, model: pf.model, reset: a.reset ?? null, only: a.only ?? null, retry: retry.map((r) => r.id) }, modelMust: pf.model,
+    name: "workset plan", command: "workset_admin", req, ident: { action: "apply_plan", plan, model: pf.model, reset: a.reset ?? null, only: a.only ?? null, retry: retry.map((r) => r.id), visibility: a.allow_visibility_change ?? null }, modelMust: pf.model,
     // The bridge field "plan" is the workset plan here, so no panel checklist (plan / step) is sent.
     check_only, dry_run, explanation, plan: undefined, step: undefined, state: wplanState, timeout, a, folder: { sub: "worksets", reports: "worksets" },
     planOf: WorksetPlan.planOf, identity: Worksets.planIdentity, blocksOf: (r) => Worksets.blocksOf(r).map(Worksets.blockWithHow), rolledBackOf: Worksets.rolledBackOf,
@@ -1588,20 +1590,36 @@ tool("view_membership_fill", {
 // an existing file is replaced only with overwrite; every pre-flight block is reported, a run record is kept.
 tool("export_deliverables", {
   title: "Export NWC, IFC and DWFx",
-  description: "Exports the open model's deliverables in one call: nwc (a 3D view), ifc (the model or a view; settings from config, a JSON file, or setup, a name looked up in the vault: rules/export.json ifc.setups or rules/ifc/<setup>.json), dwfx (sheets or a sheet set); each optional. File names: file, else the vault's rules/export.json nameTemplate ({model}, {date}, {format}), else the model name. out_dir required; an existing file is replaced only with overwrite: true. check_only: the pre-flight only. Blocks (no Navisworks exporter, missing view / setup / sheets, file exists) are reported and nothing is exported. Reply: a table of file, size, time, count, warnings; a run record is written. The model is not changed.",
+  description: "Exports the open model's deliverables in one call: nwc (a 3D view), ifc (the model or a view; settings from config, a JSON file, or setup, a name: the setup saved in the model first, then the vault's rules/export.json ifc.setups or rules/ifc/<setup>.json; list_ifc_setups lists both), dwfx (one combined file, named by file or name: sheets, a sheet set, or same_as_folder: the sheets whose .dwg/.pdf are in a folder, matched by number then name, nothing guessed; unmatched or ambiguous files block unless allow_unmatched); each optional. File names: file, else the vault's rules/export.json nameTemplate ({model}, {date}, {format}), else the model name. out_dir required; an existing file is replaced only with overwrite: true. check_only: the pre-flight only. Blocks (no Navisworks exporter, missing view / setup / sheets, file exists) are reported and nothing is exported. Reply: a table of file, size, time, count, warnings; a run record is written. The model is not changed.",
   inputSchema: {
     out_dir: z.string().min(1),
     overwrite: z.boolean().optional(), check_only: z.boolean().optional(),
     nwc: z.object({ view: z.string().max(200), file: z.string().max(200).optional() }).optional(),
     ifc: z.object({ view: z.string().max(200).optional(), setup: z.string().max(200).optional(), config: z.string().optional().describe("IFC settings .json"), file: z.string().max(200).optional() }).optional(),
-    dwfx: z.object({ sheets: z.array(z.string().max(50)).max(2000).optional(), sheet_set: z.string().max(200).optional(), file: z.string().max(200).optional() }).optional(),
+    dwfx: z.object({ sheets: z.array(z.string().max(50)).max(2000).optional(), sheet_set: z.string().max(200).optional(), file: z.string().max(200).optional(),
+      same_as_folder: z.string().optional().describe("the sheets whose .dwg / .pdf are in this folder"), allow_unmatched: z.boolean().optional(),
+      combined: z.boolean().optional(), name: z.string().max(200).optional(), paper: z.enum(["sheet"]).optional().describe("each sheet's own paper size") }).optional(),
+    list_ifc_setups: z.boolean().optional().describe("read-only: the IFC setups in the model and the vault"),
     vault: z.string().optional(), report_dir: z.string().optional(),
     timeout_seconds: z.number().int().min(30).max(7200).optional(),
   },
   annotations: benign,
 }, async ({ check_only, overwrite, timeout_seconds, ...a }) => {
+  if (a.list_ifc_setups) {
+    // Read-only: the setups saved in the model (the add-in) and the vault's; a name is looked up in the model first.
+    const vd = await projectVaultDir(a);
+    let vr = {};
+    try { vr = Deliverables.readRules(vd).rules; } catch (e) { throw new RevitError(e.message); }
+    const r = await callRevit("export_deliverables", { list_ifc_setups: true, check_only: true }, 60);
+    const inModel = r?.ifcSetups ?? r?.setups ?? [];
+    const inVault = Deliverables.vaultIfcSetups(vd, vr);
+    const out = text({ model: r?.model, inModel, inVault, vault: vd });
+    out.content.push({ type: "text", text: `IFC setups (read-only; ifc.setup looks in the model first, then the vault):\n- in the model${r?.model ? ` ${r.model}` : ""}: ${inModel.map((x) => typeof x === "string" ? x : x.name).join(", ") || "none"}\n- in the vault${vd ? ` ${vd}` : ""}: ${inVault.join(", ") || "none"}` });
+    return out;
+  }
   const formats = ["nwc", "ifc", "dwfx"].filter((f) => a[f]);
   if (!formats.length) throw new RevitError("Give at least one of nwc, ifc or dwfx.");
+  if (a.dwfx?.combined === false) throw new RevitError("dwfx.combined: false is not supported: the add-in always writes ONE combined DWFx. Leave combined out (or true); for one file per sheet, export per sheet with dwfx.sheets: [one] and its own file.");
   const model = (await callRevit("project_rules", {}, 30))?.model;
   if (!model) throw new RevitError("Revit answered without a model: open the model and run again.");
   const vaultDir = await projectVaultDir(a);
@@ -1609,11 +1627,14 @@ tool("export_deliverables", {
   try { ({ rules, file: rulesFile } = Deliverables.readRules(vaultDir)); } catch (e) { throw new RevitError(e.message); }
   const early = [], notes = [], names = {};
   for (const f of formats) {
-    if (a[f].file?.trim()) { names[f] = Deliverables.fileFor(f, a[f].file); continue; }
+    // dwfx.name names the combined file when file is not given (file wins).
+    const given = a[f].file?.trim() || (f === "dwfx" ? a.dwfx.name?.trim() : "");
+    if (given) { names[f] = Deliverables.fileFor(f, given); continue; }
     const { base, problem } = Deliverables.baseName({ model, template: rules.nameTemplate, format: f });
     if (problem) early.push({ what: `${f} file name`, why: `${problem} (${rulesFile})`, how: "fix nameTemplate in the vault's rules/export.json, or give file", code: "out-dir" });
     else names[f] = Deliverables.fileFor(f, null, base);
   }
+  if (a.dwfx?.name?.trim() && a.dwfx.file?.trim()) notes.push(`DWFx: dwfx.name ${a.dwfx.name} ignored: dwfx.file ${a.dwfx.file} names the file.`);
   if (rules.nameTemplate) notes.push(`File names from the vault's naming rule ${rules.nameTemplate} (${rulesFile}).`);
   let ifc;
   if (a.ifc) {
@@ -1621,11 +1642,30 @@ tool("export_deliverables", {
     if (ifc.problem) early.push({ what: `ifc setup ${a.ifc.setup ?? a.ifc.config}`, why: ifc.problem, code: "setup-not-found" });
     else if (ifc.source) notes.push(`IFC settings: ${ifc.source}${ifc.renamed?.length ? ` (exporter keys read as ${ifc.renamed.join(", ")})` : ""}.`);
   }
-  if (early.length) return blockedReply(Deliverables.blocksOf({ blocked: early }).map((b) => ({ what: b.what, why: b.why, how: b.how })), "Blocked before Revit was asked; nothing exported:");
+  // dwfx.same_as_folder: the sheets whose .dwg / .pdf are in that folder, matched by number (then name).
+  let dwfxSheets = a.dwfx?.sheets;
+  if (a.dwfx?.same_as_folder) {
+    let stems = [];
+    try { stems = Deliverables.folderStems(a.dwfx.same_as_folder); } catch (e) { early.push({ what: "dwfx same_as_folder", why: e.message, how: "give the folder with the issued .dwg / .pdf files", code: "no-sheets" }); }
+    if (stems.length) {
+      const lv = await callRevit("list_views", { view_type: "DrawingSheet" }, 120);
+      let mt;
+      try { mt = Deliverables.matchStems(stems, lv?.views ?? [], { stemPattern: rules?.dwfx?.stemPattern, stemPrefix: rules?.dwfx?.stemPrefix }); } catch (e) { throw new RevitError(e.message); }
+      if (a.dwfx.sheets?.length) notes.push(`DWFx: dwfx.sheets (${a.dwfx.sheets.length}) IGNORED: same_as_folder wins; give one of them.`);
+      if (a.dwfx.sheet_set) notes.push(`DWFx: dwfx.sheet_set ${a.dwfx.sheet_set} IGNORED: same_as_folder wins; give one of them.`);
+      dwfxSheets = mt.sheets;
+      notes.push(`DWFx sheets as in ${a.dwfx.same_as_folder}: ${mt.matched.length} of ${stems.length} file(s) matched (${mt.matched.filter((m) => m.how !== "name").length} by number, ${mt.matched.filter((m) => m.how === "name").length} by name)${mt.unmatched.length ? `; NOT matched: ${mt.unmatched.join(", ")}` : ""}${mt.ambiguous.length ? `; ambiguous (not guessed): ${mt.ambiguous.map((x) => `${x.stem} -> ${x.candidates.join(" | ")} (${x.how})`).join("; ")}` : ""}${mt.extra.length ? `; sheets in the model not in the folder: ${mt.extra.length}${mt.extra.length <= 15 ? ` (${mt.extra.join(", ")})` : ""}` : ""}.`);
+      if (mt.unmatched.length && !a.dwfx.allow_unmatched) early.push({ what: "dwfx same_as_folder", why: `${mt.unmatched.length} file(s) match no sheet: ${mt.unmatched.slice(0, 10).join(", ")}`, how: "rename the files or the sheets, set dwfx.stemPattern / dwfx.stemPrefix in the vault's rules/export.json, or pass allow_unmatched: true", code: "no-sheets" });
+      if (!mt.sheets.length) early.push({ what: "dwfx same_as_folder", why: "no file matches a sheet", code: "no-sheets" });
+    } else if (!early.length) early.push({ what: "dwfx same_as_folder", why: `no .dwg or .pdf in ${a.dwfx.same_as_folder}`, code: "no-sheets" });
+  }
+  if (early.length) return blockedReply(Deliverables.blocksOf({ blocked: early }).map((b) => ({ what: b.what, why: b.why, how: b.how })), [...notes.filter((n) => n.startsWith("DWFx")), "Blocked before Revit was asked; nothing exported:"].join("\n"));
   const req = { out_dir: a.out_dir, overwrite: !!overwrite, check_only: !!check_only,
     ...(a.nwc ? { nwc: { view: a.nwc.view, file: names.nwc } } : {}),
-    ...(a.ifc ? { ifc: { ...(a.ifc.view ? { view: a.ifc.view } : {}), ...(ifc.setup ? { setup: ifc.setup } : {}), ...(ifc.config ? { config: ifc.config } : {}), file: names.ifc } } : {}),
-    ...(a.dwfx ? { dwfx: { ...(a.dwfx.sheets ? { sheets: a.dwfx.sheets } : {}), ...(a.dwfx.sheet_set ? { sheet_set: a.dwfx.sheet_set } : {}), file: names.dwfx } } : {}) };
+    // ifc.setup: the setup saved in the model first (the add-in), then the vault's (sent as config, marked config_from: vault).
+    ...(a.ifc ? { ifc: { ...(a.ifc.view ? { view: a.ifc.view } : {}), ...(ifc.setup ? { setup: ifc.setup } : {}), ...(ifc.config ? { config: ifc.config, ...(a.ifc.config ? {} : { config_from: "vault" }) } : {}), file: names.ifc } } : {}),
+    ...(a.dwfx ? { dwfx: { ...(dwfxSheets ? { sheets: dwfxSheets } : {}), ...(a.dwfx.sheet_set && !a.dwfx.same_as_folder ? { sheet_set: a.dwfx.sheet_set } : {}), file: names.dwfx,
+      ...(a.dwfx.combined != null ? { combined: a.dwfx.combined } : {}), ...(a.dwfx.paper ? { paper: a.dwfx.paper } : {}) } } : {}) };
   const r = await callRevit("export_deliverables", req, timeout_seconds ?? 3600);
   const out = text(r);
   const blocked = Deliverables.blocksOf(r).length > 0;

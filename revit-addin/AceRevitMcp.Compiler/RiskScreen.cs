@@ -81,11 +81,11 @@ namespace AceRevitMcp.Compiler
             ("Autodesk.Revit.DB.PrintManager", "SubmitPrint", "prints or writes files" + NU),
             ("Autodesk.Revit.DB.DefinitionGroups", "Create", "changes the shared parameter file" + NU),
             ("Autodesk.Revit.DB.Definitions", "Create", "changes the shared parameter file" + NU),
-            ("System.IO.Path", "GetTempFileName", "creates, changes or deletes files on disk"),
-            ("System.Xml.XmlDocument", "Save", "creates, changes or deletes files on disk"),
-            ("System.Xml.Linq.XDocument", "Save", "creates, changes or deletes files on disk"),
-            ("System.Xml.Linq.XElement", "Save", "creates, changes or deletes files on disk"),
-            ("System.Xml.XmlWriter", "Create", "creates, changes or deletes files on disk"),
+            ("System.IO.Path", "GetTempFileName", "creates, changes or deletes files on disk" + NU),
+            ("System.Xml.XmlDocument", "Save", "creates, changes or deletes files on disk" + NU),
+            ("System.Xml.Linq.XDocument", "Save", "creates, changes or deletes files on disk" + NU),
+            ("System.Xml.Linq.XElement", "Save", "creates, changes or deletes files on disk" + NU),
+            ("System.Xml.XmlWriter", "Create", "creates, changes or deletes files on disk" + NU),
         };
 
         public static string[] Find(CSharpCompilation compilation, SyntaxTree tree)
@@ -101,17 +101,19 @@ namespace AceRevitMcp.Compiler
                 var type = model.GetTypeInfo(node).Type;
                 if (type?.TypeKind == TypeKind.Dynamic) found.Add("uses dynamic code that cannot be checked");
                 if (symbol == null) continue;
-                var why = Check(symbol);
+                var why = Check(symbol, node, model);
                 if (why != null) found.Add(why);
             }
             return found.ToArray();
         }
 
-        private static string Check(ISymbol symbol)
+        private static string Check(ISymbol symbol, SyntaxNode node, SemanticModel model)
         {
             var owner = symbol as INamedTypeSymbol ?? symbol.ContainingType;
             if (owner == null) return null;
             var typeName = Name(owner.OriginalDefinition);
+            var (decided, fileWhy) = FileVerdict(typeName, symbol, node, model);
+            if (decided) return fileWhy;
             var ns = owner.ContainingNamespace?.ToDisplayString() ?? "";
             // Reading a property (e.GetType().Name) is harmless; calling or creating something is what counts.
             var readsOnly = symbol is IPropertySymbol or IFieldSymbol;
@@ -130,6 +132,60 @@ namespace AceRevitMcp.Compiler
             }
             return null;
         }
+
+        private const string Writes = "creates, changes or deletes files on disk" + NU;
+        private static readonly string[] WriterTypes = { "System.IO.StreamWriter", "System.IO.BinaryWriter", "System.Xml.XmlWriter" };
+        private static readonly string[] SaveTypes = { "System.Xml.XmlDocument", "System.Xml.Linq.XDocument", "System.Xml.Linq.XElement" };
+        private static readonly string[] PathTypes = { "System.IO.File", "System.IO.Directory", "System.IO.FileInfo", "System.IO.DirectoryInfo" };
+        private static readonly string[] WriteVerbs = { "Write", "Append", "Create", "Delete", "Move", "Copy", "Replace", "Set", "Encrypt", "Decrypt", "OpenWrite", "Open" };
+
+        /// <summary>
+        /// Whether a file API use writes to disk (not undone by a rollback), decided at the call from the overload and its
+        /// arguments: a writer or XML save on a path writes, on a stream / TextWriter / StringWriter does not (the stream's own
+        /// creation decides); a FileStream, File.Open or FileInfo.Open with FileAccess.Read only reads; File / Directory members
+        /// that create, change, move or delete write. When it cannot be told (a FileStream or Open with variable arguments, a
+        /// method passed as a delegate) it counts as a write. (false, _) = not a file API this rule knows: the other lists decide.
+        /// </summary>
+        private static (bool Decided, string Why) FileVerdict(string type, ISymbol symbol, SyntaxNode node, SemanticModel model)
+        {
+            var isWriter = WriterTypes.Contains(type); var isStream = type == "System.IO.FileStream"; var isMapped = type == "System.IO.MemoryMappedFiles.MemoryMappedFile";
+            var isSave = SaveTypes.Contains(type) && symbol.Name == "Save"; var isPath = PathTypes.Contains(type);
+            if (!(isWriter || isStream || isMapped || isSave || isPath)) return (false, null);
+            if (symbol is not IMethodSymbol m)
+                return isPath ? (false, null) : (true, null);   // naming the type, or reading a property, does nothing yet
+            var call = node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax;
+            if (!call)
+            {
+                // The member access or name inside a call: the call node itself decides (with its arguments).
+                var n = node;
+                while (n.Parent is MemberAccessExpressionSyntax ma && ma.Name == n) n = ma;
+                if (n.Parent is InvocationExpressionSyntax inv && inv.Expression == n) return (true, null);
+                if (n == node && node.Parent is MemberAccessExpressionSyntax outer && outer.Expression == node) return (true, null);
+                return (isWriter || isStream || isMapped || isSave || (isPath && IsWriteVerb(m.Name))) ? (true, Writes) : (false, null);   // a method group: cannot tell
+            }
+            var args = node is InvocationExpressionSyntax i ? i.ArgumentList?.Arguments : ((BaseObjectCreationExpressionSyntax)node).ArgumentList?.Arguments;
+            bool ReadAccess() => args?.Any(x => model.GetSymbolInfo(x.Expression).Symbol is IFieldSymbol f && f.ContainingType?.Name == "FileAccess" && f.Name == "Read") == true;
+            var first = m.Parameters.FirstOrDefault()?.Type?.SpecialType;
+            if (isMapped) return (true, Writes);
+            if (isWriter)
+            {
+                if (type == "System.Xml.XmlWriter") return m.Name == "Create" && first == SpecialType.System_String ? (true, Writes) : (true, null);
+                return m.MethodKind == MethodKind.Constructor && first == SpecialType.System_String ? (true, Writes) : (true, null);
+            }
+            if (isSave) return first == SpecialType.System_String ? (true, Writes) : (true, null);
+            if (isStream)
+            {
+                if (m.MethodKind != MethodKind.Constructor) return (true, null);
+                return ReadAccess() ? (true, "reads files on disk") : (true, Writes);
+            }
+            // File / Directory / FileInfo / DirectoryInfo
+            if (m.MethodKind == MethodKind.Constructor) return (false, null);
+            if (m.Name == "Open") return ReadAccess() ? (true, "reads files on disk") : (true, Writes);
+            return IsWriteVerb(m.Name) ? (true, Writes) : (false, null);
+        }
+
+        private static bool IsWriteVerb(string name) =>
+            WriteVerbs.Any(v => name.StartsWith(v, StringComparison.Ordinal)) && !name.StartsWith("OpenRead", StringComparison.Ordinal) && !name.StartsWith("OpenText", StringComparison.Ordinal);
 
         private static bool InheritsFrom(INamedTypeSymbol type, string name)
         {
