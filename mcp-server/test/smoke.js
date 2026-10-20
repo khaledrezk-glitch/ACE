@@ -1739,6 +1739,30 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
     const sDiff = WP.statusOf({ model: "M", worksets: [{ name: "TST-A", elements: 3 }], groups: [gA] }, { std: { label: "TST", rules: [{ workset: "TST-C", category: ["Walls"], clause: "TST 1" }] }, records: [{ at: "T1", planId: "p1", rows: [{ identity: "Walls|TST W|L1|||", origin: "Workset1", from: "Workset1", to: "TST-A" }] }] });
     assert.match(WP.statusText(sDiff), /Applied by ACE, now differs from the standard:\n- 3 Walls @ L1 on "TST-A" \(ACE T1\); the standard says "TST-C"/);
     assert.deepEqual([...WP.levelTokens(["ST-L1-01"])[0].phrases[0]], ["L1", "1"], "a single 1-3 letter prefix is dropped, as the add-in does");
+    // Live defects: (a) an explicit vault always wins; (b) found above or beside the model's folders; (c) never a silent fallback.
+    const lv = path.join(tmp, "TST_X"), lvV = path.join(lv, "ACE", "ACE Vault");
+    fs.mkdirSync(lvV, { recursive: true }); fs.mkdirSync(path.join(lv, "WORK", "TST_sub"), { recursive: true });
+    fs.writeFileSync(path.join(lvV, "project-requirements.json"), JSON.stringify({ schema: "ace.project-requirements/1", worksets: { keep: ["TST-ST-OLD"], naming: { categoryTokens: { OLD: ["Generic Models"] } },
+      rules: [{ id: "tst-cols", workset: "TST-ST-GF COLUMNS", category: ["Structural Columns"] }] } }));
+    const pv = (await call("workset_plan", { action: "propose", vault: lvV, out_dir: path.join(tmp, "wpv") }));
+    const pvT = pv.content.at(-1).text;
+    assert.ok(pvT.includes(`Vault: ${lvV} (given;`) && /Standard: the project's confirmed list \(project-requirements\.json\) \(.*TST_X.*\), 1 rule\(s\)/.test(pvT), "(a) the explicit vault wins, its path is printed");
+    const pvD = parseCsvSmoke(fs.readFileSync(JSON.parse(pv.content[0].text).files[2], "utf8"));
+    assert.ok(pvD.some((r) => r[4] === "TST Thing : A" && r[7] === "TST-ST-OLD"), "the vault's categoryTokens are used (OLD -> Generic Models)");
+    assert.match(pvT, /TST-ST-OLD: keep;.*kept: confirmed in the vault \(never proposed for deletion\)/, "a workset the vault keeps is never proposed for deletion");
+    const pw = (await call("workset_plan", { action: "propose", paths: [path.join(lv, "WORK", "TST_sub", "TST_WP1.rvt")], out_dir: path.join(tmp, "wpw") })).content.at(-1).text;
+    fakeOpened = null;
+    assert.ok(pw.includes(`Vault: ${lvV} (found beside the model's folders;`), "(b) found from the model's path: X\\WORK\\<sub> -> X\\ACE\\ACE Vault");
+    const noWs = path.join(tmp, "TST_nows", "ACE Vault"); fs.mkdirSync(noWs, { recursive: true }); fs.writeFileSync(path.join(noWs, "project-requirements.json"), JSON.stringify({ checks: {} }));
+    const pc = await call("workset_plan", { action: "propose", vault: noWs, out_dir: path.join(tmp, "wpc") });
+    assert.ok(pc.isError && pc.content[0].text.includes(path.join(noWs, "project-requirements.json")) && /has no workset rules/.test(pc.content[0].text), "(c) a vault without workset rules fails loudly with the path");
+    const pm = await call("workset_plan", { action: "propose", vault: path.join(tmp, "TST_missing"), out_dir: path.join(tmp, "wpc") });
+    assert.ok(pm.isError && /no project-requirements\.json at .*TST_missing/.test(pm.content[0].text), "(c) a vault that cannot be read fails loudly");
+    const prv = JSON.parse((await call("project_rules", { section: "worksets", vault: lvV })).content[0].text);
+    assert.ok(prv.vault === lvV && prv.rules.keep[0] === "TST-ST-OLD", "project_rules: the explicit vault wins for the worksets section");
+    // PUMP ROOM: a singular category word after another word in its part is a place, not the category.
+    for (const n of ["TST-ST-PUMP ROOM", "TST-POOL & Pump Room"]) assert.ok(!WP.parseName(n, {}).categories.includes("Rooms") && WP.parseName(n, {}).words.includes("PUMP"), n);
+    assert.ok(WP.parseName("TST-ST-BASE COLUMNS", {}).categories.includes("Structural Columns") && WP.parseName("TST-ST-LOBBY WALLS", {}).categories.includes("Walls") && WP.parseName("TST-ST-ROOMS", {}).categories.includes("Rooms"), "plural element heads and a name-first category still count");
     // refresh: earlier decisions kept, rows marked new / changed / same / gone.
     const rf = await call("workset_plan", { action: "propose", out_dir: path.join(tmp, "wref"), refresh: edited });
     const rfT = rf.content.at(-1).text;

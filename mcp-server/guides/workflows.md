@@ -192,7 +192,11 @@ overlaps_ok: true after the user agreed). An xlsx is read on both sheets: rule r
 group, the Groups sheet wins. action apply with plan_file:
 check_only, dry_run, then the identical call (ONE undo step: create, rename, move, delete; borrowed elements skipped
 and listed; a changed group count refuses the whole plan). Office method: revit_guide methods/workset-cleanup.
-The standard (every reply names it): the vault's rules/worksets-standard.json (each rule with its clause, used only once
+The vault (every workset_plan reply prints its path): an explicit vault always wins; else the model's folders and their
+parents are searched for an ACE Vault (also one level down: X\WORK\<sub> finds X\ACE\ACE Vault). A given vault without
+workset rules, or one that cannot be read, stops with the path: never a silent fallback to the built-in words. Worksets
+in the vault's worksets.keep (written by confirm with save_rules) or its confirmed names are never proposed for deletion
+and never emptied by a reset. The standard (every reply names it): the vault's rules/worksets-standard.json (each rule with its clause, used only once
 the user confirmed it: confirm_standard: true), else the project's list (project-requirements.json worksets), else the
 office worksets.json; else the workset names. propose refresh: <previous file> keeps the decisions and marks rows new /
 changed / same / gone; rows ACE applied are not proposed again, a row changed after apply is flagged for review. action

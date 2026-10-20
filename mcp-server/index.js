@@ -745,10 +745,17 @@ tool("project_rules", {
   inputSchema: {
     section: z.enum(["checks", "presentation", "worksets", "clash", "clash-resolve"]).optional(),
     include_rules: z.boolean().optional(),
-    vault: z.string().optional().describe("clash-resolve: project folder or its ACE Vault (default: the open model's)"),
+    vault: z.string().optional().describe("worksets / clash-resolve: project folder or its ACE Vault (default: the open model's)"),
   },
   annotations: readOnly,
 }, async ({ vault, ...a }) => {
+  // An explicit vault always wins: its worksets section is read here (a vault without one is an error, never a fallback).
+  if (vault && a.section === "worksets") {
+    const vw = await vaultWorksetsOf({ vault });
+    const j = vw.file && fs.existsSync(vw.file) ? JSON.parse(fs.readFileSync(vw.file, "utf8").replace(/^\uFEFF/, "")) : {};
+    return text({ section: "worksets", source: `project: ${vw.file}`, vault: vw.dir, rules: j.worksets ?? null });
+  }
+  if (vault && a.section !== "clash-resolve") throw new RevitError(`vault applies to the worksets and clash-resolve sections here; for ${a.section ?? "all sections"} the add-in reads the open model's project file.`);
   if (a.section !== "clash-resolve") return text(await callRevit("project_rules", a, 30));
   // clash_resolve's rules (server side): the office file under the project vault's, project first, with their sources.
   const { merged } = await clashRules({ vault });
@@ -950,7 +957,65 @@ tool("assign_worksets", {
 
 // Workset administration (assign_worksets audit / rename / delete_empty, bridge command workset_admin). The naming rule
 // is the worksets section's naming { pattern, allowed, rename } in project-requirements.json (merged by the add-in).
-async function worksetNaming() {
+/**
+ * The worksets section of the project vault's project-requirements.json. An explicit vault always wins (and must hold
+ * workset rules or naming: else a loud error with the path tried); else the model's folders and every parent are searched
+ * for an "ACE Vault" folder or a folder holding project-requirements.json. -> { dir, file, naming, rules, keep } | { none, tried }
+ */
+const vaultWsMemo = new WeakMap();
+async function vaultWorksetsOf(a) {
+  if (!a) return null;
+  if (vaultWsMemo.has(a)) return vaultWsMemo.get(a);
+  const tried = [];
+  const readFrom = (vdir, how) => {
+    const f = path.join(vdir, "project-requirements.json");
+    tried.push(f);
+    // A vault whose standard is its confirmed rules/worksets-standard.json needs no workset section here.
+    const hasStd = fs.existsSync(path.join(vdir, "rules", "worksets-standard.json"));
+    if (!fs.existsSync(f) && hasStd) return { dir: vdir, file: f, how, naming: null, rules: [], keep: [], empty: true };
+    if (!fs.existsSync(f)) throw new RevitError(`vault ${a.vault}: no project-requirements.json at ${f}. Give the ACE Vault folder (or the project folder that holds it). Nothing was planned.`);
+    let j;
+    try { j = JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, "")); } catch (e) { throw new RevitError(`${f} cannot be read (${e.message}): fix it first. Nothing was planned.`); }
+    const ws = j?.worksets;
+    const rules = (Array.isArray(ws?.rules) ? ws.rules : []).filter((r) => r?.workset);
+    if (!ws || (!rules.length && !ws.naming)) {
+      if (how === "given" && !hasStd) throw new RevitError(`${f} has no workset rules (worksets.rules or worksets.naming): add them (workset_plan confirm with save_rules), or leave vault out to plan from the workset names. Nothing was planned.`);
+      return { dir: vdir, file: f, how, naming: null, rules: [], keep: [], empty: true };
+    }
+    let naming;
+    try { naming = Worksets.namingOf(ws); } catch (e) { throw new RevitError(`${f}: ${e.message}`); }
+    return { dir: vdir, file: f, how, naming, rules, keep: [...(Array.isArray(ws.keep) ? ws.keep : []), ...(naming?.allowed ?? [])].map(String) };
+  };
+  let out = null;
+  if (a.vault) out = readFrom(Vault.vaultDir(a.vault), "given");
+  else {
+    const starts = (a.paths ?? []).map((p) => path.dirname(p));
+    try { const info = await callRevit("project_rules", {}, 30); starts.push(...(info?.modelFolders ?? []), ...(info?.modelPath ? [path.dirname(info.modelPath)] : [])); } catch { /* Revit not reachable: the paths only */ }
+    walk: for (const s0 of starts) {
+      for (let d = path.resolve(s0); ; d = path.dirname(d)) {
+        for (const v of [path.join(d, Vault.VAULT), d]) {
+          if (fs.existsSync(path.join(v, "project-requirements.json"))) { out = readFrom(v, "found above the model"); break walk; }
+        }
+        // A sibling project folder ("X\WORK\<sub>\model.rvt" with "X\ACE\ACE Vault"): one level down from each parent.
+        let kids = [];
+        try { kids = fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => path.join(d, e.name, Vault.VAULT)).filter((v) => fs.existsSync(path.join(v, "project-requirements.json"))); } catch { kids = []; }
+        if (kids.length > 1) throw new RevitError(`Several vaults beside the model's folders (${kids.join("; ")}): give vault to choose one. Nothing was planned.`);
+        if (kids.length === 1) { out = readFrom(kids[0], "found beside the model's folders"); break walk; }
+        if (path.dirname(d) === d) break;
+      }
+    }
+    out ??= { none: true, tried: starts };
+  }
+  vaultWsMemo.set(a, out);
+  return out;
+}
+/** The vault line of every workset_plan reply. */
+const vaultLine = (vw) => !vw || vw.none ? `Vault: none found (searched ${vw?.tried?.length ? `above ${vw.tried.join(", ")}` : "nothing: give vault"}).`
+  : `Vault: ${vw.dir} (${vw.how}; ${vw.file}: ${vw.rules.length} workset rule(s)${vw.naming ? ", naming" : ""}${vw.empty ? ", NO workset section: the add-in's rules are used" : ""}).`;
+
+async function worksetNaming(a) {
+  const vw = await vaultWorksetsOf(a);
+  if (vw?.naming) return { naming: vw.naming, source: vw.file };
   let r;
   try { r = await callRevit("project_rules", { section: "worksets" }, 30); } catch { return { naming: null }; }
   try { return { naming: Worksets.namingOf(r?.rules), source: r?.source }; } catch (e) { throw new RevitError(e.message); }
@@ -958,7 +1023,7 @@ async function worksetNaming() {
 const adminState = new Map();   // request key -> { key (gate), model, planHash } of its last good dry run
 
 async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan, step, rules_file, timeout }) {
-  const { naming, source } = await worksetNaming();
+  const { naming, source } = await worksetNaming(a);
   const rules = a.rules ?? (rules_file ? (await worksetRules(rules_file)).rules : undefined);
   const base = { max_ids: a.max_ids ?? 20, ...(rules ? { rules } : {}) };
   const auditNow = () => callRevit("workset_admin", { action: "audit", check_only: true, ...base }, timeout);
@@ -1033,9 +1098,9 @@ async function worksetFactsFor(a, timeout) {
       // Only models this batch opened are closed (never the user's own active model).
       const r = await callRevit("open_model", { path: p, detach: a.detach ?? "preserve_worksets", audit: false, worksets: "all", close_previous: i > 0, clear_transmitted: false, save_as_central_ok: false }, 600);
       modelSwitched(r?.model);
-      out.push({ path: p, facts: await facts(), naming: (await worksetNaming()).naming });
+      out.push({ path: p, facts: await facts(), naming: (await worksetNaming(a)).naming });
     }
-  } else out.push({ facts: await facts(), naming: (await worksetNaming()).naming });
+  } else out.push({ facts: await facts(), naming: (await worksetNaming(a)).naming });
   return out;
 }
 const notWorkshared = (list) => list.filter((x) => x.facts?.workshared === false).map((x) => x.facts?.model ?? x.path);
@@ -1046,7 +1111,8 @@ const notWorkshared = (list) => list.filter((x) => x.facts?.workshared === false
  * (project-requirements.json worksets rules); (c) the office worksets.json. Unconfirmed clauses are listed, never trusted.
  */
 async function worksetStandard(a) {
-  const vdir = await projectVaultDir(a);
+  const vw = await vaultWorksetsOf(a);
+  const vdir = vw && !vw.none ? vw.dir : await projectVaultDir(a);
   const sf = vdir ? path.join(vdir, "rules", "worksets-standard.json") : null;
   let note = "";
   if (sf && fs.existsSync(sf)) {
@@ -1064,6 +1130,8 @@ async function worksetStandard(a) {
     note = j.confirmed === true ? `${sf}: ${noClause.length} rule(s) without a clause reference: not used until each names its clause.`
       : `Candidate clauses in ${sf} (NOT used until the user confirms them: workset_plan with confirm_standard: true):\n${rules.slice(0, 20).map((r) => `- ${WorksetPlan.ruleText(r)}${r.clause ? ` [${r.clause}]` : " [no clause]"}`).join("\n")}`;
   }
+  // (b) the project's confirmed list in the vault the server found (an explicit vault always wins).
+  if (vw?.rules?.length) return { std: { label: "the project's confirmed list (project-requirements.json)", file: vw.file, rules: vw.rules }, note };
   let r = null;
   try { r = await callRevit("project_rules", { section: "worksets" }, 30); } catch { r = null; }
   const rules = (r?.rules?.rules ?? []).filter((x) => x?.workset);
@@ -1138,7 +1206,8 @@ tool("workset_plan", {
     const ok = list.filter((x) => x.facts?.workshared !== false);
     const skip = notWorkshared(list);
     if (!ok.length) return text(`Not workshared, no worksets to plan: ${skip.join(", ")}.`);
-    for (const x of ok) x.records = (await worksetFiles(a, x.facts)).records();
+    const vw = await vaultWorksetsOf(a);
+    for (const x of ok) { x.records = (await worksetFiles(a, x.facts)).records(); x.keep = vw?.keep ?? []; x.savedRules = vw?.rules ?? []; }
     const { std, note: stdNote } = await worksetStandard(a);
     const p = WorksetPlan.propose(ok);
     p.standard = WorksetPlan.standardText(std);
@@ -1150,14 +1219,14 @@ tool("workset_plan", {
     const xlsx = await WorksetPlan.proposalXlsx(p, writeOut(dir, `${stem}.xlsx`, ""));
     const notes = list.flatMap((x) => (x.facts?.notes ?? []).map((n) => `${x.facts?.model}: ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`));
     const out = text({ models: p.models, counts: p.counts, exportViews: [...new Set(ok.flatMap((x) => x.facts?.exportViews ?? []))], files: [xlsx, csv, detail] });
-    out.content.push({ type: "text", text: `${WorksetPlan.proposalText(p, [xlsx, csv, detail])}${skip.length ? `\nNot workshared (skipped): ${skip.join(", ")}.` : ""}${notes.length ? `\nNotes:\n${notes.map((n) => `- ${n}`).join("\n")}` : ""}${stdNote ? `\n${stdNote}` : ""}` });
+    out.content.push({ type: "text", text: `${WorksetPlan.proposalText(p, [xlsx, csv, detail])}${skip.length ? `\nNot workshared (skipped): ${skip.join(", ")}.` : ""}${notes.length ? `\nNotes:\n${notes.map((n) => `- ${n}`).join("\n")}` : ""}${stdNote ? `\n${stdNote}` : ""}\n${vaultLine(vw)}` });
     return out;
   }
   if (action === "status") {
     const st = await worksetStatus(a, timeout);
     if (!st.statuses.length) return text("Not workshared: no worksets to check.");
     const out = text({ models: st.statuses.map(({ groups, ...x }) => x) });
-    out.content.push({ type: "text", text: st.text });
+    out.content.push({ type: "text", text: `${st.text}\n${vaultLine(await vaultWorksetsOf(a))}` });
     return out;
   }
   if (action === "confirm") {
@@ -1202,7 +1271,10 @@ tool("workset_plan", {
       let json = { schema: "ace.project-requirements/1" };
       try { if (fs.existsSync(f)) json = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { throw new RevitError(`${f} is not valid JSON (${e.message}): fix it first.`); }
       merge = { file: f, ...WorksetPlan.mergeRules(json, rules.rules, { overlapsOk: !!a.overlaps_ok }) };
-      if (a.confirm && merge.added.length) {
+      // The kept worksets (rule rows confirmed and not deleted) go to worksets.keep: propose never offers them for deletion again.
+      const keepNow = (rr?.rules ?? []).filter((r) => !r.delete && !r.isDefault).map((r) => r.workset);
+      if (keepNow.length) { merge.json.worksets ??= {}; merge.json.worksets.keep = [...new Set([...(merge.json.worksets.keep ?? []), ...keepNow])]; merge.keep = keepNow; }
+      if (a.confirm && (merge.added.length || merge.keep?.length)) {
         if (!Vault.trusted(path.dirname(CONFIG_PATH), vdir)) throw new RevitError(`The vault ${vdir} is not trusted for writing yet: ask the user, then vault with consent: true, and confirm again.`);
         fs.writeFileSync(`${f}.tmp`, JSON.stringify(merge.json, null, 2)); fs.renameSync(`${f}.tmp`, f);
         saved = true;
@@ -1210,7 +1282,7 @@ tool("workset_plan", {
       } else if (a.confirm) saved = true;
     }
     const out = text({ models: results.map((c) => ({ model: c.model, plan: c.plan, flagged: c.flagged, undecided: c.undecided.length })), files, rules, ...(merge ? { merge: { file: merge.file, added: merge.added, same: merge.same.length, conflicts: merge.conflicts } } : {}) });
-    out.content.push({ type: "text", text: WorksetPlan.confirmText(results, { files, others, rules, merge, saved, file: a.file, layout: useRules ? "rules" : "groups", unused }) });
+    out.content.push({ type: "text", text: `${WorksetPlan.confirmText(results, { files, others, rules, merge, saved, file: a.file, layout: useRules ? "rules" : "groups", unused })}${merge?.keep?.length ? `\n${saved ? "Saved" : "Would save"} as kept (worksets.keep: never proposed for deletion): ${merge.keep.map(Worksets.q).join(", ")}.` : ""}\n${vaultLine(await vaultWorksetsOf(a))}` });
     return out;
   }
   // apply
@@ -1229,7 +1301,8 @@ tool("workset_plan", {
   let plan = pf.plan, rs = null;
   if (a.reset) {
     if (!pf.rules) throw new RevitError("reset: \"default\" needs a rule-level plan (confirm the Worksets sheet): without rules every correctly placed element would go to the default workset.");
-    rs = WorksetPlan.resetPlan(pf, cur.facts, { manualOnly: cur.naming?.manualOnly ?? [] });
+    const vwA = await vaultWorksetsOf(a);
+    rs = WorksetPlan.resetPlan(pf, cur.facts, { manualOnly: cur.naming?.manualOnly ?? [], keep: vwA?.keep ?? [] });
     plan = rs.plan;
     lines.push(`Reset to ${Worksets.q(rs.defaultName)} (end state, each element moves once): ${rs.toDefault.elements} element(s) in ${rs.toDefault.groups} group(s) no rule takes go to the default (${rs.stay.onDefault} already there); kept: datum ${rs.stay.datum}, manual-only ${rs.stay.manual}, skipped on the Groups sheet ${rs.stay.skipped}${rs.borrowed ? `; ${rs.borrowed} borrowed by others (pending)` : ""}.`);
   }

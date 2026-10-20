@@ -101,6 +101,8 @@ export function commonPrefix(names) {
   return [...count].filter(([, c]) => c / Math.max(1, names.length) > 0.5).sort((a, b) => b[0].length - a[0].length)[0]?.[0] ?? "";
 }
 
+/** Category words that head a name without a plural (mass nouns and abbreviations). */
+const MASS_HEADS = new Set(["FRAMING", "FURNITURE", "RAFT", "SOG", "CAD", "DWG", "RVT", "STEEL"]);
 const isZoneWord = (x) => x.kind === "other" && x.w.length >= 3 && !STOP.has(x.w) && !MANUAL.has(x.w) && !/^\d+$/.test(x.w);
 /**
  * A workset name as a rule: the categories, levels, material, link / CAD and manual (visibility) words it carries, and the
@@ -148,8 +150,11 @@ export function parseName(name, { levels = [], table = W.CATEGORY_TOKENS, strong
     const list = listParts.get(x.seg);
     const kindOf = (w) => before.find((y) => y.seg === x.seg && y.w === w)?.kind;
     if (list) { if (!list.every((c) => c.filter((w) => ["cat", "strong", "other"].includes(kindOf(w))).every((w) => ["cat", "strong"].includes(kindOf(w))))) x.kind = "other"; return; }
+    // After a non-category word in its part, a category word is the head of a noun phrase naming a place ("PUMP ROOM",
+    // "PLANT ROOM"): a zone word, unless it is a plural or mass element head ("BASE COLUMNS", "LOBBY WALLS", "TST FRAMING").
     const firstInPart = !before.slice(0, i).some((y) => y.seg === x.seg && isZoneWord(y));
-    if (!firstInPart && before.slice(i + 1).some(isZoneWord)) x.kind = "other";
+    const elementHead = (/S$/.test(x.w) && x.w.length > 3) || MASS_HEADS.has(x.w);
+    if (!firstInPart && (!elementHead || before.slice(i + 1).some(isZoneWord))) x.kind = "other";
   });
   const otherCat = items.some((x) => x.kind === "cat" || x.kind === "strong") || !!out.material;
   for (const x of items) {
@@ -279,6 +284,7 @@ const section = (r, empty) => r.protected || r.isDefault ? "General" : r.manual 
  */
 export function propose(list) {
   const models = [], byHash = new Map();
+  const keepNames = new Set(list.flatMap((x) => [...(x.keep ?? []), ...(x.savedRules ?? []).map((r) => r.workset)]).filter(Boolean).map(twinKey));
   for (const { facts, naming, records } of list) {
     const hash = factsHash(facts), same = byHash.get(hash);
     models.push({ model: facts?.model ?? "model", facts, naming, hash, sameAs: same ?? null, applied: appliedIndex(records) });
@@ -351,13 +357,17 @@ export function propose(list) {
       || (!r.cad && !r.links && r.categories.length && catIs(g.category, r.categories) && (!r.levels.length || r.levels.includes(g.level)))));
     // A catch-all (a category, no level): kept even when empty.
     const catchAll = !r.cad && !r.links && r.categories.length > 0 && !r.levels.length;
+    // Kept by an earlier confirmed decision (the vault's worksets.keep, its confirmed names, a saved rule's workset).
+    const kept = [...f.names.keys()].some((n) => keepNames.has(twinKey(n)));
     let action = "keep", note = [];
     const defaultName = naming?.defaultName && !W.isDefaultName(naming.defaultName) ? naming.defaultName : null;
     if (r.protected) action = "keep (the datum workset: never renamed or deleted)";
     else if (r.isDefault) action = defaultName ? `rename from ${r.workset}` : `keep ${r.workset} (default)`;
     else if (r.manual) action = "keep (manual only)";
+    else if (kept) action = "keep";
     else if (!holds && !recv && !expected && !catchAll) action = "delete";
     else if (emptyIn.length && emptyIn.length < where.length && !recv && !expected && !catchAll) action = "keep where used, delete where empty";
+    if (kept && !r.protected && !r.isDefault) note.push("kept: confirmed in the vault (never proposed for deletion)");
     if (twins.length && !r.protected) note.push(`merge spelling twins into it: ${twins.map(q).join(", ")}`);
     if (r.workset !== [...f.names.keys()].sort((a, b) => f.names.get(b).elements - f.names.get(a).elements)[0]) note.push("spelling fixed");
     if (emptyIn.length && emptyIn.length < where.length) note.push(`empty in ${emptyIn.length} of ${where.length} models`);
@@ -979,7 +989,8 @@ export const statusTile = (s, at) => ({ id: "worksets", title: "Worksets", value
  * every other group goes where the confirmed rules place it, else to the default workset. Borrowed elements are
  * planned and skipped by the add-in (pending). -> { plan, defaultName, endState, toDefault, stay, borrowed }
  */
-export function resetPlan(pf, facts, { manualOnly = [] } = {}) {
+export function resetPlan(pf, facts, { manualOnly = [], keep = [] } = {}) {
+  const keepSet = new Set((keep ?? []).map(twinKey));
   const R = pf.rules ?? [];
   const ws = facts?.worksets ?? [];
   const groups = (facts?.groups ?? []).filter(modelGroup).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
@@ -1003,6 +1014,8 @@ export function resetPlan(pf, facts, { manualOnly = [] } = {}) {
     if (!to) { const pl = place(g, R, groups); to = pl.workset; row = R.find((r) => norm(r.workset) === norm(to ?? ""))?.line; }
     if (!to) {
       if (isProt(ws.find((w) => w.name === g.workset))) { stay.datum += n; keepKeys.push(g.key); continue; }
+      // A workset kept by a confirmed decision is never emptied by a reset: what no rule takes elsewhere stays on it.
+      if (keepSet.has(twinKey(g.workset))) { stay.kept = (stay.kept ?? 0) + n; keepKeys.push(g.key); continue; }
       to = defaultName;
       if (norm(to) === norm(cur)) { stay.onDefault += n; keepKeys.push(g.key); continue; }
       toDefault.groups++; toDefault.elements += n;

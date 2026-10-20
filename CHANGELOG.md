@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.4 (20 Oct 2026)
+- MCP server only (install with `install.ps1 -SkipAddin`, Revit stays open; the 1.13.3 add-in works with it).
+- **Live fixes:** an explicit vault always wins (workset_plan, project_rules worksets) and its path is printed; without
+  one the vault is found above or beside the model's folders; a vault without workset rules fails loudly (no silent
+  fallback). Kept worksets (vault worksets.keep, written by confirm; confirmed names; saved rules' worksets) are never
+  proposed for deletion or emptied by a reset. A singular category word after another word ("PUMP ROOM") is a place.
+
 ## 1.13.3 (20 Oct 2026)
 - **workset_plan from the first live run (8 models):** levels match whole codes only (the code before "(" after an
   "X-" prefix, the bracketed words as a phrase, the add-in's level code / phrase, vault naming.levelAliases; never a
