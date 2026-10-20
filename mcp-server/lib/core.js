@@ -132,6 +132,7 @@ export async function listInstances({ timeoutMs = 1500 } = {}) {
 
 let preferred = null;   // a model title, pid or port the user chose (revit_status instance), kept for this server process
 export const preferInstance = (hint) => { preferred = hint ? String(hint) : null; };
+export const preferredInstance = () => preferred;
 
 const title = (d) => String(d ?? "").trim().toLowerCase().replace(/\.rvt$/, "");
 /**

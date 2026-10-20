@@ -21,6 +21,21 @@ namespace AceRevitMcp.Coordination
         public DateTime FirstSeen, LastSeen;
     }
 
+    /// <summary>
+    /// The record of one clash test run, kept even when it found nothing, so a report can tell "ran, 0 clashes" from "never
+    /// ran": the test, when, its filters, what the material filter left out, and the counts.
+    /// </summary>
+    internal sealed class ClashRun
+    {
+        public string Test, Level;
+        public DateTime Time;
+        public double ToleranceMm, ClearanceMm;
+        public string[] ACategories, BCategories, AMaterials, BMaterials, ExcludeMaterials;
+        public Dictionary<string, int> Filtered = new Dictionary<string, int>();
+        public int Clashes, Open;
+        public bool Complete = true;
+    }
+
     /// <summary>One coordination issue: an element and everything it clashes with (e.g. one duct run through 8 beams).</summary>
     internal sealed class ClashIssue
     {

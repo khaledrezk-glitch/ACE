@@ -76,11 +76,29 @@ namespace AceRevitMcp.Coordination
             return d;
         }
 
-        /// <summary>The run's date: the latest time a clash was seen, as yyyy-MM-ddTHH:mm:ss.</summary>
-        public static string RunDate(IEnumerable<Clash> clashes)
+        /// <summary>The run's date: the latest stored run of these tests, else the latest time a clash was seen (yyyy-MM-ddTHH:mm:ss).</summary>
+        public static string RunDate(IEnumerable<Clash> clashes, IEnumerable<ClashRun> runs = null)
         {
-            var list = (clashes ?? Enumerable.Empty<Clash>()).ToList();
-            return list.Count == 0 ? null : list.Max(c => c.LastSeen).ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+            var times = (runs ?? Enumerable.Empty<ClashRun>()).Select(r => r.Time).ToList();
+            if (times.Count == 0) times = (clashes ?? Enumerable.Empty<Clash>()).Select(c => c.LastSeen).ToList();
+            return times.Count == 0 ? null : times.Max().ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
         }
+
+        /// <summary>
+        /// Why there is nothing to report, or null: an error only when the test (or any test) was never run. A stored run
+        /// with zero clashes is a report with no rows.
+        /// </summary>
+        public static string NothingToReport(string test, int clashes, int runs, string model)
+        {
+            if (clashes > 0 || runs > 0) return null;
+            return test == null
+                ? $"No clash results for {model} yet. Run a clash test first (run_clash_test), or call again with rerun: true."
+                : $"The test '{test}' was never run on {model}. Run it first (run_clash_test with the same test name and filters), or call again with rerun: true.";
+        }
+
+        /// <summary>The stored runs for a report: the named test's, or every test's when no test is named (latest first).</summary>
+        public static List<ClashRun> RunsFor(IEnumerable<ClashRun> runs, string test) =>
+            (runs ?? Enumerable.Empty<ClashRun>()).Where(r => test == null || string.Equals(r.Test, test, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(r => r.Time).ToList();
     }
 }

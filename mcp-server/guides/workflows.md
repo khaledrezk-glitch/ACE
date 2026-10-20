@@ -63,6 +63,21 @@ the preview"): run the dry run again. Another test name (e.g. "Arch vs ST") runs
 the add-in defines for it, unless a_categories / b_categories are given.
 After an apply, re-run run_clash_test with the same test so the fixed clashes show as resolved.
 
+## Opening models and running a batch
+
+open_model opens an .rvt in the Revit session ACE talks to and makes it active: detach (none, preserve_worksets,
+discard_worksets), audit, worksets (all, last_viewed, none) and close_previous. For a central model or a model on the
+client's share, open it detached with preserve_worksets so the central is never touched; discard_worksets removes the
+workset information from the opened copy and needs the user's explicit OK (confirm: true). Opening can take minutes.
+close_model closes a model that is not active, without saving: ask before closing a model with work in it.
+
+A batch over several models (e.g. the same clash check and interference report for every structural model of a
+package): for each path, open_model with close_previous: true (and detach preserve_worksets for centrals), run the
+read-only steps (run_clash_test, coordination_report interference: true with out_dir, clash_resolve action plan), and
+collect one line per model. The reply says which model was closed, or that the previous one was kept open and why
+(e.g. unsaved changes): report that, never close it another way. A fix (clash_resolve fix, parameter_fill) still needs
+its own dry run and the user's OK per model. A detached copy is not saved by ACE; say so if the user expects files.
+
 ## Change tracking and linked models
 
 model_changes compares this model and its linked models with an earlier snapshot (since: last, today, yesterday, week, month, a weekday such as monday, "3 days", or a date): added, deleted, moved, retyped and changed elements, by category and by person. Use it for "what changed", "what did STR change since Monday", and after a link is reloaded. Before a milestone (issue, submission), offer snapshot_model with a label. get_model_brief lists the linked and open discipline models and whether their levels and grids line up: when they don't, say so before any coordination work.

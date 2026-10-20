@@ -392,7 +392,23 @@ class P {
     Check(cnt["clashes"] == 5 && cnt["issues"] == 2 && cnt["open"] == 3 && cnt["new"] == 1 && cnt["active"] == 1 && cnt["reopened"] == 1 && cnt["approved"] == 1 && cnt["resolved"] == 1, "rows: counts by status and issues");
     var names2 = new Dictionary<string, (string, string)> { ["w1"] = ("Basic Wall", "RC 250") };
     var rowsN = (IList)IL("Rows").Invoke(null, new object[] { ic, (0.0, 0.0, 0.0), names2 });
-    Check((string)RF(rowsN[0], "AType") == "RC 250" && (string)IL("RunDate").Invoke(null, new object[] { ic }) == "2026-09-01T00:00:00", "rows: family / type read from the model win; run date from the clashes");
+    Check((string)RF(rowsN[0], "AType") == "RC 250" && (string)IL("RunDate").Invoke(null, new object[] { ic, null }) == "2026-09-01T00:00:00", "rows: family / type read from the model win; run date from the clashes");
+
+    // 14. 1.12.3: a stored run with zero clashes is a report with no rows; only a test that never ran is an error.
+    var runT = a.GetType("AceRevitMcp.Coordination.ClashRun");
+    var runListT = typeof(List<>).MakeGenericType(runT);
+    object Run(string test, DateTime time) { var r = Activator.CreateInstance(runT, true); runT.GetField("Test").SetValue(r, test); runT.GetField("Time").SetValue(r, time); return r; }
+    var runs = (IList)Activator.CreateInstance(runListT); runs.Add(Run("ST vs ST", t0.AddDays(3))); runs.Add(Run("STR vs MEP", t0.AddDays(1))); runs.Add(Run("ST vs ST", t0.AddDays(5)));
+    var forSt = (IList)IL("RunsFor").Invoke(null, new object[] { runs, "st vs st" });
+    Check(forSt.Count == 2 && (DateTime)runT.GetField("Time").GetValue(forSt[0]) == t0.AddDays(5), "runs: the named test's runs, latest first (name case-insensitive)");
+    string Nothing(string test, int clashes, int nRuns) => (string)IL("NothingToReport").Invoke(null, new object[] { test, clashes, nRuns, "M" });
+    Check(Nothing("ST vs ST", 0, 1) == null && Nothing("ST vs ST", 3, 0) == null && Nothing("ST vs ST", 0, 0).Contains("never run") && Nothing(null, 0, 0).StartsWith("No clash results"),
+      "empty report: a run with 0 clashes is no error; a test never run is");
+    var emptyRows = (IList)IL("Rows").Invoke(null, new object[] { List(), (0.0, 0.0, 0.0), null });
+    var emptyList = (IList)Activator.CreateInstance(rowListT);
+    var emptyCounts = (Dictionary<string, int>)IL("Counts").Invoke(null, new object[] { emptyList });
+    Check(emptyRows.Count == 0 && emptyCounts.Values.All(v => v == 0) && emptyCounts.ContainsKey("clashes") && emptyCounts.ContainsKey("issues"), "empty report: rows [] and every count 0");
+    Check((string)IL("RunDate").Invoke(null, new object[] { List(), forSt }) == t0.AddDays(5).ToString("yyyy-MM-ddTHH:mm:ss"), "empty report: the run date comes from the stored run");
 
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");

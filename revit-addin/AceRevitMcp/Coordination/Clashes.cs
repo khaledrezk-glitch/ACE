@@ -496,6 +496,31 @@ namespace AceRevitMcp.Coordination
             catch { return new List<Clash>(); }
         }
 
+        /// <summary>The run records live beside the results, in "runs" (so LoadAll never reads them as clashes).</summary>
+        private static string RunFile(Document host, string test)
+        {
+            var dir = Path.Combine(AceConfig.Directory, "clashes", Tracking.Snapshots.ModelKey(host), "runs");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, string.Concat(test.Select(ch => char.IsLetterOrDigit(ch) ? ch : '_')) + ".json");
+        }
+
+        public static void SaveRun(Document host, ClashRun run)
+        {
+            try { File.WriteAllText(RunFile(host, run.Test), JsonSerializer.Serialize(run, Json)); }
+            catch (Exception ex) { Log.Warn($"Clash run record not saved: {ex.Message}"); }
+        }
+
+        /// <summary>Every stored run record of this model.</summary>
+        public static List<ClashRun> LoadRuns(Document host)
+        {
+            var list = new List<ClashRun>();
+            var dir = Path.Combine(AceConfig.Directory, "clashes", Tracking.Snapshots.ModelKey(host), "runs");
+            if (!Directory.Exists(dir)) return list;
+            foreach (var f in Directory.GetFiles(dir, "*.json"))
+                try { var r = JsonSerializer.Deserialize<ClashRun>(File.ReadAllText(f), Json); if (r?.Test != null) list.Add(r); } catch { }
+            return list;
+        }
+
         public static void Save(Document host, string test, List<Clash> clashes) => File.WriteAllText(StoreFile(host, test), JsonSerializer.Serialize(clashes, Json));
     }
 }

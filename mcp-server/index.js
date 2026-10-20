@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, localDate, pinSession, preferInstance, readConfig, sessionKey, sessionLabel, text } from "./lib/core.js";
+import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, forgetInstances, preferredInstance, localDate, pinSession, preferInstance, readConfig, sessionKey, sessionLabel, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
 import * as Report from "./lib/report.js";
 import * as ParamList from "./lib/paramlist.js";
@@ -375,19 +375,21 @@ function interferenceReport(answer, a, outDir) {
   const stamp = localDate(new Date(), { time: true });
   const when = new Date().toLocaleString();
   const filters = Interference.filterText(a);
+  // No interference is a result too: an empty rows list still gets its report. No rows list at all is an older add-in.
   const sets = (Array.isArray(answer?.models) ? answer.models : [answer]).filter(Boolean);
-  if (!sets.length) throw new RevitError("Revit answered without clash rows: run run_clash_test first (or rerun: true).");
+  if (!sets.length || sets.some((m) => !Array.isArray(m.rows)))
+    throw new RevitError(`Revit answered without interference rows: the add-in in Revit is older than ${VERSION} (install the same ACE version), or run run_clash_test first.`);
   const b = brand();
   const out = sets.map((m) => {
     const rows = m.rows ?? [];
     const model = m.model ?? answer?.model ?? "model", test = m.test ?? answer?.test ?? a.test ?? "all";
     const name = Interference.stem(model, test, stamp);
-    const o = { model, test, when, run: m.run, filters, brand: b };
+    const o = { model, test, when, run: m.run, filters, filtered: m.filtered, brand: b };
     const files = [writeOut(outDir, `${name}.html`, Interference.html(rows, o)), writeOut(outDir, `${name}.csv`, Interference.csv(rows)), writeOut(outDir, `${name}.xlsx`, Interference.workbook(rows, o))];
     const s = Interference.summarise(rows);
     return { model, test, clashes: s.clashes, issues: s.issues, byStatus: s.byStatus, byPair: s.byPair, ...(m.filtered ? { filtered: m.filtered } : {}), files };
   });
-  const lines = out.map((m) => `Interference report ${m.model} (${m.test}): ${m.clashes} clash(es) in ${m.issues} issue(s); by status ${Object.entries(m.byStatus).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}; ` +
+  const lines = out.map((m) => `Interference report ${m.model} (${m.test}): ${m.clashes ? `${m.clashes} clash(es) in ${m.issues} issue(s)` : "0 interferences found (the report is written all the same)"}; by status ${Object.entries(m.byStatus).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}; ` +
     `by pair ${Object.entries(m.byPair).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}.${m.filtered && Interference.filteredText(m.filtered) ? ` Left out by the material filter: ${Interference.filteredText(m.filtered)}.` : ""}\n${m.files.map((f) => `- ${f}`).join("\n")}`);
   const res = text({ filters, reports: out });
   res.content.push({ type: "text", text: `${lines.join("\n")}\nFilters: ${filters}. Give the user the file paths (the HTML is for the client; the CSV and xlsx are the same rows).` });
@@ -577,6 +579,59 @@ tool("backup_model", {
 }, async (a) => {
   const r = await callRevit("backup_model", a, 600);
   journal({ title: "Backup", outcome: `Backup created at ${r.backup}${r.savedBeforeBackup ? " (model saved first)" : ""}` });
+  return text(r);
+});
+
+// Open and close models in this Revit session: a batch of models runs one after another (open_model close_previous).
+/** After an open or close the active model changed: list the sessions again, and a title preference follows the new model. */
+function modelSwitched(model) {
+  forgetInstances();
+  briefCache.clear();
+  const p = preferredInstance();
+  if (p && model && !/^\d+$/.test(p)) preferInstance(model);   // a pid or port preference still names the same Revit
+}
+
+tool("open_model", {
+  title: "Open a model",
+  description: "Open an .rvt in this Revit session and make it active. detach (a central or cloud copy): preserve_worksets or discard_worksets (needs confirm: true, the user's OK: the opened copy loses its workset information). audit: true audits while opening. worksets: all (default), last_viewed, none. close_previous: true closes the model that was active before, without saving (if it cannot be closed, the reply says why and it stays open). Opening can take minutes.",
+  inputSchema: {
+    path: z.string().min(1).max(1000).describe("Full path of the .rvt"),
+    detach: z.enum(["none", "preserve_worksets", "discard_worksets"]).optional(),
+    audit: z.boolean().optional(),
+    worksets: z.enum(["all", "last_viewed", "none"]).optional(),
+    close_previous: z.boolean().optional(),
+    confirm: z.boolean().optional().describe("Only after the user agreed: needed for detach discard_worksets"),
+  },
+  annotations: benign,
+}, async ({ confirm, ...a }) => {
+  if (a.detach === "discard_worksets" && !confirm)
+    throw new RevitError("Blocked for safety: detach discard_worksets discards the workset information in the opened copy (every element ends up without its workset). " +
+      "Tell the user exactly that; only if they agree, call again with confirm: true. detach preserve_worksets keeps the worksets.");
+  const req = { path: a.path, detach: a.detach ?? "none", audit: !!a.audit, worksets: a.worksets ?? "all", close_previous: !!a.close_previous };
+  await pinSession();
+  const r = await callRevit("open_model", req, 600);
+  modelSwitched(r?.model);
+  const flags = [r?.detached ? `detached${req.detach === "discard_worksets" ? ", worksets discarded" : req.detach === "preserve_worksets" ? ", worksets preserved" : ""}` : "",
+    r?.audited ? "audited" : "", r?.workshared ? `worksets: ${r.worksetsOpened && typeof r.worksetsOpened === "object" ? `${r.worksetsOpened.open ?? "?"} of ${r.worksetsOpened.total ?? "?"} open` : r.worksetsOpened ?? req.worksets}` : "not workshared"].filter(Boolean).join(" / ");
+  const c = r?.closed;
+  const prev = !c?.model ? "" : c.closed ? `; closed ${c.model}` : `; kept ${c.model} open: ${c.why ?? "not closed"}`;
+  journal({ title: `Open model ${r?.model ?? a.path}`, outcome: `Opened (${flags})${prev}`, details: { path: a.path, ...req } });
+  const out = text(r);
+  const open = (r?.openDocuments ?? []).map((d) => typeof d === "string" ? d : d?.title ?? d?.model ?? d?.name).filter(Boolean);
+  out.content.push({ type: "text", text: `Opened ${r?.model ?? a.path} (${flags})${prev}.${open.length ? ` Open now: ${open.join(", ")}.` : ""}${(r?.notes ?? []).length ? ` Notes: ${r.notes.join(" ")}` : ""}` });
+  return out;
+});
+
+tool("close_model", {
+  title: "Close a model",
+  description: "Close an open model that is not the active one, without saving (unsaved changes in it are lost: ask the user first). model: its title.",
+  inputSchema: { model: z.string().min(1).max(260) },
+  annotations: writes,
+}, async (a) => {
+  await pinSession();
+  const r = await callRevit("close_model", { model: a.model }, 300);
+  forgetInstances();
+  journal({ title: `Close model ${a.model}`, outcome: r?.closed === false ? `Not closed: ${r?.why ?? "refused"}` : "Closed without saving", details: r });
   return text(r);
 });
 

@@ -57,6 +57,9 @@ namespace AceRevitMcp.Bridge
             _app = null;
         }
 
+        /// <summary>After a command opened, closed or switched models: the active and open documents now.</summary>
+        public static void Update(UIApplication app) => Refresh(app?.Application, app?.ActiveUIDocument?.Document);
+
         public static void Register(int port, string revitVersion)
         {
             lock (Gate) { _port = port; _revitVersion = revitVersion; }

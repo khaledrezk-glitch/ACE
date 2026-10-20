@@ -56,6 +56,14 @@ namespace AceRevitMcp.Coordination
                 catch (Exception ex) { Log.Warn($"Clash causes: {ex.Message}"); }
                 var testIssues = ClashLogic.Issues(merged);
                 Clashes.Save(host, t.Name, merged);
+                // The run itself, also when it found nothing: a report can then say "0 clashes" instead of "never run".
+                Clashes.SaveRun(host, new ClashRun
+                {
+                    Test = t.Name, Time = DateTime.Now, Level = level, ToleranceMm = t.ToleranceMm, ClearanceMm = t.ClearanceMm,
+                    ACategories = t.A.Categories.Select(c => c.ToString()).ToArray(), BCategories = t.B.Categories.Select(c => c.ToString()).ToArray(),
+                    AMaterials = t.A.Materials, BMaterials = t.B.Materials, ExcludeMaterials = t.A.ExcludeMaterials,
+                    Filtered = new Dictionary<string, int>(filtered.Counts), Clashes = found.Count, Open = merged.Count(ClashLogic.IsOpen), Complete = complete,
+                });
                 all.AddRange(merged);
                 notes.AddRange(testNotes.Select(n => $"{t.Name}: {n}"));
                 perTest.Add(new JsonObject

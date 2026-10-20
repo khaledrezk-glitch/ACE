@@ -126,6 +126,13 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
       case "set_parameters":
         return reply({ ok: true, result: { applied: args.changes.length, failed: 0, dryRun: !!args.dry_run, results: [] } });
+      case "open_model": {
+        const model = path.basename(args.path).replace(/\.rvt$/i, "");
+        return reply({ ok: true, result: { model, path: args.path, workshared: true, detached: args.detach !== "none", audited: args.audit, worksetsOpened: args.worksets, echo: args,
+          closed: args.close_previous ? (model.includes("KEEP") ? { model: "Test", closed: false, why: "it has unsaved changes" } : { model: "Test", closed: true }) : null,
+          openDocuments: args.close_previous && !model.includes("KEEP") ? [model] : ["Test", model] } });
+      }
+      case "close_model": return reply({ ok: true, result: { model: args.model, closed: true } });
       case "coordination_report": {
         if (!args.interference) return reply({ ok: true, result: { htmlReport: "C:/x/Model - Coordination.html", excelList: "C:/x/Model - Coordination.csv", issues: 7, withPictures: 7 } });
         // The interference rows: one per clash, grouped by issue; test "MULTI" answers for two open models.
@@ -134,6 +141,8 @@ const bridge = http.createServer((req, res) => {
           { issue: "I-1", issueTitle: `Beam B7 into columns (${model})`, clashKey: "k1", status: "new", aId: 202, aCategory: "Structural Framing", aFamily: "BU <250>", aType: "BU 250", bId: 302, bCategory: "Structural Columns", bFamily: "Concrete-Rectangular-Column", bType: "400x400", level: "Roof", depthMm: 83.4, x: 10.1234, y: 5, z: 12.5, responsible: "STR" },
           { issue: "I-1", issueTitle: `Beam B7 into columns (${model})`, clashKey: "k2", status: "new", aId: 202, aCategory: "Structural Framing", aFamily: "BU <250>", aType: "BU 250", bId: 303, bCategory: "Structural Columns", bFamily: "Concrete-Rectangular-Column", bType: "400x400", level: "Roof", depthMm: 80, x: 14, y: 5, z: 12.5, responsible: "STR" }];
         const one = (model) => ({ model, test: args.test ?? "all", run: { id: "run-1", at: "2026-10-20T10:00:00Z" }, counts: { clashes: 3 }, rows: rows(model), ...(args.exclude_materials?.length ? { filtered: { steel: 12 } } : {}) });
+        if (args.test === "EMPTY") return reply({ ok: true, result: { model: "Test", test: "EMPTY", run: { id: "run-2" }, counts: { clashes: 0 }, rows: [], filtered: { steel: 40 } } });
+        if (args.test === "OLDADDIN") return reply({ ok: true, result: { htmlReport: "C:/x/old.html", issues: 0 } });
         return reply({ ok: true, result: args.test === "MULTI" ? { models: [one("Test"), one("Test-ARC")] } : one("Test") });
       }
       case "focus_clash": return reply({ ok: true, result: { view: "ACE Clash View - khaled", clash: args.key, intersectionMm: "200 x 200 x 250", a: "Pipes (red)", b: "Floors (green)" } });
@@ -173,7 +182,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_resolve", "clash_view", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "working_mode"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -828,6 +837,39 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const ca = await call("clash_resolve", cfx);
   assert.ok(!ca.isError && seen.at(-1).args.materials[0] === "concrete" && seen.at(-1).args.dry_run === false);
   assert.match(fs.readFileSync(ca.content.at(-1).text.match(/Evidence: (.+)/)[1].trim(), "utf8"), /\| material filter \| only concrete; left out steel 12, unknown 1 \|/);
+}
+// --- an empty interference result still gets its report; an answer without rows is an older add-in ---
+{
+  const eDir = path.join(tmp, "interference-empty");
+  const er = await call("coordination_report", { interference: true, out_dir: eDir, test: "EMPTY", exclude_materials: ["steel"] });
+  const et = er.content.at(-1).text;
+  assert.ok(!er.isError && /Interference report Test \(EMPTY\): 0 interferences found \(the report is written all the same\)/.test(et));
+  const ef = [...et.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
+  assert.equal(ef.length, 3, "html, csv and xlsx for an empty result");
+  const eh = fs.readFileSync(ef[0], "utf8");
+  assert.match(eh, /<dt>Result<\/dt><dd><b>0 interferences found<\/b><\/dd><dt>Left out by the material filter<\/dt><dd>steel 40<\/dd>/);
+  assert.match(eh, /<dt>Filters<\/dt><dd>materials: excluded steel<\/dd>/);
+  assert.match(eh, /<thead>[\s\S]*<td colspan="7">No interferences<\/td>/, "an empty table with one row saying so");
+  assert.match(fs.readFileSync(ef[1], "utf8"), /^\ufeffissue,issue title,clash key,status,[^\n]*\r\n$/, "the CSV has its header only");
+  assert.equal(fs.readFileSync(ef[2]).subarray(0, 2).toString(), "PK");
+  const old = await call("coordination_report", { interference: true, out_dir: eDir, test: "OLDADDIN" });
+  assert.ok(old.isError && /without interference rows: the add-in in Revit is older/.test(old.content[0].text), "no rows list: never an empty report by mistake");
+}
+// --- open_model / close_model: a batch of models in one Revit session ---
+{
+  const om = await call("open_model", { path: "C:/Projects/P1/P1-ST-0001.rvt", audit: true, close_previous: true });
+  const oa = seen.at(-1);
+  assert.ok(oa.command === "open_model" && oa.args.detach === "none" && oa.args.audit === true && oa.args.worksets === "all" && oa.args.close_previous === true, "defaults: no detach, all worksets");
+  assert.match(om.content.at(-1).text, /^Opened P1-ST-0001 \(audited \/ worksets: all\); closed Test\. Open now: P1-ST-0001\.$/);
+  const kept = await call("open_model", { path: "C:/Projects/P1/P1-KEEP.rvt", detach: "preserve_worksets", close_previous: true });
+  assert.match(kept.content.at(-1).text, /^Opened P1-KEEP \(detached, worksets preserved \/ worksets: all\); kept Test open: it has unsaved changes\./);
+  const n = seen.length;
+  const disc = await call("open_model", { path: "C:/Projects/P1/P1-AR.rvt", detach: "discard_worksets" });
+  assert.ok(disc.isError && /discards the workset information in the opened copy/.test(disc.content[0].text) && seen.length === n, "discard_worksets needs the user's OK, before Revit is asked");
+  assert.match((await call("open_model", { path: "C:/Projects/P1/P1-AR.rvt", detach: "discard_worksets", confirm: true, worksets: "none" })).content.at(-1).text, /\(detached, worksets discarded \/ worksets: none\)/);
+  assert.ok(!("confirm" in seen.at(-1).args), "confirm stays on this side");
+  assert.equal(json(await call("close_model", { model: "Test" })).closed, true);
+  assert.equal(seen.at(-1).command, "close_model");
 }
 // A large check goes to report files; the reply stays small.
 const bigRows = Array.from({ length: 210 }, (_, i) => ({ name: `TST_P${i}`, categories: "Levels" }));

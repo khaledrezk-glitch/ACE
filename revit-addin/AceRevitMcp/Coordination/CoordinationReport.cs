@@ -123,15 +123,28 @@ namespace AceRevitMcp.Coordination
             return new JsonObject { ["models"] = models, ["skipped"] = skipped, ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1) };
         }
 
+        private static JsonNode RunJson(ClashRun r)
+        {
+            JsonArray A(string[] v) => new JsonArray((v ?? new string[0]).Select(x => (JsonNode)x).ToArray());
+            var f = new JsonObject();
+            foreach (var kv in r.Filtered ?? new Dictionary<string, int>()) f[kv.Key] = kv.Value;
+            return new JsonObject
+            {
+                ["test"] = r.Test, ["run"] = r.Time.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture), ["toleranceMm"] = r.ToleranceMm, ["clearanceMm"] = r.ClearanceMm, ["level"] = r.Level,
+                ["aCategories"] = A(r.ACategories), ["bCategories"] = A(r.BCategories), ["aMaterials"] = A(r.AMaterials), ["bMaterials"] = A(r.BMaterials),
+                ["excludeMaterials"] = A(r.ExcludeMaterials), ["filtered"] = f, ["clashes"] = r.Clashes, ["open"] = r.Open, ["complete"] = r.Complete,
+            };
+        }
+
         /// <summary>One model's interference rows: { model, test, tests, run, coordinates, counts, rows (all, no cap), filtered?, notes }.</summary>
         private static JsonObject ModelRows(UIApplication app, Document host, JsonObject args, string test, JsonNode ran, bool active)
         {
             var notes = new List<string>();
             var clashes = Clashes.Current(host);
             if (test != null) clashes = clashes.Where(c => string.Equals(c.Test, test, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (clashes.Count == 0)
-                throw new CommandException(test == null ? $"No clash results for {host.Title} yet. Run a clash test first (run_clash_test), or call again with rerun: true."
-                    : $"No stored results for the test '{test}' in {host.Title}. Run it first (run_clash_test with the same test name and filters), or call again with rerun: true.");
+            // A stored run with zero clashes is a report with no rows; only a test that never ran is an error.
+            var runs = InterferenceLogic.RunsFor(Clashes.LoadRuns(host), test);
+            if (InterferenceLogic.NothingToReport(test, clashes.Count, runs.Count, host.Title) is string nothing) throw new CommandException(nothing);
 
             // Family and type from the model where the element can be found (this model and its loaded links), else from the stored names.
             var names = new Dictionary<string, (string Family, string Type)>(StringComparer.Ordinal);
@@ -169,11 +182,12 @@ namespace AceRevitMcp.Coordination
 
             var counts = new JsonObject();
             foreach (var kv in InterferenceLogic.Counts(rows)) counts[kv.Key] = kv.Value;
-            var tests = clashes.Select(c => c.Test).Where(t => t != null).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList();
+            var tests = clashes.Select(c => c.Test).Concat(runs.Select(r => r.Test)).Where(t => t != null).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(t => t, StringComparer.Ordinal).ToList();
             var result = new JsonObject
             {
                 ["model"] = host.Title, ["test"] = test ?? string.Join(", ", tests), ["tests"] = new JsonArray(tests.Select(t => (JsonNode)t).ToArray()),
-                ["run"] = InterferenceLogic.RunDate(clashes),
+                ["run"] = InterferenceLogic.RunDate(clashes, runs.Take(test == null ? int.MaxValue : 1)),
+                ["runs"] = new JsonArray(runs.Select(RunJson).ToArray()),
                 ["coordinates"] = "project coordinates (relative to the project base point), metres",
                 ["counts"] = counts,
                 ["rows"] = new JsonArray(rows.Select(r => (JsonNode)new JsonObject
@@ -186,15 +200,15 @@ namespace AceRevitMcp.Coordination
                 }).ToArray()),
                 ["notes"] = new JsonArray(notes.Select(x => (JsonNode)x).ToArray()),
             };
-            // What the rerun's material filter left out (summed over its tests), when there was one with a filter.
-            if (ran is JsonObject r0 && r0["tests"] is JsonArray perTest)
+            // What the material filter left out: from the stored run of each test reported (the latest per test), summed.
+            var latest = runs.GroupBy(r => r.Test, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+            if (latest.Any(r => r.Filtered != null && r.Filtered.Count > 0) || latest.Any(r => (r.AMaterials?.Length ?? 0) + (r.BMaterials?.Length ?? 0) + (r.ExcludeMaterials?.Length ?? 0) > 0))
             {
                 var filtered = new JsonObject();
-                foreach (var t in perTest.OfType<JsonObject>())
-                    if (t["filtered"] is JsonObject f)
-                        foreach (var kv in f) filtered[kv.Key] = (filtered[kv.Key]?.GetValue<int>() ?? 0) + (kv.Value?.GetValue<int>() ?? 0);
-                if (perTest.OfType<JsonObject>().Any(t => t["filtered"] is JsonObject)) result["filtered"] = filtered;
+                foreach (var r in latest) foreach (var kv in r.Filtered ?? new Dictionary<string, int>()) filtered[kv.Key] = (filtered[kv.Key]?.GetValue<int>() ?? 0) + kv.Value;
+                result["filtered"] = filtered;
             }
+            if (test != null && latest.Count == 1) result["filters"] = RunJson(latest[0]);
             if (pictures.Count > 0) result["withPictures"] = pictures.Count;
             return result;
         }

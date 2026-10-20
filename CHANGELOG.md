@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.12.3 (20 Oct 2026)
+- **open_model / close_model:** open a model in the running Revit and make it active (detach keeping or, with
+  confirmation, discarding worksets; audit; all / last viewed / no worksets), optionally closing the previous model
+  without saving when it has no unsaved changes; close a non-active model without saving. Revit stays open across a
+  batch of models. Refuses missing, already open and newer-version files with the reason.
+- **Interference report after a clean run:** run_clash_test stores every run (also with 0 clashes, with its filters), so
+  the report is written with "0 interferences found", the filters and what they left out.
+
 ## 1.12.2 (20 Oct 2026)
 - **Structural material filters on the clash tools:** `materials`, `exclude_materials`, `a_materials`, `b_materials`
   (steel, concrete, precast, timber, masonry, other, unknown) on run_clash_test, clash_resolve and coordination_report,
