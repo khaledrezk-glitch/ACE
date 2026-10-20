@@ -37,7 +37,7 @@ export function orderLine(r, req, merged = {}) {
   const sSource = r?.scopeSource ?? req?.scope_source ?? (req?.scope ? "request" : "default");
   const sFrom = req?.narrowed === "keys" ? "the call's keys" : req?.scope_source ? whereText(merged.from?.scope, merged.files ?? {}) ?? "the rules file" : sSource === "request" ? "the request" : "ACE's default";
   return `Join order (one category priority list, strongest cuts; from ${from}): ${order.map(niceCategory).join(" > ")}. Same category: the larger element cuts.\n` +
-    `Scope (from ${sFrom}): ${scope === "all-touching" ? "every touching pair of the categories" : "only the clashing pairs"}${req?.selection ? ", in the current selection" : ""}${req?.narrowed === "keys" ? " (the rules say all-touching; the call names clash keys, so only those clashing pairs)" : req?.narrowed ? ` (all-touching, narrowed to the call's ${req.narrowed === "level" ? `level ${req.level}` : `test ${req.test}`})` : ""}${req?.same_category === false ? "; same-category joins off" : ""}${req?.max_pairs ? `; at most ${req.max_pairs} touching pairs` : ""}. Trim to face: ${req?.trim_to_face ? `on (allowed by ${whereText(merged.from?.trimAllowed, merged.files ?? {}) ?? "the rules"}${req.trim_to_face.max_mm ? `, at most ${req.trim_to_face.max_mm} mm` : ""})` : "off"}.`;
+    `Scope (from ${sFrom}): ${scope === "all-touching" ? "every touching pair of the categories" : "only the clashing pairs"}${req?.selection ? ", in the current selection" : ""}${req?.narrowed === "keys" ? " (the rules say all-touching; the call names clash keys, so only those clashing pairs)" : req?.narrowed ? ` (all-touching, narrowed to the call's ${req.narrowed === "level" ? `level ${req.level}` : `test ${req.test}`})` : ""}${req?.same_category === false ? "; same-category joins off" : ""}${req?.chunk_size || req?.max_pairs ? `; chunks of ${req.chunk_size ?? req.max_pairs} touching pairs${req.chunk ? `, chunk ${req.chunk}` : ""}` : ""}${req?.flips?.length ? `; confirmed flips: ${req.flips.length}` : ""}. Trim to face: ${req?.trim_to_face ? `on (allowed by ${whereText(merged.from?.trimAllowed, merged.files ?? {}) ?? "the rules"}${req.trim_to_face.max_mm ? `, at most ${req.trim_to_face.max_mm} mm` : ""})` : "off"}.`;
 }
 
 /** The plan per category pair and kind: "Floors x Structural Columns: join 25, switch-join 3" (all-touching can be large). */
@@ -62,18 +62,48 @@ export function trimLine(p) {
 export const trimsOf = (plan = []) => [...plan.filter((p) => p.kind === "trim"), ...plan.map((p) => p.trim).filter((t) => t && typeof t === "object")];
 export const droppedOf = (r) => Number(r?.dropped?.notTouching ?? r?.droppedNotTouching ?? 0) || 0;
 /** All-touching scope: what the add-in looked at. */
-/** Above the touching-pair cap: the add-in reports only. */
+/** The old (pre-1.13) cap answer: above max_pairs nothing touching was planned. Kept for an older add-in's reportOnly. */
 export function capLine(r) {
-  const t = r?.touching, ro = (r?.reportOnly ?? []).find((x) => x.code === "too-many-pairs");
-  if (!t?.capped && !ro) return "";
-  const n = t?.capped ? (t.join ?? 0) + (t.switchJoin ?? 0) || t.pairs : ro.pairs, cap = t?.capped ? t.maxPairs ?? t.max_pairs : ro.max_pairs ?? ro.maxPairs;
-  return `${n ?? "?"} touching pairs to join, above the ${cap ?? "?"} cap; nothing touching planned. ${t?.advice || "Narrow by level or selection."}`;
+  const ro = (r?.reportOnly ?? []).find((x) => x.code === "too-many-pairs");
+  return ro ? `${ro.pairs ?? "?"} touching pairs, above the ${ro.max_pairs ?? ro.maxPairs ?? "?"} cap; nothing touching planned. Narrow by level or selection.` : "";
 }
+/** All-touching: what the add-in looked at (all in-scope pairs, every chunk). */
 export function touchingLine(t) {
-  if (!t || t.capped) return "";
+  if (!t) return "";
   const by = Array.isArray(t.byPair) ? t.byPair.map((x) => `${x.pair ?? `${x.a} x ${x.b}`} ${x.count ?? x.pairs ?? ""}`.trim()) : Object.entries(t.byPair ?? {}).map(([k, v]) => `${k} ${typeof v === "object" ? JSON.stringify(v) : v}`);
-  return `All touching: ${t.candidates ?? "?"} candidate pair(s), ${t.pairs ?? "?"} touching, ${t.right ?? 0} already right; join ${t.join ?? 0}, switch join ${t.switchJoin ?? 0}${by.length ? ` (${by.slice(0, 8).join(", ")}${by.length > 8 ? ", ..." : ""})` : ""}.`;
+  return `All touching: ${t.candidates ?? "?"} candidate pair(s), ${t.pairs ?? "?"} touching in scope, ${t.right ?? 0} already right; ${(t.chunks ?? []).length > 1 ? `this chunk: ` : ""}join ${t.join ?? 0}, switch join ${t.switchJoin ?? 0}${Number(t.flipConfirm) ? `, flip to confirm ${t.flipConfirm}` : ""}${by.length ? ` (${by.slice(0, 8).join(", ")}${by.length > 8 ? ", ..." : ""})` : ""}.`;
 }
+/** The chunks of all-touching: the list, which one is planned, and the next. "" with one chunk. */
+export function chunkLines(t) {
+  const list = t?.chunks ?? [];
+  if (list.length <= 1) return [];
+  const n = Number(t.chunk ?? 1);
+  return [`Chunks (${t.chunkSize ?? "?"} pairs each, by level then id; each chunk is its own dry run, apply and undo step): chunk ${n} of ${list.length} is planned.${t.note ? ` ${t.note}` : ""}`,
+    ...list.map((c) => `- chunk ${c.chunk} of ${list.length}: ${c.pairs} pair(s), ${c.notJoined ?? 0} to join, ${c.wrongOrder ?? 0} in the wrong order${(c.levels ?? []).filter(Boolean).length ? ` (${c.levels.filter(Boolean).join(", ")})` : ""}${c.chunk === n ? " <- planned" : ""}`),
+    ...(n < list.length ? [`Next: run chunk ${n + 1} with the same args (chunk: ${n + 1}) after this one is applied.`] : [])];
+}
+/** "Flip, confirm": joined in the order the rules call wrong, not clashing: switched only when its id is passed in flips. */
+const nc = (c) => c ? niceCategory(c) : "?";
+export const flipItems = (r) => (r?.reportOnly ?? []).filter((x) => x.code === "flip-confirm");
+export function flipLines(r) {
+  const f = flipItems(r);
+  if (!f.length) return [];
+  return [`Flip, confirm (${f.length}; not automatic: an existing join, not clashing, may be deliberate; pass the ids in flips to switch):`,
+    ...f.slice(0, 30).map((x) => `- ${x.id}: ${x.a} (${nc(x.aCategory)}) x ${x.b} (${nc(x.bCategory)})${x.level ? ` @ ${x.level}` : ""}; current cutter ${x.b} (${nc(x.bCategory)}), the rule's cutter ${x.a} (${nc(x.aCategory)})`),
+    ...(f.length > 30 ? [`- ... ${f.length - 30} more (run record)`] : [])];
+}
+/** Flip ids the call passed that are not "flip, confirm" items (in the report list, or already planned as a confirmed flip). */
+export const unknownFlips = (r, flips = []) => flips.filter((id) => !flipItems(r).some((x) => x.id === id || x.clashKey === id) && !(r?.plan ?? []).some((p) => p.id === id && p.confirmedFlip));
+/** Concrete volume and area per category, before and after (the elements the plan touches). */
+export function quantityLines(q, mode) {
+  const e = Object.entries(q ?? {});
+  if (!e.length) return [];
+  const f = (x) => x == null ? "?" : Number(x).toFixed(3);
+  return [`Volume and area (concrete, the elements the plan touches; ${mode === "apply" ? "before -> after" : "before -> would be"}):`,
+    ...e.map(([cat, v]) => `- ${cat}: volume ${f(v.volumeM3?.before)} -> ${f(v.volumeM3?.after)} m3, area ${f(v.areaM2?.before)} -> ${f(v.areaM2?.after)} m2`)];
+}
+/** New warnings with the plan items behind them. */
+export const warningItemLines = (w) => (w?.byPlanItem ?? []).length ? ["New warnings by plan item:", ...w.byPlanItem.slice(0, 20).map((x) => `- ${x.warning}: ${(x.planItems ?? []).join(", ") || "no plan item names its elements"}`)] : [];
 
 /** The join order (strongest first) -> OST category names; an entry ACE cannot read is an error, never dropped. */
 export function normaliseOrder(order, where = "order") {
@@ -101,10 +131,16 @@ export function readRules(text, file) {
   if (!o || typeof o !== "object" || Array.isArray(o)) throw new Error(`${file} must hold an object { order, scope, trim_to_face, steel }.`);
   const steel = o.steel == null ? undefined : steelOf(o.steel, `${file} steel`);
   return { order: normaliseOrder(o.order, `${file} order`), scope: scopeOf(o.scope, `${file} scope`), trim: trimOf(o.trim_to_face, `${file} trim_to_face`), steel,
-    maxPairs: maxPairsOf(o.max_pairs, `${file} max_pairs`), sameCategory: sameCategoryOf(o.same_category, `${file} same_category`) };
+    maxPairs: maxPairsOf(o.max_pairs, `${file} max_pairs`), sameCategory: sameCategoryOf(o.same_category, `${file} same_category`), chunkSize: chunkSizeOf(o.chunk_size, `${file} chunk_size`) };
 }
 
 export function maxPairsOf(v, where = "max_pairs") {
+  if (v == null) return undefined;
+  if (!Number.isInteger(v) || v < 1 || v > 100000) throw new Error(`${where} must be a whole number of pairs from 1 to 100000.`);
+  return v;
+}
+/** chunk_size: all-touching pairs planned and run per chunk (default: max_pairs). */
+export function chunkSizeOf(v, where = "chunk_size") {
   if (v == null) return undefined;
   if (!Number.isInteger(v) || v < 1 || v > 100000) throw new Error(`${where} must be a whole number of pairs from 1 to 100000.`);
   return v;
@@ -124,7 +160,7 @@ export function sameCategoryOf(v, where = "same_category") {
 export function mergeRules(office, project) {
   const o = office?.rules ?? {}, p = project?.rules ?? {};
   const from = {}, rules = {};
-  for (const k of ["order", "scope", "maxPairs", "sameCategory"]) {
+  for (const k of ["order", "scope", "maxPairs", "sameCategory", "chunkSize"]) {
     if (p[k] != null) { rules[k] = p[k]; from[k] = "project"; } else if (o[k] != null) { rules[k] = o[k]; from[k] = "office"; }
   }
   for (const k of ["trim", "steel"]) {
@@ -186,6 +222,9 @@ export function buildRequest(a, rules = {}, version) {
   else if (scope === "all-touching" && (a.level || (a.test && a.test.trim().toLowerCase() !== DEFAULT_TEST.toLowerCase()))) narrowed = a.level ? "level" : "test";
   const maxPairs = maxPairsOf(a.max_pairs) ?? rules.maxPairs;
   const sameCategory = sameCategoryOf(a.same_category) ?? rules.sameCategory;
+  const chunkSize = chunkSizeOf(a.chunk_size) ?? rules.chunkSize;
+  if (a.chunk != null && (!Number.isInteger(a.chunk) || a.chunk < 1)) throw new Error("chunk must be a whole number from 1 (the chunk list says how many there are).");
+  const flips = [...new Set((a.flips ?? []).map((x) => String(x).trim()).filter(Boolean))].sort();
   // Trim to a face is approved in the vault only; a call can switch it off, never on.
   if (a.trim_to_face === true && !rules.trim?.allowed) {
     const w = rules.from?.trimAllowed === "office" ? `the office file ${rules.files?.office}` : rules.from?.trimAllowed === "project" ? `the vault's rules/${RULES_FILE}` : null;
@@ -215,6 +254,9 @@ export function buildRequest(a, rules = {}, version) {
     ...(scopeSource ? { scope_source: scopeSource } : {}),
     ...(maxPairs ? { max_pairs: maxPairs } : {}),
     ...(sameCategory === false ? { same_category: false } : {}),
+    ...(chunkSize ? { chunk_size: chunkSize } : {}),
+    ...(a.chunk ? { chunk: a.chunk } : {}),
+    ...(flips.length ? { flips } : {}),
     ...(narrowed ? { narrowed } : {}),
     ...(a.selection ? { selection: true } : {}),
     ...(trim ? { trim_to_face: trim } : {}),
@@ -290,8 +332,11 @@ export function replyText(r, { mode, model, test, rolledBack = false, forced = f
   const pairs = pairSummary(plan);
   if (pairs.length > 1 || plan.length > 10) lines.push(`By category pair:\n${pairs.slice(0, 15).map((x) => `- ${x}`).join("\n")}${pairs.length > 15 ? `\n- ... ${pairs.length - 15} more (run record)` : ""}`);
   if (touchingLine(r?.touching)) lines.push(touchingLine(r.touching));
+  lines.push(...chunkLines(r?.touching));
   if (capLine(r)) lines.push(capLine(r));
-  if (droppedOf(r)) lines.push(`Not touching, dropped: ${droppedOf(r)} pair(s) in scope that do not touch (no join needed).`);
+  if (Number(r?.touching?.notTouching)) lines.push(`Near, not touching: ${r.touching.notTouching} pair(s) (no contact within 1 mm): no step.`);
+  if (droppedOf(r)) lines.push(`Not touching, dropped at run time: ${droppedOf(r)} pair(s) (no longer touching, or Revit said "joined but do not intersect"): left out, no join made.`);
+  lines.push(...flipLines(r));
   if (Number(r?.dropped?.trim)) lines.push(`Trims dropped: ${r.dropped.trim}.`);
   const trims = trimsOf(plan);
   if (trims.length) lines.push(`Trims to a face (${trims.length}; a trim on a join runs only if the join does not clear):\n${trims.slice(0, 50).map((p) => `- ${trimLine(p)}`).join("\n")}${trims.length > 50 ? `\n- ... ${trims.length - 50} more (run record)` : ""}`);
@@ -300,8 +345,9 @@ export function replyText(r, { mode, model, test, rolledBack = false, forced = f
   // Steel ends: the method per step and what the probe found writable (read-only plan included), and any join-state change.
   const ends = plan.filter((p) => p.kind === "cutback" || p.kind === "cope");
   if (ends.length) lines.push(`Steel ends:\n${ends.slice(0, 10).map((p) => `- ${p.kind} ${p.a} at ${p.b}: ${p.method ?? "no method"}${p.changesJoinState ? " (CHANGES THE JOIN STATE: allowUnjoin)" : ""}${p.probe ? ` [writable: ${Object.entries(p.probe).filter(([k, v]) => v === true && k !== "joinedTo").map(([k]) => k).join(", ") || "none"}${p.probe.joinedTo ? `; joined to ${p.probe.joinedTo}` : ""}]` : ""}`).join("\n")}${ends.length > 10 ? `\n- ... ${ends.length - 10} more (run record)` : ""}`);
-  const ro = groupReportOnly(r?.reportOnly);
-  if (ro.length) lines.push(`Report only (needs a person, ${r.reportOnly.length}):\n${ro.slice(0, 8).map((g) => `- ${g.why} (${g.count}, e.g. ${g.samples.join("; ")})${g.recommendation ? `: ${g.recommendation}` : ""}`).join("\n")}${ro.length > 8 ? `\n- ... ${ro.length - 8} more reason(s) (run record)` : ""}`);
+  const roList = (r?.reportOnly ?? []).filter((x) => x.code !== "flip-confirm");
+  const ro = groupReportOnly(roList);
+  if (ro.length) lines.push(`Report only (needs a person, ${roList.length}):\n${ro.slice(0, 8).map((g) => `- ${g.why} (${g.count}, e.g. ${g.samples.join("; ")})${g.recommendation ? `: ${g.recommendation}` : ""}`).join("\n")}${ro.length > 8 ? `\n- ... ${ro.length - 8} more reason(s) (run record)` : ""}`);
   if (mode !== "plan") {
     const after = r?.after;
     if (after) lines.push(`After: ${after.clashes ?? "?"} clash(es) ${mode === "dry run" || rolledBack ? "would remain" : "remain"}${after.issues != null ? ` in ${after.issues} issue(s)` : ""}${(after.remaining ?? []).length ? `:\n${after.remaining.slice(0, 10).map((x) => `- ${ids(x)}: ${x.why ?? "not auto-fixable"}`).join("\n")}${after.remaining.length > 10 ? `\n- ... ${after.remaining.length - 10} more (evidence)` : ""}` : "."}`);
@@ -309,6 +355,7 @@ export function replyText(r, { mode, model, test, rolledBack = false, forced = f
     if (changedValues(r?.guard).length) lines.push(`Information: ${changedValues(r.guard).length} dimension value(s) on shortened members changed, references intact (${changedValues(r.guard).slice(0, 5).map(valueLine).join("; ")}${changedValues(r.guard).length > 5 ? "; ..." : ""}).`);
     if (r?.verify && r.verify.ok === false) lines.push(`Self-check FAILED: ${r.verify.mismatchCount ?? r.verify.mismatches?.length ?? "?"} mismatch(es); rolled back, nothing changed.`);
     lines.push(`Warnings: ${warnText(r?.warnings)}.`);
+    lines.push(...warningItemLines(r?.warnings), ...quantityLines(r?.quantities, mode === "apply" && !rolledBack ? "apply" : "dry run"));
     if (mode === "dry run" || rolledBack) lines.push(`Changes: would have been ${kindText(wouldCounts(r))}; rolled back, nothing changed.`);
     else lines.push(`Changes: ${kindText(doneCounts(r?.done))} done.`);
   }
@@ -340,11 +387,14 @@ export function evidenceMarkdown({ model, test, when = localDate(new Date(), { t
   const skippedIds = new Set((r.skipped ?? []).map((x) => x.id).filter(Boolean));
   section(rb ? "Trims to a face (would have been made; rolled back)" : "Trims to a face (planned; a join's trim runs only if the join does not clear)", trimsOf(plan).filter((p) => !skippedIds.has(p.id)).map(trimLine));
   if (doneCounts(r.done).trim) section("Trims made", [`${doneCounts(r.done).trim}`]);
-  if (droppedOf(r)) section("Not touching, dropped", [`${droppedOf(r)} pair(s) in scope did not touch; no join made`]);
+  if (droppedOf(r) || Number(r.touching?.notTouching)) section("Not touching, dropped", [...(droppedOf(r) ? [`${droppedOf(r)} pair(s) dropped at run time (no longer touching, or "joined but do not intersect"); no join made`] : []), ...(Number(r.touching?.notTouching) ? [`${r.touching.notTouching} near pair(s) not touching: no step`] : [])]);
   section(rb ? "Changes (would have been made; rolled back)" : "Changes", plan.filter((p) => !skippedIds.has(p.id) && p.kind !== "trim").map((p) => `${p.kind}: ${p.a} x ${p.b} (${[p.aCategory, p.bCategory].filter(Boolean).join(" x ")}${p.material ? `, ${p.material}` : ""}${p.level ? `, ${p.level}` : ""})${p.why ? `: ${p.why}` : ""}`));
   section("Annotation guard differences", (g?.mismatches ?? []).map((m) => `#${m.element} ${m.what}: ${JSON.stringify(m.before)} -> ${JSON.stringify(m.after)}`));
   section("Dimension values changed on shortened members (references intact; information, not a failure)", changedValues(g).map(valueLine));
   section("New warnings", (w.new ?? []).map((x) => typeof x === "string" ? x : x.text ?? x.message ?? JSON.stringify(x)));
+  section("New warnings by plan item", (w.byPlanItem ?? []).map((x) => `${x.warning}: ${(x.planItems ?? []).join(", ") || "no plan item names its elements"} (elements ${(x.elements ?? []).join(", ")})`));
+  section("Volume and area (concrete, before -> after)", Object.entries(r.quantities ?? {}).map(([c, v]) => `${c}: volume ${v.volumeM3?.before ?? "?"} -> ${v.volumeM3?.after ?? "?"} m3, area ${v.areaM2?.before ?? "?"} -> ${v.areaM2?.after ?? "?"} m2`));
+  if (r.touching?.chunks?.length > 1) section("Chunk", [`chunk ${r.touching.chunk} of ${r.touching.chunks.length} (${r.touching.chunkSize} pairs each)`]);
   section("Remaining clashes", (rb ? [] : r.after?.remaining ?? []).map((x) => `${ids(x)}: ${x.why ?? "not auto-fixable"}`));
   section("Report only (needs a person)", (r.reportOnly ?? []).map((x) => `${ids(x)} (${[x.aCategory, x.bCategory].filter(Boolean).join(" x ")}): ${x.why ?? ""}${x.recommendation ? `; ${x.recommendation}` : ""}`));
   section("Skipped", (r.skipped ?? []).map((s) => `${s.id ? `${s.id} ` : ""}${ids(s)}: ${skipReason(s)}`));

@@ -29,10 +29,11 @@
     {
       "name": "workset-cleanup",
       "skill": "workset-cleanup",
-      "version": 1,
+      "version": 2,
       "updated": "2026-10-20",
       "tools": [
-        "assign_worksets"
+        "assign_worksets",
+        "workset_plan"
       ],
       "sourceCase": "The office's workset housekeeping: audit, review, then rename and delete empty worksets against the project's naming rule.",
       "file": "workset-cleanup.md"

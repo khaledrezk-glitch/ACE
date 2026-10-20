@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.13.0 (20 Oct 2026)
+- **workset_plan (new):** propose a workset list for one or several models from the workset NAMES: one row per target
+  workset (spelling twins merged) with what it holds (category decides, then level / zone, a material mismatch never
+  matches, majority only breaks ties; links by discipline code, CAD imports to CAD / LINKS, stairs and runs to STAIRS),
+  counts, open / default / export-view visibility (a move that would hide elements is flagged), visibility worksets
+  manual only, the datum workset by the add-in's flag, identical models once; the element groups as detail; CSV + xlsx
+  with a decision column. confirm reads the rule-level, group-level or hand-made file against the live facts (a changed
+  count is flagged), writes a plan per model and shows the rules; save_rules + confirm: true merges them into the vault
+  (conflicts listed, never overwritten). apply runs workset_admin apply_plan: check, dry run, identical apply, ONE undo
+  step, borrowed elements skipped. Audit lists quote workset names (a name may hold commas).
+- **clash_resolve chunks and flips:** chunk_size / chunk (also from the rules, validated), the chunk list and the next
+  chunk; "Flip, confirm" items (existing joins in the wrong order that do not clash) switch only by id in flips, ids off
+  the list are refused; concrete volume and area per category before and after; new warnings named by plan item; near
+  and dropped not-touching pairs counted. run_clash_test tests other open models only when named (models).
+
 ## 1.12.9 (20 Oct 2026)
 - **General method in the tool, template per project in the vault:** register_update reads the project's register
   template from the vault's rules/register.json (file or glob, headerRow, idColumn, idPattern, disciplines with their

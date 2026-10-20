@@ -22,6 +22,8 @@ namespace AceRevitMcp.Rules
             public string Name;
             public string Owner;
             public bool Open = true, Editable, IsDefault;
+            public bool Protected;     // the datum workset (levels and grids): never renamed or deleted
+            public int LevelsAndGrids; // levels and grids on it
             public int Elements;
             public Dictionary<string, int> ByCategory = new Dictionary<string, int>(StringComparer.Ordinal);
             public List<long> SampleIds = new List<long>();
@@ -47,6 +49,32 @@ namespace AceRevitMcp.Rules
 
         public static bool IsProtected(string name) => string.Equals((name ?? "").Trim(), SharedLevelsAndGrids, StringComparison.OrdinalIgnoreCase);
 
+        /// <summary>A workset that is never renamed or deleted: the datum workset (DatumWorkset), or one named Shared Levels and Grids.</summary>
+        public static bool IsProtected(Workset w) => w != null && (w.Protected || IsProtected(w.Name));
+
+        /// <summary>
+        /// The datum workset (levels and grids; in real models e.g. "Shared Views, Levels, Grids"), found without relying on its
+        /// name: the vault's worksets.datumWorkset when it names a workset; else the workset holding the most levels and grids
+        /// (ties: the oldest); else the oldest user workset whose name contains "levels" or "grids". Null when none.
+        /// </summary>
+        public static Workset DatumWorkset(IList<Workset> worksets, string vaultName)
+        {
+            if (worksets == null || worksets.Count == 0) return null;
+            if (!string.IsNullOrWhiteSpace(vaultName) && Find(worksets, vaultName.Trim()) is Workset v) return v;
+            var held = worksets.Where(w => w.LevelsAndGrids > 0).OrderByDescending(w => w.LevelsAndGrids).ThenBy(w => w.Id).FirstOrDefault();
+            if (held != null) return held;
+            return worksets.Where(w => (w.Name ?? "").IndexOf("levels", StringComparison.OrdinalIgnoreCase) >= 0 || (w.Name ?? "").IndexOf("grids", StringComparison.OrdinalIgnoreCase) >= 0)
+                .OrderBy(w => w.Id).FirstOrDefault();
+        }
+
+        /// <summary>Marks the datum workset protected (see DatumWorkset); returns it.</summary>
+        public static Workset MarkDatum(IList<Workset> worksets, string vaultName)
+        {
+            var d = DatumWorkset(worksets, vaultName);
+            if (d != null) d.Protected = true;
+            return d;
+        }
+
         private static bool OwnedByOther(Workset w, string me) =>
             !string.IsNullOrWhiteSpace(w.Owner) && !string.Equals(w.Owner.Trim(), (me ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
 
@@ -67,7 +95,7 @@ namespace AceRevitMcp.Rules
                 if (from.Length == 0 || to.Length == 0) { blocks.Add(new Block { What = what, Code = "naming", Detail = "a rename needs both from and to" }); continue; }
                 var w = Find(worksets, from);
                 if (w == null) { blocks.Add(new Block { What = what, Code = "not-found", Detail = $"no user workset is called {from}" }); continue; }
-                if (IsProtected(w.Name)) { blocks.Add(new Block { What = what, Code = "system", Detail = $"{w.Name} is never renamed" }); continue; }
+                if (IsProtected(w)) { blocks.Add(new Block { What = what, Code = "system", Detail = $"{w.Name} is the levels and grids workset: never renamed" }); continue; }
                 if (string.Equals(w.Name, to, StringComparison.Ordinal)) continue;   // already named so
                 if (to.IndexOfAny(Prohibited) >= 0) { blocks.Add(new Block { What = what, Code = "naming", Detail = "a workset name cannot contain { } [ ] | ; < > ? ` ~" }); continue; }
                 if (IsProtected(to) || worksets.Any(o => o.Id != w.Id && string.Equals(o.Name, to, StringComparison.OrdinalIgnoreCase)))
@@ -98,7 +126,7 @@ namespace AceRevitMcp.Rules
                     else if (!candidates.Contains(w)) candidates.Add(w);
                 }
             else
-                foreach (var w in worksets.Where(w => w.Elements == 0 && !IsProtected(w.Name)))
+                foreach (var w in worksets.Where(w => w.Elements == 0 && !IsProtected(w)))
                     if (!w.Open) skipped.Add($"{w.Name} (closed)");
                     else if (OwnedByOther(w, me)) skipped.Add($"{w.Name} (borrowed by {w.Owner.Trim()})");
                     else candidates.Add(w);
@@ -114,7 +142,7 @@ namespace AceRevitMcp.Rules
             foreach (var w in candidates)
             {
                 var what = "delete " + w.Name;
-                if (IsProtected(w.Name)) { blocks.Add(new Block { What = what, Code = "system", Detail = $"{w.Name} is never deleted" }); continue; }
+                if (IsProtected(w)) { blocks.Add(new Block { What = what, Code = "system", Detail = $"{w.Name} is the levels and grids workset: never deleted, even when empty" }); continue; }
                 if (!w.Open) { blocks.Add(new Block { What = what, Code = "closed", Detail = $"{w.Name} is closed, so its elements cannot be counted" }); continue; }
                 if (OwnedByOther(w, me)) { blocks.Add(new Block { What = what, Code = "borrowed", Holder = w.Owner.Trim(), Elements = w.Elements, SampleIds = w.SampleIds.ToList() }); continue; }
                 if (w.Elements > 0 && target == null)
@@ -146,7 +174,7 @@ namespace AceRevitMcp.Rules
         /// <summary>The workset that receives what an "empty" workset still held: open, not deleted; editable and the default first, protected last.</summary>
         public static Workset SafetyTarget(IList<Workset> worksets, ICollection<long> deleted) =>
             worksets.Where(w => w.Open && !deleted.Contains(w.Id))
-                .OrderBy(w => IsProtected(w.Name)).ThenByDescending(w => w.Editable).ThenByDescending(w => w.IsDefault).ThenBy(w => w.Id)
+                .OrderBy(w => IsProtected(w)).ThenByDescending(w => w.Editable).ThenByDescending(w => w.IsDefault).ThenBy(w => w.Id)
                 .FirstOrDefault();
 
         public static string Describe(Dictionary<string, int> byCategory) =>
@@ -178,7 +206,7 @@ namespace AceRevitMcp.Rules
         {
             switch (code)
             {
-                case "system": return (detail ?? "a protected workset", "Leave it as it is: Shared Levels and Grids and the system worksets are never renamed or deleted.");
+                case "system": return (detail ?? "a protected workset", "Leave it as it is: the levels and grids workset and the system worksets are never renamed or deleted.");
                 case "not-empty": return (detail ?? "the workset holds elements", "Move its elements first: run again with move_to: <workset> and the workset named in worksets, or move them in Revit.");
                 case "exists": return (detail ?? "the name is taken", "Choose another name, or delete or rename the other workset first.");
                 case "not-found": return (detail ?? "not found", "Check the name against the audit (action: audit).");

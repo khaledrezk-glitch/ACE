@@ -204,8 +204,63 @@ namespace AceRevitMcp.Coordination
             return (In(aCats, catA) && In(bCats, catB)) || (In(aCats, catB) && In(bCats, catA));
         }
 
-        /// <summary>Default cap on the touching pairs all-touching changes in one run; above it the run is report-only.</summary>
+        /// <summary>Default chunk size of all-touching (max_pairs): the touching pairs are planned and run one chunk at a time.</summary>
         public const int DefaultMaxPairs = 500;
+
+        /// <summary>
+        /// The chunks of all-touching: the in-scope touching pairs in a fixed order (by level, lowest first, then by the two
+        /// ids), cut into chunks of size. Returns the pairs' indices per chunk. The order does not depend on which pairs need a
+        /// change, so the chunks stay the same after an earlier chunk was applied.
+        /// </summary>
+        public static List<List<int>> Chunks(IList<(int LevelRank, string Level, long A, long B)> pairs, int size)
+        {
+            var order = Enumerable.Range(0, pairs?.Count ?? 0)
+                .OrderBy(i => pairs[i].LevelRank).ThenBy(i => pairs[i].Level ?? "", StringComparer.Ordinal)
+                .ThenBy(i => Math.Min(pairs[i].A, pairs[i].B)).ThenBy(i => Math.Max(pairs[i].A, pairs[i].B)).ToList();
+            var chunks = new List<List<int>>();
+            var n = Math.Max(1, size);
+            for (var i = 0; i < order.Count; i += n) chunks.Add(order.Skip(i).Take(n).ToList());
+            return chunks;
+        }
+
+        /// <summary>
+        /// What all-touching does with a touching pair: "join" (not joined, and the two really touch), "not-touching" (only
+        /// near: no step), "right" (joined in the right order), "switch-join" (joined in the wrong order and the pair clashes,
+        /// or its flip id was confirmed in flips) or "flip-confirm" (joined in the wrong order: listed, run only when confirmed).
+        /// </summary>
+        public static string TouchDecision(bool joined, bool rightOrder, bool reallyTouch, bool clashes, bool flipConfirmed)
+        {
+            if (!joined) return reallyTouch ? "join" : "not-touching";
+            if (rightOrder) return "right";
+            return clashes || flipConfirmed ? "switch-join" : "flip-confirm";
+        }
+
+        /// <summary>
+        /// Whether two planar faces touch: opposite normals (within about 2 degrees) and planes no further apart than tol
+        /// (normals need not be unit vectors). Whether they also overlap is checked on the faces themselves.
+        /// </summary>
+        public static bool FacesTouch(double[] nA, double[] oA, double[] nB, double[] oB, double tol)
+        {
+            double Dot(double[] a, double[] b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            var la = Math.Sqrt(Dot(nA, nA)); var lb = Math.Sqrt(Dot(nB, nB));
+            if (la < 1e-12 || lb < 1e-12) return false;
+            if (Dot(nA, nB) / (la * lb) > -0.9994) return false;
+            var d = new[] { oB[0] - oA[0], oB[1] - oA[1], oB[2] - oA[2] };
+            return Math.Abs(Dot(d, nA) / la) <= tol;
+        }
+
+        /// <summary>The Revit warning a join of two elements that do not intersect leaves ("joined but do not intersect").</summary>
+        public static bool IsNotIntersecting(string warning) =>
+            (warning ?? "").IndexOf("do not intersect", StringComparison.OrdinalIgnoreCase) >= 0 || (warning ?? "").IndexOf("don't intersect", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        /// <summary>The plan items a warning is about: the steps whose two elements are both in it; else those with either.</summary>
+        public static List<string> PlanItemsFor(long[] warningIds, IEnumerable<(string Id, long A, long B)> steps)
+        {
+            var ids = new HashSet<long>(warningIds ?? new long[0]);
+            var list = (steps ?? Enumerable.Empty<(string, long, long)>()).ToList();
+            var both = list.Where(s => ids.Contains(s.A) && ids.Contains(s.B)).Select(s => s.Id).Distinct().ToList();
+            return both.Count > 0 ? both : list.Where(s => ids.Contains(s.A) || ids.Contains(s.B)).Select(s => s.Id).Distinct().ToList();
+        }
 
         /// <summary>A trim's plan id: "trim:&lt;trimmed id&gt;&gt;&lt;face owner id&gt;:&lt;end&gt;".</summary>
         public static string TrimId(long trimmed, long faceOwner, int end) => $"trim:{trimmed}>{faceOwner}:{end}";
@@ -657,8 +712,13 @@ namespace AceRevitMcp.Coordination
         /// more, so a re-posted existing warning is not counted twice. Any rise is new and fails; a cleared warning is fine.
         /// </summary>
         public static (int After, List<string> New, bool Ok) Warnings(IList<(string Text, long[] Ids)> existing, IList<(string Text, long[] Ids)> afterInModel,
-            IList<(string Text, long[] Ids)> posted)
+            IList<(string Text, long[] Ids)> posted) => WarningsWithIds(existing, afterInModel, posted, out _);
+
+        /// <summary>As Warnings, also giving each new warning with its element ids (for naming the plan item behind it).</summary>
+        public static (int After, List<string> New, bool Ok) WarningsWithIds(IList<(string Text, long[] Ids)> existing, IList<(string Text, long[] Ids)> afterInModel,
+            IList<(string Text, long[] Ids)> posted, out List<(string Text, long[] Ids)> freshItems)
         {
+            freshItems = new List<(string, long[])>();
             string Key((string Text, long[] Ids) w) => (w.Text ?? "") + "|" + string.Join(",", (w.Ids ?? new long[0]).OrderBy(i => i));
             Dictionary<string, int> Count(IList<(string Text, long[] Ids)> l)
             {
@@ -678,6 +738,7 @@ namespace AceRevitMcp.Coordination
                 var had = before.TryGetValue(k, out var h) ? h : 0;
                 if (n <= had) continue;
                 var w = sample[k];
+                freshItems.Add((w.Text, w.Ids ?? new long[0]));
                 fresh.Add(w.Text + (w.Ids != null && w.Ids.Length > 0 ? $" (elements: {string.Join(", ", w.Ids)})" : "") + (n - had > 1 ? $" x{n - had}" : ""));
             }
             return (total, fresh, fresh.Count == 0);

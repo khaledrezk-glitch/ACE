@@ -1,4 +1,4 @@
-# Office method: workset cleanup (version 1)
+# Office method: workset cleanup (version 2)
 
 Scope: general method in the tool, template per project in the vault.
 
@@ -15,3 +15,7 @@ section uses the project's alone). project_rules section "worksets" shows what i
   named): check_only, then dry_run, then the identical call: ONE undo step, self-checked.
 - assign_worksets (action assign): check_only, dry_run, then apply, to put elements on the right worksets.
 - Shared Levels and Grids is never renamed or deleted; borrowed worksets block with who holds them.
+- workset_plan (a workset list for one or several models): propose -> the user edits the decision column -> confirm
+  (plan per model, rules shown; save_rules + confirm: true writes them to the vault) -> apply (check_only, dry_run, then
+  the identical call). Assignment follows the workset NAMES: the category word decides, level / zone narrows, material
+  never mismatches; visibility worksets are manual only; the next model needs no CSV (assign_worksets with the saved rules).

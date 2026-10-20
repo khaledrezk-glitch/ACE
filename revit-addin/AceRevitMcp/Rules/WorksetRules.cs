@@ -24,6 +24,7 @@ namespace AceRevitMcp.Rules
             public List<string> Categories = new List<string>();
             public Regex Function, Family, Type, Level, Zone, Department, Value;
             public string Param;
+            public string Material;      // "concrete" | "steel" | "other" (WorksetPlanLogic.MaterialClass): the rule skips other classes
         }
 
         public List<Rule> Items = new List<Rule>();
@@ -51,6 +52,7 @@ namespace AceRevitMcp.Rules
                     Index = i, Workset = ws, Categories = ListOf(o["category"]),
                     Function = Rx(o["function"]), Family = Rx(o["family"]), Type = Rx(o["type"]), Level = Rx(o["level"]),
                     Zone = Rx(o["zone"]), Department = Rx(o["department"]), Param = o["parameter"]?.ToString(), Value = Rx(o["value"]),
+                    Material = string.IsNullOrWhiteSpace(o["material"]?.ToString()) ? null : o["material"].ToString().Trim().ToLowerInvariant(),
                 });
             }
             return r;
@@ -135,6 +137,7 @@ namespace AceRevitMcp.Rules
         private static bool CategoryMatches(Element e, List<string> cats)
         {
             if (cats.Count == 0) return true;
+            if (e is ImportInstance && cats.Any(c => c.Equals(WorksetPlanLogic.CadImports, StringComparison.OrdinalIgnoreCase))) return true;   // as the workset facts name them
             var name = e.Category?.Name ?? "";
             var bic = e.Category != null ? ((BuiltInCategory)e.Category.Id.Value).ToString() : "";
             return cats.Any(c => c.Equals(name, StringComparison.OrdinalIgnoreCase) || c.Equals(bic, StringComparison.OrdinalIgnoreCase) || ("OST_" + c.Replace(" ", "")).Equals(bic, StringComparison.OrdinalIgnoreCase));
@@ -160,9 +163,11 @@ namespace AceRevitMcp.Rules
             var type = doc.GetElement(e.GetTypeId()) as ElementType;
             var familyName = e is FamilyInstance fam ? fam.Symbol?.FamilyName : type?.FamilyName;
             var typeName = type?.Name;
-            string function = null, department = null;
+            string function = null, department = null, material = null;
+            string MaterialOf() { try { return WorksetPlanLogic.MaterialClass(Coordination.StructuralMaterial.Of(e)); } catch { return "other"; } }
             var rule = Items.FirstOrDefault(r =>
                 CategoryMatches(e, r.Categories) &&
+                (r.Material == null || r.Material == (material ??= e is RevitLinkInstance || e is ImportInstance ? "other" : MaterialOf())) &&
                 (r.Function == null || r.Function.IsMatch(function ??= ctx.FunctionOf(e))) &&
                 (r.Family == null || r.Family.IsMatch(familyName ?? "")) &&
                 (r.Type == null || r.Type.IsMatch(typeName ?? "")) &&

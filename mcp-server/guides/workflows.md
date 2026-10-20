@@ -60,7 +60,13 @@ not-touching pairs are dropped and counted. Trim to a face (a beam or wall end t
 used only when the vault allows it (trim_to_face { "allowed": true, "preview_required": true, "max_mm": n }); a call can
 pass trim_to_face: false, never switch it on. Read every trim to the user (element, end, length before and after, the
 face) before the apply. With all-touching the plan can hold hundreds of joins: report it per category pair.
-max_pairs caps the touching pairs (above it nothing is planned for them: narrow by level or selection); same_category is
+All-touching runs in chunks (chunk_size, default max_pairs 500, also from the rules file; by level then id, stable after
+an earlier chunk is applied): the reply lists every chunk and which one is planned; each chunk is its own dry run, apply
+and undo step; then "run chunk 2 with the same args" (chunk: 2). A missing join is planned only when the two really
+touch (near pairs: no step; pairs that no longer touch at run time are dropped and counted). An existing join in the
+wrong order that does not clash is "Flip, confirm" (pair, current cutter, the rule's cutter): it switches only when the
+user picks its id and the call passes it in flips (ids not on that list are refused). The reply gives the concrete
+volume and area per category before and after, and names the plan item behind each new warning. same_category is
 true by default (wall with wall, slab with slab joins are part of the office method), false opts out. A call with keys
 works on those clashing pairs only, even when the rules say all-touching; a level or test narrows the touching pairs.
 preview_required is always effectively true: every apply needs the identical dry run (false is refused). A trim is
@@ -161,6 +167,24 @@ word-to-category table. Workset1, or Shared Levels and Grids holding more than d
 N elements (M structural); assign them by rules" with its top categories. Without BEP rules the wrong-workset count is
 "not checked: no rules", never 0. delete_empty without names sends only the truly empty worksets and lists the
 expected-to-hold ones it kept, with why.
+
+Workset plan ("propose the worksets", "a workset list for these models", "assign by the workset names"): workset_plan.
+action propose (read-only; the active model, or paths opened in turn, detached with worksets preserved; identical models
+proposed once, "same as"): one row per target workset (spelling twins merged: case, spaces, "-" / "_", COLUMN / COLUMNS),
+what it holds read from its name (the category word decides; then level or zone narrows; a workset with a category and no
+level is the catch-all for levels without their own; a material word excludes the other material, so concrete never
+goes to a STEEL workset; where like elements sit only breaks a tie; links by the discipline code in their name first,
+CAD imports to the CAD / LINKS workset), the elements it holds and would receive, open / default / export-view
+visibility (views, default 3D views named NAVISWORKS / NWC; a move that would hide elements there is flagged), and a
+decision column; the moving element groups are the detail (second sheet, -groups.csv); no confident home = review.
+Visibility worksets (HIDE, HIDDEN, TEMP, or the vault's worksets.naming.manualOnly) are manual only; the datum workset
+(the add-in's protected flag) is never renamed or deleted; Workset1 gets the naming rule's default name (else
+<prefix>GENERAL). The user edits the file; action confirm (file: rule-level, group-level or the hand-made CSV, matched
+by Model + Current workset + Category + Type + Level and the element count: a changed count is flagged, never applied)
+writes a plan per model beside the file and shows the rules; save_rules + confirm: true saves them into the vault's
+project-requirements.json (new rules first; a conflicting rule is listed and kept). action apply with plan_file:
+check_only, dry_run, then the identical call (ONE undo step: create, rename, move, delete; borrowed elements skipped
+and listed; a changed group count refuses the whole plan). Office method: revit_guide methods/workset-cleanup.
 
 ## Parameter requirements (AIS, LOIN, Model Checker, shared parameter files)
 

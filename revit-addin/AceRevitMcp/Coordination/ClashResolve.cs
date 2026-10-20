@@ -19,7 +19,8 @@ namespace AceRevitMcp.Coordination
     /// ONE undo step) with the clash test re-run inside the transaction and a guard before it is kept: locations, types,
     /// tags, dimensions and Revit warnings of every touched element must be unchanged, or the whole change rolls back.
     /// { test, a_categories, b_categories, tolerance_mm, level, keys, order, steel: { cutback, coping }, block_on_borrowed,
-    /// scope (clashing | all-touching), selection, same_category (default true), max_pairs (default 500),
+    /// scope (clashing | all-touching), selection, same_category (default true), max_pairs (default 500), chunk_size (default
+    /// max_pairs), chunk (1-based), flips: [plan ids of wrong-order joins confirmed to switch],
     /// trim_to_face: { allowed, max_mm } | true, check_only, dry_run, expect_model, expect_version, expect_plan, max_ids,
     /// max_elements, test_force_verify_mismatch }
     /// </summary>
@@ -49,6 +50,7 @@ namespace AceRevitMcp.Coordination
             public double[] NewEnd;      // trim: the new end point (feet, internal coordinates)
             public double LengthBefore;  // trim: the location line's length before (feet)
             public string Face;          // trim: "<category> <id> <face>"
+            public bool Excluded;        // left out after a run showed "joined but do not intersect" for it (dropped as not touching)
         }
 
         public static JsonNode Run(UIApplication app, JsonObject args)
@@ -204,7 +206,10 @@ namespace AceRevitMcp.Coordination
                 ICollection<ElementId> selection = null;
                 if (Args.Bool(args, "selection")) selection = app.ActiveUIDocument?.Selection?.GetElementIds() ?? new List<ElementId>();
                 var maxPairs = Math.Max(1, Args.Int(args, "max_pairs", ClashResolveLogic.DefaultMaxPairs));
-                touching = Touching(doc, order, selection, clashPairs, geometry, steps, planJson, ids, test, level, Args.Bool(args, "same_category", true), maxPairs);
+                var chunkSize = Math.Max(1, Args.Int(args, "chunk_size", maxPairs));
+                var flips = new HashSet<string>(Args.Strings(args, "flips").Select(f => f.Trim()), StringComparer.Ordinal);
+                touching = Touching(doc, order, selection, clashPairs, geometry, steps, planJson, reportOnly, ids, test, level, Args.Bool(args, "same_category", true),
+                    chunkSize, Args.Int(args, "chunk", 0), flips);
             }
 
             // The plan's fingerprint: an apply (or the Apply card, which replays the same args) must find the plan it previewed.
@@ -276,11 +281,17 @@ namespace AceRevitMcp.Coordination
             var hostedFor = new HashSet<long>(steps.Where(s => !s.Blocked && s.Fallback != null && doc.GetElement(new ElementId(s.Fallback.A)) is Wall).Select(s => s.Fallback.A));
             var beforeStates = checkOnly ? new List<ClashResolveLogic.ElementState>() : Snapshot(doc, guardIds, hostedFor).Values.ToList();
             var existingWarnings = Warnings(doc);
+            var quantitiesBefore = checkOnly ? null : Quantities(doc, guardIds);
+            var retryDrop = new HashSet<string>(StringComparer.Ordinal);   // join steps a run showed "joined but do not intersect" for
             var forceMismatch = Args.Bool(args, "test_force_verify_mismatch") && !Args.Bool(args, "dry_run");
             var worse = new List<(long Element, string What, string Before, string After)>();   // set by the body's after-run
             var trimmed = new HashSet<long>();                                                  // members cut back or coped
 
-            var result = NativeChange.Run(app, args, "clash_resolve", Title, (d, plan) =>
+            JsonObject result = null;
+            for (var attempt = 1; ; attempt++)
+            {
+            retryDrop.Clear();
+            result = NativeChange.Run(app, args, "clash_resolve", Title, (d, plan) =>
             {
                 var r = Common(new JsonObject());
                 var done = new JsonObject { ["join"] = 0, ["switchJoin"] = 0, ["cutback"] = 0, ["cope"] = 0, ["trim"] = 0 };
@@ -339,8 +350,25 @@ namespace AceRevitMcp.Coordination
                         mismatches.Add((kv.Key, "location (trim)", "only the trimmed ends move, each to its face", $"start {a1[0]:0.###},{a1[1]:0.###},{a1[2]:0.###} end {a1[3]:0.###},{a1[4]:0.###},{a1[5]:0.###}"));
                 }
                 mismatches.AddRange(worse);
-                var (warnAfter, fresh, warnOk) = ClashResolveLogic.Warnings(existingWarnings, Warnings(d), posted.ToList());
-                r["warnings"] = new JsonObject { ["before"] = existingWarnings.Count, ["after"] = warnAfter, ["new"] = new JsonArray(fresh.Select(w => (JsonNode)w).ToArray()) };
+                var othersOk = mismatches.Count == 0;
+                var (warnAfter, fresh, warnOk) = ClashResolveLogic.WarningsWithIds(existingWarnings, Warnings(d), posted.ToList(), out var freshItems);
+                // Each new warning with the plan items behind it (the steps whose elements it names).
+                var ranSteps = steps.Where(x => !x.Blocked && !x.Excluded).SelectMany(x => x.Fallback == null ? new[] { x } : new[] { x, x.Fallback }).Select(x => (x.Id, x.A, x.B)).ToList();
+                var byItem = freshItems.Select(w => (w.Text, w.Ids, Items: ClashResolveLogic.PlanItemsFor(w.Ids, ranSteps))).ToList();
+                r["warnings"] = new JsonObject
+                {
+                    ["before"] = existingWarnings.Count, ["after"] = warnAfter, ["new"] = new JsonArray(fresh.Select(w => (JsonNode)w).ToArray()),
+                    ["byPlanItem"] = new JsonArray(byItem.Select(w => (JsonNode)new JsonObject
+                    {
+                        ["warning"] = w.Text, ["elements"] = new JsonArray(w.Ids.Select(i => (JsonNode)i).ToArray()),
+                        ["planItems"] = new JsonArray(w.Items.Select(i => (JsonNode)i).ToArray()),
+                    }).ToArray()),
+                };
+                // Only "joined but do not intersect" on join steps: those joins are left out and the change runs again.
+                var joinIds = new HashSet<string>(steps.Where(x => x.Kind == "join" || x.Kind == "switch-join").Select(x => x.Id), StringComparer.Ordinal);
+                if (othersOk && !warnOk && byItem.All(w => ClashResolveLogic.IsNotIntersecting(w.Text) && w.Items.Count > 0 && w.Items.All(joinIds.Contains)))
+                    foreach (var w in byItem) foreach (var i in w.Items) retryDrop.Add(i);
+                if (quantitiesBefore != null) r["quantities"] = QuantitiesJson(quantitiesBefore, Quantities(d, guardIds));
                 if (!warnOk)
                     mismatches.Add((0, "warnings", existingWarnings.Count.ToString(), fresh.Count > 0 ? $"{warnAfter}: {string.Join("; ", fresh.Take(5))}" : warnAfter.ToString()));
                 if (forceMismatch) mismatches.Add((0, "forced", null, "forced by test_force_verify_mismatch (acceptance test)"));
@@ -358,6 +386,10 @@ namespace AceRevitMcp.Coordination
                 };
                 return mismatches.Count == 0;
             });
+            if (checkOnly || attempt >= 3 || retryDrop.Count == 0 || result["transaction"]?.ToString() != "VerifyFailed") break;
+            foreach (var s in steps.Where(x => retryDrop.Contains(x.Id))) s.Excluded = true;
+            notes.Add($"Revit reported \"joined but do not intersect\" for {string.Join(", ", retryDrop.OrderBy(x => x, StringComparer.Ordinal))}: left out (dropped as not touching) and the change was run again without them.");
+            }
 
             if (checkOnly) result["success"] = true;
             if (result["verify"] is JsonObject failedVerify && result["guard"] == null)   // the guard itself threw
@@ -627,6 +659,7 @@ namespace AceRevitMcp.Coordination
             };
             foreach (var s in steps.Where(s => (s.Kind == "join" || s.Kind == "switch-join") && !s.Touching))
             {
+                if (s.Excluded) { Skip(new[] { s }, "joined but do not intersect: left out"); Count(dropped, "notTouching"); continue; }
                 var joinAct = JoinAct(s);
                 if (s.Fallback == null)
                 {
@@ -650,13 +683,25 @@ namespace AceRevitMcp.Coordination
             }
             // All-touching joins (not clash fixes, no depth to clear): each in its own sub-transaction, so a pair Revit cannot
             // join (it does not touch) is dropped quietly on its own; the model is regenerated once per batch, not per join.
+            // Before each new join: the two must still really touch on the current geometry (an earlier join may have cut one
+            // back), so Revit never leaves "joined but do not intersect"; the model is regenerated first only when an element of
+            // the pair was changed since the last regeneration.
             const int batch = 50;
             var pending = 0;
+            var dirty = new HashSet<long>();
             foreach (var s in steps.Where(s => (s.Kind == "join" || s.Kind == "switch-join") && s.Touching))
             {
-                if (TryWhy(new[] { s }, JoinAct(s), false, true, regenerate: false) == null) { Count(done, Key(s.Kind)); ran[s.ClashKey] = s.Kind; }
+                if (s.Excluded) { Count(dropped, "notTouching"); ran[s.ClashKey] = "skipped: not touching (joined but do not intersect)"; continue; }
+                if (s.Kind == "join")
+                {
+                    if (dirty.Contains(s.A) || dirty.Contains(s.B)) { d.Regenerate(); dirty.Clear(); pending = 0; }
+                    bool touches;
+                    try { touches = RealContact(El(s.A), El(s.B), null); } catch { touches = false; }
+                    if (!touches) { Count(dropped, "notTouching"); ran[s.ClashKey] = "skipped: not touching (after the earlier joins)"; continue; }
+                }
+                if (TryWhy(new[] { s }, JoinAct(s), false, true, regenerate: false) == null) { Count(done, Key(s.Kind)); ran[s.ClashKey] = s.Kind; dirty.Add(s.A); dirty.Add(s.B); }
                 else { Count(dropped, "notTouching"); ran[s.ClashKey] = "skipped: not touching"; }
-                if (++pending >= batch) { d.Regenerate(); pending = 0; }
+                if (++pending >= batch) { d.Regenerate(); pending = 0; dirty.Clear(); }
             }
             if (pending > 0) d.Regenerate();
             // One cutback per member end: the deepest overlap at that end. An end that is not joined takes a negative
@@ -705,28 +750,40 @@ namespace AceRevitMcp.Coordination
             { "OST_StructuralFoundation", "OST_StructuralColumns", "OST_Walls", "OST_Floors", "OST_StructuralFraming" };
 
         /// <summary>
-        /// The touching pairs of concrete elements in the priority categories (in the model, or in the selection) that are not
-        /// joined, or joined in the wrong order, and not already a clash: a join or switch-join step each, added to the plan.
-        /// Narrowed like the clash test: its A / B categories (one element on each side) and the level (of the pair's contact).
-        /// Same-category pairs take part unless same_category is false (the larger element cuts). Above maxPairs nothing is
-        /// planned: report-only, with the counts per category pair.
-        /// Answer: { candidates, pairs, right, join, switchJoin, byPair } (+ capped, maxPairs, advice when capped).
+        /// The touching pairs of concrete elements in the priority categories (in the model, or in the selection), narrowed like
+        /// the clash test (its A / B categories, one element on each side; the level of the pair's contact) and without the
+        /// clashing pairs (the clash part fixes those). Same-category pairs take part unless same_category is false.
+        /// The pairs are cut into chunks (chunk_size, by level then id; ClashResolveLogic.Chunks) and only the requested chunk
+        /// (1-based; default 1) is planned: a missing join when the two really touch (a solid overlap, or faces touching within
+        /// 1 mm; near only = not touching, no step); an existing join in the wrong order is listed as "flip, confirm"
+        /// (report-only) and switched only when its plan id is in flips.
+        /// Answer: { candidates, pairs, right, join, switchJoin, flipConfirm, notTouching, byPair, chunk, chunks: [...], chunkSize, capped }.
         /// </summary>
         private static JsonObject Touching(Document doc, List<string> order, ICollection<ElementId> selection, HashSet<(long, long)> clashPairs,
-            Clashes.SolidCache geometry, List<Step> steps, JsonArray planJson, Dictionary<string, int> ids, Clashes.TestSpec test, string level, bool sameCategory, int maxPairs)
+            Clashes.SolidCache geometry, List<Step> steps, JsonArray planJson, JsonArray reportOnly, Dictionary<string, int> ids, Clashes.TestSpec test, string level,
+            bool sameCategory, int chunkSize, int chunk, HashSet<string> flips)
         {
             var aCats = new HashSet<string>(test.A.Categories.Select(c => c.ToString()), StringComparer.OrdinalIgnoreCase);
             var bCats = new HashSet<string>(test.B.Categories.Select(c => c.ToString()), StringComparer.OrdinalIgnoreCase);
             var cats = TouchCategories.Where(c => ClashResolveLogic.Rank(order, c) >= 0 && (aCats.Contains(c) || bCats.Contains(c)))
                 .Select(c => Enum.TryParse<BuiltInCategory>(c, out var b) ? new ElementId(b) : null).Where(x => x != null).ToList();
-            var summary = new JsonObject { ["candidates"] = 0, ["pairs"] = 0, ["right"] = 0, ["join"] = 0, ["switchJoin"] = 0, ["byPair"] = new JsonObject() };
+            var summary = new JsonObject
+            {
+                ["candidates"] = 0, ["pairs"] = 0, ["right"] = 0, ["join"] = 0, ["switchJoin"] = 0, ["flipConfirm"] = 0, ["notTouching"] = 0,
+                ["byPair"] = new JsonObject(), ["chunk"] = 1, ["chunkSize"] = chunkSize, ["chunks"] = new JsonArray(), ["capped"] = false,
+            };
             if (cats.Count == 0) return summary;
             var collector = selection != null
                 ? (selection.Count == 0 ? null : new FilteredElementCollector(doc, selection))
                 : new FilteredElementCollector(doc);
             if (collector == null) { summary["note"] = "selection: nothing is selected"; return summary; }
             var levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.ProjectElevation).ToList();
-            string LevelAt(double zFeet) => levels.LastOrDefault(l => l.ProjectElevation <= zFeet + 0.01)?.Name ?? levels.FirstOrDefault()?.Name;
+            (int Rank, string Name) LevelAt(double zFeet)
+            {
+                var i = levels.FindLastIndex(l => l.ProjectElevation <= zFeet + 0.01);
+                if (i < 0) i = levels.Count > 0 ? 0 : -1;
+                return i < 0 ? (0, null) : (i, levels[i].Name);
+            }
             var els = new Dictionary<long, Element>();
             var boxes = new List<(long Id, double[] Min, double[] Max)>();
             foreach (var e in collector.WherePasses(new ElementMulticategoryFilter(cats)).WhereElementIsNotElementType())
@@ -740,76 +797,149 @@ namespace AceRevitMcp.Coordination
             }
             summary["candidates"] = els.Count;
             var boxOf = boxes.ToDictionary(x => x.Id);
-            var pairs = ClashResolveLogic.TouchingPairs(boxes, Lengths.Ft(5));
-            var volume = new Dictionary<long, double>();
-            double Vol(Element e) => volume.TryGetValue(e.Id.Value, out var v) ? v : (volume[e.Id.Value] = geometry.Of(e).Sum(x => x.Volume));
-            var byPair = (JsonObject)summary["byPair"];
-            var planned = new List<(Step Step, JsonObject Item, string PairKey)>();
-            var inScope = 0;
-            foreach (var (ia, ib) in pairs)
+
+            // The in-scope pairs, each with the level of its contact (the middle of the two boxes' common part).
+            var scoped = new List<(int LevelRank, string Level, long A, long B)>();
+            foreach (var (ia, ib) in ClashResolveLogic.TouchingPairs(boxes, Lengths.Ft(5)))
             {
                 if (clashPairs.Contains((Math.Min(ia, ib), Math.Max(ia, ib)))) continue;
+                var catA = els[ia].Category.BuiltInCategory.ToString(); var catB = els[ib].Category.BuiltInCategory.ToString();
+                if (!ClashResolveLogic.TouchPairAllowed(catA, catB, aCats, bCats, sameCategory)) continue;
+                var za = boxOf[ia]; var zb = boxOf[ib];
+                var lv = LevelAt((Math.Max(za.Min[2], zb.Min[2]) + Math.Min(za.Max[2], zb.Max[2])) / 2);
+                if (level != null && !string.Equals(lv.Name, level, StringComparison.OrdinalIgnoreCase)) continue;
+                scoped.Add((lv.Rank, lv.Name, ia, ib));
+            }
+            summary["pairs"] = scoped.Count;
+            var chunks = ClashResolveLogic.Chunks(scoped, chunkSize);
+            var current = chunks.Count == 0 ? 1 : Math.Min(Math.Max(1, chunk <= 0 ? 1 : chunk), chunks.Count);
+            if (chunk > chunks.Count && chunks.Count > 0) summary["note"] = $"chunk {chunk} does not exist ({chunks.Count} chunk{(chunks.Count == 1 ? "" : "s")}): chunk {current} is planned.";
+            summary["chunk"] = current; summary["capped"] = chunks.Count > 1;
+            if (chunks.Count > 1) summary["advice"] = $"{scoped.Count} touching pairs in {chunks.Count} chunks of {chunkSize}: each chunk is its own dry run, apply and undo step (run again with chunk: 2, 3, ...).";
+
+            var volume = new Dictionary<long, double>();
+            double Vol(Element e) => volume.TryGetValue(e.Id.Value, out var v) ? v : (volume[e.Id.Value] = geometry.Of(e).Sum(x => x.Volume));
+            (bool Joined, bool Right, string Winner) JoinState(long ia, long ib)
+            {
                 var ea = els[ia]; var eb = els[ib];
                 var catA = ea.Category.BuiltInCategory.ToString(); var catB = eb.Category.BuiltInCategory.ToString();
-                if (!ClashResolveLogic.TouchPairAllowed(catA, catB, aCats, bCats, sameCategory)) continue;
-                if (level != null)
-                {
-                    // The level of the contact: the middle of the two boxes' common part, as the clash test places a clash.
-                    var za = boxOf[ia]; var zb = boxOf[ib];
-                    var z = (Math.Max(za.Min[2], zb.Min[2]) + Math.Min(za.Max[2], zb.Max[2])) / 2;
-                    if (!string.Equals(LevelAt(z), level, StringComparison.OrdinalIgnoreCase)) continue;
-                }
-                inScope++;
                 var sa = new ClashResolveLogic.Side { Id = ia, Category = catA, Material = "concrete" };
                 var sb = new ClashResolveLogic.Side { Id = ib, Category = catB, Material = "concrete" };
                 if (catA == catB) { sa.Volume = Vol(ea); sb.Volume = Vol(eb); }
                 var winner = ClashResolveLogic.CutterOf(order, sa, sb);
-                bool joined, aCutsB = false;
-                try { joined = JoinGeometryUtils.AreElementsJoined(doc, ea, eb); if (joined) aCutsB = JoinGeometryUtils.IsCuttingElementInJoin(doc, ea, eb); }
-                catch { continue; }
-                string kind;
-                if (joined)
+                var joined = JoinGeometryUtils.AreElementsJoined(doc, ea, eb);
+                var right = !joined || winner == null || (winner == "A") == JoinGeometryUtils.IsCuttingElementInJoin(doc, ea, eb);
+                return (joined, right, winner);
+            }
+            // Every chunk's counts (join state only: cheap); the real-contact check only for the chunk planned.
+            var chunkList = (JsonArray)summary["chunks"];
+            for (var ci = 0; ci < chunks.Count; ci++)
+            {
+                int notJoined = 0, wrong = 0;
+                foreach (var i in chunks[ci])
                 {
-                    if (winner == null || (winner == "A") == aCutsB) { summary["right"] = summary["right"].GetValue<int>() + 1; continue; }
-                    kind = "switch-join";
+                    try { var js = JoinState(scoped[i].A, scoped[i].B); if (!js.Joined) notJoined++; else if (!js.Right) wrong++; } catch { }
                 }
-                else kind = "join";
-                var (a, b) = winner == "B" ? (eb, ea) : (ea, eb);
-                var step = new Step { Kind = kind, A = a.Id.Value, B = b.Id.Value, HasWinner = winner != null, Method = kind, Touching = true };
-                var item = new JsonObject
+                chunkList.Add(new JsonObject
                 {
-                    ["kind"] = kind, ["scope"] = "touching", ["a"] = step.A, ["b"] = step.B, ["aCategory"] = a.Category?.Name, ["bCategory"] = b.Category?.Name,
-                    ["cutter"] = winner != null ? (JsonNode)step.A : null, ["cut"] = winner != null ? (JsonNode)step.B : null,
-                    ["cutterCategory"] = winner != null ? a.Category?.Name : null, ["cutCategory"] = winner != null ? b.Category?.Name : null, ["material"] = "concrete",
-                };
-                planned.Add((step, item, $"{a.Category?.Name} x {b.Category?.Name}"));
+                    ["chunk"] = ci + 1, ["pairs"] = chunks[ci].Count, ["notJoined"] = notJoined, ["wrongOrder"] = wrong,
+                    ["levels"] = new JsonArray(chunks[ci].Select(i => scoped[i].Level ?? "").Distinct().Select(n => (JsonNode)n).ToArray()),
+                });
             }
-            summary["pairs"] = inScope;
-            foreach (var (step, _, pk) in planned)
+            if (chunks.Count == 0) return summary;
+
+            var byPair = (JsonObject)summary["byPair"];
+            void Inc(string k) => summary[k] = summary[k].GetValue<int>() + 1;
+            foreach (var i in chunks[current - 1])
             {
-                var key = step.Kind == "join" ? "join" : "switchJoin";
-                summary[key] = summary[key].GetValue<int>() + 1;
-                byPair[pk] = (byPair[pk]?.GetValue<int>() ?? 0) + 1;
-            }
-            if (planned.Count > maxPairs)
-            {
-                // Too many to change in one go: nothing is planned, the counts show where they are.
-                summary["capped"] = true; summary["maxPairs"] = maxPairs;
-                summary["advice"] = $"{planned.Count} touching pairs need a join, above the {maxPairs} cap: narrow by level or selection (or raise max_pairs).";
-                return summary;
-            }
-            foreach (var (step, item, _) in planned)
-            {
-                var id = ClashResolveLogic.PlanId(step.Kind, step.A, step.B, -1);
+                var (ia, ib) = (scoped[i].A, scoped[i].B);
+                var ea = els[ia]; var eb = els[ib];
+                (bool Joined, bool Right, string Winner) js;
+                try { js = JoinState(ia, ib); } catch { continue; }
+                var (a, b) = js.Winner == "B" ? (eb, ea) : (ea, eb);
+                var flipId = ClashResolveLogic.PlanId("switch-join", a.Id.Value, b.Id.Value, -1);
+                var touches = !js.Joined && RealContact(a, b, geometry);
+                var decision = ClashResolveLogic.TouchDecision(js.Joined, js.Right, touches, clashes: false, flipConfirmed: flips.Contains(flipId));
+                switch (decision)
+                {
+                    case "right": Inc("right"); continue;
+                    case "not-touching": Inc("notTouching"); continue;
+                    case "flip-confirm":
+                        Inc("flipConfirm");
+                        reportOnly.Add(new JsonObject
+                        {
+                            ["id"] = flipId, ["a"] = a.Id.Value, ["b"] = b.Id.Value, ["aCategory"] = a.Category?.Name, ["bCategory"] = b.Category?.Name,
+                            ["code"] = "flip-confirm", ["why"] = $"joined, but the order says the {a.Category?.Name} should cut the {b.Category?.Name}: may be a deliberate exception",
+                            ["recommendation"] = "Flip only if it is not deliberate: run again with this id in flips.", ["clashKey"] = flipId, ["level"] = scoped[i].Level, ["depthMm"] = 0,
+                        });
+                        continue;
+                }
+                var kind = decision;   // join | switch-join
+                var id = ClashResolveLogic.PlanId(kind, a.Id.Value, b.Id.Value, -1);
                 ids[id] = ids.TryGetValue(id, out var n) ? n + 1 : 1;
                 if (ids[id] > 1) id += "#" + ids[id];
-                step.Id = id; step.ClashKey = "touch:" + id;
-                item["id"] = id;
+                var step = new Step { Id = id, Kind = kind, ClashKey = "touch:" + id, A = a.Id.Value, B = b.Id.Value, HasWinner = js.Winner != null, Method = kind, Touching = true };
                 steps.Add(step);
-                planJson.Add(item);
+                planJson.Add(new JsonObject
+                {
+                    ["id"] = id, ["kind"] = kind, ["scope"] = "touching", ["a"] = step.A, ["b"] = step.B, ["aCategory"] = a.Category?.Name, ["bCategory"] = b.Category?.Name,
+                    ["cutter"] = js.Winner != null ? (JsonNode)step.A : null, ["cut"] = js.Winner != null ? (JsonNode)step.B : null,
+                    ["cutterCategory"] = js.Winner != null ? a.Category?.Name : null, ["cutCategory"] = js.Winner != null ? b.Category?.Name : null, ["material"] = "concrete",
+                    ["level"] = scoped[i].Level, ["chunk"] = current, ["confirmedFlip"] = kind == "switch-join" ? true : null,
+                });
+                Inc(kind == "join" ? "join" : "switchJoin");
+                var pk = $"{a.Category?.Name} x {b.Category?.Name}";
+                byPair[pk] = (byPair[pk]?.GetValue<int>() ?? 0) + 1;
             }
-            summary["capped"] = false; summary["maxPairs"] = maxPairs;
             return summary;
+        }
+
+        /// <summary>
+        /// Whether two elements really touch: their solids overlap (more than a trace), or a planar face of one lies on a face
+        /// of the other (opposite normals, within 1 mm, and the faces overlap). Fresh geometry when no cache is given.
+        /// </summary>
+        private static bool RealContact(Element a, Element b, Clashes.SolidCache geometry)
+        {
+            var sa = geometry != null ? geometry.Of(a) : Clashes.Solids(a).ToList();
+            var sb = geometry != null ? geometry.Of(b) : Clashes.Solids(b).ToList();
+            foreach (var x in sa)
+                foreach (var y in sb)
+                    try
+                    {
+                        var inter = BooleanOperationsUtils.ExecuteBooleanOperation(x, y, BooleanOperationsType.Intersect);
+                        if (inter != null && inter.Volume > 1e-6) return true;   // about 28 mm3
+                    }
+                    catch { /* degenerate pair of solids: try the faces */ }
+            var tol = Lengths.Ft(1);
+            bool OnFace(PlanarFace target, Face from)
+            {
+                try
+                {
+                    foreach (EdgeArray loop in from.EdgeLoops)
+                        foreach (Edge edge in loop)
+                            foreach (var p in edge.Tessellate())
+                            {
+                                var ir = target.Project(p);
+                                if (ir != null && ir.Distance <= tol) return true;
+                            }
+                }
+                catch { }
+                return false;
+            }
+            foreach (var x in sa)
+                foreach (Face fa in x.Faces)
+                {
+                    if (!(fa is PlanarFace pa)) continue;
+                    foreach (var y in sb)
+                        foreach (Face fb in y.Faces)
+                        {
+                            if (!(fb is PlanarFace pb)) continue;
+                            if (!ClashResolveLogic.FacesTouch(new[] { pa.FaceNormal.X, pa.FaceNormal.Y, pa.FaceNormal.Z }, new[] { pa.Origin.X, pa.Origin.Y, pa.Origin.Z },
+                                    new[] { pb.FaceNormal.X, pb.FaceNormal.Y, pb.FaceNormal.Z }, new[] { pb.Origin.X, pb.Origin.Y, pb.Origin.Z }, tol)) continue;
+                            if (OnFace(pa, pb) || OnFace(pb, pa)) return true;
+                        }
+                }
+            return false;
         }
 
         /// <summary>
@@ -955,6 +1085,38 @@ namespace AceRevitMcp.Coordination
         }
 
         // ---- guard ------------------------------------------------------------------------------------------------------
+
+        /// <summary>Concrete volume (m3) and area (m2) per category of the given elements: HOST_VOLUME_COMPUTED / HOST_AREA_COMPUTED sums.</summary>
+        private static Dictionary<string, (double Volume, double Area)> Quantities(Document doc, IEnumerable<long> ids)
+        {
+            var d = new Dictionary<string, (double, double)>(StringComparer.Ordinal);
+            foreach (var id in ids)
+            {
+                var e = doc.GetElement(new ElementId(id));
+                if (e == null || ClashResolveLogic.ForFix(StructuralMaterial.Of(e)) != "concrete") continue;
+                double P(BuiltInParameter bip) { try { var p = e.get_Parameter(bip); return p != null && p.HasValue && p.StorageType == StorageType.Double ? p.AsDouble() : 0; } catch { return 0; } }
+                var cat = e.Category?.Name ?? "(no category)";
+                var (v, a) = d.TryGetValue(cat, out var x) ? x : (0, 0);
+                d[cat] = (v + UnitUtils.ConvertFromInternalUnits(P(BuiltInParameter.HOST_VOLUME_COMPUTED), UnitTypeId.CubicMeters),
+                          a + UnitUtils.ConvertFromInternalUnits(P(BuiltInParameter.HOST_AREA_COMPUTED), UnitTypeId.SquareMeters));
+            }
+            return d;
+        }
+
+        private static JsonObject QuantitiesJson(Dictionary<string, (double Volume, double Area)> before, Dictionary<string, (double Volume, double Area)> after)
+        {
+            var o = new JsonObject();
+            foreach (var cat in before.Keys.Union(after.Keys).OrderBy(k => k, StringComparer.Ordinal))
+            {
+                before.TryGetValue(cat, out var b); after.TryGetValue(cat, out var a);
+                o[cat] = new JsonObject
+                {
+                    ["volumeM3"] = new JsonObject { ["before"] = Math.Round(b.Volume, 3), ["after"] = Math.Round(a.Volume, 3) },
+                    ["areaM2"] = new JsonObject { ["before"] = Math.Round(b.Area, 3), ["after"] = Math.Round(a.Area, 3) },
+                };
+            }
+            return o;
+        }
 
         private static List<(string Text, long[] Ids)> Warnings(Document doc)
         {

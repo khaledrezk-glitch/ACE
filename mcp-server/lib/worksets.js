@@ -62,9 +62,11 @@ export const CATEGORY_TOKENS = {
   STAIR: ["Stairs"], STAIRS: ["Stairs"], RAMP: ["Ramps"], RAMPS: ["Ramps"], ROOF: ["Roofs"], ROOFS: ["Roofs"],
   DOOR: ["Doors"], DOORS: ["Doors"], WINDOW: ["Windows"], WINDOWS: ["Windows"], CEILING: ["Ceilings"], CEILINGS: ["Ceilings"],
   ROOM: ["Rooms"], ROOMS: ["Rooms"], FURNITURE: ["Furniture"], DUCT: ["Ducts"], DUCTS: ["Ducts"], PIPE: ["Pipes"], PIPES: ["Pipes"],
+  PARAPET: ["Walls"], PARAPETS: ["Walls"], FOOTING: ["Structural Foundations"], FOOTINGS: ["Structural Foundations"], PILE: ["Structural Foundations"], PILES: ["Structural Foundations"],
+  RAFT: ["Structural Foundations"], SOG: ["Floors"], COL: ["Structural Columns", "Columns"], COLS: ["Structural Columns", "Columns"],
   CABLE: ["Cable Trays"], TRAY: ["Cable Trays"], CONDUIT: ["Conduits"], CONDUITS: ["Conduits"],
 };
-const isCad = (cat) => /\.(dwg|dxf|dgn)$/i.test(cat) || /^imports in families$/i.test(cat);
+export const isCad = (cat) => /\.(dwg|dxf|dgn)$/i.test(cat) || /^(imports in families|cad imports)$/i.test(cat);
 /** The token table: the built-in one, extended or overridden by naming.categoryTokens { TOKEN: [categories] }. */
 export function tokenTable(naming) {
   const t = { ...CATEGORY_TOKENS };
@@ -135,8 +137,10 @@ export function audit(answer, naming) {
 }
 
 export const NOT_CHECKED = "not checked: no rules";
+/** A workset name quoted: names may hold commas ("Shared Views, Levels, Grids"), so a list never splits one. */
+export const q = (n) => `"${n}"`;
 /** Why a workset is flagged, in words, for the empty-but-expected and default-workset flags. */
-export const expectedText = (r) => `empty, but ${r.expected.elements} element(s) look like they belong here (${Object.entries(r.expected.on).map(([k, n]) => `${n} on ${k}`).join(", ")})`;
+export const expectedText = (r) => `empty, but ${r.expected.elements} element(s) look like they belong here (${Object.entries(r.expected.on).map(([k, n]) => `${n} on ${q(k)}`).join(", ")})`;
 export const defaultText = (r) => `default workset holds ${r.defaultHolds.elements} element(s) (${r.defaultHolds.structural} structural); assign them by rules. Top: ${r.defaultHolds.top.map(([k, v]) => `${k} ${v}`).join(", ")}`;
 const top = (byCategory, n = 3) => Object.entries(byCategory ?? {}).sort((x, y) => y[1] - x[1]).slice(0, n).map(([k, v]) => `${k} ${v}`).join(", ");
 const yesNo = (v) => v == null ? "?" : v ? "yes" : "no";
@@ -150,15 +154,15 @@ export function auditText(model, a, naming) {
   for (const r of a.rows) lines.push(`${r.name} | ${r.elements ?? "?"} | ${top(r.byCategory) || "-"} | ${r.owner || "-"} | ${yesNo(r.open)} | ${r.flags.join(", ") || "ok"}${r.protected ? " (protected)" : ""}${r.suggestedName ? ` -> ${r.suggestedName}?` : ""}`);
   for (const r of a.rows.filter((x) => x.expected)) lines.push(`${r.name}: ${expectedText(r)}. Move them here (assign_worksets rules) rather than delete it.`);
   for (const r of a.rows.filter((x) => x.defaultHolds)) lines.push(`${r.name}: ${defaultText(r)}.`);
-  if (a.groups.length) lines.push(`Near-duplicates: ${a.groups.map((g) => g.join(" / ")).join("; ")}.`);
-  if (a.suggestions.length) lines.push(`Rename suggestions (none applied): ${a.suggestions.map((s) => `${s.from} -> ${s.to} (${s.why})`).join("; ")}. To rename: assign_worksets action rename with these renames, dry_run: true first.`);
+  if (a.groups.length) lines.push(`Near-duplicates: ${a.groups.map((g) => g.map(q).join(" / ")).join("; ")}.`);
+  if (a.suggestions.length) lines.push(`Rename suggestions (none applied): ${a.suggestions.map((s) => `${q(s.from)} -> ${q(s.to)} (${s.why})`).join("; ")}. To rename: assign_worksets action rename with these renames, dry_run: true first.`);
   if (a.counts.empty) lines.push(`Empty worksets can go with action delete_empty (dry_run: true first); a workset that still holds elements is never deleted unless the user names move_to${a.counts.emptyButExpected ? "; empty-but-expected ones are kept unless named" : ""}.`);
   return lines.join("\n");
 }
 
 const HEAD = ["workset", "elements", "categories", "owner", "open", "editable", "flags", "near-duplicates", "suggested name", "wrong workset", "id"];
 const row = (r) => [r.name, r.elements, Object.entries(r.byCategory ?? {}).map(([k, v]) => `${k} ${v}`).join("; "), r.owner, yesNo(r.open), yesNo(r.editable),
-  [r.flags.join(", "), r.expected ? expectedText(r) : "", r.defaultHolds ? defaultText(r) : ""].filter(Boolean).join("; "), r.nearDuplicates.join(", "), r.suggestedName, r.wrongWorkset, r.id];
+  [r.flags.join(", "), r.expected ? expectedText(r) : "", r.defaultHolds ? defaultText(r) : ""].filter(Boolean).join("; "), r.nearDuplicates.join(" | "), r.suggestedName, r.wrongWorkset, r.id];
 export const auditCsv = (a) => toCsv([HEAD, ...a.rows.map(row)]);
 export function auditHtml(model, a, { when, naming, brand = {} } = {}) {
   const body = `<tbody>${a.rows.map((r) => `<tr><td>${esc(r.name)}${r.protected ? ' <span class="n">(protected)</span>' : ""}</td><td class="num">${esc(r.elements ?? "?")}</td><td>${esc(top(r.byCategory, 5) || "-")}</td>` +
@@ -197,6 +201,7 @@ const HOW = {
   naming: "pick a name the project's naming rule allows (project-requirements.json worksets.naming)",
   closed: "open the workset (Manage Worksets) so its elements can be counted, then run again",
   central: "reload latest, then run the dry run again",
+  "plan-changed": "the model changed since the plan: propose and confirm again (or run the dry run again)",
 };
 export const blockWithHow = (b) => ({ ...b, how: b.how ?? HOW[b.code] });
 

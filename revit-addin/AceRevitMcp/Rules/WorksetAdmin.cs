@@ -11,14 +11,14 @@ using L = AceRevitMcp.Rules.WorksetAdminLogic;
 namespace AceRevitMcp.Rules
 {
     /// <summary>
-    /// Bridge "workset_admin": { action: audit | rename | delete_empty, check_only, dry_run, expect_model, expect_version,
+    /// Bridge "workset_admin": { action: audit | facts | rename | delete_empty | apply_plan (WorksetPlan.cs), check_only, dry_run, expect_model, expect_version,
     /// expect_plan, max_ids, rules?, renames?: [{from, to}], worksets?: [names], move_to? }. audit reads only; rename and
     /// delete_empty run like clash_resolve: a plan with a fingerprint (planHash), a dry run and an identical apply as ONE undo
     /// step, and a self-check (element count per category the same before and after) that rolls the whole change back on a
     /// mismatch. Any block (protected, borrowed, not empty, name taken, closed) refuses the dry run and the apply.
     /// The naming rules live in the vault; the server sends the renames.
     /// </summary>
-    internal static class WorksetAdmin
+    internal static partial class WorksetAdmin
     {
         public static JsonNode Run(UIApplication app, JsonObject args)
         {
@@ -27,7 +27,9 @@ namespace AceRevitMcp.Rules
             var aceVersion = ParameterFill.AceVersion();
             var maxIds = Math.Max(0, Args.Int(args, "max_ids", 20));
             if (action == "audit") return Audit(doc, args, aceVersion, maxIds);
-            if (action != "rename" && action != "delete_empty") throw new CommandException("action must be audit, rename or delete_empty.");
+            if (action == "facts") return Facts(doc, args, aceVersion, maxIds);
+            if (action == "apply_plan") return ApplyPlan(app, doc, args, aceVersion, maxIds);
+            if (action != "rename" && action != "delete_empty") throw new CommandException("action must be audit, facts, rename, delete_empty or apply_plan.");
 
             var checkOnly = Args.Bool(args, "check_only");
             JsonObject Refuse(string stage, string error, JsonArray blocked) => new JsonObject
@@ -55,7 +57,7 @@ namespace AceRevitMcp.Rules
                 return Refuse("blocked", "Nothing was changed: the model cannot be edited.", new JsonArray(OneBlock("the model", "model", null, "a read-only, linked or family document")));
 
             // The plan.
-            var worksets = Read(doc, maxIds, out var before);
+            var worksets = Read(doc, maxIds, out var before, DatumName(doc, args));
             var me = app.Application.Username;
             var notes = new List<string>();
             List<L.Step> steps; List<L.Block> blocks;
@@ -236,7 +238,7 @@ namespace AceRevitMcp.Rules
         {
             var r = new JsonObject { ["model"] = doc.Title, ["aceVersion"] = aceVersion, ["action"] = "audit", ["checkOnly"] = true, ["workshared"] = doc.IsWorkshared };
             if (!doc.IsWorkshared) { r["worksets"] = new JsonArray(); r["rules"] = null; r["note"] = "The model is not workshared: it has no worksets."; return r; }
-            var worksets = Read(doc, maxIds, out _);
+            var worksets = Read(doc, maxIds, out _, DatumName(doc, args));
 
             // Elements on the wrong workset: the same rules engine as assign_worksets (check_only).
             Dictionary<long, int> wrong = null;
@@ -265,7 +267,7 @@ namespace AceRevitMcp.Rules
             {
                 ["id"] = w.Id, ["name"] = w.Name, ["elements"] = w.Elements, ["byCategory"] = Counts(w.ByCategory),
                 ["owner"] = string.IsNullOrWhiteSpace(w.Owner) ? null : w.Owner, ["open"] = w.Open, ["editable"] = w.Editable, ["isDefault"] = w.IsDefault,
-                ["protected"] = L.IsProtected(w.Name), ["wrongWorkset"] = wrong == null ? null : (JsonNode)wrong[w.Id],
+                ["protected"] = L.IsProtected(w), ["wrongWorkset"] = wrong == null ? null : (JsonNode)wrong[w.Id],
                 ["sampleIds"] = new JsonArray(w.SampleIds.Take(maxIds).Select(i => (JsonNode)i).ToArray()),
             }).ToArray());
             if (worksets.Any(w => !w.Open)) r["note"] = "Closed worksets are listed with the elements Revit reports for them; open them for a reliable count.";
@@ -278,7 +280,7 @@ namespace AceRevitMcp.Rules
         /// Every user workset (Shared Levels and Grids included) with every element on it: view-specific, hidden, in groups and
         /// design options. One pass over the model, which also gives the element count per category (the self-check's measure).
         /// </summary>
-        private static List<L.Workset> Read(Document doc, int maxIds, out Dictionary<string, int> totals)
+        private static List<L.Workset> Read(Document doc, int maxIds, out Dictionary<string, int> totals, string datumName)
         {
             var list = new List<L.Workset>();
             var byId = new Dictionary<int, L.Workset>();
@@ -296,10 +298,20 @@ namespace AceRevitMcp.Rules
                 try { ws = e.WorksetId.IntegerValue; } catch { continue; }
                 if (!byId.TryGetValue(ws, out var info)) continue;
                 info.Elements++;
+                if (e is Level || e is Grid) info.LevelsAndGrids++;
                 info.ByCategory[cat] = info.ByCategory.TryGetValue(cat, out var n) ? n + 1 : 1;
                 if (info.SampleIds.Count < Math.Max(maxIds, 1)) info.SampleIds.Add(e.Id.Value);
             }
+            L.MarkDatum(list, datumName);
             return list;
+        }
+
+        /// <summary>The datum workset's name from the request (datum_workset) or the vault (worksets.datumWorkset); null = find it.</summary>
+        private static string DatumName(Document doc, JsonObject args)
+        {
+            var given = Args.Str(args, "datum_workset");
+            if (!string.IsNullOrWhiteSpace(given)) return given;
+            try { return ProjectRules.For(doc)?.Section("worksets")?["datumWorkset"]?.ToString(); } catch { return null; }
         }
 
         private static FilteredElementCollector AllElements(Document doc) =>

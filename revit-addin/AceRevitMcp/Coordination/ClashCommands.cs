@@ -14,7 +14,7 @@ namespace AceRevitMcp.Coordination
 {
     internal static class ClashCommands
     {
-        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, primary_model, with_model, show }</summary>
+        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, primary_model, with_model, models, show }</summary>
         public static JsonNode Run(UIApplication app, JsonObject args)
         {
             var host = Args.RequireDoc(app);
@@ -26,12 +26,18 @@ namespace AceRevitMcp.Coordination
             var perTest = new JsonArray();
             var notes = new List<string>();
             // Once per run: the models taking part, and each element's geometry (shared by every test and both sides).
-            var sources = Clashes.Sources(app, host);
+            // Other open models take part only when named (with_model, primary_model or models); links of this model always do.
+            var named = new HashSet<string>(Args.Strings(args, "models"), StringComparer.OrdinalIgnoreCase);
+            foreach (var n in new[] { Args.Str(args, "with_model"), Args.Str(args, "primary_model") }) if (!string.IsNullOrWhiteSpace(n)) named.Add(n.Trim());
+            var allSources = Clashes.Sources(app, host);
+            var sources = allSources.Where(x => x.Relation != "open model" || named.Contains(x.Name)).ToList();
+            var ignoredModels = allSources.Where(x => !sources.Contains(x)).Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             var geometry = new Clashes.SolidCache();
             var loaded = new HashSet<string>(sources.Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
             var withModel = Args.Str(args, "with_model");
             var primaryModel = Args.Str(args, "primary_model");
             var storedAll = new List<Clash>();
+            if (ignoredModels.Count > 0) notes.Add($"Other open models were not tested (name them in models or with_model to include them): {string.Join(", ", ignoredModels)}.");
             foreach (var t in tests)
             {
                 var testNotes = new List<string>();

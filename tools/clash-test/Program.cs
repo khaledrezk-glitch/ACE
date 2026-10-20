@@ -721,6 +721,83 @@ class P {
     }
     finally { try { File.Delete(jPath); } catch { } }
 
+    // 20. 1.13.0: workset_plan (workset_admin facts / apply_plan): group key, creates, run order, counts after moves, plan hash.
+    var wpl = a.GetType("AceRevitMcp.Rules.WorksetPlanLogic"); var wpsT = a.GetType("AceRevitMcp.Rules.WorksetPlanLogic+Step");
+    MethodInfo WP(string n) => wpl.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!;
+    string GK(params string[] f) => (string)WP("Key").Invoke(null, f.Cast<object>().ToArray())!;
+    Check(GK("TST_STR", "Structural Columns", "TST_Col : 400x400", "TST_GF", "concrete", "", "") == "TST_STR|Structural Columns|TST_Col : 400x400|TST_GF|concrete||"
+      && GK(" TST_STR ", "Walls", null, null, "other", null, null) == "TST_STR|Walls|||other||"
+      && string.Join(",", (string[])wpl.GetField("KeyFields")!.GetValue(null)!) == "workset,category,type,level,material,zone,option",
+      "workset facts: the group key is [workset, category, type, level, material, zone, option] joined with |, empty for none");
+    Check((string)WP("MaterialClass").Invoke(null, new object[] { "precast" })! == "concrete" && (string)WP("MaterialClass").Invoke(null, new object[] { "steel" })! == "steel"
+      && (string)WP("MaterialClass").Invoke(null, new object[] { "timber" })! == "other", "workset facts: material class concrete (precast too) / steel / other");
+    var cr = WP("PlanCreate").Invoke(null, new object[] { wsList, new[] { "TST_NEW", "tst_new", "TST_Walls", "", "TST{bad}", "TST_RENAMED" }, new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "TST_RENAMED" } })!;
+    var crSteps = (IList)FW(cr, "Item1"); var crBlocks = (IList)FW(cr, "Item2");
+    Check(crSteps.Count == 1 && (string)FW(crSteps[0], "Workset") == "TST_NEW" && crBlocks.Cast<object>().Select(b => (string)FW(b, "Code")).SequenceEqual(new[] { "exists", "exists", "naming", "naming", "exists" }),
+      "workset plan: create blocks a taken name (case-insensitive), a name given twice, a rename's target, an empty or invalid name");
+    object PS(string kind, string ws, long wsId = 0, long toId = 0, int n = 0, params long[] ids)
+    { var st = Activator.CreateInstance(wpsT, true)!; Set(st, ("Id", kind + ":" + ws), ("Kind", kind), ("Workset", ws), ("WorksetId", wsId), ("ToId", toId), ("Elements", n)); var il = (List<long>)FW(st, "Ids"); il.AddRange(ids); return st; }
+    IList PL(params object[] xs) { var l = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(wpsT))!; foreach (var x in xs) l.Add(x); return l; }
+    var mixedSteps = PL(PS("delete", "TST_Old", 9), PS("move", "TST_A", 0, 2, 2, 11, 12), PS("rename", "TST_B", 3), PS("create", "TST_C"), PS("move-and-delete", "TST_D", 4, 2, 3), PS("create", "TST_E"));
+    var ord = ((IList)WP("Ordered").Invoke(null, new object[] { mixedSteps })!).Cast<object>().Select(x => (string)FW(x, "Id")).ToList();
+    Check(ord.SequenceEqual(new[] { "create:TST_C", "create:TST_E", "rename:TST_B", "move:TST_A", "delete:TST_Old", "move-and-delete:TST_D" }), $"workset plan: run order create, rename, move, delete (request order within a kind) ({string.Join(",", ord)})");
+    string PHW(IList l) => (string)WP("PlanHash").Invoke(null, new object[] { l })!;
+    var wh1 = PHW(mixedSteps);
+    var wh2 = PHW(PL(PS("create", "TST_E"), PS("create", "TST_C"), PS("move-and-delete", "TST_D", 4, 2, 3), PS("rename", "TST_B", 3), PS("move", "TST_A", 0, 2, 2, 12, 11), PS("delete", "TST_Old", 9)));
+    var wh3 = PHW(PL(PS("delete", "TST_Old", 9), PS("move", "TST_A", 0, 2, 2, 11, 13), PS("rename", "TST_B", 3), PS("create", "TST_C"), PS("move-and-delete", "TST_D", 4, 2, 3), PS("create", "TST_E")));
+    var wh4 = PHW(PL(PS("delete", "TST_Old", 9), PS("move", "TST_A", 0, 5, 2, 11, 12), PS("rename", "TST_B", 3), PS("create", "TST_C"), PS("move-and-delete", "TST_D", 4, 2, 3), PS("create", "TST_E")));
+    Check(wh1 == wh2 && wh1 != wh3 && wh1 != wh4 && wh1.Length == 64, "workset plan hash: over the whole plan, order-free; another element or another target is another plan");
+    var am = (Dictionary<long, int>)WP("AfterMoves").Invoke(null, new object[] { new Dictionary<long, int> { [2] = 5, [3] = 2, [4] = 0 }, new List<(long, long, int)> { (3, 4, 1), (3, 0, 1), (2, 4, 2) } })!;
+    Check(am[2] == 3 && am[3] == 0 && am[4] == 3 && !am.ContainsKey(0), "workset plan: elements per workset after the moves (a created target is not counted), so a delete sees what is left");
+
+    // 21. 1.13.0 review: the datum workset by content (vault, levels and grids, then name), never renamed or deleted; link types in the hash.
+    IList DW(params (long Id, string Name, int Lg, int El)[] xs)
+    {
+      var l = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(wsT))!;
+      foreach (var x in xs) { var w = WS(x.Id, x.Name, x.El); wsT.GetField("LevelsAndGrids")!.SetValue(w, x.Lg); l.Add(w); }
+      return l;
+    }
+    string DName(IList l, string vault) { var d = WA("DatumWorkset").Invoke(null, new object[] { l, vault }); return d == null ? null : (string)FW(d, "Name"); }
+    var dws = DW((5, "TST_Shared Views, Levels, Grids", 0, 0), (2, "TST_Grids old", 0, 0), (9, "TST_STR", 14, 300), (11, "TST_ARC", 2, 10));
+    Check(DName(dws, "TST_ARC") == "TST_ARC" && DName(dws, null) == "TST_STR" && DName(dws, "TST_missing") == "TST_STR"
+      && DName(DW((5, "TST_Shared Views, Levels, Grids", 0, 0), (2, "TST_GRIDS old", 0, 0), (9, "TST_STR", 0, 3)), null) == "TST_GRIDS old"
+      && DName(DW((9, "TST_STR", 0, 3)), null) == null,
+      "datum workset: the vault's name, else the one holding the levels and grids, else the oldest named levels / grids; not by its exact name");
+    var emptyDatum = DW((5, "TST_Shared Views, Levels, Grids", 0, 0), (9, "TST_STR", 0, 3));
+    WA("MarkDatum").Invoke(null, new object[] { emptyDatum, null });
+    var delDatum = WA("PlanDelete").Invoke(null, new object[] { emptyDatum, new List<string>(), null, "me" })!;
+    var delNamed = WA("PlanDelete").Invoke(null, new object[] { emptyDatum, new List<string> { "TST_Shared Views, Levels, Grids" }, null, "me" })!;
+    var renDatum = WA("PlanRename").Invoke(null, new object[] { emptyDatum, new List<(string, string)> { ("TST_Shared Views, Levels, Grids", "TST_X") }, "me" })!;
+    Check(((IList)FW(delDatum, "Item1")).Count == 0 && ((IList)FW(delNamed, "Item1")).Count == 0 && (string)FW(((IList)FW(delNamed, "Item2"))[0], "Code") == "system"
+      && ((IList)FW(renDatum, "Item1")).Count == 0 && (string)FW(((IList)FW(renDatum, "Item2"))[0], "Code") == "system" && (bool)wal.GetMethod("IsProtected", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { wsT }, null)!.Invoke(null, new object[] { emptyDatum[0] })!,
+      "datum workset: protected, never deleted (even empty, even when named) or renamed");
+    var lt1 = PS("move", "TST_LINKS", 0, 2, 1, 21); var lt2 = PS("move", "TST_LINKS", 0, 2, 1, 21); ((List<long>)FW(lt2, "TypeIds")).Add(22);
+    Check(PHW(PL(lt1)) != PHW(PL(lt2)), "workset plan hash: a link type moved with its instance is part of the plan");
+
+    // 22. 1.13.0 solver: all-touching in chunks, flips need a confirmation, faces that touch, warnings named by plan item.
+    var chIn = new List<(int, string, long, long)> { (1, "TST_L1", 30, 31), (0, "TST_L0", 50, 51), (1, "TST_L1", 12, 40), (0, "TST_L0", 9, 70), (2, "TST_L2", 1, 2) };
+    var ch = (List<List<int>>)R("Chunks").Invoke(null, new object[] { chIn, 2 })!;
+    var chFlat = ch.Select(c => string.Join(",", c)).ToList();
+    var chAgain = (List<List<int>>)R("Chunks").Invoke(null, new object[] { chIn.AsEnumerable().Reverse().ToList(), 2 })!;
+    var chOne = (List<List<int>>)R("Chunks").Invoke(null, new object[] { chIn, 500 })!;
+    Check(chFlat.SequenceEqual(new[] { "3,1", "2,0", "4" }) && chAgain.Count == 3 && chAgain[0].Count == 2 && chOne.Count == 1 && chOne[0].Count == 5
+      && ((List<List<int>>)R("Chunks").Invoke(null, new object[] { new List<(int, string, long, long)>(), 500 })!).Count == 0,
+      $"all-touching chunks: by level then id, cut by chunk size; one chunk below the size ({string.Join(" | ", chFlat)})");
+    string TDec(bool j, bool r, bool t, bool c, bool f) => (string)R("TouchDecision").Invoke(null, new object[] { j, r, t, c, f })!;
+    Check(TDec(false, true, true, false, false) == "join" && TDec(false, true, false, false, false) == "not-touching" && TDec(true, true, true, false, false) == "right"
+      && TDec(true, false, true, false, false) == "flip-confirm" && TDec(true, false, true, false, true) == "switch-join" && TDec(true, false, true, true, false) == "switch-join",
+      "all-touching: missing joins only where the two really touch; a wrong-order join is switched only when the pair clashes or its flip is confirmed");
+    bool FT(double[] na, double[] oa, double[] nb, double[] ob) => (bool)R("FacesTouch").Invoke(null, new object[] { na, oa, nb, ob, 0.003 })!;
+    Check(FT(new[] { 0.0, 0, 1 }, new[] { 0.0, 0, 3 }, new[] { 0.0, 0, -2 }, new[] { 5.0, 5, 3.002 }) && !FT(new[] { 0.0, 0, 1 }, new[] { 0.0, 0, 3 }, new[] { 0.0, 0, -1 }, new[] { 0.0, 0, 3.01 })
+      && !FT(new[] { 0.0, 0, 1 }, new[] { 0.0, 0, 3 }, new[] { 0.0, 0, 1 }, new[] { 0.0, 0, 3 }) && !FT(new[] { 0.0, 0, 1 }, new[] { 0.0, 0, 3 }, new[] { 1.0, 0, 0 }, new[] { 0.0, 0, 3 }),
+      "real contact: faces touch when their normals are opposite and their planes within 1 mm; near only is not touching");
+    var pis = new List<(string, long, long)> { ("join:1>2", 1, 2), ("join:3>4", 3, 4), ("trim:2>9:1", 2, 9) };
+    var pi1 = (List<string>)R("PlanItemsFor").Invoke(null, new object[] { new long[] { 2, 1 }, pis })!;
+    var pi2 = (List<string>)R("PlanItemsFor").Invoke(null, new object[] { new long[] { 4, 77 }, pis })!;
+    Check(pi1.SequenceEqual(new[] { "join:1>2" }) && pi2.SequenceEqual(new[] { "join:3>4" }) && (bool)R("IsNotIntersecting").Invoke(null, new object[] { "Highlighted elements are joined but do not intersect." })!
+      && !(bool)R("IsNotIntersecting").Invoke(null, new object[] { "Highlighted walls overlap." })!,
+      "guard: each new warning names the plan item behind it; \"joined but do not intersect\" is recognised");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

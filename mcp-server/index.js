@@ -21,6 +21,7 @@ import * as ParamExec from "./lib/paramexec.js";
 import * as ClashResolve from "./lib/clashresolve.js";
 import * as Interference from "./lib/interference.js";
 import * as Worksets from "./lib/worksets.js";
+import * as WorksetPlan from "./lib/worksetplan.js";
 import * as Capture from "./lib/capture.js";
 import * as RegisterUpdate from "./lib/registerupdate.js";
 import * as ViewFill from "./lib/viewfill.js";
@@ -213,6 +214,7 @@ tool("run_clash_test", {
     ...materialInputs,
     with_model: z.string().optional().describe("Secondary model: compare the primary with this linked or open model only (its name, from sources: true)"),
     primary_model: z.string().optional().describe("Primary model (default: this model). A BIM manager can set a link here to check link against link"),
+    models: z.array(z.string().max(260)).max(20).optional().describe("Other open models to test too (default: none; links always take part)"),
     show: z.boolean().optional(),
   },
   annotations: benign,
@@ -984,7 +986,7 @@ async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan,
       const keep = au.rows.filter((r) => r.expected);
       if (keep.length) {
         const truly = au.rows.filter((r) => r.flags.includes("empty")).map((r) => r.name);
-        keptNote = `Kept (empty, but elements look like they belong there; move them rather than delete): ${keep.map((r) => `${r.name}: ${r.expected.elements} on ${Object.keys(r.expected.on).join(", ")}`).join("; ")}.`;
+        keptNote = `Kept (empty, but elements look like they belong there; move them rather than delete): ${keep.map((r) => `${Worksets.q(r.name)}: ${r.expected.elements} on ${Object.keys(r.expected.on).map(Worksets.q).join(", ")}`).join("; ")}.`;
         if (!truly.length) return text(`Nothing to delete: no workset is truly empty.\n${keptNote}`);
         a = { ...a, worksets: truly };
       }
@@ -1004,6 +1006,119 @@ async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan,
   });
 }
 
+// workset_plan: propose (from the workset names, read-only) -> the user edits the CSV / xlsx -> confirm (a plan per model,
+// rules for the vault) -> apply (workset_admin apply_plan through planExecute: check, dry run, identical apply).
+const wplanState = new Map();
+
+/** Facts (and the naming rule) of the active model, or of each path opened in turn (detached, worksets preserved). */
+async function worksetFactsFor(a, timeout) {
+  const facts = () => callRevit("workset_admin", { action: "facts", check_only: true, max_ids: a.max_ids ?? 5, expect_version: VERSION, ...(a.views?.length ? { views: a.views } : {}), ...(a.datum_workset ? { datum_workset: a.datum_workset } : {}) }, timeout);
+  const out = [];
+  if (a.paths?.length) {
+    await pinSession();
+    for (const [i, p] of a.paths.entries()) {
+      // Only models this batch opened are closed (never the user's own active model).
+      const r = await callRevit("open_model", { path: p, detach: a.detach ?? "preserve_worksets", audit: false, worksets: "all", close_previous: i > 0, clear_transmitted: false, save_as_central_ok: false }, 600);
+      modelSwitched(r?.model);
+      out.push({ path: p, facts: await facts(), naming: (await worksetNaming()).naming });
+    }
+  } else out.push({ facts: await facts(), naming: (await worksetNaming()).naming });
+  return out;
+}
+const notWorkshared = (list) => list.filter((x) => x.facts?.workshared === false).map((x) => x.facts?.model ?? x.path);
+
+tool("workset_plan", {
+  title: "Plan the worksets (propose, confirm, apply)",
+  description: "propose (read-only): for the active model or each of paths (identical models once), one row per target workset (spelling twins merged) with what it holds from its NAME (category decides, then level / zone, a material mismatch never matches; visibility worksets manual only), counts, export-view visibility; element groups as detail; CSV + xlsx with a decision column. confirm: reads the edited file (rule-level, group-level or hand-made) against the model, writes a plan per model and shows the rules; save_rules + confirm: true saves them into the vault. apply: plan_file: check_only, dry_run, then the identical call, ONE undo step; borrowed elements skipped.",
+  inputSchema: {
+    action: z.enum(["propose", "confirm", "apply"]),
+    paths: z.array(z.string().max(1000)).max(30).optional().describe("Models to open in turn (default: the active model)"),
+    detach: z.enum(["none", "preserve_worksets"]).optional().describe("How paths open (default preserve_worksets)"),
+    views: z.array(z.string().max(200)).max(20).optional().describe("Export views to check visibility in (default: 3D views named NAVISWORKS / NWC)"),
+    datum_workset: z.string().max(200).optional(),
+    out_dir: z.string().optional(),
+    file: z.string().optional().describe("confirm: the edited proposal (.csv / .xlsx)"),
+    save_rules: z.boolean().optional(), confirm: z.boolean().optional().describe("save_rules: write after the user saw the rules"),
+    vault: z.string().optional(),
+    plan_file: z.string().optional().describe("apply: a plan JSON written by confirm"),
+    max_ids: z.number().int().min(0).max(500).optional(),
+    check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().max(600).optional(),
+    report_dir: z.string().optional(), timeout_seconds: z.number().int().min(10).max(3600).optional(),
+  },
+  annotations: writes,
+}, async ({ action, check_only, dry_run, explanation, timeout_seconds, ...a }) => {
+  const timeout = timeout_seconds ?? 900;
+  if (action === "propose") {
+    const list = await worksetFactsFor(a, timeout);
+    const ok = list.filter((x) => x.facts?.workshared !== false);
+    const skip = notWorkshared(list);
+    if (!ok.length) return text(`Not workshared, no worksets to plan: ${skip.join(", ")}.`);
+    const p = WorksetPlan.propose(ok);
+    const first = p.models[0].model;
+    const dir = a.out_dir ?? (await auditFolder(a, first, { sub: "worksets", reports: "worksets" })).dir;
+    const stem = ParamExec.fileStem("worksets-plan", p.models.length > 1 ? `${p.models.length}-models` : first);
+    const csv = writeOut(dir, `${stem}.csv`, WorksetPlan.proposalCsv(p)), detail = writeOut(dir, `${stem}-groups.csv`, WorksetPlan.detailCsv(p));
+    const xlsx = await WorksetPlan.proposalXlsx(p, writeOut(dir, `${stem}.xlsx`, ""));
+    const notes = list.flatMap((x) => (x.facts?.notes ?? []).map((n) => `${x.facts?.model}: ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`));
+    const out = text({ models: p.models, counts: p.counts, exportViews: [...new Set(ok.flatMap((x) => x.facts?.exportViews ?? []))], files: [xlsx, csv, detail] });
+    out.content.push({ type: "text", text: `${WorksetPlan.proposalText(p, [xlsx, csv, detail])}${skip.length ? `\nNot workshared (skipped): ${skip.join(", ")}.` : ""}${notes.length ? `\nNotes:\n${notes.map((n) => `- ${n}`).join("\n")}` : ""}` });
+    return out;
+  }
+  if (action === "confirm") {
+    if (!a.file) throw new RevitError("confirm needs file: the edited proposal (.csv or .xlsx).");
+    let table;
+    try { table = await WorksetPlan.readTable(a.file); } catch (e) { throw new RevitError(e.message); }
+    const list = (await worksetFactsFor(a, timeout)).filter((x) => x.facts?.workshared !== false);
+    let results, rules, others = [];
+    if (table.layout === "rules") {
+      // Rule rows: the confirmed rules, evaluated against each model's facts.
+      const ctx = { levels: WorksetPlan.levelTokens(list.flatMap((x) => x.facts?.levels ?? [])), table: Worksets.tokenTable(list[0]?.naming), noise: WorksetPlan.commonTokens(table.rows.map((r) => r.proposed)), manualOnly: list[0]?.naming?.manualOnly ?? [] };
+      const rr = WorksetPlan.rulesFromRows(table.rows, ctx);
+      results = list.map((x) => ({ ...WorksetPlan.planFromRules(rr.rules, x.facts), flagged: rr.flagged, undecided: rr.undecided, skipped: rr.skipped, confirmed: rr.confirmed }));
+      rules = { rules: WorksetPlan.vaultRules(rr.rules, [...new Set(list.flatMap((x) => x.facts?.zones ?? []))]), ambiguous: [] };
+    } else {
+      results = list.map((x) => WorksetPlan.confirm(table.rows, x.facts)).filter((c) => c.rowsForModel);
+      others = WorksetPlan.otherModels(table.rows, list.map((x) => x.facts?.model).filter(Boolean));
+    }
+    if (!results.length) return text(`No rows in ${a.file} are for the open model (${list.map((x) => x.facts?.model).join(", ")}). Models in the file: ${others.join(", ") || "none"}. Open one (or pass paths) and confirm again.`);
+    const dir = path.dirname(a.file), stem = path.basename(a.file).replace(/\.(csv|xlsx)$/i, "");
+    const files = results.map((c) => writeOut(dir, `${stem}.plan-${ParamExec.safeName(c.model)}.json`,
+      JSON.stringify({ schema: "ace.workset-plan/1", model: c.model, source: a.file, layout: table.layout, at: localDate(new Date(), { time: true }), plan: c.plan, flagged: c.flagged, undecided: c.undecided.length, notes: c.notes ?? [] }, null, 1)));
+    rules ??= WorksetPlan.deriveRules(results);
+    let merge = null, saved = false;
+    if (a.save_rules) {
+      const vdir = await projectVaultDir(a);
+      if (!vdir) throw new RevitError("save_rules needs the project vault: give vault (or open a model whose vault ACE finds).");
+      const f = path.join(vdir, "project-requirements.json");
+      let json = { schema: "ace.project-requirements/1" };
+      try { if (fs.existsSync(f)) json = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { throw new RevitError(`${f} is not valid JSON (${e.message}): fix it first.`); }
+      merge = { file: f, ...WorksetPlan.mergeRules(json, rules.rules) };
+      if (a.confirm && merge.added.length) {
+        if (!Vault.trusted(path.dirname(CONFIG_PATH), vdir)) throw new RevitError(`The vault ${vdir} is not trusted for writing yet: ask the user, then vault with consent: true, and confirm again.`);
+        fs.writeFileSync(`${f}.tmp`, JSON.stringify(merge.json, null, 2)); fs.renameSync(`${f}.tmp`, f);
+        saved = true;
+        journal({ title: "Workset rules saved from workset_plan", outcome: `${merge.added.length} rule(s) added to ${f}; ${merge.conflicts.length} conflict(s) kept`, details: { added: merge.added, conflicts: merge.conflicts.map((c) => c.rule.id) } });
+      } else if (a.confirm) saved = true;
+    }
+    const out = text({ models: results.map((c) => ({ model: c.model, plan: c.plan, flagged: c.flagged, undecided: c.undecided.length })), files, rules, ...(merge ? { merge: { file: merge.file, added: merge.added, same: merge.same.length, conflicts: merge.conflicts } } : {}) });
+    out.content.push({ type: "text", text: WorksetPlan.confirmText(results, { files, others, rules, merge, saved, file: a.file, layout: table.layout }) });
+    return out;
+  }
+  // apply
+  if (!a.plan_file) throw new RevitError("apply needs plan_file: the plan JSON that workset_plan action confirm wrote.");
+  let pf;
+  try { pf = WorksetPlan.readPlanFile(JSON.parse(fs.readFileSync(a.plan_file, "utf8"))); } catch (e) { throw new RevitError(`${a.plan_file}: ${e.message}`); }
+  const req = { action: "apply_plan", plan: pf.plan, max_ids: a.max_ids ?? 20, expect_version: VERSION };
+  return planExecute({
+    name: "workset plan", command: "workset_admin", req, ident: { action: "apply_plan", plan: pf.plan, model: pf.model }, modelMust: pf.model,
+    // The bridge field "plan" is the workset plan here, so no panel checklist (plan / step) is sent.
+    check_only, dry_run, explanation, plan: undefined, step: undefined, state: wplanState, timeout, a, folder: { sub: "worksets", reports: "worksets" },
+    planOf: WorksetPlan.planOf, identity: Worksets.planIdentity, blocksOf: (r) => Worksets.blocksOf(r).map(Worksets.blockWithHow), rolledBackOf: Worksets.rolledBackOf,
+    render: (r, mode, model, rolledBack) => WorksetPlan.applyText(r, { model, mode, rolledBack }),
+    nothing: (model) => `Nothing to do in ${model}: the plan is empty (or already applied).`,
+  });
+});
+
 /**
  * The execution stage shared by the plan-based native changes (worksets rename / delete_empty): an apply needs the
  * identical dry run in the same Revit session (checked before Revit is asked), a read-only check fails fast on blocks and
@@ -1016,6 +1131,8 @@ async function planExecute(o) {
   if (o.check_only) {
     // Read-only: the plan and its blocks as Revit sees them now; no gate, nothing remembered as a preview.
     const pre = await callRevit(command, { ...req, check_only: true, dry_run: false }, timeout);
+    if (o.modelMust && pre?.model && WorksetPlan.modelKey(o.modelMust) !== WorksetPlan.modelKey(pre.model))
+      return blockedReply([{ what: "the plan", why: `it is for ${o.modelMust}, the active model is ${pre.model}`, how: `open ${o.modelMust} (open_model) and run again` }], "Blocked; nothing changed:", { model: pre.model });
     const out = text(pre);
     out.content.push({ type: "text", text: `${o.render(pre, "check", pre?.model ?? "the model", false)}\n${o.planOf(pre).length && !o.blocksOf(pre).length ? "To change: the same call with dry_run: true, then the identical call after the user's OK." : ""}`.trim() });
     return out;
@@ -1030,6 +1147,8 @@ async function planExecute(o) {
   const pre = await callRevit(command, { ...req, check_only: true, dry_run: false }, timeout);
   const model = pre?.model;
   if (!model) throw new RevitError("Revit answered without a model: open the model and run again.");
+  if (o.modelMust && WorksetPlan.modelKey(o.modelMust) !== WorksetPlan.modelKey(model))
+    return blockedReply([{ what: "the plan", why: `it is for ${o.modelMust}, the active model is ${model}`, how: `open ${o.modelMust} (open_model) and run again` }], "Blocked before anything changed:", { model });
   const { dir, note: dirNote } = await auditFolder(a, model, o.folder);
   const stamp = localDate(new Date(), { time: true });
   const record = (x) => writeOut(dir, `${ParamExec.fileStem(`${command.replace(/_/g, "-")}-run`, model, stamp)}.json`, JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, request: req, ...x }, null, 1));
@@ -1054,7 +1173,7 @@ async function planExecute(o) {
   if (prev && prev.key !== key) return stop([ClashResolve.PLAN_CHANGED], `Blocked in ${model}; nothing changed:`);
   const ok = (r) => r?.success === true && !o.blocksOf(r).length && r?.verify?.ok !== false;   // a dry run is always rolled back: its self-check decides
   const result = await gated(key, { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    () => callRevit(command, { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step, expect_model: dry_run ? model : prev.model, ...(!dry_run && prev.planHash ? { expect_plan: prev.planHash } : {}) }, timeout), ok);
+    () => callRevit(command, { ...req, check_only: false, dry_run: !!dry_run, explanation, ...(plan ? { plan } : {}), ...(step ? { step } : {}), expect_model: dry_run ? model : prev.model, ...(!dry_run && prev.planHash ? { expect_plan: prev.planHash } : {}) }, timeout), ok);
   if (dry_run && ok(result)) state.set(reqKey, { key, model: result.model ?? model, planHash: result.planHash ?? pre.planHash ?? null });
   if (!dry_run) state.delete(reqKey);
   if (result?.alreadyApplied) return text(result);
@@ -1901,6 +2020,7 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
     const v = r?.aceVersion;
     out.content.push({ type: "text", text: [ClashResolve.replyText(r, { mode: "plan", model: r?.model, test: req.test, scope: req }), rulesLine(r),
       v && !sameVersion(v, VERSION) ? `Note: the add-in is ${v}, the server ${VERSION}: a fix is refused until both are one version.` : "",
+      ClashResolve.unknownFlips(r, req.flips).length ? `Not on the "Flip, confirm" list (a fix refuses them): ${ClashResolve.unknownFlips(r, req.flips).join(", ")}.` : "",
       r?.plan?.length && !r?.blocked?.length ? "To fix: clash_resolve action fix with dry_run: true, show the user the result, then the identical call without dry_run." : ""].filter(Boolean).join("\n") });
     return out;
   }
@@ -1941,6 +2061,9 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
       how: "install one ACE version for both (build a package with build-package.ps1, run install.ps1, restart Revit)" }], `Blocked in ${model}; nothing changed:`);
   // Fail fast: borrowed elements, groups, design options, a read-only model stop the fix before the dry run.
   if (pre.blocked?.length) return stop(pre.blocked, `Blocked in ${model}; stopped before the dry run, nothing changed:`);
+  // Flips only from the "flip, confirm" list the plan showed.
+  const badFlips = ClashResolve.unknownFlips(pre, req.flips);
+  if (badFlips.length) return stop(badFlips.map((id) => ({ what: `flip ${id}`, why: "it is not on the plan's \"Flip, confirm\" list", how: "run clash_resolve (action plan) with the same args and take the ids from that list" })), `Blocked in ${model}; nothing changed:`);
   if (!pre.plan?.length) {
     record({ outcome: "nothing to fix", reportOnly: pre.reportOnly });
     const out = text(pre);
@@ -2009,7 +2132,10 @@ tool("clash_resolve", {
     scope: z.enum(["clashing", "all-touching"]).optional().describe("Default: the vault's, else clashing"),
     selection: z.boolean().optional().describe("Only the current selection"),
     trim_to_face: z.boolean().optional().describe("false switches the vault-approved trim off; true only where the vault allows it"),
-    max_pairs: z.number().int().min(1).max(100000).optional().describe("All-touching: cap on touching pairs (above it: report only)"),
+    max_pairs: z.number().int().min(1).max(100000).optional().describe("All-touching: default chunk size"),
+    chunk_size: z.number().int().min(1).max(100000).optional().describe("All-touching: pairs per chunk (default max_pairs, 500); each chunk is its own dry run, apply and undo"),
+    chunk: z.number().int().min(1).optional().describe("Which chunk to plan (default 1)"),
+    flips: z.array(z.string().max(120)).max(2000).optional().describe("Ids from the plan's \"Flip, confirm\" list to switch"),
     same_category: z.boolean().optional().describe("Default true (same-category joins are part of the office method); false opts out"),
     steel: z.object({ cutback: z.boolean().optional(), coping: z.boolean().optional(), allowUnjoin: z.boolean().optional().describe("Only after the user agrees: a steel end joined to a column may be unjoined (join state changes) to cut it back") }).optional(),
     vault: z.string().optional().describe("Project folder or its ACE Vault (default: the open model's)"),
