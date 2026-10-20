@@ -10,7 +10,9 @@ import { spawnSync as spawnSyncDefault } from "node:child_process";
 import ExcelJS from "exceljs";
 
 // JSZip is exceljs's own zip library (resolved from exceljs, so the two always travel together).
-const JSZip = createRequire(createRequire(import.meta.url).resolve("exceljs"))("jszip");
+const fromExceljs = createRequire(createRequire(import.meta.url).resolve("exceljs"));
+const JSZip = fromExceljs("jszip");
+const { SaxesParser } = fromExceljs("saxes");   // exceljs's own XML parser: the strict, namespace-aware check
 
 const lc = (s) => String(s ?? "").trim().toLowerCase();
 const cellText = (v) => v == null ? "" : typeof v === "object" ? (v.richText ? v.richText.map((t) => t.text).join("") : v.text ?? (v.result != null ? String(v.result) : v.formula ? "" : String(v))) : String(v);
@@ -433,6 +435,45 @@ const countOf = (block, child) => block ? [...block.matchAll(new RegExp(`<${chil
 const innerOf = (block) => block && !/\/>$/.test(block) ? block.replace(/^<[^>]*>/, "").replace(/<\/[^>]+>$/, "") : "";
 const shiftDxf = (xml, by) => by ? xml.replace(DXF_ATTR, (m, k, n) => `${k}="${Number(n) + by}"`) : xml;
 
+// Namespaces: a carried block (custom table styles carry xr9:uid, for one) uses prefixes the target root may not declare;
+// an unbound prefix makes the part not well-formed and Excel refuses the file.
+const rootTagOf = (xml) => xml.match(/<(?!\?)(?!!)[\w:.-]+\b[^>]*>/)?.[0] ?? "";
+const nsDecls = (root) => Object.fromEntries([...root.matchAll(/\sxmlns:([\w.-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+const ignorableOf = (root) => (root.match(/\smc:Ignorable="([^"]*)"/)?.[1] ?? "").split(/\s+/).filter(Boolean);
+const prefixesIn = (frag) => new Set([...frag.matchAll(/<\/?([\w.-]+):[\w.-]+|\s([\w.-]+):[\w.-]+\s*=/g)].map((m) => m[1] ?? m[2]).filter((p) => p !== "xmlns" && p !== "xml"));
+/** Carried fragments made safe for the target part: prefixes the source root declares are declared on the target root
+ * (and kept ignorable when the source lists them in mc:Ignorable); prefixes nobody declares are stripped.
+ * -> { target, fragments, added, stripped } */
+export function carryNamespaces(targetXml, sourceXml, fragments) {
+  const tRoot = rootTagOf(targetXml), sRoot = rootTagOf(sourceXml);
+  const tNs = nsDecls(tRoot), sNs = nsDecls(sRoot), sIgn = ignorableOf(sRoot);
+  const declaredInFrag = (f) => new Set(Object.keys(nsDecls(f)));
+  const added = [], stripped = [];
+  let root = tRoot;
+  const out = fragments.map((frag) => {
+    let f = frag;
+    const local = declaredInFrag(frag);
+    for (const p of prefixesIn(frag)) {
+      if (tNs[p] || local.has(p)) continue;
+      if (sNs[p]) {
+        root = root.replace(/^<([\w:.-]+)/, `<$1 xmlns:${p}="${sNs[p]}"`); tNs[p] = sNs[p]; added.push(p);
+        if (sIgn.includes(p)) {
+          if (!tNs.mc && sNs.mc) { root = root.replace(/^<([\w:.-]+)/, `<$1 xmlns:mc="${sNs.mc}"`); tNs.mc = sNs.mc; }
+          const ign = ignorableOf(root);
+          if (!ign.includes(p)) root = /\smc:Ignorable="/.test(root) ? root.replace(/\smc:Ignorable="([^"]*)"/, (m, v) => ` mc:Ignorable="${`${v} ${p}`.trim()}"`) : root.replace(/(\/?>)$/, ` mc:Ignorable="${p}"$1`);
+        }
+        continue;
+      }
+      // Declared nowhere: its attributes and elements go.
+      const e = p.replace(/[.-]/g, "\\$&");
+      f = f.replace(new RegExp(`\\s${e}:[\\w.-]+\\s*=\\s*"[^"]*"`, "g"), "").replace(new RegExp(`<${e}:([\\w.-]+)\\b[^>]*/>|<${e}:([\\w.-]+)\\b[^>]*>[\\s\\S]*?</${e}:\\1\\2>`, "g"), "");
+      stripped.push(p);
+    }
+    return f;
+  });
+  return { target: root === tRoot ? targetXml : targetXml.replace(tRoot, root), fragments: out, added: [...new Set(added)], stripped: [...new Set(stripped)] };
+}
+
 /** The workbook as xlsx bytes, its tables restored from the source register (by table name), their dxfs carried.
  * -> { buf, restored, stripped, dxfsCarried, overridesDropped, tableStylesCarried } */
 export async function writeWorkbook(wb, srcBuf) {
@@ -452,19 +493,25 @@ export async function writeWorkbook(wb, srcBuf) {
     if (orig && attrsOf(orig).ref === a.ref) { restoredFiles.push([f, orig]); restored.push(a.name); continue; }
     if (a.headerRowCount === "0" && /<autoFilter\b/.test(xml)) { out.file(f, xml.replace(/<autoFilter\b[^>]*\/>|<autoFilter\b[\s\S]*?<\/autoFilter>/, "")); stripped.push(a.name); }
   }
-  let dxfsCarried = 0, overridesDropped = 0, tableStylesCarried = 0;
+  let dxfsCarried = 0, overridesDropped = 0, tableStylesCarried = 0, nsAdded = [], nsStripped = [];
   const needs = restoredFiles.some(([, x]) => DXF_ATTR.test(x)); DXF_ATTR.lastIndex = 0;
   const carry = needs && srcDxfs > 0 && styles;
   if (carry) {
     // Append the register's dxfs after the written ones (or put the list where styles.xml expects it).
-    const total = writtenDxfs + srcDxfs, wBlock = blockOf(styles, "dxfs");
-    const merged = `<dxfs count="${total}">${innerOf(wBlock)}${innerOf(srcDxfsBlock)}</dxfs>`;
+    const total = writtenDxfs + srcDxfs;
+    // The carried blocks bring their namespace prefixes' declarations (from the register's styles root) with them.
+    const sTs0 = blockOf(srcStyles, "tableStyles");
+    const ns = carryNamespaces(styles, srcStyles, [innerOf(srcDxfsBlock), sTs0 ?? ""]);
+    styles = ns.target; nsAdded = ns.added; nsStripped = ns.stripped;
+    const [srcDxfInner, sTs] = [ns.fragments[0], sTs0 ? ns.fragments[1] : null];
+    const wBlock = blockOf(styles, "dxfs");
+    const merged = `<dxfs count="${total}">${innerOf(wBlock)}${srcDxfInner}</dxfs>`;
     if (wBlock) styles = styles.replace(wBlock, merged);
     else if (/<tableStyles\b/.test(styles)) styles = styles.replace(/<tableStyles\b/, `${merged}<tableStyles`);
     else styles = styles.replace(/<\/cellStyles>/, `</cellStyles>${merged}`);
     dxfsCarried = srcDxfs;
     // The register's custom table styles (their dxfIds shifted too), when exceljs wrote none.
-    const wTs = blockOf(styles, "tableStyles"), sTs = blockOf(srcStyles, "tableStyles");
+    const wTs = blockOf(styles, "tableStyles");
     if (sTs && countOf(sTs, "tableStyle") > 0 && countOf(wTs, "tableStyle") === 0) {
       const carried = shiftDxf(sTs, writtenDxfs);
       styles = wTs ? styles.replace(wTs, carried) : styles.replace(merged, `${merged}${carried}`);
@@ -479,7 +526,16 @@ export async function writeWorkbook(wb, srcBuf) {
     x = x.replace(/\s(\w*[dD]xfId)="(\d+)"/g, (m, k, n) => { if (Number(n) < limit) return m; overridesDropped++; return ""; });
     out.file(f, x);
   }
-  return { buf: await out.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), restored, stripped, dxfsCarried, overridesDropped, tableStylesCarried };
+  // workbook.xml: the register's view named its own sheet (firstSheet / activeTab); with the other tabs dropped, an index
+  // past the sheets left is clamped to 0.
+  let viewsClamped = 0;
+  if (out.file("xl/workbook.xml")) {
+    const wbx = await out.file("xl/workbook.xml").async("string");
+    const sheets = [...wbx.matchAll(/<sheet\b/g)].length;
+    const fixed = wbx.replace(/<workbookView\b[^>]*>/g, (tag) => tag.replace(/\s(firstSheet|activeTab)="(\d+)"/g, (m, k, n) => { if (Number(n) < sheets) return m; viewsClamped++; return ` ${k}="0"`; }));
+    if (fixed !== wbx) out.file("xl/workbook.xml", fixed);
+  }
+  return { buf: await out.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), restored, stripped, dxfsCarried, overridesDropped, tableStylesCarried, nsAdded, nsStripped, viewsClamped };
 }
 
 /** The style and string indexes of an xlsx: every dxfId below the dxf count, every cell style below the cellXfs count,
@@ -512,18 +568,53 @@ export async function checkIndexes(buf) {
   return problems;
 }
 
+/** Every .xml and .rels part parsed strictly (well-formed, namespaces bound), and the workbook views inside the sheets.
+ * -> problems naming the part, line and column (empty = ok) */
+export async function checkXml(buf) {
+  const zip = await JSZip.loadAsync(buf);
+  const problems = [];
+  for (const f of Object.keys(zip.files).filter((n) => !zip.files[n].dir && /\.(xml|rels)$/i.test(n)).sort()) {
+    const xml = await zip.file(f).async("string");
+    const parser = new SaxesParser({ xmlns: true });
+    let err = null;
+    parser.on("error", (e) => { err ??= e; });
+    try { parser.write(xml.replace(/^\uFEFF/, "")).close(); } catch (e) { err ??= e; }
+    if (err) { const at = String(err.message).match(/(\d+):(\d+):\s*(.*)$/s); problems.push(`${f} is not well-formed XML (line ${at?.[1] ?? parser.line}, column ${at?.[2] ?? parser.column}): ${(at?.[3] ?? String(err.message)).trim()}`); }
+  }
+  const wbx = zip.file("xl/workbook.xml") ? await zip.file("xl/workbook.xml").async("string") : "";
+  const sheets = [...wbx.matchAll(/<sheet\b/g)].length;
+  for (const m of wbx.matchAll(/\s(firstSheet|activeTab)="(\d+)"/g)) if (Number(m[2]) >= sheets) problems.push(`xl/workbook.xml: ${m[1]}="${m[2]}" but the workbook has ${sheets} sheet(s)`);
+  return problems;
+}
+
 /** Opens the xlsx read-only in Excel (Windows, COM) -> { ok, skipped, why }. Never on other systems. */
-export function excelOpenTest(file, { timeoutMs = 60000, spawnSync = spawnSyncDefault, platform = process.platform } = {}) {
+export function excelOpenTest(file, { timeoutMs = 90000, spawnSync = spawnSyncDefault, platform = process.platform } = {}) {
   if (platform !== "win32") return { ok: true, skipped: true, why: "not on Windows" };
   const p = String(file).replace(/'/g, "''");
-  const ps = `$ErrorActionPreference='Stop'; try { $x = New-Object -ComObject Excel.Application } catch { Write-Output 'NOEXCEL'; exit 0 }
-try { $x.DisplayAlerts = $false; $wb = $x.Workbooks.Open('${p}', 0, $true); $wb.Close($false); Write-Output 'OK' } catch { Write-Output ('FAIL: ' + $_.Exception.Message) } finally { $x.Quit(); [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($x) }`;
-  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], { encoding: "utf8", timeout: timeoutMs, windowsHide: true });
+  // The Excel started here is found by its process id (never another Excel the user has open), so a hang (a repair
+  // prompt) can be ended. A repaired open (the name changes) and "Unable to get the Open property" are failures.
+  const ps = [
+    "$ErrorActionPreference='Stop'",
+    "$before = @(Get-Process EXCEL -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })",
+    "try { $x = New-Object -ComObject Excel.Application } catch { Write-Output ('NOEXCEL: ' + $_.Exception.Message); exit 0 }",
+    "$new = @(Get-Process EXCEL -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id } | ForEach-Object { $_.Id })",
+    "Write-Output ('PID: ' + ($new -join ','))",
+    "try { $x.DisplayAlerts = $false; $x.Visible = $false; $wb = $x.Workbooks.Open('" + p + "', 0, $true); $n = $wb.Name; $wb.Close($false)",
+    "  if ($n -ne [System.IO.Path]::GetFileName('" + p + "')) { Write-Output ('FAIL: Excel repaired the file (opened as ' + $n + ')') } else { Write-Output 'OK' } }",
+    "catch { Write-Output ('FAIL: ' + $_.Exception.Message) }",
+    "finally { try { $x.Quit() } catch {}; [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($x) }",
+  ].join("\n");
+  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps], { encoding: "utf8", timeout: timeoutMs, windowsHide: true });
   const outTxt = String(r.stdout ?? "").trim();
-  if (r.error) return { ok: true, skipped: true, why: `Excel open test not run (${r.error.code === "ETIMEDOUT" ? "timed out" : r.error.message})` };
-  if (/NOEXCEL/.test(outTxt)) return { ok: true, skipped: true, why: "Excel is not installed" };
-  if (/^OK/m.test(outTxt)) return { ok: true, skipped: false };
-  return { ok: false, skipped: false, why: (outTxt.match(/FAIL: (.*)/)?.[1] ?? outTxt) || `PowerShell exit ${r.status}` };
+  const pids = (outTxt.match(/PID: ([\d,]*)/)?.[1] ?? "").split(",").filter(Boolean);
+  if (r.error?.code === "ETIMEDOUT") {
+    for (const id of pids) try { spawnSync("taskkill.exe", ["/PID", id, "/F"], { timeout: 15000, windowsHide: true }); } catch {}
+    return { ok: false, skipped: false, why: `Excel did not open it within ${Math.round(timeoutMs / 1000)} s (probably a repair prompt)` };
+  }
+  if (r.error) return { ok: true, skipped: true, why: `PowerShell could not run (${r.error.message})` };
+  if (/NOEXCEL/.test(outTxt)) return { ok: true, skipped: true, why: `Excel is not installed (${outTxt.match(/NOEXCEL: (.*)/)?.[1] ?? "no Excel.Application"})` };
+  if (/^OK$/m.test(outTxt)) return { ok: true, skipped: false };
+  return { ok: false, skipped: false, why: (outTxt.match(/FAIL: (.*)/)?.[1] ?? (outTxt || String(r.stderr ?? "").trim())) || `PowerShell exit ${r.status}` };
 }
 
 /** Every table of an xlsx checked: no autoFilter without a header row, ref inside the sheet's used range, as many columns

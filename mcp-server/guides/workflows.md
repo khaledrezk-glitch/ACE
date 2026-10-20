@@ -322,7 +322,8 @@ Rows whose id cell is not an id (section headings) are skipped and listed (id_pa
 "idPattern"). An id pattern with a capture group extracts the id from file names (group 1); without one (e.g. an
 anchored prefix "^XX01-") it only filters the ids found in file names as they are. discipline may be left out when the
 template has one discipline (or when register, id_column and stage_columns are given). Tables in the sheet are kept as
-in the register, and the written file is self-checked (tables Excel would refuse, dxf / cell style / shared-string indexes; on Windows Excel
+in the register, and the written file is self-checked (strict XML of every part, tables Excel would refuse, dxf / cell style / shared-string
+indexes; on Windows Excel
 opens it read-only unless excel_open_test: false): a failing file is deleted, never reported as written. A confirm after an MCP restart finds no check: run the check again. stage can be a list (e.g. the stage's planned and actual columns). "Probably the same, confirm" pairs
 (same final number block, one naming field different) are never set by themselves: ask the user, then pass
 accept_near: [ids]. "The id column looks wrong" stops the check: show the sample values and fix id_column;

@@ -5,7 +5,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
 import { createRequire } from "node:module";
-import { asDate, checkTables, checkIndexes, excelOpenTest, writeWorkbook, patternUse, checkTemplate, matchDelivered, nearMatches, reportRows, reportText, resolveRegisterFile, sha, splitIds, summaryOf, templateArgs, updateRegister } from "../lib/registerupdate.js";
+import { asDate, checkTables, checkIndexes, checkXml, excelOpenTest, writeWorkbook, patternUse, checkTemplate, matchDelivered, nearMatches, reportRows, reportText, resolveRegisterFile, sha, splitIds, summaryOf, templateArgs, updateRegister } from "../lib/registerupdate.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-reg-"));
 const wb = new ExcelJS.Workbook();
@@ -321,8 +321,57 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   const fake = (out) => () => ({ stdout: out, status: 0 });
   assert.deepEqual(excelOpenTest("x.xlsx", { platform: "linux" }), { ok: true, skipped: true, why: "not on Windows" });
   assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("OK\n") }), { ok: true, skipped: false });
-  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("NOEXCEL\n") }), { ok: true, skipped: true, why: "Excel is not installed" });
-  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("FAIL: TST cannot open\n") }), { ok: false, skipped: false, why: "TST cannot open" });
+  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("NOEXCEL: TST no class\n") }), { ok: true, skipped: true, why: "Excel is not installed (TST no class)" });
+  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("PID: 42\nFAIL: Unable to get the Open property of the Workbooks class\n") }), { ok: false, skipped: false, why: "Unable to get the Open property of the Workbooks class" });
+  assert.equal(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("PID: 42\nFAIL: Excel repaired the file (opened as x [Repaired].xlsx)\n") }).ok, false, "a repaired open fails");
+  // 1.14.5 #31: a hang (a repair prompt) is a failure, never a skip; the Excel this test started is ended by its id.
+  const calls = [];
+  const hang = (cmd, args) => { calls.push([cmd, ...args].join(" ")); return cmd === "powershell.exe" ? { stdout: "PID: 4242\n", error: Object.assign(new Error("t"), { code: "ETIMEDOUT" }) } : { status: 0 }; };
+  const h = excelOpenTest("x.xlsx", { platform: "win32", spawnSync: hang, timeoutMs: 1000 });
+  assert.ok(!h.ok && !h.skipped && /did not open it within 1 s/.test(h.why) && calls.some((c) => c === "taskkill.exe /PID 4242 /F"), JSON.stringify(h));
+  assert.equal(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: () => ({ stdout: "", stderr: "", status: 1 }) }).ok, false, "no answer is not a pass");
+}
+
+// 1.14.5 #31: the carried table styles use xr9:uid; the written styles root must declare xr9 (Excel refuses an unbound
+// prefix). Every part is parsed strictly; firstSheet / activeTab of a dropped tab are clamped.
+{
+  const JSZip = createRequire(createRequire(import.meta.url).resolve("exceljs"))("jszip");
+  const w9 = new ExcelJS.Workbook();
+  w9.addWorksheet("TST_A"); w9.addWorksheet("TST_B"); w9.addWorksheet("TST_C");
+  const s9 = w9.addWorksheet("TST_REG9");
+  s9.getCell("A1").value = "TST MIDP";
+  s9.addTable({ name: "TST_Xr9", ref: "A3", headerRow: true, columns: [{ name: "Doc", filterButton: true }, { name: "Stage 1", filterButton: true }], rows: [["TST-DOC-001", null], ["TST-DOC-002", null], ["TST-DOC-003", null]] });
+  w9.views = [{ x: 0, y: 0, width: 10000, height: 20000, firstSheet: 3, activeTab: 3, visibility: "visible" }];
+  const z9 = await JSZip.loadAsync(await w9.xlsx.writeBuffer());
+  const tf9 = Object.keys(z9.files).find((f) => /^xl\/tables\/.*\.xml$/.test(f));
+  const XR9 = "http://schemas.microsoft.com/office/spreadsheetml/2016/revision9";
+  let st9 = await z9.file("xl/styles.xml").async("string");
+  st9 = st9.replace(/<styleSheet\b([^>]*)>/, (m, at) => `<styleSheet${at.replace(/\smc:Ignorable="[^"]*"/, "")} mc:Ignorable="x14ac xr9" xmlns:xr9="${XR9}" xmlns:tstu="urn:tst-unused">`)
+    .replace(/<dxfs\b[^>]*\/>|<dxfs\b[\s\S]*?<\/dxfs>/, '<dxfs count="1"><dxf><font><color rgb="FF00AA00"/></font></dxf></dxfs>')
+    .replace(/<tableStyles\b[^>]*\/>|<tableStyles\b[\s\S]*?<\/tableStyles>/, '<tableStyles count="1" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"><tableStyle name="TST-style" pivot="0" count="1" xr9:uid="{00000000-0000-0000-0000-000000000001}" tstx:flag="1"><tableStyleElement type="headerRow" dxfId="0"/></tableStyle></tableStyles>');
+  if (!/xmlns:mc=/.test(st9)) st9 = st9.replace(/<styleSheet\b/, '<styleSheet xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"');
+  z9.file("xl/styles.xml", st9);
+  z9.file(tf9, (await z9.file(tf9).async("string")).replace(/\sheaderRowCount="1"/, "").replace(/<table\b([^>]*)>/, '<table$1 headerRowDxfId="0">').replace(/name="TableStyle[^"]*"/, 'name="TST-style"'));
+  const src9 = await z9.generateAsync({ type: "nodebuffer" });
+  const { wb: out9 } = await updateRegister(src9, { sheet: "TST_REG9", header_row: 3, id_column: "Doc", stage_columns: ["Stage 1"], submission_date: "2026-10-20", label: "S9", files: ["TST-DOC-001.pdf"], force_id_column: true });
+  const w = await writeWorkbook(out9, src9);
+  assert.ok(w.tableStylesCarried === 1 && w.nsAdded.includes("xr9") && w.nsStripped.includes("tstx") && !w.nsAdded.includes("tstu"), JSON.stringify({ ...w, buf: undefined }));
+  assert.deepEqual(await checkXml(w.buf), [], "every part parses strictly");
+  const zo = await JSZip.loadAsync(w.buf);
+  const so = await zo.file("xl/styles.xml").async("string");
+  const root = so.match(/<styleSheet\b[^>]*>/)[0];
+  assert.ok(root.includes(`xmlns:xr9="${XR9}"`) && /\smc:Ignorable="[^"]*\bxr9\b/.test(root) && /xr9:uid=/.test(so) && !/tstx:/.test(so), "xr9 declared and ignorable; an undeclared prefix stripped");
+  const wbv = (await zo.file("xl/workbook.xml").async("string")).match(/<workbookView\b[^>]*>/)[0];
+  assert.ok(w.viewsClamped === 2 && /firstSheet="0"/.test(wbv) && /activeTab="0"/.test(wbv), wbv);
+  // A broken part fails the strict check, named, with line and column; an out-of-range view too.
+  const br = await JSZip.loadAsync(w.buf);
+  br.file("xl/styles.xml", so.replace(` xmlns:xr9="${XR9}"`, ""));
+  assert.match((await checkXml(await br.generateAsync({ type: "nodebuffer" }))).join(), /xl\/styles\.xml is not well-formed XML \(line \d+, column \d+\): .*xr9/, "the unbound xr9 of 1.14.4 is caught");
+  br.file("xl/styles.xml", so); br.file("xl/workbook.xml", (await zo.file("xl/workbook.xml").async("string")).replace(/activeTab="0"/, 'activeTab="3"'));
+  br.file("xl/TST-broken.xml", "<a><b></a>");
+  const bp = (await checkXml(await br.generateAsync({ type: "nodebuffer" }))).join("\n");
+  assert.match(bp, /xl\/TST-broken\.xml is not well-formed XML \(line 1, column \d+\)/);
+  assert.match(bp, /xl\/workbook\.xml: activeTab="3" but the workbook has 1 sheet\(s\)/);
 }
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("registerupdate test passed");

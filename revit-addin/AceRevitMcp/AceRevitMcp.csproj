@@ -11,7 +11,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <RootNamespace>AceRevitMcp</RootNamespace>
     <AssemblyName>AceRevitMcp</AssemblyName>
-    <Version>1.14.4</Version>
+    <Version>1.14.5</Version>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
   </PropertyGroup>

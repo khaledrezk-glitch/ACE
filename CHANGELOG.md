@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.14.5 (20 Oct 2026)
+- MCP server only (`install.cmd -SkipAddin`).
+- **register_update output opens in Excel (third cause):** carried table styles used the `xr9:` prefix without its
+  declaration, so styles.xml was not well-formed. Carried blocks now bring their namespace declarations (and
+  mc:Ignorable entries); an undeclared prefix is stripped. Every XML part of the written file is parsed strictly before
+  anything else (part, line and column named on failure); firstSheet / activeTab are reset when sheets are dropped. The
+  Excel open test now fails on a timeout (a repair prompt), on a silently repaired copy and on "Unable to get the Open
+  property"; it kills only the Excel it started.
+
 ## 1.14.4 (20 Oct 2026)
 - MCP server only (`install.cmd -SkipAddin`).
 - **register_update output opens in Excel (second cause):** the restored tables pointed at formatting overrides (dxfs)

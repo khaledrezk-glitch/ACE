@@ -1967,7 +1967,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const wr = (await call("register_update", { ...ru, confirm: true })).content.at(-1).text;
   assert.ok(fs.existsSync(ru.output) && /written to .*out\.xlsx/.test(wr) && /Report: .*out - report\.csv \(not beside the output\)/.test(wr));
   // 1.14.2: the report never lands beside the output (a submission folder): ACE's reports folder here; report_dir there is refused.
-  assert.match(wr, /Self-check ok \(tables, style and string indexes\); Excel open test: skipped \((not on Windows|Excel is not installed)\)\./, "the written file is self-checked; the Excel open test is said");
+  assert.match(wr, /Self-check ok \(strict XML, tables, style and string indexes\); Excel open test: skipped \((not on Windows|Excel is not installed)\)\./, "the written file is self-checked; the Excel open test is said");
   const repF = wr.match(/Report: (.*out - report\.csv)/)[1];
   assert.ok(fs.existsSync(repF) && path.dirname(repF) !== rDir && !fs.readdirSync(rDir).some((f) => /report\.csv$/.test(f)), "no report CSV beside the output");
   assert.match(chk, /Full report \(every item\): .*out - check report\.csv/, "the check names its full report");
