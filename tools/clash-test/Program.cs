@@ -349,6 +349,51 @@ class P {
     Check(gotR.Select(x => (string)F(x.D, "Recommendation")).Distinct().Count() == gotR.Count && gotR.All(x => !((string)F(x.D, "Why")).Contains("no safe automatic fix")),
       "report only: every reason has its own recommendation, none says only \"no safe automatic fix\"");
 
+    // 13. 1.12.2: structural material filter (shared classification) and interference report rows.
+    var smT = a.GetType("AceRevitMcp.Coordination.StructuralMaterial");
+    MethodInfo SM(string n) => smT.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    string Cls(string cat, string st, string mc) => (string)SM("Classify").Invoke(null, new object[] { cat, st, mc });
+    Check(Cls("OST_StructuralFraming", "Steel", null) == "steel" && Cls("OST_StructuralColumns", "PrecastConcrete", null) == "precast" && Cls("OST_StructuralFraming", "Wood", null) == "timber"
+      && Cls("OST_Walls", null, "Masonry") == "masonry" && Cls("OST_Walls", null, "Brick") == "masonry" && Cls("OST_StructuralColumns", "Undefined", "Metal") == "steel"
+      && Cls("OST_Floors", null, "Generic") == "concrete" && Cls("OST_StructuralColumns", "Undefined", null) == "unknown" && Cls("OST_StructuralFraming", "Other", "Plastic") == "other",
+      "material: steel, precast, timber, masonry, concrete by category, unknown when nothing says");
+    Check(Mat("OST_StructuralColumns", "PrecastConcrete", null) == "concrete" && Mat("OST_Walls", null, "Masonry") == "other" && Mat("OST_StructuralColumns", "Undefined", null) == "other",
+      "clash_resolve's fix material comes from the shared classification (precast = concrete, masonry / unknown = other)");
+    bool Keep(string m, string[] inc, string[] exc) => (bool)SM("Keep").Invoke(null, new object[] { m, inc, exc });
+    var noMat = new string[0];
+    Check(!Keep("steel", noMat, new[] { "steel" }) && Keep("concrete", noMat, new[] { "steel" }) && Keep("unknown", noMat, new[] { "steel" }),
+      "exclude_materials: [steel] leaves steel out and keeps concrete and unknown");
+    Check(Keep("concrete", new[] { "concrete" }, noMat) && !Keep("steel", new[] { "concrete" }, noMat) && Keep("unknown", new[] { "concrete" }, noMat) && !Keep("unknown", new[] { "concrete" }, new[] { "unknown" }),
+      "materials: [concrete] keeps concrete and unknown (unknown only goes when excluded)");
+    Check(((string[])SM("Parse").Invoke(null, new object[] { new[] { "Steel", "wood", "steel" }, "materials" })).SequenceEqual(new[] { "steel", "timber" }), "material names: case-insensitive, wood = timber, each once");
+    var parseErr = false; try { SM("Parse").Invoke(null, new object[] { new[] { "glass" }, "materials" }); } catch (TargetInvocationException) { parseErr = true; }
+    Check(parseErr, "material names: an unknown name is refused");
+
+    var il = a.GetType("AceRevitMcp.Coordination.InterferenceLogic");
+    MethodInfo IL(string n) => il.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+    var sn = IL("SplitName").Invoke(null, new object[] { "UC-Universal Columns : 254x254x73UC" }); var sn2 = IL("SplitName").Invoke(null, new object[] { "Generic - 200mm" });
+    Check((string)sn.GetType().GetField("Item1").GetValue(sn) == "UC-Universal Columns" && (string)sn.GetType().GetField("Item2").GetValue(sn) == "254x254x73UC"
+      && sn2.GetType().GetField("Item1").GetValue(sn2) == null && (string)sn2.GetType().GetField("Item2").GetValue(sn2) == "Generic - 200mm", "row names: \"Family : Type\" split; a system type name is the type");
+    object CX(string key, string status, string ua, string ub, double depth, int reopened = 0, double x = 1000) { var c = C(key, status, ua, ub, "Walls", "Floors", "L1", null, "STR", depth); Set(c, ("Reopened", reopened), ("X", x), ("Y", 2500.0), ("Z", 3000.0), ("IdA", 11L), ("IdB", 22L), ("NameA", "Basic Wall : W200"), ("NameB", "F250")); return c; }
+    var ic = List(CX("x1", "new", "w1", "f1", 40), CX("x2", "active", "w1", "f2", 90), CX("x3", "new", "w9", "f9", 20, 1), CX("x4", "approved", "w5", "f5", 30), CX("x5", "resolved", "w6", "f6", 10));
+    var rowsT = (IList)IL("Rows").Invoke(null, new object[] { ic, (500.0, 500.0, 0.0), null });
+    object RF(object r, string f) => r.GetType().GetField(f).GetValue(r);
+    var rk = rowsT.Cast<object>().Select(r => (string)RF(r, "ClashKey")).ToList();
+    Check(rowsT.Count == 5 && rk.SequenceEqual(new[] { "x2", "x1", "x3", "x4", "x5" }), $"rows: one per clash, by issue (largest first, deepest first), then approved, then resolved ({string.Join(",", rk)})");
+    var r0 = rowsT[0];
+    Check((int?)RF(r0, "Issue") == 1 && (int?)RF(rowsT[2], "Issue") == 2 && RF(rowsT[3], "Issue") == null && (string)RF(r0, "AFamily") == "Basic Wall" && (string)RF(r0, "AType") == "W200" && (string)RF(r0, "BType") == "F250"
+      && (double)RF(r0, "X") == 0.5 && (double)RF(r0, "Y") == 2.0 && (double)RF(r0, "Z") == 3.0 && (long)RF(r0, "AId") == 11,
+      "rows: issue numbers, family / type, project coordinates in metres from the base point");
+    Check((string)RF(rowsT[2], "Status") == "reopened" && (string)RF(r0, "Status") == "active" && (string)RF(rowsT[1], "Status") == "new" && (string)RF(rowsT[3], "Status") == "approved" && (string)RF(rowsT[4], "Status") == "resolved",
+      "rows: status new / active / reopened / approved / resolved");
+    var rowListT = typeof(List<>).MakeGenericType(a.GetType("AceRevitMcp.Coordination.InterferenceRow"));
+    var rl2 = (IList)Activator.CreateInstance(rowListT); foreach (var r in rowsT) rl2.Add(r);
+    var cnt = (Dictionary<string, int>)IL("Counts").Invoke(null, new object[] { rl2 });
+    Check(cnt["clashes"] == 5 && cnt["issues"] == 2 && cnt["open"] == 3 && cnt["new"] == 1 && cnt["active"] == 1 && cnt["reopened"] == 1 && cnt["approved"] == 1 && cnt["resolved"] == 1, "rows: counts by status and issues");
+    var names2 = new Dictionary<string, (string, string)> { ["w1"] = ("Basic Wall", "RC 250") };
+    var rowsN = (IList)IL("Rows").Invoke(null, new object[] { ic, (0.0, 0.0, 0.0), names2 });
+    Check((string)RF(rowsN[0], "AType") == "RC 250" && (string)IL("RunDate").Invoke(null, new object[] { ic }) == "2026-09-01T00:00:00", "rows: family / type read from the model win; run date from the clashes");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

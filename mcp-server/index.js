@@ -19,6 +19,7 @@ import * as ParamSources from "./lib/paramsources.js";
 import * as ParamActions from "./lib/paramactions.js";
 import * as ParamExec from "./lib/paramexec.js";
 import * as ClashResolve from "./lib/clashresolve.js";
+import * as Interference from "./lib/interference.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
@@ -66,6 +67,13 @@ function tool(name, config, handler) {
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const writes = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false };
 const benign = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+
+// Material filters of the clash engine (both sides, or per side): steel, concrete, timber, masonry, precast, other, unknown.
+const material = z.array(z.enum(Interference.MATERIALS)).max(7).optional();
+const materialInputs = {
+  materials: material.describe("Only elements of these materials"), exclude_materials: material.describe("Leave these materials out (e.g. [\"steel\"])"),
+  a_materials: material, b_materials: material,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Understand the model
@@ -193,6 +201,7 @@ tool("run_clash_test", {
     max_elements: z.number().int().optional().describe("Cap on elements in set A (default 5000)"),
     a_categories: z.array(z.string()).optional(), b_categories: z.array(z.string()).optional(),
     a_disciplines: z.array(z.string()).optional(), b_disciplines: z.array(z.string()).optional(),
+    ...materialInputs,
     with_model: z.string().optional().describe("Secondary model: compare the primary with this linked or open model only (its name, from sources: true)"),
     primary_model: z.string().optional().describe("Primary model (default: this model). A BIM manager can set a link here to check link against link"),
     show: z.boolean().optional(),
@@ -344,9 +353,46 @@ tool("coordination_report", {
     rerun: z.boolean().optional().describe("Run the clash tests again first"),
     pictures: z.boolean().optional().describe("false = no pictures (faster)"),
     open: z.boolean().optional().describe("Open the report in the browser"),
+    interference: z.boolean().optional().describe("Interference report instead: every clash grouped by issue as HTML, CSV and xlsx in out_dir (needs out_dir)"),
+    out_dir: z.string().optional().describe("interference: the folder for the files"),
+    level: z.string().optional(), tolerance_mm: z.number().optional(),
+    a_categories: z.array(z.string()).optional(), b_categories: z.array(z.string()).optional(),
+    a_disciplines: z.array(z.string()).optional(), b_disciplines: z.array(z.string()).optional(),
+    ...materialInputs,
   },
   annotations: benign,
-}, async (a) => text(await callRevit("coordination_report", a, 900)));
+}, async ({ out_dir, ...a }) => {
+  if (!a.interference) return text(await callRevit("coordination_report", a, 900));
+  if (!out_dir) throw new RevitError("interference: true needs out_dir: the folder the user wants the report in.");
+  return interferenceReport(await callRevit("coordination_report", a, 900), a, out_dir);
+});
+
+/**
+ * The interference report files, one set per model (the answer, or its models list when several models were run):
+ * interference-<model>-<test>-<stamp>.html / .csv / .xlsx in out_dir. The reply: paths and counts, not the rows.
+ */
+function interferenceReport(answer, a, outDir) {
+  const stamp = localDate(new Date(), { time: true });
+  const when = new Date().toLocaleString();
+  const filters = Interference.filterText(a);
+  const sets = (Array.isArray(answer?.models) ? answer.models : [answer]).filter(Boolean);
+  if (!sets.length) throw new RevitError("Revit answered without clash rows: run run_clash_test first (or rerun: true).");
+  const b = brand();
+  const out = sets.map((m) => {
+    const rows = m.rows ?? [];
+    const model = m.model ?? answer?.model ?? "model", test = m.test ?? answer?.test ?? a.test ?? "all";
+    const name = Interference.stem(model, test, stamp);
+    const o = { model, test, when, run: m.run, filters, brand: b };
+    const files = [writeOut(outDir, `${name}.html`, Interference.html(rows, o)), writeOut(outDir, `${name}.csv`, Interference.csv(rows)), writeOut(outDir, `${name}.xlsx`, Interference.workbook(rows, o))];
+    const s = Interference.summarise(rows);
+    return { model, test, clashes: s.clashes, issues: s.issues, byStatus: s.byStatus, byPair: s.byPair, ...(m.filtered ? { filtered: m.filtered } : {}), files };
+  });
+  const lines = out.map((m) => `Interference report ${m.model} (${m.test}): ${m.clashes} clash(es) in ${m.issues} issue(s); by status ${Object.entries(m.byStatus).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}; ` +
+    `by pair ${Object.entries(m.byPair).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}.${m.filtered && Interference.filteredText(m.filtered) ? ` Left out by the material filter: ${Interference.filteredText(m.filtered)}.` : ""}\n${m.files.map((f) => `- ${f}`).join("\n")}`);
+  const res = text({ filters, reports: out });
+  res.content.push({ type: "text", text: `${lines.join("\n")}\nFilters: ${filters}. Give the user the file paths (the HTML is for the client; the CSV and xlsx are the same rows).` });
+  return res;
+}
 
 tool("pending_changes", {
   title: "What is waiting in the Companion panel",
@@ -1272,7 +1318,7 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
     const r = await checkNow();
     const out = text(r);
     const v = r?.aceVersion;
-    out.content.push({ type: "text", text: [ClashResolve.replyText(r, { mode: "plan", model: r?.model, test: req.test }), rulesNote,
+    out.content.push({ type: "text", text: [ClashResolve.replyText(r, { mode: "plan", model: r?.model, test: req.test, scope: req }), rulesNote,
       v && !sameVersion(v, VERSION) ? `Note: the add-in is ${v}, the server ${VERSION}: a fix is refused until both are one version.` : "",
       r?.plan?.length && !r?.blocked?.length ? "To fix: clash_resolve action fix with dry_run: true, show the user the result, then the identical call without dry_run." : ""].filter(Boolean).join("\n") });
     return out;
@@ -1315,7 +1361,7 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
   if (!pre.plan?.length) {
     record({ outcome: "nothing to fix", reportOnly: pre.reportOnly });
     const out = text(pre);
-    out.content.push({ type: "text", text: `${ClashResolve.replyText(pre, { mode: "plan", model, test: req.test })}\nNothing to fix automatically in ${model}: no dry run needed.${rulesNote ? `\n${rulesNote}` : ""}` });
+    out.content.push({ type: "text", text: `${ClashResolve.replyText(pre, { mode: "plan", model, test: req.test, scope: req })}\nNothing to fix automatically in ${model}: no dry run needed.${rulesNote ? `\n${rulesNote}` : ""}` });
     return out;
   }
   // One gate key per plan: the request and what would change (kind and elements of every step).
@@ -1345,11 +1391,11 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
     details: { counts: ClashResolve.countsByKind(result?.plan), before: result?.before?.clashes, after: rolledBack ? null : result?.after?.clashes, guard: result?.guard, warnings: result?.warnings, done: result?.done } });
   let evidence;
   if (!dry_run) {
-    evidence = writeOut(dir, ClashResolve.evidenceName(model, stamp), ClashResolve.evidenceMarkdown({ model, test: req.test, when: stamp, result, explanation }));
+    evidence = writeOut(dir, ClashResolve.evidenceName(model, stamp), ClashResolve.evidenceMarkdown({ model, test: req.test, when: stamp, result, explanation, scope: req }));
     if (result?.success && !rolledBack) briefCache.clear();
   }
   const out = text(result);
-  const lines = [ClashResolve.replyText(result, { mode: dry_run ? "dry run" : "apply", model, test: req.test, rolledBack, forced: !!a.test_force_verify_mismatch })];
+  const lines = [ClashResolve.replyText(result, { mode: dry_run ? "dry run" : "apply", model, test: req.test, rolledBack, forced: !!a.test_force_verify_mismatch, scope: req })];
   if (rulesNote) lines.push(rulesNote);
   if (dry_run) {
     const why = [result?.success !== true ? "the dry run failed" : "", result?.guard?.ok === false ? "the annotation guard found differences" : "", result?.verify?.ok === false ? "the self-check failed" : "",
@@ -1372,11 +1418,12 @@ tool("clash_resolve", {
     a_categories: z.array(z.string().max(80)).max(30).optional().describe("Default for \"ST vs ST\": structural columns, framing, walls, floors, foundations, stairs, ramps"),
     b_categories: z.array(z.string().max(80)).max(30).optional().describe("Default: a_categories"),
     a_disciplines: z.array(z.string().max(40)).max(10).optional(), b_disciplines: z.array(z.string().max(40)).max(10).optional(),
+    ...materialInputs,
     tolerance_mm: z.number().min(0).max(500).optional(),
     level: z.string().max(120).optional(),
     keys: z.array(z.string().max(300)).max(2000).optional().describe("Only these clash or issue keys (run_clash_test)"),
     order: z.array(z.string().max(60)).max(12).optional().describe("Join order, strongest first (default: the vault's rules/clash-resolve.json, else foundation > column > wall > beam > slab > stair)"),
-    steel: z.object({ cutback: z.boolean().optional(), coping: z.boolean().optional() }).optional(),
+    steel: z.object({ cutback: z.boolean().optional(), coping: z.boolean().optional(), allowUnjoin: z.boolean().optional().describe("Only after the user agrees: a steel end joined to a column may be unjoined (join state changes) to cut it back") }).optional(),
     vault: z.string().optional().describe("Project folder or its ACE Vault (default: the open model's)"),
     report_dir: z.string().optional().describe("Folder for the evidence and run record"),
     max_ids: z.number().int().min(0).max(500).optional(),

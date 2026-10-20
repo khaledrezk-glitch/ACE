@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.2 (20 Oct 2026)
+- **Structural material filters on the clash tools:** `materials`, `exclude_materials`, `a_materials`, `b_materials`
+  (steel, concrete, precast, timber, masonry, other, unknown) on run_clash_test, clash_resolve and coordination_report,
+  so steel can be left out where it shares categories with concrete. What a filter left out is always reported; a
+  filtered run never marks stored clashes of filtered-out elements resolved; the scope is part of clash_resolve's gate.
+- **Interference report:** `coordination_report` with `interference: true` and `out_dir` writes, per model, a
+  client-readable HTML laid out like Revit's Interference Report (A and B as category : family : type : id, level,
+  depth, location, status, responsible; grouped by issue, then approved and resolved) with the same rows as CSV and xlsx.
+
 ## 1.12.1 (20 Oct 2026)
 - **clash_resolve, from the first live test:** joined steel ends are cut back with the join cutback (the extension only
   for free ends; `plan[].method`); each step is checked on its own and a step that does not clear its clash is dropped

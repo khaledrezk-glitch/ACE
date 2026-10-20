@@ -80,6 +80,10 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   clash; "responsible" = who gives way, "caused by" = whose change made it. Walk through with clash_view (key or
   issueKey); approve with set_clash_status; meeting pack with coordination_report. Check the brief's alignment first.
   A Navisworks clash report (.xml / .html) from the user: run_clash_test import_report (the full path).
+- Material filters (run_clash_test, clash_resolve, coordination_report): materials / exclude_materials (both sides) or
+  a_materials / b_materials, from steel, concrete, timber, masonry, precast, other, unknown; say what was left out.
+  "Interference report" for a client: coordination_report interference: true with out_dir (ask for the folder): HTML,
+  CSV and xlsx per model; give the paths.
 - Structure clashing with structure ("ST vs ST", "fix the structural clashes"): clash_resolve. action plan first
   (read-only), then fix with dry_run, then the identical call. It only joins, switches join order, cuts back steel ends
   and copes; it never deletes, recreates or moves anything. Report the report-only clashes with their reasons; a guard

@@ -95,7 +95,41 @@ namespace AceRevitMcp.Coordination
             BuiltInCategory.OST_Ceilings, BuiltInCategory.OST_Stairs, BuiltInCategory.OST_Doors, BuiltInCategory.OST_Roofs,
         };
 
-        internal sealed class SetSpec { public string[] Disciplines; public BuiltInCategory[] Categories; }
+        /// <summary>One side of a test: disciplines, categories and (optional) structural materials to keep or leave out.</summary>
+        internal sealed class SetSpec
+        {
+            public string[] Disciplines; public BuiltInCategory[] Categories;
+            public string[] Materials = new string[0], ExcludeMaterials = new string[0];   // StructuralMaterial names
+            public bool FiltersMaterial => (Materials?.Length ?? 0) > 0 || (ExcludeMaterials?.Length ?? 0) > 0;
+        }
+
+        /// <summary>What a test's material filter left out: elements per material (each element once) and their unique ids.</summary>
+        internal sealed class FilterReport
+        {
+            public readonly Dictionary<string, int> Counts = new Dictionary<string, int>(StringComparer.Ordinal);
+            public readonly HashSet<string> UniqueIds = new HashSet<string>(StringComparer.Ordinal);
+            private readonly HashSet<(int, long)> _seen = new HashSet<(int, long)>();
+            public void Add(Element e, string material)
+            {
+                if (!_seen.Add((e.Document.GetHashCode(), e.Id.Value))) return;
+                Counts[material] = Counts.TryGetValue(material, out var n) ? n + 1 : 1;
+                UniqueIds.Add(e.UniqueId);
+            }
+        }
+
+        /// <summary>The elements of a set whose material passes its filter (the rest are counted in filtered).</summary>
+        private static List<Element> ByMaterial(List<Element> items, SetSpec spec, FilterReport filtered)
+        {
+            if (!spec.FiltersMaterial) return items;
+            var keep = new List<Element>();
+            foreach (var e in items)
+            {
+                var m = StructuralMaterial.Of(e);
+                if (StructuralMaterial.Keep(m, spec.Materials, spec.ExcludeMaterials)) keep.Add(e);
+                else filtered?.Add(e, m);
+            }
+            return keep;
+        }
         internal sealed class TestSpec { public string Name; public SetSpec A, B; public double ToleranceMm = 15, ClearanceMm; }
 
         public static readonly TestSpec[] Standard =
@@ -227,9 +261,12 @@ namespace AceRevitMcp.Coordination
         /// <summary>Clash search grid cell: about 3 m, close to a typical duct run or beam span between joints.</summary>
         private const double GridCellFeet = 10;
 
-        public static List<Clash> Run(Document host, List<Source> sources, SolidCache geometry, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null, string primaryModel = null)
+        /// <param name="filtered">Optional: receives what the material filter left out (also summarised in notes).</param>
+        public static List<Clash> Run(Document host, List<Source> sources, SolidCache geometry, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null, string primaryModel = null,
+            FilterReport filtered = null)
         {
             complete = true;
+            filtered = filtered ?? ((test.A.FiltersMaterial || test.B.FiltersMaterial) ? new FilterReport() : null);
             var aSources = Pick(sources, test.A); var bSources = Pick(sources, test.B);
             // Compare two chosen models only (Clash Browser): the primary (this model, or a link for a BIM manager) and the secondary.
             var primary = string.IsNullOrEmpty(primaryModel) ? host.Title : primaryModel;
@@ -240,7 +277,7 @@ namespace AceRevitMcp.Coordination
                 aSources = aSources.Where(Allowed).ToList(); bSources = bSources.Where(Allowed).ToList();
                 if (aSources.Count == 0 || bSources.Count == 0) { notes.Add($"Nothing to compare with {withModel} in this test."); return new List<Clash>(); }
             }
-            var aItems = aSources.SelectMany(s => Collect(s, test.A.Categories).Select(e => (s, e))).ToList();
+            var aItems = aSources.SelectMany(s => ByMaterial(Collect(s, test.A.Categories), test.A, filtered).Select(e => (s, e))).ToList();
             notes.Add($"A: {aItems.Count} elements in {string.Join(", ", aSources.Select(s => $"{s.Name} ({s.Discipline})"))}");
             notes.Add($"B: {string.Join(", ", test.B.Categories.Length)} categories in {string.Join(", ", bSources.Select(s => $"{s.Name} ({s.Discipline})"))}");
             if (aItems.Count > maxElements) { notes.Add($"Only the first {maxElements} A elements were tested (max_elements)."); aItems = aItems.Take(maxElements).ToList(); complete = false; }
@@ -260,7 +297,7 @@ namespace AceRevitMcp.Coordination
                 if (indexes.TryGetValue(sb, out var ix)) return ix;
                 var grid = new BoxGrid(GridCellFeet);
                 var items = new List<Element>();
-                foreach (var e in Collect(sb, test.B.Categories))
+                foreach (var e in ByMaterial(Collect(sb, test.B.Categories), test.B, filtered))
                 {
                     var bb = e.get_BoundingBox(null);
                     if (bb == null) continue;
@@ -351,6 +388,8 @@ namespace AceRevitMcp.Coordination
                     }
                 }
             }
+            if (filtered != null && filtered.Counts.Count > 0)
+                notes.Add("Left out by material: " + string.Join(", ", filtered.Counts.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Value} {kv.Key}")) + " element(s).");
             return clashes.Values.ToList();
         }
 

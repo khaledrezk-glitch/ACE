@@ -89,7 +89,8 @@ namespace AceRevitMcp.Coordination
 
             // Before: the clash test on this model only (links are never changed).
             var geometry = new Clashes.SolidCache();
-            var found = Clashes.Run(doc, host, geometry, test, level, maxElements, notes, out var complete);
+            var filtered = new Clashes.FilterReport();
+            var found = Clashes.Run(doc, host, geometry, test, level, maxElements, notes, out var complete, filtered: filtered);
             if (!complete) notes.Add("The clash test was cut short (max_elements or cancelled): the plan covers the clashes found.");
             var beforeIssues = ClashLogic.Issues(found);
             var before = new JsonObject { ["clashes"] = found.Count, ["issues"] = beforeIssues.Count, ["byPair"] = ByPair(found) };
@@ -172,6 +173,8 @@ namespace AceRevitMcp.Coordination
                 r["model"] = doc.Title; r["aceVersion"] = aceVersion; r["test"] = test.Name; r["planHash"] = planHash;
                 r["before"] = before.DeepClone(); r["plan"] = planJson.DeepClone(); r["reportOnly"] = reportOnly.DeepClone(); r["blocked"] = blocked.DeepClone();
                 r["reportGroups"] = ReportGroups(reportOnly);
+                r["filtered"] = ClashCommands.Counts(filtered);   // { material: count } left out by the material filter ({} without one)
+                if (test.A.FiltersMaterial || test.B.FiltersMaterial) r["materials"] = ClashCommands.MaterialFilter(test);
                 r["notes"] = new JsonArray(notes.Select(n => (JsonNode)n).ToArray());
                 if (keysNotFound.Count > 0) r["keysNotFound"] = new JsonArray(keysNotFound.Take(Math.Max(1, maxIds)).Select(k => (JsonNode)k).ToArray());
                 return r;
@@ -452,25 +455,8 @@ namespace AceRevitMcp.Coordination
             return side;
         }
 
-        /// <summary>The material of an element: the family's structural material type, then its structural material's class, then the category.</summary>
-        private static string MaterialOf(Document doc, Element e, string cat)
-        {
-            string type = null, cls = null;
-            try
-            {
-                ElementId mid = ElementId.InvalidElementId;
-                if (e is FamilyInstance fi)
-                {
-                    type = fi.StructuralMaterialType.ToString();
-                    mid = fi.StructuralMaterialId;
-                }
-                else if (doc.GetElement(e.GetTypeId()) is HostObjAttributes hoa && hoa.GetCompoundStructure() is CompoundStructure cs && cs.StructuralMaterialIndex >= 0)
-                    mid = cs.GetMaterialId(cs.StructuralMaterialIndex);
-                if (mid != ElementId.InvalidElementId && doc.GetElement(mid) is Material mat) cls = mat.MaterialClass;
-            }
-            catch { /* unknown: by category */ }
-            return ClashResolveLogic.MaterialOf(cat, type, cls);
-        }
+        /// <summary>The material of an element for the fix rules (the shared classification, StructuralMaterial).</summary>
+        private static string MaterialOf(Document doc, Element e, string cat) => ClashResolveLogic.ForFix(StructuralMaterial.Of(e));
 
         // ---- pre-flight ---------------------------------------------------------------------------------------------
 

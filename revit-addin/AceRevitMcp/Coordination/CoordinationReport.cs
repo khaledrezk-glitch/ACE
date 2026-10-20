@@ -22,9 +22,13 @@ namespace AceRevitMcp.Coordination
     /// </summary>
     internal static class CoordinationReport
     {
-        /// <summary>{ max_issues: 12, test: "STR vs MEP" (default: all stored tests), rerun: false, pictures: true }</summary>
+        /// <summary>
+        /// { max_issues: 12, test: "STR vs MEP" (default: all stored tests), rerun: false, pictures: true }, or with interference:
+        /// true the per-clash rows of an interference report (see Interference).
+        /// </summary>
         public static JsonNode Build(UIApplication app, JsonObject args)
         {
+            if (Args.Bool(args, "interference")) return Interference(app, args);
             var host = Args.RequireDoc(app);
             var sw = System.Diagnostics.Stopwatch.StartNew();
             if (Args.Bool(args, "rerun")) ClashCommands.Run(app, new JsonObject { ["test"] = Args.Str(args, "test") ?? "all" });
@@ -76,6 +80,123 @@ namespace AceRevitMcp.Coordination
                 ["notes"] = new JsonArray(notes.Select(x => (JsonNode)x).ToArray()),
                 ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1),
             };
+        }
+
+        // ---- interference report rows ------------------------------------------------------------------------------
+
+        /// <summary>
+        /// coordination_report { interference: true, test, rerun, a_categories, b_categories, materials, exclude_materials,
+        /// a_materials, b_materials, tolerance_mm, level, pictures: false, max_issues }: one row per clash of the stored results of
+        /// the test (or of a rerun with the same filters), grouped by issue, as JSON: { model, test, tests, run, coordinates,
+        /// counts, rows, notes }. Pictures only with pictures: true. The server writes the files.
+        /// </summary>
+        private static JsonNode Interference(UIApplication app, JsonObject args)
+        {
+            var host = Args.RequireDoc(app);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var test = Args.Str(args, "test");
+            JsonNode ran = null;
+            if (Args.Bool(args, "rerun"))
+            {
+                var custom = args["a_categories"] is JsonArray || args["b_categories"] is JsonArray;
+                if (custom && string.IsNullOrWhiteSpace(test)) throw new CommandException("A rerun with a_categories / b_categories needs the test's name (test), so its results are stored under it.");
+                var run = new JsonObject { ["test"] = test ?? "all" };
+                foreach (var k in new[] { "a_categories", "b_categories", "a_disciplines", "b_disciplines", "materials", "exclude_materials", "a_materials", "b_materials",
+                                          "tolerance_mm", "clearance_mm", "level", "max_elements" })
+                    if (args[k] != null) run[k] = args[k].DeepClone();
+                ran = ClashCommands.Run(app, run);
+            }
+            if (!Args.Bool(args, "all_documents"))
+            {
+                var one = ModelRows(app, host, args, test, ran, true);
+                one["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1);
+                return one;
+            }
+            // Every open project model with stored results (the rerun and the pictures are for the active model only).
+            var models = new JsonArray();
+            var skipped = new JsonArray();
+            foreach (var d in new[] { host }.Concat(app.Application.Documents.Cast<Document>().Where(d => !d.Equals(host) && !d.IsLinked && !d.IsFamilyDocument)))
+            {
+                try { models.Add(ModelRows(app, d, args, test, d.Equals(host) ? ran : null, d.Equals(host))); }
+                catch (CommandException ex) { skipped.Add(new JsonObject { ["model"] = d.Title, ["why"] = ex.Message }); }
+            }
+            return new JsonObject { ["models"] = models, ["skipped"] = skipped, ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1) };
+        }
+
+        /// <summary>One model's interference rows: { model, test, tests, run, coordinates, counts, rows (all, no cap), filtered?, notes }.</summary>
+        private static JsonObject ModelRows(UIApplication app, Document host, JsonObject args, string test, JsonNode ran, bool active)
+        {
+            var notes = new List<string>();
+            var clashes = Clashes.Current(host);
+            if (test != null) clashes = clashes.Where(c => string.Equals(c.Test, test, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (clashes.Count == 0)
+                throw new CommandException(test == null ? $"No clash results for {host.Title} yet. Run a clash test first (run_clash_test), or call again with rerun: true."
+                    : $"No stored results for the test '{test}' in {host.Title}. Run it first (run_clash_test with the same test name and filters), or call again with rerun: true.");
+
+            // Family and type from the model where the element can be found (this model and its loaded links), else from the stored names.
+            var names = new Dictionary<string, (string Family, string Type)>(StringComparer.Ordinal);
+            var sources = Clashes.Sources(app, host).GroupBy(x => x.Name).ToDictionary(g => g.Key, g => g.First().Doc);
+            void Name(string model, string uid)
+            {
+                if (uid == null || names.ContainsKey(uid) || model == null || !sources.TryGetValue(model, out var d)) return;
+                try
+                {
+                    var e = d.GetElement(uid);
+                    if (e is FamilyInstance fi) names[uid] = (fi.Symbol.FamilyName, fi.Symbol.Name);
+                    else if (e != null && d.GetElement(e.GetTypeId()) is ElementType et) names[uid] = (et.FamilyName, et.Name);
+                }
+                catch { /* stored names are used */ }
+            }
+            foreach (var c in clashes) { Name(c.SourceA, c.UA); Name(c.SourceB, c.UB); }
+
+            var origin = (0.0, 0.0, 0.0);
+            try { var p = BasePoint.GetProjectBasePoint(host).Position; origin = (Lengths.Mm(p.X), Lengths.Mm(p.Y), Lengths.Mm(p.Z)); }
+            catch (Exception ex) { notes.Add("The project base point could not be read: coordinates are internal. " + ex.Message); }
+
+            var rows = InterferenceLogic.Rows(clashes, origin, names);
+            var pictures = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (active && Args.Bool(args, "pictures", false))
+            {
+                var max = Math.Max(1, Math.Min(40, Args.Int(args, "max_issues", 12)));
+                var shown = ClashLogic.Issues(clashes).Take(max).ToList();
+                var time = DateTime.Now;
+                var safe = string.Concat(host.Title.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
+                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ACE Insights", safe);
+                var imgFolder = $"{safe} - Interference {time:yyyy-MM-dd HHmm} images";
+                try { foreach (var kv in Pictures(host, shown, Path.Combine(dir, imgFolder), imgFolder, notes)) pictures[kv.Key.Key] = Path.Combine(dir, kv.Value); }
+                catch (Exception ex) { notes.Add("Pictures could not be made: " + ex.Message); Log.Warn($"Interference pictures: {ex}"); }
+            }
+
+            var counts = new JsonObject();
+            foreach (var kv in InterferenceLogic.Counts(rows)) counts[kv.Key] = kv.Value;
+            var tests = clashes.Select(c => c.Test).Where(t => t != null).Distinct().OrderBy(t => t, StringComparer.Ordinal).ToList();
+            var result = new JsonObject
+            {
+                ["model"] = host.Title, ["test"] = test ?? string.Join(", ", tests), ["tests"] = new JsonArray(tests.Select(t => (JsonNode)t).ToArray()),
+                ["run"] = InterferenceLogic.RunDate(clashes),
+                ["coordinates"] = "project coordinates (relative to the project base point), metres",
+                ["counts"] = counts,
+                ["rows"] = new JsonArray(rows.Select(r => (JsonNode)new JsonObject
+                {
+                    ["issue"] = r.Issue, ["issueTitle"] = r.IssueTitle, ["issueKey"] = r.IssueKey, ["clashKey"] = r.ClashKey, ["test"] = r.Test, ["status"] = r.Status,
+                    ["aId"] = r.AId, ["aModel"] = r.AModel, ["aCategory"] = r.ACategory, ["aFamily"] = r.AFamily, ["aType"] = r.AType,
+                    ["bId"] = r.BId, ["bModel"] = r.BModel, ["bCategory"] = r.BCategory, ["bFamily"] = r.BFamily, ["bType"] = r.BType,
+                    ["level"] = r.Level, ["depthMm"] = r.DepthMm, ["x"] = r.X, ["y"] = r.Y, ["z"] = r.Z, ["responsible"] = r.Responsible,
+                    ["picture"] = r.IssueKey != null && pictures.TryGetValue(r.IssueKey, out var pic) ? pic : null,
+                }).ToArray()),
+                ["notes"] = new JsonArray(notes.Select(x => (JsonNode)x).ToArray()),
+            };
+            // What the rerun's material filter left out (summed over its tests), when there was one with a filter.
+            if (ran is JsonObject r0 && r0["tests"] is JsonArray perTest)
+            {
+                var filtered = new JsonObject();
+                foreach (var t in perTest.OfType<JsonObject>())
+                    if (t["filtered"] is JsonObject f)
+                        foreach (var kv in f) filtered[kv.Key] = (filtered[kv.Key]?.GetValue<int>() ?? 0) + (kv.Value?.GetValue<int>() ?? 0);
+                if (perTest.OfType<JsonObject>().Any(t => t["filtered"] is JsonObject)) result["filtered"] = filtered;
+            }
+            if (pictures.Count > 0) result["withPictures"] = pictures.Count;
+            return result;
         }
 
         // ---- pictures ------------------------------------------------------------------------------------------

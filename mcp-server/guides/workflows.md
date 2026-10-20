@@ -22,6 +22,24 @@ cannot be shown or selected; name those models (notes) and suggest linking them.
 new / active / resolved; Navisworks Approved and Resolved are kept and approvals made in ACE survive. ACE's own run and
 the Navisworks import can disagree (tolerances, Navisworks rules): present them as two tests, do not merge them.
 
+Material filters: run_clash_test, coordination_report and clash_resolve take materials (only these, both sides),
+exclude_materials (leave these out) and a_materials / b_materials (per side), from steel, concrete, timber, masonry,
+precast, other and unknown (no structural material set). The answer counts what the filter left out (filtered, per
+material): always say it, so a short clash list is never mistaken for a clean model.
+
+Interference report (a client-readable list of every clash, like Revit's Interference Report): coordination_report
+with interference: true and out_dir (the folder the user names; ask when they did not), plus the same test, level,
+category, discipline and material filters as run_clash_test. ACE writes interference-<model>-<test>-<stamp>.html
+(header with model, test, date, filters and counts by status and by pair; a table grouped by issue: A and B as category
+: family : type : id, level, depth mm, location x / y / z, status, responsible), .csv and .xlsx, one set per model.
+Give the user the paths and the counts.
+
+A typical structural job: (1) run_clash_test test "ST vs ST" with exclude_materials ["steel"] and the stairs left out of
+a_categories / b_categories (e.g. columns, framing, walls, floors, foundations) to see the concrete interferences;
+(2) coordination_report interference: true with the same filters and out_dir, for the client; (3) clash_resolve with
+materials ["concrete"] (action plan, then fix with dry_run, then the identical call) to join what can be joined; the
+material scope is part of the preview, so the apply must carry the same materials; (4) run_clash_test again.
+
 Structural self-clashes (ST vs ST): for "fix the structural clashes", "interference check ST vs ST" use clash_resolve.
 The default test is "ST vs ST" (structural columns, framing, walls, floors, foundations, stairs, ramps against the same
 set); a_categories / b_categories, level, tolerance_mm and keys (clash or issue keys from run_clash_test) narrow it.

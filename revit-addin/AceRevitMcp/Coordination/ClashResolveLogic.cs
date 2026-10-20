@@ -30,37 +30,14 @@ namespace AceRevitMcp.Coordination
         /// <summary>A dimension value may not change by more than this (feet).</summary>
         public const double DimensionTolerance = 1e-6;
 
-        private static readonly HashSet<string> ConcreteByCategory = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "OST_Walls", "OST_Floors", "OST_StructuralFoundation", "OST_Stairs",
-        };
-
-        private static readonly HashSet<string> IgnoredClasses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "", "generic", "unassigned", "default", "none", "other",
-        };
-
         /// <summary>
-        /// "concrete" | "steel" | "other": the structural material type of a family (Steel, Concrete, PrecastConcrete, ...) first,
-        /// then the structural material's class ("Concrete", "Metal", ...), then the category (walls, floors, foundations and
-        /// stairs are concrete in a structural model; columns and framing of unknown material are "other").
+        /// "concrete" | "steel" | "other" for the fix rules, from the shared classification (StructuralMaterial): precast counts
+        /// as concrete; timber, masonry, other and unknown are "other" (no automatic fix).
         /// </summary>
-        public static string MaterialOf(string category, string structuralType, string materialClass)
-        {
-            var st = (structuralType ?? "").Trim().ToLowerInvariant();
-            if (st == "steel") return "steel";
-            if (st == "concrete" || st == "precastconcrete") return "concrete";
-            if (st == "wood" || st == "aluminum") return "other";
-            var mc = (materialClass ?? "").Trim();
-            if (!IgnoredClasses.Contains(mc))
-            {
-                var l = mc.ToLowerInvariant();
-                if (l.Contains("concrete")) return "concrete";
-                if (l.Contains("metal") || l.Contains("steel")) return "steel";
-                return "other";
-            }
-            return category != null && ConcreteByCategory.Contains(category) ? "concrete" : "other";
-        }
+        public static string MaterialOf(string category, string structuralType, string materialClass) => ForFix(StructuralMaterial.Classify(category, structuralType, materialClass));
+
+        /// <summary>The fix rules' material for a shared material name.</summary>
+        public static string ForFix(string material) => material == "steel" ? "steel" : material == "concrete" || material == "precast" ? "concrete" : "other";
 
         /// <summary>The plan's material label of a pair.</summary>
         public static string PairMaterial(string a, string b) => a == b && (a == "concrete" || a == "steel") ? a : "mixed";

@@ -34,7 +34,8 @@ namespace AceRevitMcp.Coordination
             foreach (var t in tests)
             {
                 var testNotes = new List<string>();
-                var found = Clashes.Run(host, sources, geometry, t, level, max, testNotes, out var complete, withModel, primaryModel);
+                var filtered = new Clashes.FilterReport();
+                var found = Clashes.Run(host, sources, geometry, t, level, max, testNotes, out var complete, withModel, primaryModel, filtered);
                 // Only what this run looked at can become resolved: one level, one compared model, or nothing if it was cut short.
                 bool InLevel(Clash c) => level == null || string.Equals(c.Level, level, StringComparison.OrdinalIgnoreCase);
                 var primaryName = primaryModel ?? host.Title;
@@ -44,7 +45,9 @@ namespace AceRevitMcp.Coordination
                     : ((Is(c.SourceA, withModel) || Is(c.SourceA, primaryName)) && (Is(c.SourceB, withModel) || Is(c.SourceB, primaryName)));
                 // A model that is not loaded now was not tested: its stored clashes stay as they are.
                 bool Loaded(Clash c) => loaded.Contains(c.SourceA ?? "") && loaded.Contains(c.SourceB ?? "");
-                Func<Clash, bool> scope = !complete ? (c => false) : (c => Loaded(c) && InLevel(c) && InModel(c));
+                // An element the material filter left out was not tested: its stored clashes stay as they are.
+                bool Tested(Clash c) => !filtered.UniqueIds.Contains(c.UA ?? "") && !filtered.UniqueIds.Contains(c.UB ?? "");
+                Func<Clash, bool> scope = !complete ? (c => false) : (c => Loaded(c) && InLevel(c) && InModel(c) && Tested(c));
                 if (!complete) testNotes.Add("Stored clashes were not marked resolved because the run was cut short.");
                 var stored = Clashes.Load(host, t.Name);
                 DateTime? previousRun = stored.Count > 0 ? stored.Max(c => c.LastSeen) : (DateTime?)null;
@@ -66,6 +69,8 @@ namespace AceRevitMcp.Coordination
                     ["byResponsible"] = Group(merged.Where(ClashLogic.IsOpen), c => c.Responsible),
                     ["byLevel"] = Group(merged.Where(ClashLogic.IsOpen), c => c.Level),
                     ["byPair"] = Group(merged.Where(ClashLogic.IsOpen), c => $"{c.CatA} x {c.CatB}"),
+                    ["materials"] = t.A.FiltersMaterial || t.B.FiltersMaterial ? MaterialFilter(t) : null,
+                    ["filtered"] = t.A.FiltersMaterial || t.B.FiltersMaterial ? Counts(filtered) : null,
                     ["notes"] = new JsonArray(testNotes.Select(n => (JsonNode)n).ToArray()),
                 });
             }
@@ -97,6 +102,24 @@ namespace AceRevitMcp.Coordination
                 ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1),
                 ["note"] = "Ids are ids inside the model named in brackets; only ids of this model can be selected here. Status is kept between runs (new, active, resolved, approved; a resolved clash that comes back is new again and counted as reopened). Issues group the clashes of one element that has to move: coordinate issue by issue, not clash by clash.",
             };
+        }
+
+        /// <summary>The material filter of a test, as given: { a: { materials, exclude }, b: { ... } }.</summary>
+        internal static JsonObject MaterialFilter(Clashes.TestSpec t)
+        {
+            JsonObject Side(Clashes.SetSpec s) => new JsonObject
+            {
+                ["materials"] = new JsonArray(s.Materials.Select(m => (JsonNode)m).ToArray()), ["exclude"] = new JsonArray(s.ExcludeMaterials.Select(m => (JsonNode)m).ToArray()),
+            };
+            return new JsonObject { ["a"] = Side(t.A), ["b"] = Side(t.B) };
+        }
+
+        /// <summary>What the material filter left out: { steel: n, ... } (each element once).</summary>
+        internal static JsonObject Counts(Clashes.FilterReport f)
+        {
+            var o = new JsonObject();
+            if (f != null) foreach (var kv in f.Counts.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal)) o[kv.Key] = kv.Value;
+            return o;
         }
 
         private static JsonObject Group(IEnumerable<Clash> clashes, Func<Clash, string> key)
@@ -131,7 +154,15 @@ namespace AceRevitMcp.Coordination
                          ?? throw new CommandException($"Unknown test '{name}'. Standard tests: {string.Join(", ", Clashes.Standard.Select(s => s.Name))}, or 'all', or a custom test with a_categories / b_categories.");
                 chosen = new List<Clashes.TestSpec> { t0 };
             }
-            return chosen.Select(s => new Clashes.TestSpec { Name = s.Name, A = s.A, B = s.B, ToleranceMm = tol ?? s.ToleranceMm, ClearanceMm = clear }).ToList();
+            // Structural materials: materials and exclude_materials apply to both sets; a_materials / b_materials add a set's own.
+            var include = StructuralMaterial.Parse(Args.Strings(args, "materials"), "materials");
+            var exclude = StructuralMaterial.Parse(Args.Strings(args, "exclude_materials"), "exclude_materials");
+            Clashes.SetSpec With(Clashes.SetSpec set, string side) => new Clashes.SetSpec
+            {
+                Disciplines = set.Disciplines, Categories = set.Categories,
+                Materials = include.Concat(StructuralMaterial.Parse(Args.Strings(args, side + "_materials"), side + "_materials")).Distinct().ToArray(), ExcludeMaterials = exclude,
+            };
+            return chosen.Select(s => new Clashes.TestSpec { Name = s.Name, A = With(s.A, "a"), B = With(s.B, "b"), ToleranceMm = tol ?? s.ToleranceMm, ClearanceMm = clear }).ToList();
         }
 
         /// <summary>Bridge "clash_results": the stored results of this model (no re-run), for the Clash Browser and Claude.</summary>

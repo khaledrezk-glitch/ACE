@@ -105,7 +105,8 @@ const bridge = http.createServer((req, res) => {
           { id: "cope:204>203", kind: "cope", a: 203, b: 204, aCategory: "Structural Framing", bCategory: "Structural Framing", material: "Steel", level: "Roof", why: "secondary into primary" }];
         const reportOnly = [{ a: 401, b: 402, aCategory: "Walls", bCategory: "Walls", why: "duplicate or overlapping walls", recommendation: "decide which wall stays" }];
         const blocked = keys.includes("TST_BORROW") ? [{ what: "2 element(s) to join", why: "borrowed by another user", elements: 2, sampleIds: [201, 301], holder: "jane", how: "ask jane to synchronise and relinquish, then run again", code: "borrowed" }] : [];
-        const base = { model: "Test", aceVersion: keys.includes("TST_OLDADDIN") ? "1.9.0" : SERVER_VERSION, before, plan, planHash: `ph-${keys.join(",")}-${args.test_force_verify_mismatch ? "f" : ""}`, reportOnly, blocked, echo: args };
+        const filtered = args.materials?.length || args.exclude_materials?.length ? { filtered: { steel: 12, unknown: 1 } } : {};
+        const base = { model: "Test", ...filtered, aceVersion: keys.includes("TST_OLDADDIN") ? "1.9.0" : SERVER_VERSION, before, plan, planHash: `ph-${keys.join(",")}-${args.test_force_verify_mismatch ? "f" : ""}`, reportOnly, blocked, echo: args };
         if (args.check_only) return reply({ ok: true, result: { success: true, checkOnly: true, ...base, after: null, guard: null, warnings: { before: 10, after: null, new: [] } } });
         if (args.expect_version !== SERVER_VERSION) return reply({ ok: true, result: { success: false, stage: "blocked", error: "Nothing was changed: version", model: "Test", blocked: [{ what: "the whole plan", why: "version", how: "update" }] } });
         // expect_plan: the apply's recomputed plan must be the previewed one (TST_DRIFT: the model changed in between).
@@ -125,7 +126,16 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { success: true, checkOnly: !!args.check_only, dryRun: !!args.dry_run, standard: "ACE default: 3 mm for 1:50 and larger, 2.5 mm for smaller", [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 40, deleted: 0 }, echo: args } });
       case "set_parameters":
         return reply({ ok: true, result: { applied: args.changes.length, failed: 0, dryRun: !!args.dry_run, results: [] } });
-      case "coordination_report": return reply({ ok: true, result: { htmlReport: "C:/x/Model - Coordination.html", excelList: "C:/x/Model - Coordination.csv", issues: 7, withPictures: 7 } });
+      case "coordination_report": {
+        if (!args.interference) return reply({ ok: true, result: { htmlReport: "C:/x/Model - Coordination.html", excelList: "C:/x/Model - Coordination.csv", issues: 7, withPictures: 7 } });
+        // The interference rows: one per clash, grouped by issue; test "MULTI" answers for two open models.
+        const rows = (model) => [
+          { issue: "I-2", issueTitle: "Wall W1 overlaps wall W2", clashKey: "k3", status: "active", aId: 401, aCategory: "Walls", aFamily: "Basic Wall", aType: "RC 200", bId: 402, bCategory: "Walls", bFamily: "Basic Wall", bType: "RC 200", level: "L1", depthMm: 200, x: 1.5, y: 2.25, z: 0, responsible: "STR" },
+          { issue: "I-1", issueTitle: `Beam B7 into columns (${model})`, clashKey: "k1", status: "new", aId: 202, aCategory: "Structural Framing", aFamily: "BU <250>", aType: "BU 250", bId: 302, bCategory: "Structural Columns", bFamily: "Concrete-Rectangular-Column", bType: "400x400", level: "Roof", depthMm: 83.4, x: 10.1234, y: 5, z: 12.5, responsible: "STR" },
+          { issue: "I-1", issueTitle: `Beam B7 into columns (${model})`, clashKey: "k2", status: "new", aId: 202, aCategory: "Structural Framing", aFamily: "BU <250>", aType: "BU 250", bId: 303, bCategory: "Structural Columns", bFamily: "Concrete-Rectangular-Column", bType: "400x400", level: "Roof", depthMm: 80, x: 14, y: 5, z: 12.5, responsible: "STR" }];
+        const one = (model) => ({ model, test: args.test ?? "all", run: { id: "run-1", at: "2026-10-20T10:00:00Z" }, counts: { clashes: 3 }, rows: rows(model), ...(args.exclude_materials?.length ? { filtered: { steel: 12 } } : {}) });
+        return reply({ ok: true, result: args.test === "MULTI" ? { models: [one("Test"), one("Test-ARC")] } : one("Test") });
+      }
       case "focus_clash": return reply({ ok: true, result: { view: "ACE Clash View - khaled", clash: args.key, intersectionMm: "200 x 200 x 250", a: "Pipes (red)", b: "Floors (green)" } });
       case "working_mode": return reply({ ok: true, result: { mode: args.mode ? "Coordination" : "All tools", focus: ["Coordination"], leadWith: ["run_clash_test"] } });
       case "pending_changes": return reply({ ok: true, result: { waiting: [{ card: 1, title: "Claude: Test fit (301, 10 m2)" }, { card: 2, title: "Claude: Test fit (301, 8 m2)" }], recentlyDecided: [] } });
@@ -770,6 +780,54 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   fs.writeFileSync(path.join(cv, "rules", "clash-resolve.json"), "{ order: ");
   const bad = await call("clash_resolve", { vault: cv });
   assert.ok(bad.isError && /clash-resolve\.json is not valid JSON/.test(bad.content[0].text) && crs().length === n3, "bad rules: refused before Revit is asked");
+}
+// --- material filters, the interference report and clash_resolve scoped to concrete ---
+{
+  await call("run_clash_test", { test: "ST vs ST", exclude_materials: ["steel"], a_materials: ["concrete"] });
+  const rs = seen.filter((x) => x.command === "run_clash_test").at(-1).args;
+  assert.deepEqual([rs.exclude_materials, rs.a_materials], [["steel"], ["concrete"]], "run_clash_test passes the material filters");
+  assert.ok((await call("run_clash_test", { materials: ["glass"] })).isError, "only the known materials");
+
+  const n0 = seen.length;
+  const noDir = await call("coordination_report", { interference: true });
+  assert.ok(noDir.isError && /needs out_dir/.test(noDir.content[0].text) && seen.length === n0, "interference needs out_dir, checked before Revit is asked");
+  const iDir = path.join(tmp, "interference");
+  const ir = await call("coordination_report", { interference: true, out_dir: iDir, test: "ST vs ST", exclude_materials: ["steel"], level: "Roof" });
+  const is = seen.at(-1);
+  assert.ok(is.command === "coordination_report" && is.args.interference === true && !("out_dir" in is.args) && is.args.exclude_materials[0] === "steel" && is.args.level === "Roof", "the filters reach the add-in, the folder stays here");
+  const it = ir.content.at(-1).text;
+  assert.match(it, /Interference report Test \(ST vs ST\): 3 clash\(es\) in 2 issue\(s\); by status new 2, active 1; by pair Structural Columns x Structural Framing 2, Walls x Walls 1\. Left out by the material filter: steel 12\./);
+  const files = [...it.matchAll(/^- (.+)$/gm)].map((m) => m[1].trim());
+  assert.deepEqual(files.map((f) => path.extname(f)), [".html", ".csv", ".xlsx"]);
+  assert.ok(files.every((f) => path.dirname(f) === iDir && /^interference-Test-ST vs ST-\d{4}-\d\d-\d\d_\d{6}\./.test(path.basename(f))), "interference-<model>-<test>-<stamp> in out_dir");
+  const h = fs.readFileSync(files[0], "utf8");
+  assert.match(h, /<h1>Interference Report<\/h1>/);
+  assert.match(h, /<dt>Model<\/dt><dd>Test<\/dd><dt>Test<\/dt><dd>ST vs ST<\/dd>/);
+  assert.match(h, /<dt>Filters<\/dt><dd>level Roof; materials: excluded steel<\/dd>/);
+  assert.match(h, /Issue I-1: Beam B7 into columns \(Test\) <span class="n">\(2 clashes\)<\/span>[\s\S]*Issue I-2/, "grouped by issue, the largest first");
+  assert.match(h, /<td>Structural Framing : BU &lt;250&gt; : BU 250 : 202<\/td><td>Structural Columns : Concrete-Rectangular-Column : 400x400 : 302<\/td><td>Roof<\/td><td class="num">83<\/td><td class="num">10.123 \/ 5 \/ 12.5<\/td><td>new<\/td><td>STR<\/td>/);
+  assert.ok(h.includes("#EF3340") && h.includes("Poppins") && /@media print/.test(h), "brand colours and fonts, print-friendly");
+  assert.ok(!/<script|<link|https?:\/\//i.test(h), "self-contained: no scripts, no external files");
+  const cs = fs.readFileSync(files[1], "utf8");
+  assert.match(cs, /^\ufeffissue,issue title,clash key,status,A category,A family,A type,A id,B category/);
+  assert.match(cs, /\r\nI-1,Beam B7 into columns \(Test\),k1,new,Structural Framing,BU <250>,BU 250,202,Structural Columns/);
+  assert.equal(fs.readFileSync(files[2]).subarray(0, 2).toString(), "PK", "an xlsx (zip)");
+  const multi = (await call("coordination_report", { interference: true, out_dir: iDir, test: "MULTI" })).content.at(-1).text;
+  assert.match(multi, /Interference report Test \(MULTI\)[\s\S]*Interference report Test-ARC \(MULTI\)/, "one file set per model");
+  assert.equal([...multi.matchAll(/^- (.+)$/gm)].length, 6);
+
+  // clash_resolve scoped to concrete: the filter is said, and it is part of the gate key.
+  const cfx = { action: "fix", report_dir: path.join(tmp, "clash-mat"), explanation: "Join the concrete clashes", materials: ["concrete"] };
+  const cp = await call("clash_resolve", { materials: ["concrete"] });
+  assert.deepEqual(seen.at(-1).args.materials, ["concrete"]);
+  assert.match(cp.content.at(-1).text, /Material filter: only concrete; left out: steel 12, unknown 1 element\(s\)\./);
+  await call("clash_resolve", { ...cfx, dry_run: true });
+  const { materials: _m, ...noMat } = cfx;
+  assert.match((await call("clash_resolve", noMat)).content[0].text, /not been previewed/, "another material scope needs its own dry run");
+  assert.match((await call("clash_resolve", { ...cfx, materials: ["steel"] })).content[0].text, /not been previewed/);
+  const ca = await call("clash_resolve", cfx);
+  assert.ok(!ca.isError && seen.at(-1).args.materials[0] === "concrete" && seen.at(-1).args.dry_run === false);
+  assert.match(fs.readFileSync(ca.content.at(-1).text.match(/Evidence: (.+)/)[1].trim(), "utf8"), /\| material filter \| only concrete; left out steel 12, unknown 1 \|/);
 }
 // A large check goes to report files; the reply stays small.
 const bigRows = Array.from({ length: 210 }, (_, i) => ({ name: `TST_P${i}`, categories: "Levels" }));

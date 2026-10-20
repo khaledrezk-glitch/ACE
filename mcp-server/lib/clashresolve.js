@@ -4,6 +4,7 @@
 // the vault (rules/clash-resolve.json), the reply text and the evidence; index.js calls Revit and writes the files.
 import { blockLine, fileStem } from "./paramexec.js";
 import { localDate } from "./core.js";
+import { filteredText, materialArgs, materialScope } from "./interference.js";
 
 export const DEFAULT_TEST = "ST vs ST";
 export const ST_CATEGORIES = ["OST_StructuralColumns", "OST_StructuralFraming", "OST_Walls", "OST_Floors", "OST_StructuralFoundation", "OST_Stairs", "OST_Ramps"];
@@ -46,9 +47,9 @@ export function readRules(text, file) {
 }
 
 function steelOf(s, where) {
-  if (typeof s !== "object" || Array.isArray(s)) throw new Error(`${where} must be { cutback: true|false, coping: true|false }.`);
+  if (typeof s !== "object" || Array.isArray(s)) throw new Error(`${where} must be { cutback: true|false, coping: true|false, allowUnjoin: true|false }.`);
   const out = {};
-  for (const k of ["cutback", "coping"]) if (s[k] != null) {
+  for (const k of ["cutback", "coping", "allowUnjoin"]) if (s[k] != null) {
     if (typeof s[k] !== "boolean") throw new Error(`${where}.${k} must be true or false.`);
     out[k] = s[k];
   }
@@ -73,6 +74,7 @@ export function buildRequest(a, rules = {}, version) {
     ...(bCats ? { b_categories: bCats } : {}),
     ...(a.a_disciplines?.length ? { a_disciplines: a.a_disciplines } : {}),
     ...(a.b_disciplines?.length ? { b_disciplines: a.b_disciplines } : {}),
+    ...materialArgs(a),   // part of the request, so part of the gate key
     ...(a.tolerance_mm != null ? { tolerance_mm: a.tolerance_mm } : {}),
     ...(a.level ? { level: a.level } : {}),
     ...(a.keys?.length ? { keys: a.keys } : {}),
@@ -131,16 +133,21 @@ const warnText = (w) => !w ? "not reported" : `before ${w.before ?? "?"}, after 
  * The reply in four stages: before, plan, report only, after (with the guard and the warnings). Blocks come first.
  * mode: "plan" (read-only check) | "dry run" | "apply".
  */
-export function replyText(r, { mode, model, test, rolledBack = false, forced = false } = {}) {
+export function replyText(r, { mode, model, test, rolledBack = false, forced = false, scope = {} } = {}) {
   const lines = [];
   const plan = r?.plan ?? [];
   const counts = countsByKind(plan);
   const head = mode === "plan" ? "plan, read-only, nothing changed" : mode === "dry run" ? "dry run" : rolledBack ? "NOT applied: rolled back" : "applied as ONE undo step";
   lines.push(`CLASH RESOLVE ${test ?? r?.test ?? DEFAULT_TEST} in ${model ?? r?.model ?? "?"} (${head}).`);
   if (r?.blocked?.length) lines.push(`Blocked (${mode === "plan" ? "a fix stops here, before the dry run" : "nothing changed"}):\n${r.blocked.map((b) => `- ${blockLine(b)}`).join("\n")}`);
+  const ms = materialScope(scope);
+  if (ms || filteredText(r?.filtered)) lines.push(`Material filter: ${ms || "none"}${filteredText(r?.filtered) ? `; left out: ${filteredText(r.filtered)} element(s)` : ""}.`);
   const b = r?.before ?? {};
   lines.push(`Before: ${b.clashes ?? "?"} clash(es) in ${b.issues ?? "?"} issue(s)${pairLine(b.byPair) ? `; by pair: ${pairLine(b.byPair)}` : ""}.`);
   lines.push(`Plan: ${plan.length} change(s): ${kindText(counts)}. Only joins, switched join orders, steel end cutbacks and copes; nothing is deleted, recreated or moved.`);
+  // Steel ends: the method per step and what the probe found writable (read-only plan included), and any join-state change.
+  const ends = plan.filter((p) => p.kind === "cutback" || p.kind === "cope");
+  if (ends.length) lines.push(`Steel ends:\n${ends.slice(0, 10).map((p) => `- ${p.kind} ${p.a} at ${p.b}: ${p.method ?? "no method"}${p.changesJoinState ? " (CHANGES THE JOIN STATE: allowUnjoin)" : ""}${p.probe ? ` [writable: ${Object.entries(p.probe).filter(([k, v]) => v === true && k !== "joinedTo").map(([k]) => k).join(", ") || "none"}${p.probe.joinedTo ? `; joined to ${p.probe.joinedTo}` : ""}]` : ""}`).join("\n")}${ends.length > 10 ? `\n- ... ${ends.length - 10} more (run record)` : ""}`);
   const ro = groupReportOnly(r?.reportOnly);
   if (ro.length) lines.push(`Report only (needs a person, ${r.reportOnly.length}):\n${ro.slice(0, 8).map((g) => `- ${g.why} (${g.count}, e.g. ${g.samples.join("; ")})${g.recommendation ? `: ${g.recommendation}` : ""}`).join("\n")}${ro.length > 8 ? `\n- ... ${ro.length - 8} more reason(s) (run record)` : ""}`);
   if (mode !== "plan") {
@@ -159,7 +166,7 @@ export function replyText(r, { mode, model, test, rolledBack = false, forced = f
 }
 
 /** evidence-clash-<model>-<stamp>.md after an apply (kept or rolled back). */
-export function evidenceMarkdown({ model, test, when = localDate(new Date(), { time: true }), result: r = {}, explanation }) {
+export function evidenceMarkdown({ model, test, when = localDate(new Date(), { time: true }), result: r = {}, explanation, scope = {} }) {
   const rb = rolledBackOf(r);
   const plan = r.plan ?? [];
   const planned = countsByKind(plan), done = doneCounts(r.done), would = wouldCounts(r);
@@ -170,6 +177,7 @@ export function evidenceMarkdown({ model, test, when = localDate(new Date(), { t
     `| clashes before | ${r.before?.clashes ?? "?"} (${r.before?.issues ?? "?"} issue(s)) |`,
     `| clashes after | ${rb ? `${r.before?.clashes ?? "?"} (as before: rolled back${r.after?.clashes != null ? `; would have been ${r.after.clashes}` : ""})` : r.after?.clashes ?? "?"} |`,
     ...KINDS.map((k) => `| ${k} | ${rb ? `0 (${would[k] ?? 0} would have been done; rolled back)` : `${done[k] ?? 0} of ${planned[k] ?? 0}`} |`),
+    `| material filter | ${materialScope(scope) || "none"}${filteredText(r.filtered) ? `; left out ${filteredText(r.filtered)}` : ""} |`,
     `| report only | ${(r.reportOnly ?? []).length} |`,
     `| skipped | ${(r.skipped ?? []).length} |`,
     `| annotation guard | ${!g ? "not reported" : g.ok ? `ok (${g.checked ?? "every"} element(s) checked)` : `FAILED: ${(g.mismatches ?? []).length} difference(s), rolled back`} |`,
