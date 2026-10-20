@@ -182,7 +182,10 @@ Visibility worksets (HIDE, HIDDEN, TEMP, or the vault's worksets.naming.manualOn
 <prefix>GENERAL). The user edits the file; action confirm (file: rule-level, group-level or the hand-made CSV, matched
 by Model + Current workset + Category + Type + Level and the element count: a changed count is flagged, never applied)
 writes a plan per model beside the file and shows the rules; save_rules + confirm: true saves them into the vault's
-project-requirements.json (new rules first; a conflicting rule is listed and kept). action apply with plan_file:
+project-requirements.json (each new rule before the first less specific one, category-free rules last; a conflicting
+rule is listed and kept; a rule that would shadow, or be shadowed by, an existing one is listed and saved only with
+overlaps_ok: true after the user agreed). An xlsx is read on both sheets: rule rows and group rows; where both decide a
+group, the Groups sheet wins. action apply with plan_file:
 check_only, dry_run, then the identical call (ONE undo step: create, rename, move, delete; borrowed elements skipped
 and listed; a changed group count refuses the whole plan). Office method: revit_guide methods/workset-cleanup.
 

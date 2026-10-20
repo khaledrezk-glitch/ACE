@@ -794,9 +794,13 @@ class P {
     var pis = new List<(string, long, long)> { ("join:1>2", 1, 2), ("join:3>4", 3, 4), ("trim:2>9:1", 2, 9) };
     var pi1 = (List<string>)R("PlanItemsFor").Invoke(null, new object[] { new long[] { 2, 1 }, pis })!;
     var pi2 = (List<string>)R("PlanItemsFor").Invoke(null, new object[] { new long[] { 4, 77 }, pis })!;
-    Check(pi1.SequenceEqual(new[] { "join:1>2" }) && pi2.SequenceEqual(new[] { "join:3>4" }) && (bool)R("IsNotIntersecting").Invoke(null, new object[] { "Highlighted elements are joined but do not intersect." })!
+    var pn2 = (List<string>)R("PlanItemsNear").Invoke(null, new object[] { new long[] { 4, 77 }, pis })!;
+    Check(pi1.SequenceEqual(new[] { "join:1>2" }) && pi2.Count == 0 && pn2.SequenceEqual(new[] { "join:3>4" }) && (bool)R("IsNotIntersecting").Invoke(null, new object[] { "Highlighted elements are joined but do not intersect." })!
       && !(bool)R("IsNotIntersecting").Invoke(null, new object[] { "Highlighted walls overlap." })!,
-      "guard: each new warning names the plan item behind it; \"joined but do not intersect\" is recognised");
+      "guard: a warning names only the steps joining both its elements (others are listed as near, never dropped); \"joined but do not intersect\" is recognised");
+
+    Check((string)WP("KeptWhy").Invoke(null, new object[] { 3, 3 })! == "holds 3 types (a plan moves instances only)" && ((string)WP("KeptWhy").Invoke(null, new object[] { 5, 2 })!).StartsWith("not empty after the moves (5 elements, 2 of them types")
+      && (string)WP("KeptWhy").Invoke(null, new object[] { 1, 0 })! == "not empty after the moves (1 element)", "workset plan: a workset holding only types is kept (\"holds N types\"), never a plan-wide rollback");
 
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");

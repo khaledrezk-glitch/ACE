@@ -25,6 +25,11 @@ namespace AceRevitMcp.Rules
         public static string MaterialClass(string structuralMaterial) =>
             structuralMaterial == "steel" ? "steel" : structuralMaterial == "concrete" || structuralMaterial == "precast" ? "concrete" : "other";
 
+        /// <summary>Why a workset named for deletion is kept: what it still holds after the moves (types are never moved by a plan).</summary>
+        public static string KeptWhy(int elements, int types) =>
+            types > 0 && elements == types ? $"holds {types} type{(types == 1 ? "" : "s")} (a plan moves instances only)"
+            : $"not empty after the moves ({elements} element{(elements == 1 ? "" : "s")}{(types > 0 ? $", {types} of them types" : "")})";
+
         /// <summary>One planned step of apply_plan.</summary>
         internal sealed class Step
         {

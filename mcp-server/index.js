@@ -1039,6 +1039,7 @@ tool("workset_plan", {
     out_dir: z.string().optional(),
     file: z.string().optional().describe("confirm: the edited proposal (.csv / .xlsx)"),
     save_rules: z.boolean().optional(), confirm: z.boolean().optional().describe("save_rules: write after the user saw the rules"),
+    overlaps_ok: z.boolean().optional().describe("save_rules: also save rules that overlap existing ones (after the user agreed)"),
     vault: z.string().optional(),
     plan_file: z.string().optional().describe("apply: a plan JSON written by confirm"),
     max_ids: z.number().int().min(0).max(500).optional(),
@@ -1066,24 +1067,36 @@ tool("workset_plan", {
   }
   if (action === "confirm") {
     if (!a.file) throw new RevitError("confirm needs file: the edited proposal (.csv or .xlsx).");
-    let table;
-    try { table = await WorksetPlan.readTable(a.file); } catch (e) { throw new RevitError(e.message); }
+    let tables;
+    try { tables = await WorksetPlan.readTables(a.file); } catch (e) { throw new RevitError(e.message); }
     const list = (await worksetFactsFor(a, timeout)).filter((x) => x.facts?.workshared !== false);
-    let results, rules, others = [];
-    if (table.layout === "rules") {
-      // Rule rows: the confirmed rules, evaluated against each model's facts.
-      const ctx = { levels: WorksetPlan.levelTokens(list.flatMap((x) => x.facts?.levels ?? [])), table: Worksets.tokenTable(list[0]?.naming), noise: WorksetPlan.commonTokens(table.rows.map((r) => r.proposed)), manualOnly: list[0]?.naming?.manualOnly ?? [] };
-      const rr = WorksetPlan.rulesFromRows(table.rows, ctx);
+    // An xlsx has two sheets: the rule rows and the group rows. Each sheet with decisions is used; on both, the Groups sheet wins per group.
+    const ruleT = tables.find((t) => t.layout === "rules"), groupT = tables.find((t) => t.layout === "groups");
+    const useRules = ruleT && (WorksetPlan.decided(ruleT) || !groupT || !WorksetPlan.decided(groupT));
+    const useGroups = groupT && WorksetPlan.decided(groupT) > 0;
+    const table = useRules ? ruleT : groupT;
+    let results, rules, others = [], unused = [];
+    let rr = null;
+    if (useRules) {
+      const ctx = { levels: WorksetPlan.levelTokens(list.flatMap((x) => x.facts?.levels ?? [])), table: Worksets.tokenTable(list[0]?.naming), noise: WorksetPlan.commonTokens(ruleT.rows.map((r) => r.proposed)), manualOnly: list[0]?.naming?.manualOnly ?? [] };
+      rr = WorksetPlan.rulesFromRows(ruleT.rows, ctx);
       results = list.map((x) => ({ ...WorksetPlan.planFromRules(rr.rules, x.facts), flagged: rr.flagged, undecided: rr.undecided, skipped: rr.skipped, confirmed: rr.confirmed }));
       rules = { rules: WorksetPlan.vaultRules(rr.rules, [...new Set(list.flatMap((x) => x.facts?.zones ?? []))]), ambiguous: [] };
-    } else {
-      results = list.map((x) => WorksetPlan.confirm(table.rows, x.facts)).filter((c) => c.rowsForModel);
-      others = WorksetPlan.otherModels(table.rows, list.map((x) => x.facts?.model).filter(Boolean));
+      if (rr.flagged.length) unused.push(`${ruleT.sheet ? `${ruleT.sheet} sheet` : "The file"}: ${rr.flagged.length} decision(s) not used (flagged above).`);
     }
+    if (useGroups) {
+      const g = list.map((x) => WorksetPlan.confirm(groupT.rows, x.facts));
+      others = WorksetPlan.otherModels(groupT.rows, list.map((x) => x.facts?.model).filter(Boolean));
+      if (useRules) results = results.map((rp, i) => WorksetPlan.combine(rp, g[i]));
+      else results = g.filter((c) => c.rowsForModel);
+      const notUsed = g.reduce((n, c) => n + c.flagged.length, 0) + groupT.rows.filter((r) => others.includes(r.model) && WorksetPlan.decisionOf(r.decision).kind !== "none").length;
+      if (notUsed) unused.push(`${groupT.sheet ? `${groupT.sheet} sheet` : "The file"}: ${notUsed} decision(s) not used (flagged above, or for models not open).`);
+    }
+    if (ruleT && !useRules && WorksetPlan.decided(ruleT)) unused.push(`${ruleT.sheet} sheet: ${WorksetPlan.decided(ruleT)} decision(s) not used.`);
     if (!results.length) return text(`No rows in ${a.file} are for the open model (${list.map((x) => x.facts?.model).join(", ")}). Models in the file: ${others.join(", ") || "none"}. Open one (or pass paths) and confirm again.`);
     const dir = path.dirname(a.file), stem = path.basename(a.file).replace(/\.(csv|xlsx)$/i, "");
     const files = results.map((c) => writeOut(dir, `${stem}.plan-${ParamExec.safeName(c.model)}.json`,
-      JSON.stringify({ schema: "ace.workset-plan/1", model: c.model, source: a.file, layout: table.layout, at: localDate(new Date(), { time: true }), plan: c.plan, flagged: c.flagged, undecided: c.undecided.length, notes: c.notes ?? [] }, null, 1)));
+      JSON.stringify({ schema: "ace.workset-plan/1", model: c.model, source: a.file, layout: useRules && useGroups ? "both sheets" : table.layout, at: localDate(new Date(), { time: true }), plan: c.plan, flagged: c.flagged, undecided: c.undecided.length, notes: c.notes ?? [] }, null, 1)));
     rules ??= WorksetPlan.deriveRules(results);
     let merge = null, saved = false;
     if (a.save_rules) {
@@ -1092,7 +1105,7 @@ tool("workset_plan", {
       const f = path.join(vdir, "project-requirements.json");
       let json = { schema: "ace.project-requirements/1" };
       try { if (fs.existsSync(f)) json = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) { throw new RevitError(`${f} is not valid JSON (${e.message}): fix it first.`); }
-      merge = { file: f, ...WorksetPlan.mergeRules(json, rules.rules) };
+      merge = { file: f, ...WorksetPlan.mergeRules(json, rules.rules, { overlapsOk: !!a.overlaps_ok }) };
       if (a.confirm && merge.added.length) {
         if (!Vault.trusted(path.dirname(CONFIG_PATH), vdir)) throw new RevitError(`The vault ${vdir} is not trusted for writing yet: ask the user, then vault with consent: true, and confirm again.`);
         fs.writeFileSync(`${f}.tmp`, JSON.stringify(merge.json, null, 2)); fs.renameSync(`${f}.tmp`, f);
@@ -1101,14 +1114,14 @@ tool("workset_plan", {
       } else if (a.confirm) saved = true;
     }
     const out = text({ models: results.map((c) => ({ model: c.model, plan: c.plan, flagged: c.flagged, undecided: c.undecided.length })), files, rules, ...(merge ? { merge: { file: merge.file, added: merge.added, same: merge.same.length, conflicts: merge.conflicts } } : {}) });
-    out.content.push({ type: "text", text: WorksetPlan.confirmText(results, { files, others, rules, merge, saved, file: a.file, layout: table.layout }) });
+    out.content.push({ type: "text", text: WorksetPlan.confirmText(results, { files, others, rules, merge, saved, file: a.file, layout: useRules ? "rules" : "groups", unused }) });
     return out;
   }
   // apply
   if (!a.plan_file) throw new RevitError("apply needs plan_file: the plan JSON that workset_plan action confirm wrote.");
   let pf;
   try { pf = WorksetPlan.readPlanFile(JSON.parse(fs.readFileSync(a.plan_file, "utf8"))); } catch (e) { throw new RevitError(`${a.plan_file}: ${e.message}`); }
-  const req = { action: "apply_plan", plan: pf.plan, max_ids: a.max_ids ?? 20, expect_version: VERSION };
+  const req = { action: "apply_plan", workset_plan: pf.plan, max_ids: a.max_ids ?? 20, expect_version: VERSION };
   return planExecute({
     name: "workset plan", command: "workset_admin", req, ident: { action: "apply_plan", plan: pf.plan, model: pf.model }, modelMust: pf.model,
     // The bridge field "plan" is the workset plan here, so no panel checklist (plan / step) is sent.

@@ -71,7 +71,7 @@ export function capLine(r) {
 export function touchingLine(t) {
   if (!t) return "";
   const by = Array.isArray(t.byPair) ? t.byPair.map((x) => `${x.pair ?? `${x.a} x ${x.b}`} ${x.count ?? x.pairs ?? ""}`.trim()) : Object.entries(t.byPair ?? {}).map(([k, v]) => `${k} ${typeof v === "object" ? JSON.stringify(v) : v}`);
-  return `All touching: ${t.candidates ?? "?"} candidate pair(s), ${t.pairs ?? "?"} touching in scope, ${t.right ?? 0} already right; ${(t.chunks ?? []).length > 1 ? `this chunk: ` : ""}join ${t.join ?? 0}, switch join ${t.switchJoin ?? 0}${Number(t.flipConfirm) ? `, flip to confirm ${t.flipConfirm}` : ""}${by.length ? ` (${by.slice(0, 8).join(", ")}${by.length > 8 ? ", ..." : ""})` : ""}.`;
+  return `All touching: ${t.candidates ?? "?"} candidate pair(s), ${t.pairs ?? "?"} touching in scope${Number(t.clashing) ? ` (${t.clashing} of them clashing)` : ""}, ${t.right ?? 0} already right; ${(t.chunks ?? []).length > 1 ? `this chunk: ` : ""}join ${t.join ?? 0}, switch join ${t.switchJoin ?? 0}${Number(t.flipConfirm) ? `, flip to confirm ${t.flipConfirm}` : ""}${by.length ? ` (${by.slice(0, 8).join(", ")}${by.length > 8 ? ", ..." : ""})` : ""}.`;
 }
 /** The chunks of all-touching: the list, which one is planned, and the next. "" with one chunk. */
 export function chunkLines(t) {
@@ -79,7 +79,7 @@ export function chunkLines(t) {
   if (list.length <= 1) return [];
   const n = Number(t.chunk ?? 1);
   return [`Chunks (${t.chunkSize ?? "?"} pairs each, by level then id; each chunk is its own dry run, apply and undo step): chunk ${n} of ${list.length} is planned.${t.note ? ` ${t.note}` : ""}`,
-    ...list.map((c) => `- chunk ${c.chunk} of ${list.length}: ${c.pairs} pair(s), ${c.notJoined ?? 0} to join, ${c.wrongOrder ?? 0} in the wrong order${(c.levels ?? []).filter(Boolean).length ? ` (${c.levels.filter(Boolean).join(", ")})` : ""}${c.chunk === n ? " <- planned" : ""}`),
+    ...list.map((c) => `- chunk ${c.chunk} of ${list.length}: ${c.pairs} pair(s)${Number(c.clashing) ? ` (${c.clashing} clashing: solved as clashes, no touching step)` : ""}, ${c.notJoined ?? 0} to join, ${c.wrongOrder ?? 0} in the wrong order${(c.levels ?? []).filter(Boolean).length ? ` (${c.levels.filter(Boolean).join(", ")})` : ""}${c.chunk === n ? " <- planned" : ""}`),
     ...(n < list.length ? [`Next: run chunk ${n + 1} with the same args (chunk: ${n + 1}) after this one is applied.`] : [])];
 }
 /** "Flip, confirm": joined in the order the rules call wrong, not clashing: switched only when its id is passed in flips. */
@@ -103,7 +103,7 @@ export function quantityLines(q, mode) {
     ...e.map(([cat, v]) => `- ${cat}: volume ${f(v.volumeM3?.before)} -> ${f(v.volumeM3?.after)} m3, area ${f(v.areaM2?.before)} -> ${f(v.areaM2?.after)} m2`)];
 }
 /** New warnings with the plan items behind them. */
-export const warningItemLines = (w) => (w?.byPlanItem ?? []).length ? ["New warnings by plan item:", ...w.byPlanItem.slice(0, 20).map((x) => `- ${x.warning}: ${(x.planItems ?? []).join(", ") || "no plan item names its elements"}`)] : [];
+export const warningItemLines = (w) => (w?.byPlanItem ?? []).length ? ["New warnings by plan item (steps that join both of its elements):", ...w.byPlanItem.slice(0, 20).map((x) => `- ${x.warning}: ${(x.planItems ?? []).join(", ") || `no step joins both${(x.nearPlanItems ?? []).length ? ` (near: ${x.nearPlanItems.join(", ")}, for information)` : ""}`}`)] : [];
 
 /** The join order (strongest first) -> OST category names; an entry ACE cannot read is an error, never dropped. */
 export function normaliseOrder(order, where = "order") {
@@ -392,7 +392,7 @@ export function evidenceMarkdown({ model, test, when = localDate(new Date(), { t
   section("Annotation guard differences", (g?.mismatches ?? []).map((m) => `#${m.element} ${m.what}: ${JSON.stringify(m.before)} -> ${JSON.stringify(m.after)}`));
   section("Dimension values changed on shortened members (references intact; information, not a failure)", changedValues(g).map(valueLine));
   section("New warnings", (w.new ?? []).map((x) => typeof x === "string" ? x : x.text ?? x.message ?? JSON.stringify(x)));
-  section("New warnings by plan item", (w.byPlanItem ?? []).map((x) => `${x.warning}: ${(x.planItems ?? []).join(", ") || "no plan item names its elements"} (elements ${(x.elements ?? []).join(", ")})`));
+  section("New warnings by plan item", (w.byPlanItem ?? []).map((x) => `${x.warning}: ${(x.planItems ?? []).join(", ") || `no step joins both${(x.nearPlanItems ?? []).length ? ` (near: ${x.nearPlanItems.join(", ")})` : ""}`} (elements ${(x.elements ?? []).join(", ")})`));
   section("Volume and area (concrete, before -> after)", Object.entries(r.quantities ?? {}).map(([c, v]) => `${c}: volume ${v.volumeM3?.before ?? "?"} -> ${v.volumeM3?.after ?? "?"} m3, area ${v.areaM2?.before ?? "?"} -> ${v.areaM2?.after ?? "?"} m2`));
   if (r.touching?.chunks?.length > 1) section("Chunk", [`chunk ${r.touching.chunk} of ${r.touching.chunks.length} (${r.touching.chunkSize} pairs each)`]);
   section("Remaining clashes", (rb ? [] : r.after?.remaining ?? []).map((x) => `${ids(x)}: ${x.why ?? "not auto-fixable"}`));

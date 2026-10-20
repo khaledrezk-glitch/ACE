@@ -116,7 +116,7 @@ const bridge = http.createServer((req, res) => {
         const base = { model: "Test", ...filtered, aceVersion: keys.includes("TST_OLDADDIN") ? "1.9.0" : SERVER_VERSION, before, plan, planHash: `ph-${keys.join(",")}-${args.test_force_verify_mismatch ? "f" : ""}`, reportOnly, blocked, echo: args,
           ...(keys.includes("TST_SKIPTRIM") ? { skipped: [{ id: "trim:211>302:end", a: 211, b: 302, code: "hosts-openings" }, { id: "trim:212>302:start", a: 212, b: 302, code: "one-trim-per-end" }] } : {}),
           ...(args.scope === "all-touching" && args.max_pairs === 5 ? { touching: { candidates: 120, pairs: 12, right: 2, join: 3, switchJoin: 1, flipConfirm: 1, notTouching: 7, byPair: { "Walls x Floors": 4 }, chunk: args.chunk ?? 1, chunkSize: args.chunk_size ?? 5, capped: true,
-            chunks: [{ chunk: 1, pairs: 5, notJoined: 3, wrongOrder: 2, levels: ["L1"] }, { chunk: 2, pairs: 5, notJoined: 4, wrongOrder: 0, levels: ["L1", "L2"] }, { chunk: 3, pairs: 2, notJoined: 2, wrongOrder: 0, levels: ["L2"] }] },
+            clashing: 1, chunks: [{ chunk: 1, pairs: 5, clashing: 1, notJoined: 3, wrongOrder: 2, levels: ["L1"] }, { chunk: 2, pairs: 5, notJoined: 4, wrongOrder: 0, levels: ["L1", "L2"] }, { chunk: 3, pairs: 2, notJoined: 2, wrongOrder: 0, levels: ["L2"] }] },
             quantities: { Floors: { volumeM3: { before: 12.5, after: 12.25 }, areaM2: { before: 50, after: 49.5 } } } } : {}),
           ...(args.scope === "all-touching" && args.max_pairs !== 5 ? { dropped: { notTouching: 40, trim: 0 }, scope: "all-touching", scopeSource: args.scope_source ?? "request", touching: { candidates: 120, pairs: 80, right: 38, join: 30, switchJoin: 12, byPair: { "Floors x Structural Columns": 25 } } } : {}),
           storeKey: keys.includes("TST_STORE") ? "TST_Central" : "Test", orderSource: args.order_source ?? (args.order ? "request" : "default"),
@@ -133,7 +133,7 @@ const bridge = http.createServer((req, res) => {
           guard: forced ? { ok: false, checked: 8, mismatches: [{ element: 202, what: "tags", before: 2, after: 1 }] }
             : { ok: true, checked: 8, mismatches: [], changedValues: [{ element: 202, dimension: 9001, before: "6000", after: "5917" }] },
           warnings: { before: 10, after: 10, new: keys.includes("TST_NEWWARN") ? ["Highlighted elements are joined but do not intersect."] : [],
-            ...(args.max_pairs === 5 ? { byPlanItem: [{ warning: "TST wall and floor overlap.", elements: [205, 206], planItems: ["switch-join:205>206"] }] } : {}) },
+            ...(args.max_pairs === 5 ? { byPlanItem: [{ warning: "TST wall and floor overlap.", elements: [205, 206], planItems: ["switch-join:205>206"] }, { warning: "TST near only.", elements: [207, 208], planItems: [], nearPlanItems: ["join:207>209"] }] } : {}) },
           done: args.dry_run || forced ? { join: 0, switchJoin: 0, cutback: 0, cope: 0, trim: 0 } : { join: 1, switchJoin: 1, cutback: 1, cope: 1, trim: args.trim_to_face ? 1 : 0 }, skipped: [],
           [args.dry_run ? "wouldChange" : forced ? "wouldHaveChanged" : "changed"]: { added: 0, modified: 8, deleted: 0 } } });
       }
@@ -167,11 +167,11 @@ const bridge = http.createServer((req, res) => {
           const names = ["TST Shared Views, Levels, Grids", "TST-ST-GF COLUMNS", "TST-ST-GF COLUMN ", "TST-ST-RF FRAMING", "TST-ST-ROOF STEEL", "TST-ST-STAIRS", "TST-ST-GF STAIRS", "TST-ST-EL RVT LINKS", "TST-ST-RVT LINKS", "TST-ST-CAD LINKS", "TST-ST-HIDE ALL", "TST-ST-OLD", "Workset1"];
           const wsF = names.map((name, i) => { const mine = groups.filter((g) => g.workset === name); const byCategory = {}; mine.forEach((g) => { byCategory[g.category] = (byCategory[g.category] ?? 0) + g.elements; });
             return { id: i + 1, name, elements: i === 0 ? 12 : mine.reduce((n, g) => n + g.elements, 0), byCategory: i === 0 ? { Levels: 4, Grids: 8 } : byCategory, isDefault: name === "Workset1", protected: i === 0, editable: true, owner: "", open: true,
-              visibleByDefault: true, views: { "TST NAVISWORKS": !["TST-ST-HIDE ALL", "TST-ST-STAIRS"].includes(name) } }; });
+              visibleByDefault: true, views: { "TST NAVISWORKS": !["TST-ST-HIDE ALL", "TST-ST-STAIRS"].includes(name) }, types: name === "TST-ST-OLD" ? 2 : 0 }; });
           const factsModel = fakeOpened ?? "Test";
           if (args.action === "facts") return reply({ ok: true, result: { model: factsModel, aceVersion: SERVER_VERSION, action: "facts", checkOnly: true, workshared: true, datumWorkset: names[0], exportViews: args.views ?? ["TST NAVISWORKS"],
             levels: [{ name: "TST-GF(GROUND FLOOR)", elevation: 0 }, { name: "TST-01", elevation: 3000 }, { name: "TST-RF(ROOF)", elevation: 6000 }], zones: ["TST ZONE A"], worksets: wsF, groups, echo: args } });
-          const p = args.plan ?? {};
+          const p = args.workset_plan ?? {};   // 1.13.1: the plan travels as workset_plan (plan is the panel checklist)
           const steps = [...(p.create ?? []).map((n) => ({ id: `create:${n}`, kind: "create", workset: n })), ...(p.rename ?? []).map((r) => ({ id: `rename:${r.from}`, kind: "rename", workset: r.from, from: r.from, to: r.to })),
             ...(p.moves ?? []).map((m) => ({ id: `move:${m.key}`, kind: "move", workset: m.from, key: m.key, from: m.from, to: m.to, elements: m.elements })), ...(p.delete ?? []).map((n) => ({ id: `delete:${n}`, kind: "delete", workset: n, elements: 0 }))];
           const changed = (p.moves ?? []).filter((m) => { const g = groups.find((x) => x.key === m.key); return !g || g.elements !== m.elements; }).map((m) => ({ key: m.key, expected: m.elements, found: groups.find((x) => x.key === m.key)?.elements ?? 0 }));
@@ -184,7 +184,9 @@ const bridge = http.createServer((req, res) => {
           if (args.check_only) return reply({ ok: true, result: { ...baseP, success: true, checkOnly: true, blocked: [] } });
           if (args.expect_plan && args.expect_plan !== planHash) return reply({ ok: true, result: { success: false, stage: "blocked", code: "plan-changed", model: "Test", blocked: [{ what: "the plan", why: "differs", code: "plan-changed" }] } });
           const moved = (p.moves ?? []).reduce((n, m) => n + m.elements, 0) - skipped.length * 2;
-          return reply({ ok: true, result: { ...baseP, success: true, blocked: [], rolledBack: !!args.dry_run, verify: { ok: true, checked: 9, mismatches: [] },
+          const np = args.dry_run ? { notPreviewed: steps.filter((x) => x.kind === "move" && x.to === "TST-ST-CAD LINKS").map((x) => x.id) } : {};
+          const keptP = args.dry_run ? { kept: [{ name: "TST-ST-OLD", elements: 0, types: 2, why: "holds 2 types (a plan moves instances only)" }], notPreviewedCounts: { moves: 1, elements: 1, linkTypes: 1 } } : {};
+          return reply({ ok: true, result: { ...baseP, ...np, ...keptP, success: true, blocked: [], rolledBack: !!args.dry_run, verify: { ok: true, checked: 9, mismatches: [] },
             done: args.dry_run ? { created: 0, renamed: 0, moved: 0, deleted: 0 } : { created: (p.create ?? []).length, renamed: (p.rename ?? []).length, moved, deleted: (p.delete ?? []).length } } });
         }
         const ws = [
@@ -984,7 +986,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(ln.content.at(-1).text, /every touching pair of the categories \(all-touching, narrowed to the call's level L1\); same-category joins off; chunks of 5 touching pairs\./);
   // 1.13.0: chunks (the list, which one is planned, the next), flips only from the "flip, confirm" list, quantities, warnings by plan item.
   const lt = ln.content.at(-1).text;
-  assert.match(lt, /Chunks \(5 pairs each, by level then id; each chunk is its own dry run, apply and undo step\): chunk 1 of 3 is planned\.\n- chunk 1 of 3: 5 pair\(s\), 3 to join, 2 in the wrong order \(L1\) <- planned\n- chunk 2 of 3: 5 pair\(s\), 4 to join, 0 in the wrong order \(L1, L2\)\n- chunk 3 of 3: 2 pair\(s\), 2 to join, 0 in the wrong order \(L2\)\nNext: run chunk 2 with the same args \(chunk: 2\)/);
+  assert.match(lt, /Chunks \(5 pairs each, by level then id; each chunk is its own dry run, apply and undo step\): chunk 1 of 3 is planned\.\n- chunk 1 of 3: 5 pair\(s\) \(1 clashing: solved as clashes, no touching step\), 3 to join, 2 in the wrong order \(L1\) <- planned\n- chunk 2 of 3: 5 pair\(s\), 4 to join, 0 in the wrong order \(L1, L2\)\n- chunk 3 of 3: 2 pair\(s\), 2 to join, 0 in the wrong order \(L2\)\nNext: run chunk 2 with the same args \(chunk: 2\)/);
   assert.match(lt, /Near, not touching: 7 pair\(s\) \(no contact within 1 mm\): no step\./);
   assert.match(lt, /Flip, confirm \(1; not automatic: an existing join, not clashing, may be deliberate; pass the ids in flips to switch\):\n- switch-join:501>502: 501 \(Walls\) x 502 \(Floors\) @ L1; current cutter 502 \(Floors\), the rule's cutter 501 \(Walls\)/);
   assert.ok(!/Report only \(needs a person, 2\)/.test(lt), "flip items are not counted as report only");
@@ -995,7 +997,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(badf.isError && /flip switch-join:999>998.*not on the plan.s "Flip, confirm" list/.test(badf.content[0].text), "flips only from the list");
   const fd = await call("clash_resolve", { ...fxf, flips: ["switch-join:501>502"], dry_run: true });
   assert.ok(!fd.isError && crs().at(-1).args.flips[0] === "switch-join:501>502", fd.content.at(-1).text);
-  assert.match(fd.content.at(-1).text, /New warnings by plan item:\n- TST wall and floor overlap\.: switch-join:205>206/);
+  assert.match(fd.content.at(-1).text, /New warnings by plan item \(steps that join both of its elements\):\n- TST wall and floor overlap\.: switch-join:205>206\n- TST near only\.: no step joins both \(near: join:207>209, for information\)/);
   assert.match(fd.content.at(-1).text, /Volume and area \(concrete, the elements the plan touches; before -> would be\):\n- Floors: volume 12\.500 -> 12\.250 m3, area 50\.000 -> 49\.500 m2/);
   await call("run_clash_test", { test: "ST vs ST", models: ["TST_Other"] });
   assert.deepEqual(seen.filter((x) => x.command === "run_clash_test").at(-1).args.models, ["TST_Other"], "other open models only when named");
@@ -1440,7 +1442,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(pt, /- \[General\] TST Shared Views, Levels, Grids: keep \(the datum workset: never renamed or deleted\)/, "the datum workset by the add-in's flag, a name with commas kept whole");
   assert.match(pt, /- \[General\] TST_Walls: rename from Workset1;/, "Workset1 gets the naming rule's default name");
   assert.match(pt, /- \[Links\] TST-ST-CAD LINKS: keep; CAD imports .* Receives 1\. \(empty, but elements are expected here \(not deleted\)\)/, "an empty but expected CAD LINKS is never deleted");
-  assert.match(pt, /- \[Delete\] TST-ST-OLD: delete;/);
+  assert.match(pt, /- \[Delete\] TST-ST-OLD: delete;.*\(holds 2 type\(s\): a plan moves instances only, so it is kept unless the types move by hand\)/, "facts types: said on the row");
   assert.match(rule("TST-ST-STAIRS").rule, /"categories":\["Stairs"/);
   assert.ok(!rt.rows.some((r) => /^(rename|delete)/.test(r.action) && r.proposed === "TST Shared Views, Levels, Grids"));
   // Detail: the category decides, then level; material never mismatched; links by code first; CAD never stays on Workset1.
@@ -1472,7 +1474,16 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(ct, /Renames: "Workset1" -> "TST_Walls"; "TST-ST-RF FRAMING" -> "TST-ST-RF BEAMS"\./);
   assert.match(ct, /Left where they are \(no rule fits\):\n- 3 Generic Models on "Workset1"/);
   assert.match(ct, /- Structural Columns\/Columns @ level TST-GF\(GROUND FLOOR\) -> TST-ST-GF COLUMNS\n/, "rule rows become rules");
-  assert.match(ct, /- RVT Links type \(\?i\)\\b\(EL\)\\b -> TST-ST-EL RVT LINKS/);
+  assert.match(ct, /- RVT Links type \(\?i\)\(\?<!\[A-Za-z0-9\]\)\(EL\)\(\?!\[A-Za-z0-9\]\) -> TST-ST-EL RVT LINKS/);
+  // 1.13.1: the saved regexes match between underscores (\b would not); the merge keeps first-match order and lists overlaps.
+  const elRx = new RegExp(WP.wordRegex(["EL"]).replace("(?i)", ""), "i");
+  assert.ok(elRx.test("TST_PRJ_MEP_EL.rvt") && elRx.test("TST-EL Model") && !elRx.test("TST_PRJ_MEPEL.rvt") && !elRx.test("TST_ELEC.rvt"), "a link code between underscores");
+  const mr = WP.mergeRules({ worksets: { rules: [{ id: "x-cols", workset: "TST-X", category: "Structural Columns" }, { id: "x-steel", workset: "TST-S", material: "steel" }] } },
+    [{ id: "n-gf", workset: "TST-GF", category: ["Structural Columns"], level: "^(GF)$" }, { id: "n-zone", workset: "TST-Z", zone: "(?i)(POOL)" }, { id: "n-walls", workset: "TST-W", category: ["Walls"] }]);
+  assert.deepEqual(mr.json.worksets.rules.map((r) => r.id), ["x-cols", "n-walls", "x-steel"], "a category rule before the less specific material rule; the overlapping one held back");
+  assert.deepEqual(mr.overlaps.map((o) => [o.rule.id, o.shadows.map((h) => h.id), o.shadowedBy.map((h) => h.id)]), [["n-gf", ["x-cols"], []], ["n-zone", [], ["x-steel"]]], "overlaps listed to confirm, both ways");
+  assert.deepEqual(WP.mergeRules({ worksets: { rules: [{ id: "x-cols", workset: "TST-X", category: "Structural Columns" }] } }, [{ id: "n-steel", workset: "TST-S", material: "steel" }]).json.worksets.rules.map((r) => r.id), ["x-cols", "n-steel"], "a material-only rule never goes ahead of a category rule");
+  assert.deepEqual(WP.mergeRules({ worksets: { rules: [{ id: "x-cols", workset: "TST-X", category: "Structural Columns" }] } }, [{ id: "n-gf", workset: "TST-GF", category: ["Structural Columns"], level: "^(GF)$" }], { overlapsOk: true }).json.worksets.rules.map((r) => r.id), ["n-gf", "x-cols"], "after the user agreed: before the less specific rule");
   const planFile = JSON.parse(cf.content[0].text).files[0];
   const pj0 = JSON.parse(fs.readFileSync(planFile, "utf8"));
   assert.ok(pj0.plan.delete.includes("TST-ST-GF COLUMN ") && pj0.plan.delete.includes("TST-ST-OLD") && !pj0.plan.delete.includes("TST-ST-CAD LINKS"), "twin merged then deleted; empty-but-expected kept");
@@ -1501,12 +1512,13 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   prj.worksets = { rules: [{ id: "plan-tst-st-gf-columns", workset: "TST-OTHER", category: "Structural Columns" }] };
   fs.writeFileSync(prf, JSON.stringify(prj));
   const sv = (await call("workset_plan", { action: "confirm", file: edited, save_rules: true, vault: wv })).content.at(-1).text;
-  assert.match(sv, /Would save to .*project-requirements\.json: \d+ new rule\(s\) first, 0 already there, 1 conflict\(s\)/);
+  assert.match(sv, /Would save to .*project-requirements\.json: \d+ new rule\(s\) \(each before the first less specific rule; category-free ones last\), 0 already there, 1 conflict\(s\)/);
   assert.match(sv, /Conflicts \(not overwritten\):\n- Structural Columns\/Columns @ level TST-GF\(GROUND FLOOR\) -> TST-ST-GF COLUMNS; the file has plan-tst-st-gf-columns: Structural Columns -> TST-OTHER/);
   assert.equal(JSON.parse(fs.readFileSync(prf, "utf8")).worksets.rules.length, 1, "nothing written before confirm: true");
   await call("workset_plan", { action: "confirm", file: edited, save_rules: true, vault: wv, confirm: true });
   const after = JSON.parse(fs.readFileSync(prf, "utf8")).worksets.rules;
-  assert.ok(after.length > 1 && after.at(-1).workset === "TST-OTHER" && after[0].source === "workset_plan", "new rules first, the conflicting one kept");
+  const io = after.findIndex((r) => r.workset === "TST-OTHER");
+  assert.ok(after.length > 1 && io >= 0 && after[0].source === "workset_plan" && after.findIndex((r) => r.id === "plan-tst-st-stairs") > io, "the conflicting rule kept; specific rules before it, catch-alls after it");
   // Apply: no apply without its dry run; check, dry run, identical apply; borrowed skipped; visibility; another model or a changed count blocks.
   const wadm = () => seen.filter((x) => x.command === "workset_admin");
   const n0 = wadm().length;
@@ -1517,6 +1529,9 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(ck, /Visibility in the export views \("TST NAVISWORKS"\):\n- WOULD HIDE 1 element\(s\) in "TST NAVISWORKS": Workset1\|Stairs\|TST Stair : B.* -> TST-ST-STAIRS/);
   const dr = await call("workset_plan", { action: "apply", plan_file: planFile, dry_run: true, explanation: "TST plan" });
   assert.ok(!dr.isError && /PREVIEW ONLY/.test(dr.content.at(-1).text) && wadm().at(-1).args.action === "apply_plan" && wadm().at(-1).args.dry_run === true);
+  assert.ok(wadm().at(-1).args.workset_plan?.moves?.length && !("plan" in wadm().at(-1).args), "1.13.1: the plan travels as workset_plan, never as the panel's plan");
+  assert.match(dr.content.at(-1).text, /Kept \(not empty after the moves\): "TST-ST-OLD" 0 \(holds 2 types \(a plan moves instances only\)\)/);
+  assert.match(dr.content.at(-1).text, /Would move \(not previewed: not yours yet\): 1 group\(s\), 1 element\(s\), 1 link type\(s\)\. The apply borrows those worksets first\./);
   const ap = await call("workset_plan", { action: "apply", plan_file: planFile, explanation: "TST plan" });
   assert.ok(!ap.isError && /applied as ONE undo step/.test(ap.content.at(-1).text) && /Changes: renamed 2, moved 52 element\(s\), deleted 2 done\./.test(ap.content.at(-1).text), ap.content.at(-1).text);
   assert.ok(wadm().at(-1).args.expect_plan && wadm().at(-1).args.expect_model === "Test", "the apply names its plan and model");
@@ -1525,6 +1540,24 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const drift = path.join(wpDir, "drift.json"); const pj = JSON.parse(JSON.stringify(pj0)); pj.plan.moves[0].elements += 1; fs.writeFileSync(drift, JSON.stringify(pj));
   const dtr = await call("workset_plan", { action: "apply", plan_file: drift, dry_run: true, explanation: "TST plan" });
   assert.ok(dtr.isError && /planned, \d+ found/.test(dtr.content.map((c) => c.text).join("\n")), "a changed count blocks the whole plan");
+  // 1.13.1: an xlsx is read on both sheets; on both, the Groups sheet wins per group; unused decisions are said.
+  const wbe = new ExcelJS.Workbook(); await wbe.xlsx.readFile(xlsxF);
+  const [shW, shG] = wbe.worksheets;
+  const hdr = (sh, name) => sh.getRow(1).values.indexOf(name);
+  shW.eachRow((row, i) => { if (i > 1) row.getCell(hdr(shW, WP.DECISION)).value = "OK"; });
+  shG.eachRow((row, i) => {
+    if (i === 1) return;
+    const type = row.getCell(hdr(shG, "Type / link / contents")).value, cur = row.getCell(hdr(shG, "Current workset")).value;
+    if (cur === "Workset1" && type === "TST Beam : 300x600") row.getCell(hdr(shG, WP.DECISION)).value = "skip";
+    if (cur === "Workset1" && type === "TST Stair : B") row.getCell(hdr(shG, WP.DECISION)).value = "maybe";
+  });
+  const both = path.join(wpDir, "TST both sheets.xlsx");
+  await wbe.xlsx.writeFile(both);
+  const bt = (await call("workset_plan", { action: "confirm", file: both })).content.at(-1).text;
+  assert.match(bt, /1 group\(s\) decided on both sheets: the Groups sheet wins for them\./, bt);
+  assert.match(bt, /Groups sheet: 1 decision\(s\) not used \(flagged above, or for models not open\)\./);
+  const bplan = JSON.parse(fs.readFileSync(bt.match(/Plan file\(s\):\n- (.*\.json)/)[1], "utf8"));
+  assert.ok(!bplan.plan.moves.some((m) => m.key === "Workset1|Structural Framing|TST Beam : 300x600|TST-RF(ROOF)|concrete||") && bplan.layout === "both sheets", "the Groups sheet's skip wins over the rule");
   // Twin models (the same facts): proposed once, "same as".
   const tw = (await call("workset_plan", { action: "propose", paths: ["C:/TST/a/TST_WP1.rvt", "C:/TST/b/TST_WP2.rvt"], out_dir: path.join(tmp, "wplan2"), views: ["TST NWC"] })).content.at(-1).text;
   fakeOpened = null;

@@ -558,6 +558,12 @@ class P {
     Check(fp0 != Fp("{" + basePlan.Replace(@"""NA""", @"""N/A""") + "}") && fp0 != Fp("{" + basePlan.Replace("TST_A", "TST_B") + "}")
       && fp0 != Fp("{" + basePlan + @", ""bind"": [{ ""name"": ""TST_Code"" }] }") && fp0 != Fp("{" + basePlan.Replace("TST_Code\", \"group", "TST_Other\", \"group") + "}"),
       "fingerprint: another value, derive rule, binding or row is another plan");
+    string FpW(string json) => (string)hubT.GetMethod("Fingerprint", flags).Invoke(null, new object[] { "workset_admin", System.Text.Json.Nodes.JsonNode.Parse(json).AsObject() });
+    var wpA = @"""action"": ""apply_plan"", ""workset_plan"": { ""create"": [""TST_NEW""], ""moves"": [{ ""key"": ""TST_A|Walls||||"", ""to"": ""TST_NEW"", ""elements"": 3 }] }";
+    var wpB = wpA.Replace("TST_NEW\"], ", "TST_OTHER\"], ").Replace(@"""to"": ""TST_NEW""", @"""to"": ""TST_OTHER""");
+    Check(FpW("{" + wpA + "}") != FpW("{" + wpB + "}") && FpW("{" + wpA + "}") == FpW("{" + wpA + @", ""dry_run"": true, ""plan"": [""checklist""], ""step"": 2 }")
+      && FpW(@"{ ""action"": ""apply_plan"", ""plan"": { ""create"": [""TST_A""] } }") != FpW(@"{ ""action"": ""apply_plan"", ""plan"": { ""create"": [""TST_B""] } }"),
+      "fingerprint: two workset plans are two changes (workset_plan, and the 1.13.0 plan object); the panel's checklist plan is not part of it");
 
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }

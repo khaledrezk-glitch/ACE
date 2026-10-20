@@ -253,13 +253,18 @@ namespace AceRevitMcp.Coordination
         public static bool IsNotIntersecting(string warning) =>
             (warning ?? "").IndexOf("do not intersect", StringComparison.OrdinalIgnoreCase) >= 0 || (warning ?? "").IndexOf("don't intersect", StringComparison.OrdinalIgnoreCase) >= 0;
 
-        /// <summary>The plan items a warning is about: the steps whose two elements are both in it; else those with either.</summary>
+        /// <summary>The plan items a warning is about: only the steps whose two elements are both in it (none: an empty list).</summary>
         public static List<string> PlanItemsFor(long[] warningIds, IEnumerable<(string Id, long A, long B)> steps)
         {
             var ids = new HashSet<long>(warningIds ?? new long[0]);
-            var list = (steps ?? Enumerable.Empty<(string, long, long)>()).ToList();
-            var both = list.Where(s => ids.Contains(s.A) && ids.Contains(s.B)).Select(s => s.Id).Distinct().ToList();
-            return both.Count > 0 ? both : list.Where(s => ids.Contains(s.A) || ids.Contains(s.B)).Select(s => s.Id).Distinct().ToList();
+            return (steps ?? Enumerable.Empty<(string, long, long)>()).Where(s => ids.Contains(s.A) && ids.Contains(s.B)).Select(s => s.Id).Distinct().ToList();
+        }
+
+        /// <summary>The steps that change an element of the warning (for the report only: never dropped on this basis).</summary>
+        public static List<string> PlanItemsNear(long[] warningIds, IEnumerable<(string Id, long A, long B)> steps)
+        {
+            var ids = new HashSet<long>(warningIds ?? new long[0]);
+            return (steps ?? Enumerable.Empty<(string, long, long)>()).Where(s => ids.Contains(s.A) || ids.Contains(s.B)).Select(s => s.Id).Distinct().ToList();
         }
 
         /// <summary>A trim's plan id: "trim:&lt;trimmed id&gt;&gt;&lt;face owner id&gt;:&lt;end&gt;".</summary>

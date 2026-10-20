@@ -70,7 +70,8 @@ namespace AceRevitMcp.Rules
                 return typeNames[tid.Value] = name;
             }
 
-            foreach (var e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
+            // Every element, types included: the same filter as audit and as the delete check (ElementWorksetFilter counts types).
+            foreach (var e in AllElements(doc))
             {
                 long ws;
                 try { ws = e.WorksetId.IntegerValue; } catch { continue; }
@@ -78,6 +79,7 @@ namespace AceRevitMcp.Rules
                 var cat = CategoryName(e);
                 w.Elements++;
                 w.ByCategory[cat] = w.ByCategory.TryGetValue(cat, out var c0) ? c0 + 1 : 1;
+                if (e is ElementType) { w.Types++; continue; }   // counted, never grouped or moved
                 if (e is Level || e is Grid) w.LevelsAndGrids++;
 
                 // Groupable: model elements, links and imports; not view-specific, not datums, not nested family parts.
@@ -200,7 +202,7 @@ namespace AceRevitMcp.Rules
                 foreach (var v in views) { try { inViews[v.Name] = VisibleIn(v, w.Id, defaults); } catch { inViews[v.Name] = null; } }
                 return (JsonNode)new JsonObject
                 {
-                    ["id"] = w.Id, ["name"] = w.Name, ["elements"] = w.Elements, ["byCategory"] = Counts(w.ByCategory),
+                    ["id"] = w.Id, ["name"] = w.Name, ["elements"] = w.Elements, ["types"] = w.Types, ["byCategory"] = Counts(w.ByCategory),
                     ["isDefault"] = w.IsDefault, ["protected"] = L.IsProtected(w), ["editable"] = w.Editable,
                     ["owner"] = string.IsNullOrWhiteSpace(w.Owner) ? null : w.Owner, ["open"] = w.Open,
                     ["visibleByDefault"] = byDefault, ["views"] = inViews,
@@ -260,7 +262,8 @@ namespace AceRevitMcp.Rules
                 return Refuse("blocked", "Nothing was changed: the model is not workshared.", new JsonArray(OneBlock("the model", "not-workshared", null, null)));
             if (doc.IsReadOnly || doc.IsFamilyDocument || doc.IsLinked)
                 return Refuse("blocked", "Nothing was changed: the model cannot be edited.", new JsonArray(OneBlock("the model", "model", null, "a read-only, linked or family document")));
-            var planArg = args["plan"] as JsonObject ?? args;
+            // The plan object: workset_plan (1.13.1); "plan" as an object is still read for one release.
+            var planArg = args["workset_plan"] as JsonObject ?? args["plan"] as JsonObject ?? args;
             JsonArray Arr(params string[] names) => names.Select(n => planArg[n] as JsonArray).FirstOrDefault(a => a != null) ?? new JsonArray();
 
             var worksets = UserWorksets(doc);
@@ -363,6 +366,11 @@ namespace AceRevitMcp.Rules
                 if (readOnly.Count > 0)
                     skipped.Add(new JsonObject { ["key"] = step.Key, ["ids"] = new JsonArray(readOnly.Take(Math.Max(1, maxIds)).Select(i => (JsonNode)i).ToArray()), ["count"] = readOnly.Count, ["holder"] = null, ["why"] = "its workset cannot be set (read-only: e.g. hosted by or part of another element)" });
                 step.Elements = step.Ids.Count;
+                if (key != null && mv["ids"] == null && found.Count == 0 && expected != 0)
+                {
+                    blocks.Add(new L.Block { What = what, Code = "not-found", Detail = "no element matches this group now (moved, deleted or renamed since the facts)" });
+                    continue;
+                }
                 if (step.Elements > 0) moveSteps.Add(step);
             }
 
@@ -371,7 +379,7 @@ namespace AceRevitMcp.Rules
             var after = P.AfterMoves(now, moveSteps.SelectMany(s => s.Ids.Select(id => (factById[id].WorksetId, s.ToId, 1))));
             var afterWs = worksets.Select(w => new L.Workset
             {
-                Id = w.Id, Name = w.Name, Owner = w.Owner, Open = w.Open, Editable = w.Editable, IsDefault = w.IsDefault, Protected = w.Protected, LevelsAndGrids = w.LevelsAndGrids,
+                Id = w.Id, Name = w.Name, Owner = w.Owner, Open = w.Open, Editable = w.Editable, IsDefault = w.IsDefault, Protected = w.Protected, LevelsAndGrids = w.LevelsAndGrids, Types = w.Types,
                 Elements = after.TryGetValue(w.Id, out var a) ? a : w.Elements, ByCategory = w.ByCategory, SampleIds = w.SampleIds,
             }).ToList();
             var deleteNames = Arr("delete").Select(n => n?.ToString()).Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()).ToList();
@@ -385,7 +393,8 @@ namespace AceRevitMcp.Rules
                     if (b.Code == "not-empty")
                     {
                         var w = afterWs.First(x => "delete " + x.Name == b.What);
-                        kept.Add(new JsonObject { ["name"] = w.Name, ["elements"] = w.Elements, ["byCategory"] = Counts(w.ByCategory), ["why"] = $"not empty after the moves ({w.Elements} element{(w.Elements == 1 ? "" : "s")})" });
+                        var why = P.KeptWhy(w.Elements, w.Types);
+                        kept.Add(new JsonObject { ["name"] = w.Name, ["elements"] = w.Elements, ["types"] = w.Types, ["byCategory"] = Counts(w.ByCategory), ["why"] = why });
                     }
                     else blocks.Add(b);
                 }
@@ -486,6 +495,7 @@ namespace AceRevitMcp.Rules
             var need = steps.SelectMany(s => s.Kind == "rename" ? new[] { s.WorksetId } : s.Kind == "move-and-delete" ? new[] { s.WorksetId, s.ToId } : s.Kind == "delete" ? new[] { s.WorksetId, s.SafetyId } : new long[0])
                 .Where(id => id != 0).Distinct().Where(id => worksets.FirstOrDefault(w => w.Id == id)?.Editable != true).ToList();
             var notPreviewed = new HashSet<string>(StringComparer.Ordinal);
+            var notYours = new HashSet<long>();   // dry run: elements it would move but does not (not owned by this user yet)
             if (dryRun)
             {
                 if (need.Count > 0)
@@ -493,8 +503,26 @@ namespace AceRevitMcp.Rules
                     foreach (var st in steps.Where(st => need.Contains(st.WorksetId) || (st.Kind != "move" && need.Contains(st.ToId)) || need.Contains(st.SafetyId))) notPreviewed.Add(st.Id);
                     notes.Add($"The apply would borrow {string.Join(", ", need.Select(NameOf))} (given back when you synchronize with central). The dry run did not borrow them, so it could not preview: {string.Join(", ", notPreviewed)}.");
                 }
-                var wouldBorrow = moveSteps.Sum(s => s.Ids.Count(id => { try { return WorksharingUtils.GetCheckoutStatus(doc, new ElementId(id)) != CheckoutStatus.OwnedByCurrentUser; } catch { return false; } }));
-                if (wouldBorrow > 0) notes.Add($"The apply would borrow {wouldBorrow} element{(wouldBorrow == 1 ? "" : "s")} it moves (given back when you synchronize with central). The dry run borrowed nothing.");
+                // Elements this user does not own yet (nor their workset): setting them would borrow them, and a rolled-back dry run
+                // does not give them back. The dry run leaves them alone; only the apply borrows them.
+                var editable = new HashSet<long>(worksets.Where(w => w.Editable).Select(w => w.Id));
+                bool Mine(long id)
+                {
+                    try
+                    {
+                        var e = doc.GetElement(new ElementId(id));
+                        return e != null && (editable.Contains(e.WorksetId.IntegerValue) || WorksharingUtils.GetCheckoutStatus(doc, e.Id) == CheckoutStatus.OwnedByCurrentUser);
+                    }
+                    catch { return false; }
+                }
+                foreach (var id in moveSteps.SelectMany(s => s.Ids.Concat(s.TypeIds))) if (!Mine(id)) notYours.Add(id);
+                if (notYours.Count > 0)
+                {
+                    // A delete whose workset still holds elements the dry run did not move cannot be previewed either.
+                    var stillOn = new HashSet<long>(moveSteps.SelectMany(s => s.Ids).Where(notYours.Contains).Select(id => factById[id].WorksetId));
+                    foreach (var st in steps.Where(st => (st.Kind == "delete" || st.Kind == "move-and-delete") && stillOn.Contains(st.WorksetId))) notPreviewed.Add(st.Id);
+                    notes.Add($"{notYours.Count} element{(notYours.Count == 1 ? "" : "s")} the plan moves {(notYours.Count == 1 ? "is" : "are")} not yours yet: the dry run did not move them (would move, not previewed); the apply borrows them (given back when you synchronize with central).");
+                }
             }
             else if (need.Count > 0)
             {
@@ -548,17 +576,19 @@ namespace AceRevitMcp.Rules
                             var toId = st.ToId != 0 ? st.ToId : created.TryGetValue(st.Workset, out var cid) ? cid : throw new CommandException($"Nothing was changed: the workset {st.Workset} was not created.");
                             foreach (var id in st.Ids)
                             {
+                                if (notYours.Contains(id)) continue;
                                 var p = d.GetElement(new ElementId(id))?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
                                 if (p == null || p.IsReadOnly || !p.Set((int)toId))
                                     throw new CommandException($"Nothing was changed: element {id} could not be moved to {st.Workset}. Run the dry run again.");
                             }
                             foreach (var id in st.TypeIds)
                             {
+                                if (notYours.Contains(id)) continue;
                                 var p = d.GetElement(new ElementId(id))?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
                                 if (p == null || p.IsReadOnly || !p.Set((int)toId))
                                     throw new CommandException($"Nothing was changed: the link type {id} could not be moved to {st.Workset}. Run the dry run again.");
                             }
-                            Count("moved", st.Ids.Count);
+                            Count("moved", st.Ids.Count(id => !notYours.Contains(id)));
                             break;
                         }
                         default:
@@ -577,6 +607,13 @@ namespace AceRevitMcp.Rules
                     ran.Add(st);
                 }
                 if (notPreviewed.Count > 0) r["notPreviewed"] = new JsonArray(notPreviewed.Select(x => (JsonNode)x).ToArray());
+                if (notYours.Count > 0)
+                    r["notPreviewedCounts"] = new JsonObject
+                    {
+                        ["moves"] = steps.Count(x => x.Kind == "move" && x.Ids.Any(notYours.Contains)),
+                        ["elements"] = steps.Where(x => x.Kind == "move").Sum(x => x.Ids.Count(notYours.Contains)),
+                        ["linkTypes"] = steps.Where(x => x.Kind == "move").Sum(x => x.TypeIds.Count(notYours.Contains)),
+                    };
                 return r;
             }, verify: (d, r) =>
             {
@@ -596,8 +633,9 @@ namespace AceRevitMcp.Rules
                         case "move":
                         {
                             var toId = st.ToId != 0 ? st.ToId : created.TryGetValue(st.Workset, out var c2) ? c2 : -1;
-                            var off = st.Ids.Concat(st.TypeIds).Where(id => { var e = d.GetElement(new ElementId(id)); return e == null || e.WorksetId.IntegerValue != toId; }).ToList();
-                            var all = st.Ids.Count + st.TypeIds.Count;
+                            var checkIds = st.Ids.Concat(st.TypeIds).Where(id => !notYours.Contains(id)).ToList();   // the dry run moved only these
+                            var off = checkIds.Where(id => { var e = d.GetElement(new ElementId(id)); return e == null || e.WorksetId.IntegerValue != toId; }).ToList();
+                            var all = checkIds.Count;
                             if (off.Count > 0) mismatches.Add(($"elements moved to {st.Workset}", all.ToString(), $"{all - off.Count} (not there: {string.Join(", ", off.Take(5))})"));
                             break;
                         }

@@ -274,6 +274,8 @@ export function propose(list) {
     if (r.workset !== [...f.names.keys()].sort((a, b) => f.names.get(b).elements - f.names.get(a).elements)[0]) note.push("spelling fixed");
     if (emptyIn.length && emptyIn.length < where.length) note.push(`empty in ${emptyIn.length} of ${where.length} models`);
     if (expected && !holds) note.push("empty, but elements are expected here (not deleted)");
+    const types = uniq.reduce((n, m) => n + (m.facts?.worksets ?? []).filter((w) => f.names.has(w.name)).reduce((k, w) => k + Number(w.types ?? 0), 0), 0);
+    if (types) note.push(`holds ${types} type(s): a plan moves instances only, so it is kept unless the types move by hand`);
     const hid = hides.get(r.workset) ?? [];
     if (hid.length) note.push(`WOULD HIDE ${hid.reduce((n, h) => n + h.n, 0)} element(s) in ${[...new Set(hid.map((h) => h.v))].map(q).join(", ")}`);
     const proposed = r.isDefault ? defaultName ?? (prefix ? `${prefix}GENERAL` : "") : r.workset;
@@ -330,16 +332,25 @@ const cellText = (v) => v == null ? "" : typeof v === "object" ? String(v.text ?
  * The table of an edited file (CSV, or the first sheet of an xlsx) -> { layout: "rules" | "groups", rows }. The rule-level
  * file has "What it holds" / Rule and no Row column; the group-level and the hand-made files have Row. Headers match loosely.
  */
-export async function readTable(file) {
-  let rows;
+export async function readTables(file) {
+  const raw = [];
   if (/\.xlsx$/i.test(file)) {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(file);
-    const sh = wb.worksheets[0];
-    rows = [];
-    sh.eachRow({ includeEmpty: false }, (r) => rows.push(Array.from({ length: Math.max(r.cellCount, RULE_COLUMNS.length, COLUMNS.length) }, (_, i) => cellText(r.getCell(i + 1).value))));
-  } else rows = parseCsv(fs.readFileSync(file, "utf8"));
-  if (!rows.length) throw new Error(`${file} is empty.`);
+    for (const sh of wb.worksheets) {
+      const rows = [];
+      sh.eachRow({ includeEmpty: false }, (r) => rows.push(Array.from({ length: Math.max(r.cellCount, RULE_COLUMNS.length, COLUMNS.length) }, (_, i) => cellText(r.getCell(i + 1).value))));
+      if (rows.length) raw.push({ sheet: sh.name, rows });
+    }
+  } else raw.push({ sheet: null, rows: parseCsv(fs.readFileSync(file, "utf8")) });
+  if (!raw.length || !raw[0].rows.length) throw new Error(`${file} is empty.`);
+  const tables = raw.map((t) => tableOf2(t, file)).filter(Boolean);
+  if (!tables.length) throw new Error(`${file} has no sheet with the workset_plan columns (the decision header is "${DECISION}").`);
+  return tables;
+}
+/** The first table (a CSV, or an xlsx's first sheet with the proposal's columns). */
+export const readTable = async (file) => (await readTables(file))[0];
+function tableOf2({ sheet, rows }, file) {
   const head = rows[0].map((h) => norm(h));
   const col = (re) => head.findIndex((h) => re.test(h));
   const at = { model: col(/^model$/), row: col(/^row$/), current: col(/^current workset/), category: col(/^category$/), type: col(/^type/), level: col(/^level$/),
@@ -347,11 +358,15 @@ export async function readTable(file) {
     group: col(/^group$/), models: col(/^models$/), holds: col(/^what it holds/), rule: col(/^rule$/) };
   const layout = at.row < 0 && at.proposed >= 0 ? "rules" : "groups";
   const missing = (layout === "rules" ? ["proposed", "decision"] : ["model", "row", "current", "decision"]).filter((k) => at[k] < 0);
-  if (missing.length) throw new Error(`${file} has no ${missing.join(", ")} column (expected a workset_plan proposal; the decision header is "${DECISION}").`);
+  if (missing.length) {
+    if (sheet != null) return null;   // another sheet of the workbook (notes, a pivot): not a proposal sheet
+    throw new Error(`${file} has no ${missing.join(", ")} column (expected a workset_plan proposal; the decision header is "${DECISION}").`);
+  }
   const get = (r, k) => at[k] < 0 ? "" : String(r[at[k]] ?? "").trim();
-  return { layout, rows: rows.slice(1).map((r, i) => ({ line: i + 2, model: get(r, "model"), row: up(get(r, "row")), current: get(r, "current"), category: get(r, "category"), type: get(r, "type"), level: get(r, "level"),
+  return { sheet, layout, rows: rows.slice(1).map((r, i) => ({ line: i + 2, model: get(r, "model"), row: up(get(r, "row")), current: get(r, "current"), category: get(r, "category"), type: get(r, "type"), level: get(r, "level"),
     elements: get(r, "elements"), proposed: String(r[at.proposed] ?? "").replace(/^\s+/, ""), action: get(r, "action"), decision: get(r, "decision"), key: get(r, "key"), group: get(r, "group"), models: get(r, "models"), rule: get(r, "rule") })) };
 }
+export const decided = (t) => (t?.rows ?? []).filter((r) => decisionOf(r.decision).kind !== "none").length;
 
 /** A decision cell -> { kind: ok|change|skip|none|unclear, to } ("change to X", "-> X", "move to X", "OK", "yes", "skip", "no"). */
 export function decisionOf(cell) {
@@ -378,14 +393,16 @@ export function confirm(rowsIn, facts) {
   const groups = (facts?.groups ?? []).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
   const existing = new Map((facts?.worksets ?? []).map((w) => [norm(w.name), w]));
   const plan = finalPlan();
-  const flagged = [], undecided = [], skipped = [], confirmed = [];
+  const flagged = [], undecided = [], skipped = [], confirmed = [], decidedKeys = new Set();
+  const findGroups = (r) => r.key ? groups.filter((g) => g.key === r.key)
+    : groups.filter((g) => norm(g.workset) === norm(r.current) && (norm(g.category) === norm(r.category) || (W.isCad(g.category) && W.isCad(r.category))) && typeKey(g.type) === typeKey(r.type) && norm(g.level) === norm(r.level));
   const flag = (r, why) => flagged.push({ line: r.line, what: `${r.row} ${r.current}${r.category ? ` ${r.category}` : ""}${r.level ? ` @ ${r.level}` : ""}`, why });
   const finalName = new Map();
   for (const r of mine) {
     const d = decisionOf(r.decision);
     if (d.kind === "none") { undecided.push(r.line); continue; }
     if (d.kind === "unclear") { flag(r, `decision "${r.decision}" not understood (OK / change to <workset> / skip)`); continue; }
-    if (d.kind === "skip") { skipped.push(r.line); continue; }
+    if (d.kind === "skip") { skipped.push(r.line); if (r.row === "MOVE") findGroups(r).forEach((g) => decidedKeys.add(g.key)); continue; }
     if (r.row === "RENAME" || (r.row === "WORKSET" && d.kind === "change")) {
       const to = d.kind === "change" ? d.to : r.proposed;
       const w = existing.get(norm(r.current));
@@ -409,18 +426,17 @@ export function confirm(rowsIn, facts) {
     if (r.row !== "MOVE") { flag(r, `unknown row type "${r.row}"`); continue; }
     const to = d.kind === "change" ? d.to : r.proposed;
     if (!to) { flag(r, "no target workset (a review row): write change to <workset>"); continue; }
-    const found = r.key ? groups.filter((g) => g.key === r.key)
-      : groups.filter((g) => norm(g.workset) === norm(r.current) && (norm(g.category) === norm(r.category) || (W.isCad(g.category) && W.isCad(r.category))) && typeKey(g.type) === typeKey(r.type) && norm(g.level) === norm(r.level));
+    const found = findGroups(r);
     const now = found.reduce((n, g) => n + Number(g.elements), 0);
     if (!found.length) { flag(r, "not found in the model now (changed since the proposal)"); continue; }
     if (String(r.elements).trim() !== "" && Number(r.elements) !== now) { flag(r, `changed since the proposal: ${r.elements} element(s) in the file, ${now} in the model now`); continue; }
     const target = finalOf(to);
     if (isProt(existing.get(norm(target))) && !DATUM.test(r.category)) { flag(r, "model elements do not go on the datum workset"); continue; }
     if (!names.has(norm(target)) && !plan.create.some((c) => norm(c) === norm(target))) plan.create.push(target);
-    for (const g of found) if (norm(finalOf(g.workset)) !== norm(target)) plan.moves.push(moveOf(g, finalOf(g.workset), target));
+    for (const g of found) { decidedKeys.add(g.key); if (norm(finalOf(g.workset)) !== norm(target)) plan.moves.push(moveOf(g, finalOf(g.workset), target)); }
     confirmed.push(r.line);
   }
-  return { model, plan, creates: plan.create, flagged, undecided, skipped, confirmed, rowsForModel: mine.length };
+  return { model, plan, creates: plan.create, flagged, undecided, skipped, confirmed, rowsForModel: mine.length, decidedKeys };
 }
 
 /**
@@ -491,11 +507,30 @@ export function planFromRules(R, facts) {
   return { model, plan, creates: plan.create, notes };
 }
 
+/**
+ * Both sheets of the xlsx decided: the rules' plan for the model, with the Groups sheet winning for every group it
+ * decided (OK, change to or skip). Group targets follow the rules' renames. -> the rules' result with merged plan and notes.
+ */
+export function combine(rp, gp) {
+  const ren = new Map(rp.plan.rename.map((r) => [norm(r.from), r.to]));
+  const fin = (n) => ren.get(norm(n)) ?? n;
+  const keys = gp.decidedKeys ?? new Set();
+  const both = rp.plan.moves.filter((m) => keys.has(m.key)).length;
+  const moves = [...rp.plan.moves.filter((m) => !keys.has(m.key)), ...gp.plan.moves.map((m) => ({ ...m, from: fin(m.from), to: fin(m.to) }))].filter((m) => norm(m.from) !== norm(m.to));
+  const create = [...rp.plan.create];
+  for (const c of gp.plan.create.map(fin)) if (!create.some((x) => norm(x) === norm(c)) && !rp.plan.rename.some((r) => norm(r.to) === norm(c))) create.push(c);
+  const del = rp.plan.delete.filter((d) => !moves.some((m) => norm(m.to) === norm(d)));
+  const sheetNotes = both ? [`${both} group(s) decided on both sheets: the Groups sheet wins for them.`] : [];
+  return { ...rp, plan: { create, rename: rp.plan.rename, moves, delete: del }, creates: create, flagged: [...(rp.flagged ?? []), ...gp.flagged.map((f) => ({ ...f, what: `Groups sheet: ${f.what}` }))], sheetNotes, both };
+}
+
 /** Models named in the file that are not among the checked ones. */
 export const otherModels = (rows, checked) => [...new Set(rows.map((r) => r.model).filter((m) => m && !checked.some((c) => modelKey(c) === modelKey(m))))];
 
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const rx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** A whole-word match that also works between underscores ("PRJ_MEP_EL"): \\b treats "_" as a word character. */
+export const wordRegex = (list) => `(?i)(?<![A-Za-z0-9])(${list.map(rx).join("|")})(?![A-Za-z0-9])`;
 /**
  * Confirmed rule rows -> project rules (assign_worksets format): category, level (regex), material, zone or type (regex
  * on the name words: zone when a model zone carries the word), links by their code. Category rules come first, the most
@@ -507,12 +542,12 @@ export function vaultRules(R, zones = []) {
   for (const r of R) {
     if (r.manual || r.isDefault || r.protected) continue;
     const base = { id: `plan-${slug(r.workset)}`, workset: r.workset, source: "workset_plan" };
-    if (r.links) { out.push({ ...base, category: ["RVT Links"], ...(r.codes.length ? { type: `(?i)\\b(${r.codes.map(rx).join("|")})\\b` } : {}), spec: r.codes.length ? 9 : 1, cat: 1 }); continue; }
+    if (r.links) { out.push({ ...base, category: ["RVT Links"], ...(r.codes.length ? { type: wordRegex(r.codes) } : {}), spec: r.codes.length ? 9 : 1, cat: 1 }); continue; }
     if (r.cad) { out.push({ ...base, category: ["CAD Imports"], spec: 1, cat: 1 }); continue; }
     if (!r.categories.length && !r.levels.length && !r.words.length && !r.material) continue;
     const z = r.words.filter((w) => zoneWords.has(w)), t = r.words.filter((w) => !zoneWords.has(w));
     out.push({ ...base, ...(r.categories.length ? { category: r.categories } : {}), ...(r.levels.length ? { level: `^(${r.levels.map(rx).join("|")})$` } : {}),
-      ...(r.material ? { material: r.material } : {}), ...(z.length ? { zone: `(?i)\\b(${z.map(rx).join("|")})\\b` } : {}), ...(t.length ? { type: `(?i)\\b(${t.map(rx).join("|")})\\b` } : {}),
+      ...(r.material ? { material: r.material } : {}), ...(z.length ? { zone: wordRegex(z) } : {}), ...(t.length ? { type: wordRegex(t) } : {}),
       spec: (r.levels.length ? 2 : 0) + (r.words.length ? 2 : 0) + (r.material ? 1 : 0), cat: r.categories.length ? 1 : 0 });
   }
   return out.sort((a, b) => b.cat - a.cat || b.spec - a.spec).map(({ spec, cat, ...r }) => r);
@@ -550,25 +585,46 @@ const selector = (r) => JSON.stringify([[].concat(r.category ?? []).map(norm).so
  * "already there"; an existing rule with the same id or the same selectors but another workset is a conflict, kept as
  * it is and listed. -> { json, added, same, conflicts }
  */
-export function mergeRules(json, rules) {
+export function mergeRules(json, rules, { overlapsOk = false } = {}) {
   const out = JSON.parse(JSON.stringify(json ?? {}));
   out.worksets ??= {};
   const have = Array.isArray(out.worksets.rules) ? out.worksets.rules : [];
-  const added = [], same = [], conflicts = [];
+  const added = [], same = [], conflicts = [], overlaps = [];
+  const list = [...have];
   for (const r of rules) {
     const hit = have.find((h) => h.id === r.id) ?? have.find((h) => selector(h) === selector(r));
-    if (!hit) added.push(r);
-    else if (hit.workset === r.workset && selector(hit) === selector(r)) same.push(r);
-    else conflicts.push({ rule: r, existing: hit });
+    if (hit) { if (hit.workset === r.workset && selector(hit) === selector(r)) same.push(r); else conflicts.push({ rule: r, existing: hit }); continue; }
+    // First match wins: a category-free rule (material / zone only) goes after every rule; another before the first
+    // existing rule that is less specific, never ahead of a category rule when it has no category itself.
+    const at = !hasCategory(r) ? list.length : (() => { const k = list.findIndex((h) => specificity(h) < specificity(r)); return k < 0 ? list.length : k; })();
+    const before = list.slice(0, at), after = list.slice(at);
+    // Overlaps with the rules already in the file (not among the new ones); a category-free rule after a category rule is by design.
+    const old = (h) => have.includes(h) && h.workset !== r.workset;
+    const shadowedBy = before.filter((h) => old(h) && overlap(h, r) && !(!hasCategory(r) && hasCategory(h)));
+    const shadows = after.filter((h) => old(h) && overlap(r, h) && !(!hasCategory(h) && hasCategory(r)));
+    if ((shadowedBy.length || shadows.length) && !overlapsOk) { overlaps.push({ rule: r, shadowedBy, shadows }); continue; }
+    list.splice(at, 0, r);
+    added.push(r);
   }
-  out.worksets.rules = [...added, ...have];
-  return { json: out, added, same, conflicts };
+  out.worksets.rules = list;
+  return { json: out, added, same, conflicts, overlaps };
+}
+const hasCategory = (r) => [].concat(r.category ?? []).length > 0;
+/** How narrow a rule is: category, then level, zone / type / family, material. */
+export const specificity = (r) => (hasCategory(r) ? 8 : 0) + (r.level ? 4 : 0) + (r.zone || r.type || r.family || r.function || r.parameter ? 2 : 0) + (r.material ? 1 : 0);
+/** Can two rules match the same element (another workset)? Unknown regexes count as overlapping only when equal or absent. */
+export function overlap(a, b) {
+  const ca = [].concat(a.category ?? []).map(norm), cb = [].concat(b.category ?? []).map(norm);
+  if (ca.length && cb.length && !ca.some((c) => cb.includes(c))) return false;
+  if (a.material && b.material && a.material !== b.material) return false;
+  for (const k of ["level", "zone", "type", "family", "function"]) if (a[k] && b[k] && a[k] !== b[k]) return false;
+  return true;
 }
 
 
 export const ruleText = (r) => `${[].concat(r.category ?? []).join("/") || "any category"}${r.level ? ` @ level ${r.level.replace(/^\^\(?|\)?\$$/g, "").replace(/\\(.)/g, "$1")}` : ""}${r.zone ? ` in zone ${r.zone}` : ""}${r.type ? ` type ${r.type}` : ""}${r.material ? ` (${r.material})` : ""} -> ${r.workset}`;
 
-export function confirmText(results, { files = [], others = [], rules, merge, saved, file, layout } = {}) {
+export function confirmText(results, { files = [], others = [], rules, merge, saved, file, layout, unused = [] } = {}) {
   const lines = [];
   for (const c of results) {
     const p = c.plan;
@@ -576,8 +632,10 @@ export function confirmText(results, { files = [], others = [], rules, merge, sa
     if (p.create.length) lines.push(`New worksets (a target the model does not have yet): ${p.create.map(W.q).join(", ")}.`);
     if (p.rename.length) lines.push(`Renames: ${p.rename.map((r) => `${W.q(r.from)} -> ${W.q(r.to)}`).join("; ")}.`);
     if (c.flagged?.length) lines.push(`Flagged, NOT in the plan:\n${c.flagged.slice(0, 20).map((f) => `- line ${f.line}: ${f.what}: ${f.why}`).join("\n")}${c.flagged.length > 20 ? `\n- ... ${c.flagged.length - 20} more` : ""}`);
+    if (c.sheetNotes?.length) lines.push(...c.sheetNotes);
     if (c.notes?.length) lines.push(`Left where they are (no rule fits):\n${c.notes.slice(0, 15).map((n) => `- ${n}`).join("\n")}${c.notes.length > 15 ? `\n- ... ${c.notes.length - 15} more` : ""}`);
   }
+  if (unused.length) lines.push(...unused);
   if (others.length) lines.push(`Rows for models not checked (open the model, or pass its path in paths, and confirm again): ${others.join(", ")}.`);
   if (files.length) lines.push(`Plan file(s):\n${files.map((f) => `- ${f}`).join("\n")}`);
   if (rules) {
@@ -585,8 +643,9 @@ export function confirmText(results, { files = [], others = [], rules, merge, sa
     if (rules.ambiguous?.length) lines.push(`Not generalised (the rows disagree): ${rules.ambiguous.map((a) => `${a.category}${a.level ? ` @ ${a.level}` : ""}${a.material ? ` (${a.material})` : ""} -> ${a.worksets.join(" / ")}`).join("; ")}.`);
   }
   if (merge) {
-    lines.push(`${saved ? "Saved to" : "Would save to"} ${merge.file}: ${merge.added.length} new rule(s) first, ${merge.same.length} already there, ${merge.conflicts.length} conflict(s) (kept as they are).`);
+    lines.push(`${saved ? "Saved to" : "Would save to"} ${merge.file}: ${merge.added.length} new rule(s) (each before the first less specific rule; category-free ones last), ${merge.same.length} already there, ${merge.conflicts.length} conflict(s) (kept as they are)${merge.overlaps?.length ? `, ${merge.overlaps.length} overlap(s) to confirm` : ""}.`);
     if (merge.conflicts.length) lines.push(`Conflicts (not overwritten):\n${merge.conflicts.map((c) => `- ${ruleText(c.rule)}; the file has ${c.existing.id ? `${c.existing.id}: ` : ""}${ruleText(c.existing)}`).join("\n")}`);
+    if (merge.overlaps?.length) lines.push(`Overlaps to confirm (first match wins; not saved unless the user agrees: overlaps_ok: true):\n${merge.overlaps.map((o) => `- ${ruleText(o.rule)}${o.shadows.length ? `; would shadow ${o.shadows.map((h) => `${h.id ? `${h.id}: ` : ""}${ruleText(h)}`).join(", ")}` : ""}${o.shadowedBy.length ? `; shadowed by ${o.shadowedBy.map((h) => `${h.id ? `${h.id}: ` : ""}${ruleText(h)}`).join(", ")}` : ""}`).join("\n")}`);
     if (!saved) lines.push("Show these rules to the user; save with the same call and confirm: true.");
   }
   lines.push("Next: workset_plan action apply with plan_file (check_only, then dry_run, then the identical call: ONE undo step).");
@@ -597,6 +656,13 @@ export function confirmText(results, { files = [], others = [], rules, merge, sa
 
 const stepText = (p) => p.kind === "create" ? `create ${p.workset}` : p.kind === "rename" ? `rename ${p.from ?? p.workset} -> ${p.to}` : p.kind === "move" ? `move ${p.elements ?? "?"} element(s) ${p.from ?? p.workset} -> ${p.to}${p.category ? ` (${p.category}${p.level ? ` @ ${p.level}` : ""})` : ""}` : `delete ${p.workset}`;
 export const planOf = (r) => Array.isArray(r?.plan) ? r.plan : [];
+/** Steps the dry run could not preview (worksets the user must borrow first): the add-in's counts, else from the step ids. */
+export function notPreviewedOf(r) {
+  const ids = new Set(r?.notPreviewed ?? []);
+  const steps = planOf(r).filter((p) => ids.has(p.id)), moves = steps.filter((p) => p.kind === "move");
+  const c = r?.notPreviewedCounts;
+  return { steps: ids.size || Number(c?.moves ?? 0), moves: c?.moves ?? moves.length, elements: c?.elements ?? moves.reduce((n, p) => n + Number(p.elements ?? 0), 0), linkTypes: Number(c?.linkTypes ?? 0) };
+}
 export function applyText(r, { model, mode, rolledBack = false }) {
   const plan = planOf(r);
   const head = mode === "check" ? "check, read-only, nothing changed" : mode === "dry run" ? "dry run" : rolledBack ? "NOT applied: rolled back" : "applied as ONE undo step";
@@ -608,7 +674,9 @@ export function applyText(r, { model, mode, rolledBack = false }) {
   if (r?.skipped?.length) lines.push(`Skipped (borrowed by others; ask them to relinquish, then run again for these):\n${r.skipped.map((s) => `- ${s.key}: ${(s.ids ?? []).length} element(s)${s.holder ? `, held by ${s.holder}` : ""}`).join("\n")}`);
   if (r?.changed?.length) lines.push(`Changed since the plan (the whole plan is refused; propose and confirm again):\n${r.changed.map((c) => `- ${c.key}: ${c.expected} planned, ${c.found} found`).join("\n")}`);
   if (r?.visibility?.length) lines.push(`Visibility in the export views (${(r.exportViews ?? []).map(W.q).join(", ") || "none"}):\n${r.visibility.slice(0, 20).map((v) => `- ${v.wouldHide ? `WOULD HIDE ${v.wouldHide}` : ""}${v.wouldHide && v.wouldShow ? ", " : ""}${v.wouldShow ? `would show ${v.wouldShow}` : ""} element(s) in ${W.q(v.view)}: ${v.key ?? v.move} -> ${v.to}`).join("\n")}`);
-  if (r?.kept?.length) lines.push(`Kept (not empty after the moves): ${r.kept.map((x) => `${x.name} ${x.elements}${x.why ? ` (${x.why})` : ""}`).join("; ")}.`);
+  if (r?.kept?.length) lines.push(`Kept (not empty after the moves): ${r.kept.map((x) => `${W.q(x.name)} ${x.elements}${x.why ? ` (${x.why})` : Number(x.types) ? ` (holds ${x.types} type(s))` : ""}`).join("; ")}.`);
+  const np = notPreviewedOf(r);
+  if (np.steps) lines.push(`Would move (not previewed: not yours yet): ${np.moves} group(s), ${np.elements} element(s)${np.linkTypes ? `, ${np.linkTypes} link type(s)` : ""}${np.steps > np.moves ? `; ${np.steps - np.moves} other step(s)` : ""}. The apply borrows those worksets first.`);
   if (r?.notes?.length) lines.push(`Notes:\n${r.notes.map((n) => `- ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`).join("\n")}`);
   if (mode !== "check") {
     const v = r?.verify;

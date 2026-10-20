@@ -24,6 +24,7 @@ namespace AceRevitMcp.Rules
             public bool Open = true, Editable, IsDefault;
             public bool Protected;     // the datum workset (levels and grids): never renamed or deleted
             public int LevelsAndGrids; // levels and grids on it
+            public int Types;          // element types on it (counted in Elements; never moved by a plan)
             public int Elements;
             public Dictionary<string, int> ByCategory = new Dictionary<string, int>(StringComparer.Ordinal);
             public List<long> SampleIds = new List<long>();

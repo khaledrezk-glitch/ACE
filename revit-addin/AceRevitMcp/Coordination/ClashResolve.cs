@@ -354,7 +354,7 @@ namespace AceRevitMcp.Coordination
                 var (warnAfter, fresh, warnOk) = ClashResolveLogic.WarningsWithIds(existingWarnings, Warnings(d), posted.ToList(), out var freshItems);
                 // Each new warning with the plan items behind it (the steps whose elements it names).
                 var ranSteps = steps.Where(x => !x.Blocked && !x.Excluded).SelectMany(x => x.Fallback == null ? new[] { x } : new[] { x, x.Fallback }).Select(x => (x.Id, x.A, x.B)).ToList();
-                var byItem = freshItems.Select(w => (w.Text, w.Ids, Items: ClashResolveLogic.PlanItemsFor(w.Ids, ranSteps))).ToList();
+                var byItem = freshItems.Select(w => (w.Text, w.Ids, Items: ClashResolveLogic.PlanItemsFor(w.Ids, ranSteps), Near: ClashResolveLogic.PlanItemsNear(w.Ids, ranSteps))).ToList();
                 r["warnings"] = new JsonObject
                 {
                     ["before"] = existingWarnings.Count, ["after"] = warnAfter, ["new"] = new JsonArray(fresh.Select(w => (JsonNode)w).ToArray()),
@@ -362,6 +362,8 @@ namespace AceRevitMcp.Coordination
                     {
                         ["warning"] = w.Text, ["elements"] = new JsonArray(w.Ids.Select(i => (JsonNode)i).ToArray()),
                         ["planItems"] = new JsonArray(w.Items.Select(i => (JsonNode)i).ToArray()),
+                        // No step joins exactly these elements: the warning is reported against them, with the steps that change them.
+                        ["nearPlanItems"] = w.Items.Count == 0 ? new JsonArray(w.Near.Select(i => (JsonNode)i).ToArray()) : null,
                     }).ToArray()),
                 };
                 // Only "joined but do not intersect" on join steps: those joins are left out and the change runs again.
@@ -769,7 +771,7 @@ namespace AceRevitMcp.Coordination
                 .Select(c => Enum.TryParse<BuiltInCategory>(c, out var b) ? new ElementId(b) : null).Where(x => x != null).ToList();
             var summary = new JsonObject
             {
-                ["candidates"] = 0, ["pairs"] = 0, ["right"] = 0, ["join"] = 0, ["switchJoin"] = 0, ["flipConfirm"] = 0, ["notTouching"] = 0,
+                ["candidates"] = 0, ["pairs"] = 0, ["clashing"] = 0, ["right"] = 0, ["join"] = 0, ["switchJoin"] = 0, ["flipConfirm"] = 0, ["notTouching"] = 0,
                 ["byPair"] = new JsonObject(), ["chunk"] = 1, ["chunkSize"] = chunkSize, ["chunks"] = new JsonArray(), ["capped"] = false,
             };
             if (cats.Count == 0) return summary;
@@ -800,9 +802,10 @@ namespace AceRevitMcp.Coordination
 
             // The in-scope pairs, each with the level of its contact (the middle of the two boxes' common part).
             var scoped = new List<(int LevelRank, string Level, long A, long B)>();
+            // Clashing pairs stay in the list (they get their clash step, not a touching one), so the chunks do not shift when
+            // earlier fixes clear clashes.
             foreach (var (ia, ib) in ClashResolveLogic.TouchingPairs(boxes, Lengths.Ft(5)))
             {
-                if (clashPairs.Contains((Math.Min(ia, ib), Math.Max(ia, ib)))) continue;
                 var catA = els[ia].Category.BuiltInCategory.ToString(); var catB = els[ib].Category.BuiltInCategory.ToString();
                 if (!ClashResolveLogic.TouchPairAllowed(catA, catB, aCats, bCats, sameCategory)) continue;
                 var za = boxOf[ia]; var zb = boxOf[ib];
@@ -835,14 +838,15 @@ namespace AceRevitMcp.Coordination
             var chunkList = (JsonArray)summary["chunks"];
             for (var ci = 0; ci < chunks.Count; ci++)
             {
-                int notJoined = 0, wrong = 0;
+                int notJoined = 0, wrong = 0, clashing = 0;
                 foreach (var i in chunks[ci])
                 {
+                    if (clashPairs.Contains((Math.Min(scoped[i].A, scoped[i].B), Math.Max(scoped[i].A, scoped[i].B)))) { clashing++; continue; }
                     try { var js = JoinState(scoped[i].A, scoped[i].B); if (!js.Joined) notJoined++; else if (!js.Right) wrong++; } catch { }
                 }
                 chunkList.Add(new JsonObject
                 {
-                    ["chunk"] = ci + 1, ["pairs"] = chunks[ci].Count, ["notJoined"] = notJoined, ["wrongOrder"] = wrong,
+                    ["chunk"] = ci + 1, ["pairs"] = chunks[ci].Count, ["clashing"] = clashing, ["notJoined"] = notJoined, ["wrongOrder"] = wrong,
                     ["levels"] = new JsonArray(chunks[ci].Select(i => scoped[i].Level ?? "").Distinct().Select(n => (JsonNode)n).ToArray()),
                 });
             }
@@ -853,6 +857,7 @@ namespace AceRevitMcp.Coordination
             foreach (var i in chunks[current - 1])
             {
                 var (ia, ib) = (scoped[i].A, scoped[i].B);
+                if (clashPairs.Contains((Math.Min(ia, ib), Math.Max(ia, ib)))) { Inc("clashing"); continue; }   // fixed by its clash step
                 var ea = els[ia]; var eb = els[ib];
                 (bool Joined, bool Right, string Winner) js;
                 try { js = JoinState(ia, ib); } catch { continue; }

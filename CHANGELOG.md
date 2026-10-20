@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.1 (20 Oct 2026)
+- **workset_plan review fixes:** the plan goes to apply_plan as workset_plan (no longer sharing the panel's plan field);
+  saved link-code, zone and type regexes match between underscores ((?<![A-Za-z0-9])...(?![A-Za-z0-9]) instead of \b);
+  saved rules keep first-match order (each new rule before the first less specific one, category-free rules last, never
+  ahead of a category rule) and overlaps with existing rules are listed to confirm (overlaps_ok: true saves them); confirm
+  reads both xlsx sheets (on both, the Groups sheet wins per group, with a note; unused decisions are said); apply prints
+  what would move but was not previewed (worksets not yours yet) and the types that keep a workset.
+
 ## 1.13.0 (20 Oct 2026)
 - **workset_plan (new):** propose a workset list for one or several models from the workset NAMES: one row per target
   workset (spelling twins merged) with what it holds (category decides, then level / zone, a material mismatch never
