@@ -32,6 +32,13 @@ namespace AceRevitMcp.Commands
             return d == null ? null : OpenedByAce.FirstOrDefault(x => x.Doc.Equals(d));
         }
 
+        /// <summary>
+        /// Payload Stop (reload_addin): this build forgets the models it opened. The new build starts with an empty list, so
+        /// close_model refuses discard for them (the safe side) until ACE opens them again; it also drops this build's
+        /// Document references so the old build can unload.
+        /// </summary>
+        internal static void Forget() => OpenedByAce.Clear();
+
         /// <summary>A change made outside an ACE request (DocumentChanged while the bridge is idle): the user worked in that model.</summary>
         internal static void UserTouched(Document d)
         {

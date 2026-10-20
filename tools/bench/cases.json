@@ -1039,6 +1039,34 @@
           "op": "exists"
         }
       ]
+    },
+    {
+      "name": "reload_addin answers from the ACE loader (G8; no force: nothing swaps when the installed build runs)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "reload_addin",
+      "args": {
+        "force": false
+      },
+      "maxMs": 10000,
+      "expect": [
+        {
+          "path": "loaderVersion",
+          "op": "exists"
+        },
+        {
+          "path": "payloadVersion",
+          "op": "exists"
+        },
+        {
+          "path": "ok",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "why",
+          "op": "exists"
+        }
+      ]
     }
   ]
 }

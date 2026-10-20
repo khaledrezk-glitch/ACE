@@ -86,6 +86,7 @@ namespace AceRevitMcp
             Dispatcher = null;
             if (application != null) Step("document events", () => application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged);
             Step("change tracking", Tracking.ChangeTracking.Detach);
+            Step("models opened by ACE", Commands.ModelFileCommands.Forget);
             if (application != null) Step("companion", () => Companion.CompanionPane.Unregister(application));
             Step("instance registry", InstanceRegistry.Detach);
             Step("work modes", Ribbon.WorkModes.Detach);

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.14.0 (20 Oct 2026)
+- **ACE loader (G8): updates without a Revit restart.** A small, stable `AceRevitMcp.Loader.dll` (own version 1.0.0) is
+  now the only DLL in the Revit `.addin` file; it owns the ribbon (proxy commands), the bridge's ExternalEvent and the
+  Companion pane, and loads the ACE build from `payload\<version>-<hash>` named in `current.json` (own folder only,
+  SHA-256 checked, signer must equal the loader's when signing is on, previous build as fallback). Revit 2025: one
+  collectible AssemblyLoadContext per build; Revit 2024: loaded from bytes (old copies stay in memory, inactive, until
+  Revit closes).
+- **Upgrade:** the first install of 1.14.0 replaces the old `.addin` file, so a running Revit needs **one restart**.
+  After that, `install.cmd` runs with Revit open: it adds the new build next to the running one and asks Revit to load
+  it (`reload_addin`) when Revit is idle; if the new build fails to start, the previous one runs again. Only a new loader
+  version needs a restart, and the installer says so. The unsigned-add-in prompt concerns only the loader, so it no
+  longer comes back with every update.
+- **`reload_addin`** (MCP tool and bridge command): reports loaderVersion, payloadVersion, previous, ok, why; previews
+  made before a reload must be made again. With no model open the loader also switches by itself. A reload forgets the
+  models ACE opened (close_model then refuses discard for them, the safe side).
+- **doctor / check_setup:** loader and build versions, a pending reload. **uninstall:** removes the loader and every
+  build folder. Benchmark case for `reload_addin`.
 ## 1.13.7 (20 Oct 2026)
 - **clash_resolve no longer loses whole chunks on commit:** a dry run whose commit Revit refuses now fails (every native
   command: a refused commit was counted as success), so errors such as "Can't cut joined element" show in the preview.
