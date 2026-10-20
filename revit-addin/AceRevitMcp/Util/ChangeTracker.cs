@@ -99,6 +99,34 @@ namespace AceRevitMcp.Util
 
             /// <summary>While true, changes are not recorded (e.g. temporary preview views).</summary>
             public bool Paused { get; set; }
+            /// <summary>
+            /// Revit keeps a record element per warning (no category, on the "Reviewable Warnings" workset) and deletes it when
+            /// the warning is resolved: those deletions are reported as resolved warning records, never as deleted elements.
+            /// The caller lists the record ids before the change (after a real apply they can no longer be inspected).
+            /// </summary>
+            public void NoteWarningRecords(Document doc) { foreach (var id in WarningRecordIds(doc)) _warningRecords.Add(id); }
+            private readonly HashSet<long> _warningRecords = new HashSet<long>();
+
+            /// <summary>The ids of the warning records (elements without a category on a warnings workset); empty when not workshared.</summary>
+            internal static List<long> WarningRecordIds(Document doc)
+            {
+                var list = new List<long>();
+                try
+                {
+                    if (doc == null || !doc.IsWorkshared) return list;
+                    foreach (var ws in new FilteredWorksetCollector(doc).ToWorksets())
+                    {
+                        if (ws.Name == null || ws.Name.IndexOf("Warning", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        foreach (var e in new FilteredElementCollector(doc).WherePasses(new ElementWorksetFilter(ws.Id)))
+                            if (e.Category == null) list.Add(e.Id.Value);
+                    }
+                }
+                catch { /* not readable: nothing known */ }
+                return list;
+            }
+
+            internal const string WarningRecordLabel = "resolved warning records";
+
             public ICollection<long> AddedIds => _added;
             public ICollection<long> ModifiedIds => _modified;
 
@@ -130,6 +158,7 @@ namespace AceRevitMcp.Util
                     {
                         var el = doc.GetElement(new ElementId(id));
                         if (el == null) continue;
+                        if (_deleted.Contains(id) && IsWarningRecord(doc, el)) { _categories[id] = WarningRecordLabel; continue; }
                         _categories[id] = Label(el);
                         _names[id] = NameOf(doc, el);
                         // Data many elements depend on (not something Revit updates on its own, like views or tags).
@@ -138,6 +167,34 @@ namespace AceRevitMcp.Util
                     catch { }
                 }
             }
+
+            /// <summary>A Revit warning record: an element without a category on the warnings workset.</summary>
+            private static bool IsWarningRecord(Document doc, Element el)
+            {
+                try
+                {
+                    if (el.Category != null || !doc.IsWorkshared) return false;
+                    var ws = doc.GetWorksetTable().GetWorkset(el.WorksetId);
+                    return ws != null && ws.Name != null && ws.Name.IndexOf("Warning", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+                catch { return false; }
+            }
+
+            /// <summary>Splits deleted ids into warning records (labelled so, or known records) and real deletions.</summary>
+            internal static (List<long> Records, List<long> Deleted) SplitWarningRecords(IEnumerable<long> deleted, IDictionary<long, string> categories, ICollection<long> knownRecords)
+            {
+                var records = new List<long>(); var rest = new List<long>();
+                foreach (var id in (deleted ?? Enumerable.Empty<long>()).OrderBy(i => i))
+                {
+                    var isRecord = (knownRecords != null && knownRecords.Contains(id)) || (categories != null && categories.TryGetValue(id, out var c) && c == WarningRecordLabel);
+                    (isRecord ? records : rest).Add(id);
+                }
+                return (records, rest);
+            }
+
+            internal static string WarningRecordText(int n) => $"{n} resolved warning record{(n == 1 ? "" : "s")}";
+
+            private (List<long> Records, List<long> Deleted) Split() => SplitWarningRecords(_deleted, _categories, _warningRecords);
 
             private static string Label(Element el) =>
                 el.Category?.Name ?? el switch
@@ -182,7 +239,9 @@ namespace AceRevitMcp.Util
                 var d = new JsonObject();
                 if (_added.Count > 0) d["added"] = Part(_added);
                 if (_modified.Count > 0) d["modified"] = Part(_modified);
-                if (_deleted.Count > 0) d["deleted"] = Part(_deleted);
+                var (records, deleted) = Split();
+                if (deleted.Count > 0) d["deleted"] = Part(deleted);
+                if (records.Count > 0) d["resolvedWarningRecords"] = WarningRecordText(records.Count) + " (Revit removed the records of warnings the change resolved; no model element is deleted)";
                 return d;
             }
 
@@ -190,11 +249,13 @@ namespace AceRevitMcp.Util
             private JsonArray Attention()
             {
                 var a = new JsonArray();
-                foreach (var g in _deleted.GroupBy(i => _categories.TryGetValue(i, out var c) ? c : "elements").OrderByDescending(g => g.Count()).Take(6))
+                var (records, deleted) = Split();
+                foreach (var g in deleted.GroupBy(i => _categories.TryGetValue(i, out var c) ? c : "elements").OrderByDescending(g => g.Count()).Take(6))
                 {
                     var names = g.Select(i => _names.TryGetValue(i, out var n) ? n : null).Where(n => n != null).Distinct().Take(5).ToList();
                     a.Add($"Deletes {g.Count()} {g.Key}{(names.Count > 0 ? ": " + string.Join(", ", names) : "")}");
                 }
+                if (records.Count > 0) a.Add(WarningRecordText(records.Count) + " (warnings the change resolved; no model element is deleted)");
                 foreach (var g in _modified.Where(_sensitive.Contains).GroupBy(i => _categories.TryGetValue(i, out var c) ? c : "data").Take(4))
                 {
                     var names = g.Select(i => _names.TryGetValue(i, out var n) ? n : null).Where(n => n != null).Distinct().Take(4).ToList();
@@ -226,19 +287,21 @@ namespace AceRevitMcp.Util
                     return obj;
                 }
 
+                var (records, deleted) = Split();
                 var summary = new JsonObject
                 {
                     ["added"] = _added.Count,
                     ["modified"] = _modified.Count,
-                    ["deleted"] = _deleted.Count,
+                    ["deleted"] = deleted.Count,
                 };
+                if (records.Count > 0) summary["resolvedWarningRecords"] = records.Count;
                 if (_added.Count > 0) summary["addedByCategory"] = ByCategory(_added);
                 if (_modified.Count > 0) summary["modifiedByCategory"] = ByCategory(_modified);
                 var details = Details();
                 if (details.Count > 0) summary["details"] = details;
                 var attention = Attention();
                 if (attention.Count > 0) summary["attention"] = attention;
-                if (_deleted.Count > 0) summary["deletedIds"] = new JsonArray(_deleted.Take(200).Select(i => (JsonNode)i).ToArray());
+                if (deleted.Count > 0) summary["deletedIds"] = new JsonArray(deleted.Take(200).Select(i => (JsonNode)i).ToArray());
                 if (_modified.Count > 0) summary["modifiedIds"] = new JsonArray(_modified.Take(500).Select(i => (JsonNode)i).ToArray());
                 if (_added.Count > 0 && _added.Count <= 200) summary["addedIds"] = new JsonArray(_added.Select(i => (JsonNode)i).ToArray());
                 summary["note"] = "Counts include elements Revit updates automatically (e.g. views, tags, joined walls).";

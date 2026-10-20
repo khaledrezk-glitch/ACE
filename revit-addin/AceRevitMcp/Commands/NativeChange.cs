@@ -75,6 +75,7 @@ namespace AceRevitMcp.Commands
                 var kept = false;
                 try
                 {
+                    recording.NoteWarningRecords(doc);   // so resolved warnings are not reported as deleted elements
                     group.Start();
                     t.Start();
                     result = body(doc, false);

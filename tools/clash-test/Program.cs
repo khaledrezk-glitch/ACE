@@ -303,6 +303,52 @@ class P {
     var w5 = Warn(none0, new List<(string Text, long[] Ids)> { ("Walls overlap", new long[] { 1, 2 }), ("Walls overlap", new long[] { 1, 2 }) });
     Check(!w5.Item3 && w5.Item2.Count == 1, "warnings: a second copy of the same warning is a rise");
 
+    // 12. 1.12.1: cutback method on joined ends, a step must clear its clash, warning records, reopened status, report-only reasons.
+    string CM(bool ext, bool join) => (string)R("CutbackMethod").Invoke(null, new object[] { ext, join });
+    Check(CM(true, true) == "extension" && CM(false, true) == "join-cutback" && CM(false, false) == null,
+      "cutback: the extension on an end that is not joined, the join cutback on a joined end (extension read-only), none when neither can be written");
+    string Drop(double b, double aft) => (string)R("DropReason").Invoke(null, new object[] { b, aft, 15.0 });
+    Check(Drop(83, 0) == null && Drop(83, 14) == null && Drop(83, 15) == "did not clear the clash (depth 83 -> 15 mm)" && Drop(29, 29) == "did not clear the clash (depth 29 -> 29 mm)",
+      "a step is kept only when its overlap is below the tolerance after it; otherwise dropped with the depths");
+    var recT = a.GetType("AceRevitMcp.Util.ChangeTracker+Recording");
+    var split = recT.GetMethod("SplitWarningRecords", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    var label = (string)recT.GetField("WarningRecordLabel", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public).GetValue(null);
+    var sp = split.Invoke(null, new object[] { new long[] { 5, 7, 9, 11 }, new Dictionary<long, string> { [5] = "Walls", [9] = label }, new HashSet<long> { 7 } });
+    var spRec = (List<long>)sp.GetType().GetField("Item1").GetValue(sp); var spDel = (List<long>)sp.GetType().GetField("Item2").GetValue(sp);
+    Check(spRec.SequenceEqual(new long[] { 7, 9 }) && spDel.SequenceEqual(new long[] { 5, 11 }), "change summary: warning records (known before, or labelled) are not deleted elements");
+    var wrt = (string)recT.GetMethod("WarningRecordText", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public).Invoke(null, new object[] { 2 });
+    Check(wrt == "2 resolved warning records" && !wrt.Contains("Deletes"), "change summary: \"2 resolved warning records\", never \"Deletes 2 elements\"");
+    // Reopened: fixed (resolved by a re-test), then the undo brings it back: shown as reopened, not new; next run active.
+    var st0 = List(C("r1", "active", "a", "b", "Structural Framing", "Structural Columns", "L1"), C("r2", "active", "c", "d", "Walls", "Floors", "L1"));
+    var afterFix = (IList)merge.Invoke(null, new object[] { st0, List(C("r2", "new", "c", "d", "Walls", "Floors", "L1")), null, t0.AddDays(1) });
+    var afterUndo = (IList)merge.Invoke(null, new object[] { afterFix, List(C("r1", "new", "a", "b", "Structural Framing", "Structural Columns", "L1"), C("r2", "new", "c", "d", "Walls", "Floors", "L1"), C("r3", "new", "e", "f", "Walls", "Walls", "L1")), null, t0.AddDays(2) });
+    var disp = M("DisplayStatus");
+    string Ds(IList l, string k) => (string)disp.Invoke(null, new object[] { l.Cast<object>().First(c => (string)F(c, "Key") == k) });
+    Check(Ds(afterFix, "r1") == "resolved" && Ds(afterUndo, "r1") == "reopened" && Ds(afterUndo, "r2") == "active" && Ds(afterUndo, "r3") == "new",
+      $"status: resolved then found again (same key) shows as reopened, not new ({Ds(afterUndo, "r1")}, {Ds(afterUndo, "r2")}, {Ds(afterUndo, "r3")})");
+    var again = (IList)merge.Invoke(null, new object[] { afterUndo, List(C("r1", "new", "a", "b", "Structural Framing", "Structural Columns", "L1")), null, t0.AddDays(3) });
+    Check(Ds(again, "r1") == "active" && (int)F(again.Cast<object>().First(c => (string)F(c, "Key") == "r1"), "Reopened") == 1, "status: a reopened clash still there next run is active and keeps its reopened count");
+    // Report-only reasons, each with its own recommendation.
+    string Code(object d) => (string)F(d, "Code");
+    var reasons = new (object Pair, string Code)[] {
+      (Pair(RSide("OST_StructuralFraming", "steel", 0, 0.2, 10), RSide("OST_StructuralFraming", "steel", 1, 0.2, 10)), "node"),
+      (Pair(RSide("OST_StructuralFraming", "steel", -1, 0, 10), RSide("OST_StructuralFraming", "steel", -1, 0, 10)), "crossing"),
+      (Pair(RSide("OST_StructuralFraming", "steel", -1, 0, 20), RSide("OST_StructuralColumns", "steel", -1)), "through-column"),
+      (Pair(RSide("OST_StructuralColumns", "steel", 1, 0, 12), RSide("OST_StructuralFraming", "steel", -1, 0, 20)), "column-into-beam"),
+      (Pair(RSide("OST_StructuralColumns", "steel", 1), RSide("OST_StructuralColumns", "steel", 0)), "columns"),
+      (Pair(RSide("OST_StructuralFraming", "steel", -2, 0, 20), RSide("OST_StructuralFraming", "steel", -1, 0, 20)), "end-unknown"),
+      (Pair(RSide("OST_StructuralFraming", "other", 1, 0.2, 20), RSide("OST_StructuralColumns", "concrete")), "material-unknown"),
+      (Pair(RSide("OST_StructuralFraming", "steel", -1, 0, 20), RSide("OST_Floors", "concrete")), "steel-on-concrete"),
+      (Pair(RSide("OST_StructuralColumns", "steel", -1), RSide("OST_StructuralFraming", "concrete", -1, 0, 20)), "mixed"),
+      (Pair(RSide("OST_StructuralFraming", "steel", 0, 3.0, 20), RSide("OST_StructuralColumns", "steel")), "too-deep"),
+      (Pair(RSide("OST_StructuralColumns", "steel", 0), RSide("OST_StructuralFoundation", "concrete")), "column-base"),
+    };
+    var gotR = reasons.Select(x => (Want: x.Code, D: Dec(x.Pair))).ToList();
+    var bad = gotR.Where(x => K(x.D) != null || Code(x.D) != x.Want).Select(x => $"{x.Want}: {K(x.D) ?? Code(x.D)}").ToList();
+    Check(bad.Count == 0, $"report only: each unfixable pair has its own reason code ({string.Join("; ", bad)})");
+    Check(gotR.Select(x => (string)F(x.D, "Recommendation")).Distinct().Count() == gotR.Count && gotR.All(x => !((string)F(x.D, "Why")).Contains("no safe automatic fix")),
+      "report only: every reason has its own recommendation, none says only \"no safe automatic fix\"");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

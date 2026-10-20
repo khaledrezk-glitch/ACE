@@ -40,6 +40,7 @@ namespace AceRevitMcp.Coordination
             public int End = -1;
             public double Cut;           // feet
             public double DepthMm;       // the clash depth before the fix
+            public string Method;        // join | switch-join | extension | join-cutback | coping (null: a cutback with nothing writable)
             public bool Blocked;
         }
 
@@ -110,14 +111,14 @@ namespace AceRevitMcp.Coordination
                 var ea = doc.GetElement(c.UA); var eb = doc.GetElement(c.UB);
                 if (ea == null || eb == null)
                 {
-                    reportOnly.Add(ReportItem(c, c.IdA, c.IdB, c.CatA, c.CatB, "an element was not found in this model", "Run the clash test again."));
+                    reportOnly.Add(ReportItem(c, c.IdA, c.IdB, c.CatA, c.CatB, "missing", "an element was not found in this model", "Run the clash test again."));
                     reportWhy[c.Key] = "an element was not found in this model";
                     continue;
                 }
                 var d = Decide(doc, c, ea, eb, geometry, opts);
                 if (d.Kind == null)
                 {
-                    reportOnly.Add(ReportItem(c, ea.Id.Value, eb.Id.Value, ea.Category?.Name, eb.Category?.Name, d.Why, d.Recommendation));
+                    reportOnly.Add(ReportItem(c, ea.Id.Value, eb.Id.Value, ea.Category?.Name, eb.Category?.Name, d.Code, d.Why, d.Recommendation));
                     reportWhy[c.Key] = d.Why;
                     continue;
                 }
@@ -131,6 +132,7 @@ namespace AceRevitMcp.Coordination
                 {
                     Id = id, Kind = d.Kind, ClashKey = c.Key, DepthMm = c.DepthMm,
                     A = a.Id.Value, B = b.Id.Value, HasWinner = d.Changed != null, End = d.End, Cut = d.Cut,
+                    Method = d.Kind == "cutback" ? CutbackMethod(a as FamilyInstance, d.End) : d.Kind == "cope" ? "coping" : d.Kind,
                 };
                 steps.Add(step);
                 var item = new JsonObject
@@ -139,6 +141,7 @@ namespace AceRevitMcp.Coordination
                     ["aCategory"] = a.Category?.Name, ["bCategory"] = b.Category?.Name, ["material"] = d.Material, ["level"] = c.Level, ["why"] = d.Why,
                     ["clashKey"] = c.Key, ["depthMm"] = c.DepthMm,
                 };
+                item["method"] = step.Method;
                 if (d.Kind == "cutback" || d.Kind == "cope") { item["end"] = d.End; item["cutMm"] = Math.Round(Lengths.Mm(d.Cut), 1); }
                 planJson.Add(item);
             }
@@ -147,7 +150,7 @@ namespace AceRevitMcp.Coordination
             var planHash = ClashResolveLogic.PlanHash(steps.Select(s =>
             {
                 var trim = s.Kind == "cutback" || s.Kind == "cope";
-                return (s.Kind, trim ? s.B : s.A, trim ? s.A : s.B, s.End, trim ? Lengths.Mm(s.Cut) : 0.0, s.Kind == "cope" ? s.B : 0L);
+                return (s.Kind + "/" + s.Method, trim ? s.B : s.A, trim ? s.A : s.B, s.End, trim ? Lengths.Mm(s.Cut) : 0.0, s.Kind == "cope" ? s.B : 0L);
             }));
             var expectPlan = Args.Str(args, "expect_plan");
 
@@ -168,6 +171,7 @@ namespace AceRevitMcp.Coordination
             {
                 r["model"] = doc.Title; r["aceVersion"] = aceVersion; r["test"] = test.Name; r["planHash"] = planHash;
                 r["before"] = before.DeepClone(); r["plan"] = planJson.DeepClone(); r["reportOnly"] = reportOnly.DeepClone(); r["blocked"] = blocked.DeepClone();
+                r["reportGroups"] = ReportGroups(reportOnly);
                 r["notes"] = new JsonArray(notes.Select(n => (JsonNode)n).ToArray());
                 if (keysNotFound.Count > 0) r["keysNotFound"] = new JsonArray(keysNotFound.Take(Math.Max(1, maxIds)).Select(k => (JsonNode)k).ToArray());
                 return r;
@@ -207,15 +211,16 @@ namespace AceRevitMcp.Coordination
             {
                 var r = Common(new JsonObject());
                 var done = new JsonObject { ["join"] = 0, ["switchJoin"] = 0, ["cutback"] = 0, ["cope"] = 0 };
+                var dropped = new JsonObject { ["join"] = 0, ["switchJoin"] = 0, ["cutback"] = 0, ["cope"] = 0 };
                 var skipped = (JsonArray)preSkipped.DeepClone();
-                r["done"] = done; r["skipped"] = skipped;
+                r["done"] = done; r["dropped"] = dropped; r["skipped"] = skipped;
                 r["warnings"] = new JsonObject { ["before"] = existingWarnings.Count, ["after"] = null, ["new"] = new JsonArray() };
                 r["after"] = null; r["guard"] = null;
                 if (plan) return r;
 
                 worse.Clear(); trimmed.Clear();
                 var ran = new Dictionary<string, string>(StringComparer.Ordinal);   // clash key -> kind done, or the skip reason
-                Execute(d, steps.Where(s => !s.Blocked).ToList(), done, skipped, ran);
+                Execute(d, steps.Where(s => !s.Blocked).ToList(), done, dropped, skipped, ran, test.ToleranceMm);
                 foreach (var s in steps.Where(s => s.Blocked)) ran[s.ClashKey] = "skipped: blocked";
                 foreach (var s in steps.Where(s => !s.Blocked && (s.Kind == "cutback" || s.Kind == "cope") && ran.TryGetValue(s.ClashKey, out var k) && k == s.Kind)) trimmed.Add(s.A);
                 d.Regenerate();
@@ -274,7 +279,7 @@ namespace AceRevitMcp.Coordination
             if (checkOnly) result["success"] = true;
             if (result["verify"] is JsonObject failedVerify && result["guard"] == null)   // the guard itself threw
                 result["guard"] = new JsonObject { ["ok"] = false, ["checked"] = guardIds.Count, ["mismatches"] = new JsonArray(), ["error"] = failedVerify["error"]?.ToString() };
-            foreach (var k in new[] { "guard", "after", "done", "skipped", "warnings" }) if (!result.ContainsKey(k)) result[k] = null;
+            foreach (var k in new[] { "guard", "after", "done", "dropped", "skipped", "warnings" }) if (!result.ContainsKey(k)) result[k] = null;
             if (result["rolledBack"] is JsonValue rb && rb.TryGetValue<bool>(out var rolled) && rolled)
             {
                 // Nothing was kept: nothing is reported as done.
@@ -327,11 +332,51 @@ namespace AceRevitMcp.Coordination
             return o;
         }
 
-        private static JsonObject ReportItem(Clash c, long a, long b, string catA, string catB, string why, string recommendation) => new JsonObject
+        private static JsonObject ReportItem(Clash c, long a, long b, string catA, string catB, string code, string why, string recommendation) => new JsonObject
         {
-            ["a"] = a, ["b"] = b, ["aCategory"] = catA, ["bCategory"] = catB, ["why"] = why, ["recommendation"] = recommendation,
+            ["a"] = a, ["b"] = b, ["aCategory"] = catA, ["bCategory"] = catB, ["code"] = code, ["why"] = why, ["recommendation"] = recommendation,
             ["clashKey"] = c.Key, ["level"] = c.Level, ["depthMm"] = c.DepthMm,
         };
+
+        /// <summary>The report-only items grouped by reason code: { code, why, recommendation, count, sampleKeys }, largest first.</summary>
+        private static JsonArray ReportGroups(JsonArray reportOnly) => new JsonArray(reportOnly.OfType<JsonObject>()
+            .GroupBy(o => o["code"]?.ToString() ?? "other")
+            .OrderByDescending(g => g.Count()).ThenBy(g => g.Key, StringComparer.Ordinal)
+            .Select(g => (JsonNode)new JsonObject
+            {
+                ["code"] = g.Key, ["why"] = g.First()["why"]?.ToString(), ["recommendation"] = g.First()["recommendation"]?.ToString(), ["count"] = g.Count(),
+                ["sampleKeys"] = new JsonArray(g.Take(5).Select(o => (JsonNode)o["clashKey"]?.ToString()).ToArray()),
+            }).ToArray());
+
+        /// <summary>The parameters a cutback writes: the extension (an end that is not joined) and the join cutback (a joined end).</summary>
+        private static (Parameter Extension, Parameter JoinCutback) CutbackParameters(FamilyInstance fi, int end) =>
+            fi == null ? (null, null) : (
+                fi.get_Parameter(end == 0 ? BuiltInParameter.START_EXTENSION : BuiltInParameter.END_EXTENSION),
+                fi.get_Parameter(end == 0 ? BuiltInParameter.START_JOIN_CUTBACK : BuiltInParameter.END_JOIN_CUTBACK));
+
+        private static string CutbackMethod(FamilyInstance fi, int end)
+        {
+            var (ext, join) = CutbackParameters(fi, end);
+            return ClashResolveLogic.CutbackMethod(ext != null && !ext.IsReadOnly, join != null && !join.IsReadOnly);
+        }
+
+        /// <summary>The overlap of two elements now (fresh geometry, after Regenerate), as the clash test measures it: mm, rounded.</summary>
+        private static double DepthMm(Element a, Element b)
+        {
+            double depth = 0;
+            var sb = Clashes.Solids(b);
+            foreach (var sa in Clashes.Solids(a))
+                foreach (var s2 in sb)
+                    try
+                    {
+                        var inter = BooleanOperationsUtils.ExecuteBooleanOperation(sa, s2, BooleanOperationsType.Intersect);
+                        if (inter == null || inter.Volume < 1e-6) continue;
+                        var (mn, mx) = ViewTools.Box(inter, Transform.Identity);
+                        depth = Math.Max(depth, Math.Min(mx.X - mn.X, Math.Min(mx.Y - mn.Y, mx.Z - mn.Z)));
+                    }
+                    catch { /* degenerate pair of solids */ }
+            return Math.Round(Lengths.Mm(depth));
+        }
 
         private static JsonObject SkipItem(Step s, string reason) => new JsonObject { ["id"] = s.Id, ["a"] = s.A, ["b"] = s.B, ["kind"] = s.Kind, ["reason"] = reason };
 
@@ -389,6 +434,21 @@ namespace AceRevitMcp.Coordination
                 var (end, cut) = ClashResolveLogic.EndOverlap(line.Length, m.Min, m.Max, i.Min, i.Max, Lengths.Ft(5));
                 side.End = end; side.Cut = cut; side.Length = line.Length;
             }
+            else if (cat == nameof(BuiltInCategory.OST_StructuralColumns) && inter.Count > 0 && solids.Count > 0)
+            {
+                // A column: is the overlap at its top or base (the column runs into the other element) or along its height?
+                (double Min, double Max) Z(IEnumerable<Solid> list)
+                {
+                    double min = double.MaxValue, max = double.MinValue;
+                    foreach (var s in list)
+                        foreach (Edge edge in s.Edges)
+                            foreach (var q in edge.Tessellate()) { if (q.Z < min) min = q.Z; if (q.Z > max) max = q.Z; }
+                    return (min, max);
+                }
+                var m = Z(solids); var i = Z(inter);
+                side.End = ClashResolveLogic.EndOverlap(m.Max - m.Min, m.Min, m.Max, i.Min, i.Max, Lengths.Ft(5)).End;
+                side.Length = m.Max - m.Min;
+            }
             return side;
         }
 
@@ -437,30 +497,53 @@ namespace AceRevitMcp.Coordination
 
         // ---- the change -----------------------------------------------------------------------------------------------
 
-        /// <summary>Each fix in its own sub-transaction: one that Revit refuses is skipped with the reason, the rest go on.</summary>
-        private static void Execute(Document d, List<Step> steps, JsonObject done, JsonArray skipped, Dictionary<string, string> ran)
+        /// <summary>
+        /// Each fix in its own sub-transaction. After the fix: Regenerate and measure the pair's overlap again; a fix that Revit
+        /// refuses, or that does not clear its clash (below the test's tolerance), is rolled back alone and skipped with the
+        /// reason (counted in dropped), and the rest of the plan goes on. Deterministic: the dry run and the apply drop the same.
+        /// </summary>
+        private static void Execute(Document d, List<Step> steps, JsonObject done, JsonObject dropped, JsonArray skipped, Dictionary<string, string> ran, double toleranceMm)
         {
-            bool Try(IEnumerable<Step> group, Action act)
+            void Count(JsonObject o, string key) => o[key] = o[key].GetValue<int>() + 1;
+            string Key(string kind) => kind == "switch-join" ? "switchJoin" : kind;
+            Element El(long id) => d.GetElement(new ElementId(id)) ?? throw new InvalidOperationException($"element {id} is gone");
+            void Skip(IEnumerable<Step> group, string reason)
+            {
+                foreach (var s in group) { skipped.Add(SkipItem(s, reason)); ran[s.ClashKey] = "skipped: " + reason; }
+            }
+            bool Try(IList<Step> group, Action act)
             {
                 using (var st = new SubTransaction(d))
                 {
+                    string drop = null;
                     try
                     {
                         st.Start();
                         act();
+                        d.Regenerate();
+                        foreach (var s in group)
+                        {
+                            drop = ClashResolveLogic.DropReason(s.DepthMm, DepthMm(El(s.A), El(s.B)), toleranceMm);
+                            if (drop != null) break;
+                        }
+                        if (drop != null)
+                        {
+                            st.RollBack();
+                            Skip(group, drop);
+                            Count(dropped, Key(group[0].Kind));
+                            return false;
+                        }
                         if (st.Commit() != TransactionStatus.Committed) throw new InvalidOperationException("Revit did not commit the change");
                         return true;
                     }
                     catch (Exception ex)
                     {
                         if (st.HasStarted() && !st.HasEnded()) st.RollBack();
-                        foreach (var s in group) { skipped.Add(SkipItem(s, ex.Message)); ran[s.ClashKey] = "skipped: " + ex.Message; }
+                        Skip(group, ex.Message);
                         return false;
                     }
                 }
             }
-            void Count(string key) => done[key] = done[key].GetValue<int>() + 1;
-            Element El(long id) => d.GetElement(new ElementId(id)) ?? throw new InvalidOperationException($"element {id} is gone");
 
             foreach (var s in steps.Where(s => s.Kind == "join" || s.Kind == "switch-join"))
             {
@@ -475,22 +558,34 @@ namespace AceRevitMcp.Coordination
                     else JoinGeometryUtils.SwitchJoinOrder(d, a, b);
                     if (s.HasWinner && !JoinGeometryUtils.IsCuttingElementInJoin(d, a, b)) throw new InvalidOperationException("the join order did not take");
                 });
-                if (ok) { Count(s.Kind == "join" ? "join" : "switchJoin"); ran[s.ClashKey] = s.Kind; }
+                if (ok) { Count(done, Key(s.Kind)); ran[s.ClashKey] = s.Kind; }
             }
-            // One cutback per member end: the deepest overlap at that end.
+            // One cutback per member end: the deepest overlap at that end. An end that is not joined takes a negative
+            // extension; a joined end (Revit drives the extension) a larger join cutback. The location line never moves.
             foreach (var g in steps.Where(s => s.Kind == "cutback").GroupBy(s => (s.A, s.End)))
             {
-                var cut = g.Max(s => s.Cut);
-                var ok = Try(g, () =>
+                var group = g.ToList();
+                var cut = group.Max(s => s.Cut);
+                var ok = Try(group, () =>
                 {
                     var fi = El(g.Key.A) as FamilyInstance ?? throw new InvalidOperationException("not a framing instance");
-                    var which = g.Key.End == 0 ? "Start Extension" : "End Extension";
-                    var p = fi.get_Parameter(g.Key.End == 0 ? BuiltInParameter.START_EXTENSION : BuiltInParameter.END_EXTENSION)
-                            ?? throw new InvalidOperationException($"the member has no {which} parameter");
-                    if (p.IsReadOnly) throw new InvalidOperationException($"{which} is read-only here (Revit drives it, e.g. the end is joined)");
-                    if (!p.Set(p.AsDouble() - cut)) throw new InvalidOperationException($"Revit refused the {which} value");
+                    var (ext, join) = CutbackParameters(fi, g.Key.End);
+                    var start = g.Key.End == 0;
+                    switch (group[0].Method)
+                    {
+                        case "extension":
+                            if (ext == null || ext.IsReadOnly) throw new InvalidOperationException($"{(start ? "Start" : "End")} Extension cannot be written now");
+                            if (!ext.Set(ext.AsDouble() - cut)) throw new InvalidOperationException($"Revit refused the {(start ? "Start" : "End")} Extension value");
+                            break;
+                        case "join-cutback":
+                            if (join == null || join.IsReadOnly) throw new InvalidOperationException($"{(start ? "Start" : "End")} Join Cutback cannot be written now");
+                            if (!join.Set(join.AsDouble() + cut)) throw new InvalidOperationException($"Revit refused the {(start ? "Start" : "End")} Join Cutback value");
+                            break;
+                        default:
+                            throw new InvalidOperationException($"neither {(start ? "Start" : "End")} Extension nor {(start ? "Start" : "End")} Join Cutback can be written on this member");
+                    }
                 });
-                if (ok) { Count("cutback"); foreach (var s in g) ran[s.ClashKey] = "cutback"; }
+                if (ok) { Count(done, "cutback"); foreach (var s in group) ran[s.ClashKey] = "cutback"; }
             }
             foreach (var s in steps.Where(s => s.Kind == "cope"))
             {
@@ -501,7 +596,7 @@ namespace AceRevitMcp.Coordination
                     if (fi.GetCopingIds().Contains(cutter.Id)) throw new InvalidOperationException("already coped by this element");
                     if (!fi.AddCoping(cutter)) throw new InvalidOperationException("Revit did not add the coping");
                 });
-                if (ok) { Count("cope"); ran[s.ClashKey] = "cope"; }
+                if (ok) { Count(done, "cope"); ran[s.ClashKey] = "cope"; }
             }
         }
 

@@ -93,6 +93,12 @@ namespace AceRevitMcp.Coordination
         public static bool IsOpen(Clash c) => c.Status == "new" || c.Status == "active";
 
         /// <summary>
+        /// The status people see: a clash that was resolved and is found again (same key) is stored as "new" with a reopened
+        /// count (it is open, and gets a fresh cause), but shown as "reopened", never as plain "new". Stays "active" after that.
+        /// </summary>
+        public static string DisplayStatus(Clash c) => c.Status == "new" && c.Reopened > 0 ? "reopened" : c.Status;
+
+        /// <summary>
         /// Merges a new run with the stored one: new / active / resolved, keeping approvals and notes.
         /// Only stored clashes inside the run's scope can become resolved (a run on one level, or one cut short by
         /// max_elements, says nothing about the rest); out-of-scope ones are kept as they were.

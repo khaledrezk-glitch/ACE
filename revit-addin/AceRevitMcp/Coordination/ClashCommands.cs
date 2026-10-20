@@ -59,7 +59,7 @@ namespace AceRevitMcp.Coordination
                 {
                     ["test"] = t.Name, ["toleranceMm"] = t.ToleranceMm, ["clearanceMm"] = t.ClearanceMm,
                     ["open"] = merged.Count(ClashLogic.IsOpen),
-                    ["new"] = merged.Count(c => c.Status == "new"), ["active"] = merged.Count(c => c.Status == "active"),
+                    ["new"] = merged.Count(c => ClashLogic.DisplayStatus(c) == "new"), ["active"] = merged.Count(c => c.Status == "active"),
                     ["resolved"] = merged.Count(c => c.Status == "resolved"), ["approved"] = merged.Count(c => c.Status == "approved"),
                     ["issues"] = testIssues.Count,
                     ["reopened"] = merged.Count(c => ClashLogic.IsOpen(c) && c.Reopened > 0),
@@ -88,7 +88,7 @@ namespace AceRevitMcp.Coordination
                 }).ToArray()),
                 ["topOpen"] = new JsonArray(all.Where(ClashLogic.IsOpen).OrderByDescending(c => c.DepthMm).Take(30).Select(c => (JsonNode)new JsonObject
                 {
-                    ["key"] = c.Key, ["status"] = c.Status, ["reopened"] = c.Reopened > 0 ? c.Reopened : null, ["kind"] = c.Kind, ["level"] = c.Level, ["depthMm"] = c.DepthMm,
+                    ["key"] = c.Key, ["status"] = ClashLogic.DisplayStatus(c), ["reopened"] = c.Reopened > 0 ? c.Reopened : null, ["kind"] = c.Kind, ["level"] = c.Level, ["depthMm"] = c.DepthMm,
                     ["a"] = $"{c.CatA}: {c.NameA} (id {c.IdA}, {c.SourceA})", ["b"] = $"{c.CatB}: {c.NameB} (id {c.IdB}, {c.SourceB})",
                     ["pointMm"] = $"{c.X}, {c.Y}, {c.Z}", ["responsible"] = c.Responsible, ["reason"] = c.Reason,
                     ["cause"] = c.Cause, ["causedBy"] = c.CausedBy,
@@ -239,7 +239,7 @@ namespace AceRevitMcp.Coordination
                 "The model, its links and the other open discipline models");
             var red = DashboardHtml.Hex(Branding.Accent);
             sb.Append("<table class=\"row\"><tr>");
-            foreach (var (label, n, key) in new[] { ("Open issues", issues.Count, true), ("Open clashes", open.Count, false), ("New since last run", clashes.Count(c => c.Status == "new"), false), ("Resolved", clashes.Count(c => c.Status == "resolved"), false), ("Approved", clashes.Count(c => c.Status == "approved"), false) })
+            foreach (var (label, n, key) in new[] { ("Open issues", issues.Count, true), ("Open clashes", open.Count, false), ("New since last run", clashes.Count(c => ClashLogic.DisplayStatus(c) == "new"), false), ("Resolved", clashes.Count(c => c.Status == "resolved"), false), ("Approved", clashes.Count(c => c.Status == "approved"), false) })
                 sb.Append($"<td class=\"cell\" style=\"width:20%\"><div class=\"card\"><h3>{E(label)}</h3><div class=\"big\"{(key && n > 0 ? $" style=\"color:{red}\"" : "")}>{n}</div></div></td>");
             sb.Append("</tr></table>");
 
@@ -271,7 +271,7 @@ namespace AceRevitMcp.Coordination
             foreach (var c in clashes.OrderBy(c => c.Status == "resolved" || c.Status == "approved" ? 1 : 0).ThenByDescending(c => c.DepthMm).Take(400))
             {
                 var tag = c.Status == "new" ? "fail" : c.Status == "active" ? "warn" : "plan";
-                sb.Append($"<tr><td><span class=\"tag {tag}\">{E(c.Status)}</span>{(c.Reopened > 0 ? "<div class='muted'><b>reopened</b></div>" : "")}<div class=\"muted\">{E(c.Kind)}</div></td><td>{E(c.Level)}</td>" +
+                sb.Append($"<tr><td><span class=\"tag {tag}\">{E(ClashLogic.DisplayStatus(c))}</span>{(c.Reopened > 0 ? "<div class='muted'><b>reopened</b></div>" : "")}<div class=\"muted\">{E(c.Kind)}</div></td><td>{E(c.Level)}</td>" +
                           $"<td><b>{E(c.CatA)}</b><div class=\"muted\">{E(DashboardHtml.Trim(c.NameA, 50))} · id {c.IdA} · {E(c.SourceA)}</div></td>" +
                           $"<td><b>{E(c.CatB)}</b><div class=\"muted\">{E(DashboardHtml.Trim(c.NameB, 50))} · id {c.IdB} · {E(c.SourceB)}</div></td>" +
                           $"<td class=\"num\">{c.DepthMm:0} mm</td><td>{E(c.Responsible)}<div class=\"muted\">{E(c.Reason)}</div>{(c.Cause != null ? $"<div class='muted'>Cause: {E(c.Cause)}</div>" : "")}</td><td class=\"muted\">{c.X:0}, {c.Y:0}, {c.Z:0}</td></tr>");

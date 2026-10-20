@@ -104,7 +104,7 @@ namespace AceRevitMcp.Coordination
             public string Material;      // concrete | steel | other
             public bool Host = true;     // in the active model (links are never changed)
             public double Volume;        // cubic feet
-            public int End = -2;         // straight framing: 0 / 1 = the overlap is at that end, -1 = not at an end; -2 = not framing (or not straight)
+            public int End = -2;         // straight framing (along its line) or a column (vertically): 0 / 1 = the overlap is at that end, -1 = not at an end; -2 = not measured
             public double Cut;           // feet, with End 0 / 1
             public double Length;        // feet, the location line
         }
@@ -133,12 +133,13 @@ namespace AceRevitMcp.Coordination
         internal sealed class Decision
         {
             public string Kind, Changed, Material, Why, Recommendation;
+            public string Code;          // report only: the reason code (groups the report)
             public int End = -1;
             public double Cut;
         }
 
-        private static Decision Report(string material, string why, string recommendation) =>
-            new Decision { Kind = null, Material = material, Why = why, Recommendation = recommendation };
+        private static Decision Report(string material, string code, string why, string recommendation) =>
+            new Decision { Kind = null, Material = material, Code = code, Why = why, Recommendation = recommendation };
 
         private static bool IsColumn(Side s) => s.Category == "OST_StructuralColumns";
         private static bool IsFraming(Side s) => s.Category == "OST_StructuralFraming";
@@ -148,29 +149,29 @@ namespace AceRevitMcp.Coordination
             o = o ?? new Options();
             var material = PairMaterial(p.A.Material, p.B.Material);
             if (!p.A.Host || !p.B.Host)
-                return Report(material, "an element is in a linked model: ACE changes the active model only", "Fix it in the linked model, or approve the clash.");
+                return Report(material, "linked", "an element is in a linked model: ACE changes the active model only", "Fix it in the linked model, or approve the clash.");
             if (p.ClashKind != "hard")
-                return Report(material, "a clearance clash, not an overlap: nothing to cut", "Move one element by hand if the clearance matters.");
+                return Report(material, "clearance", "a clearance clash, not an overlap: nothing to cut", "Move one element by hand if the clearance matters.");
 
             // Near-identical geometry: one of the two is redundant (a person decides which one goes).
             var big = Math.Max(p.A.Volume, p.B.Volume); var small = Math.Min(p.A.Volume, p.B.Volume);
             if (big > 0 && p.Overlap >= 0.9 * big)
-                return Report(material, "duplicate: the two elements occupy nearly the same space", "Delete one of the two by hand, keeping the one that is tagged, dimensioned or scheduled.");
+                return Report(material, "duplicate", "duplicate: the two elements occupy nearly the same space", "Delete one of the two by hand, keeping the one that is tagged, dimensioned or scheduled.");
             var insideA = p.A.Volume > 0 && p.Overlap >= 0.9 * p.A.Volume;
             var insideB = p.B.Volume > 0 && p.Overlap >= 0.9 * p.B.Volume;
 
             if (p.A.Material == "concrete" && p.B.Material == "concrete")
             {
                 if (Rank(o.Order, p.A.Category) < 0 || Rank(o.Order, p.B.Category) < 0)
-                    return Report(material, "a category that is not in the join order", "Add the category to order, or resolve the clash by hand.");
+                    return Report(material, "not-in-order", "a category that is not in the join order", "Add the category to order, or resolve the clash by hand.");
                 var winner = Winner(o.Order, p.A.Category, p.B.Category);
                 if ((insideA && winner != "A") || (insideB && winner != "B"))
-                    return Report(material, "one element lies (almost) entirely inside the other: a join would cut it away", "Check which element is intended and delete or resize the other by hand.");
+                    return Report(material, "inside", "one element lies (almost) entirely inside the other: a join would cut it away", "Check which element is intended and delete or resize the other by hand.");
                 if (p.Joined)
                 {
                     var wrong = winner != null && (winner == "A") != p.ACutsB;
                     if (wrong) return new Decision { Kind = "switch-join", Changed = winner, Material = material, Why = $"joined, but the {(winner == "A" ? "second" : "first")} element cuts: the order says the other one wins" };
-                    return Report(material, "already joined in the right order but still overlapping", "Check the geometry by hand (an edited profile or a sketch that runs past the joined face).");
+                    return Report(material, "joined-still", "already joined in the right order but still overlapping", "Check the geometry by hand (an edited profile or a sketch that runs past the joined face).");
                 }
                 return new Decision
                 {
@@ -187,13 +188,13 @@ namespace AceRevitMcp.Coordination
                 if (m.End < 0) continue;
                 if (IsFraming(other) && other.End >= 0) continue;   // both members end here: a node, not a member running into a support
                 if (m.Cut > o.MaxCutFeet || (m.Length > 0 && m.Cut > MaxCutbackShare * m.Length))
-                    return Report(material, $"the steel member runs {Math.Round(m.Cut * 304.8)} mm into the {(IsColumn(other) ? "column" : "beam")}: more than a trim", "Check the member's end point and connection by hand.");
+                    return Report(material, "too-deep", $"the steel member runs {Math.Round(m.Cut * 304.8)} mm into the {(IsColumn(other) ? "column" : "beam")}: more than a trim", "Check the member's end point and connection by hand.");
                 var steelCutter = other.Material == "steel";
                 string kind = null;
                 if (IsColumn(other)) kind = o.Cutback ? "cutback" : (o.Coping && steelCutter ? "cope" : null);
                 else kind = o.Coping && steelCutter ? "cope" : (o.Cutback ? "cutback" : null);
                 if (kind == null)
-                    return Report(material, "a steel member end runs into a support, but cutback and coping are switched off", "Allow steel.cutback or steel.coping, or trim it by hand.");
+                    return Report(material, "switched-off", "a steel member end runs into a support, but cutback and coping are switched off", "Allow steel.cutback or steel.coping, or trim it by hand.");
                 var into = IsColumn(other) ? "column" : "supporting beam";
                 return new Decision
                 {
@@ -204,17 +205,84 @@ namespace AceRevitMcp.Coordination
                 };
             }
 
-            if (IsFraming(p.A) && IsFraming(p.B) && p.A.End >= 0 && p.B.End >= 0)
-                return Report(material, "two members end at the same node", "Decide the connection (which member runs through) and cope or trim by hand.");
-            if (IsFraming(p.A) && IsFraming(p.B) && p.A.End == -1 && p.B.End == -1)
-                return Report(material, "two members cross mid-span", "A level or design question: move one member or change its offset by hand.");
-            if ((p.A.Category == "OST_StructuralColumns" && p.A.Material == "steel" && p.B.Category == "OST_StructuralFoundation")
-                || (p.B.Category == "OST_StructuralColumns" && p.B.Material == "steel" && p.A.Category == "OST_StructuralFoundation"))
-                return Report(material, "a steel column base in a foundation (usually intended: base plate, embedment)", "Approve the clash if the embedment is intended.");
-            if (material == "mixed")
-                return Report(material, "mixed materials: Revit cannot join them and a cut would change the design", "Resolve it by hand (offset, profile or connection), or approve it if intended.");
-            return Report(material, "no safe automatic fix for this pair", "Resolve it by hand, or approve it if intended.");
+            return Unfixable(p, material);
         }
+
+        private static string Short(string category)
+        {
+            switch (category)
+            {
+                case "OST_StructuralFraming": return "beam";
+                case "OST_StructuralColumns": return "column";
+                case "OST_StructuralFoundation": return "foundation";
+                case "OST_Walls": return "wall";
+                case "OST_Floors": return "slab";
+                case "OST_Stairs": return "stair";
+                case "OST_Ramps": return "ramp";
+                default: return (category ?? "element").Replace("OST_", "").ToLowerInvariant();
+            }
+        }
+
+        /// <summary>
+        /// The pairs no fix covers, by reason, each with its own recommendation (so the report groups them): a node, a crossing,
+        /// a member passing a column, a column into a beam, stacked columns, an end that cannot be measured, an unknown or
+        /// non-structural material, steel bearing on concrete, a steel column base, other mixed pairs.
+        /// </summary>
+        private static Decision Unfixable(Pair p, string material)
+        {
+            var a = p.A; var b = p.B;
+            bool Both(Func<Side, bool> f) => f(a) && f(b);
+            bool Either(Func<Side, bool> f, out Side hit, out Side other)
+            {
+                if (f(a)) { hit = a; other = b; return true; }
+                if (f(b)) { hit = b; other = a; return true; }
+                hit = other = null; return false;
+            }
+            if (Both(IsFraming))
+            {
+                if (a.End >= 0 && b.End >= 0)
+                    return Report(material, "node", "two members end at the same node: no member clearly supports the other", "Decide the connection (which member runs through) and cope or trim by hand.");
+                if (a.End == -1 && b.End == -1)
+                    return Report(material, "crossing", "two members cross mid-span: neither ends at the other", "A level or design question: move one member or change its offset by hand.");
+                if (a.End == -2 || b.End == -2)
+                    return Report(material, "end-unknown", "a member's end could not be measured (curved location line or no overlap solid)", "Trim the member by hand, or check its geometry.");
+            }
+            if (Either(s => s.Material == "other", out var unknown, out _))
+                return Report(material, "material-unknown", $"the {Short(unknown.Category)}'s material is not steel or concrete (or its family has no structural material)",
+                    "Set the family's structural material (steel or concrete) so ACE can decide, or fix it by hand.");
+            if (Either(IsColumn, out var col, out var on) && IsFraming(on) && on.End == -1 && col.End >= 0)
+                return Report(material, "column-into-beam", "the column's top or base runs into the beam: ACE does not cut columns back", "Adjust the column's top or base offset (or level) by hand.");
+            if (Either(s => IsFraming(s) && s.Material == "steel", out var beam, out var partner) && IsColumn(partner))
+            {
+                if (beam.End == -1)
+                    return Report(material, "through-column", "the beam passes the column mid-span instead of ending at it", "Split the beam at the column, or move one of them by hand: a cutback would cut the span.");
+                if (beam.End == -2)
+                    return Report(material, "end-unknown", "the beam's end could not be measured (curved location line or no overlap solid)", "Trim the beam by hand, or check its geometry.");
+            }
+            if (Both(IsColumn))
+                return Report(material, "columns", "two columns overlap (a splice or a stacked or duplicated column)", "Check the columns' base and top levels and offsets by hand.");
+            if (Either(s => s.Category == "OST_StructuralColumns" && s.Material == "steel", out _, out var footing) && footing.Category == "OST_StructuralFoundation")
+                return Report(material, "column-base", "a steel column base in a foundation (usually intended: base plate, embedment)", "Approve the clash if the embedment is intended.");
+            if (Either(s => s.Material == "steel", out var st, out var concrete) && concrete.Material == "concrete" && !IsColumn(concrete) && !IsFraming(concrete))
+                return Report(material, "steel-on-concrete", $"a steel {Short(st.Category)} bears on or runs into a concrete {Short(concrete.Category)}", "Approve it if the bearing or embedment is intended, else lower or shift the steel member by hand.");
+            if (material == "mixed")
+                return Report(material, "mixed", "steel with concrete: Revit cannot join them and a cut would change the design", "Resolve it by hand (offset, profile or connection), or approve it if intended.");
+            return Report(material, "other", $"no automatic fix for a {Short(a.Category)} with a {Short(b.Category)} of this material", "Resolve it by hand, or approve it if intended.");
+        }
+
+        /// <summary>
+        /// A step is kept only when it clears its clash: the overlap measured after the step is below the test's tolerance.
+        /// Null = keep; otherwise the skip reason (the step's sub-transaction is rolled back, the rest of the plan goes on).
+        /// </summary>
+        public static string DropReason(double beforeMm, double afterMm, double toleranceMm) =>
+            afterMm < toleranceMm ? null : $"did not clear the clash (depth {Math.Round(beforeMm)} -> {Math.Round(afterMm)} mm)";
+
+        /// <summary>
+        /// How a cutback is made: "extension" (Start / End Extension, when the end is not joined), else "join-cutback" (Start /
+        /// End Join Cutback, when the end is joined and Revit drives the extension), else null (neither can be written).
+        /// </summary>
+        public static string CutbackMethod(bool extensionWritable, bool joinCutbackWritable) =>
+            extensionWritable ? "extension" : joinCutbackWritable ? "join-cutback" : null;
 
         // ---- pre-flight: blocks in plain language ----------------------------------------------------------------
 

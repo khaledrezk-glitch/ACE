@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.1 (20 Oct 2026)
+- **clash_resolve, from the first live test:** joined steel ends are cut back with the join cutback (the extension only
+  for free ends; `plan[].method`); each step is checked on its own and a step that does not clear its clash is dropped
+  and reported ("did not clear the clash (depth X -> Y mm)", `dropped`), so one bad cope no longer rolls back the good
+  joins; report-only items carry a reason code and are grouped (`reportGroups`) with a recommendation per reason.
+- **Change summaries:** warning records Revit removes when a change resolves warnings read "N resolved warning
+  record(s)", never as deleted elements.
+- **run_clash_test:** a clash that comes back after being resolved shows as "reopened", not "new".
+
 ## 1.12.0 (20 Oct 2026)
 - **Structural self-clash solver (`clash_resolve`):** runs an ST vs ST clash test on the host model and fixes only what is
   safe without moving or replacing anything: Join Geometry / Switch Join Order for concrete pairs (join order from the
