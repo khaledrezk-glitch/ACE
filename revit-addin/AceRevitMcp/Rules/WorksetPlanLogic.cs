@@ -25,6 +25,59 @@ namespace AceRevitMcp.Rules
         public static string MaterialClass(string structuralMaterial) =>
             structuralMaterial == "steel" ? "steel" : structuralMaterial == "concrete" || structuralMaterial == "precast" ? "concrete" : "other";
 
+        /// <summary>A sketch category (&lt;Sketch&gt;, &lt;Stair/Ramp Sketch: Boundary&gt;, ...): Revit names them in angle brackets.</summary>
+        public static bool IsSketchCategory(string category)
+        {
+            var c = (category ?? "").Trim();
+            return c.Length > 2 && c[0] == '<' && c[c.Length - 1] == '>';
+        }
+
+        /// <summary>
+        /// A level's code: the text before "(" with a short discipline prefix ("A-", "C-", "ST-") removed. "A-01(FIRST FLOOR)" gives
+        /// 01, "C-GF(GROUND FLOOR)" gives GF, "Level 1" gives Level 1. Null when nothing is left.
+        /// </summary>
+        public static string LevelCode(string levelName)
+        {
+            var n = (levelName ?? "").Trim();
+            var open = n.IndexOf('(');
+            var head = (open >= 0 ? n.Substring(0, open) : n).Trim();
+            var dash = head.IndexOf('-');
+            if (dash >= 1 && dash <= 3 && dash < head.Length - 1 && head.Substring(0, dash).All(char.IsLetter)) head = head.Substring(dash + 1).Trim();
+            return head.Length == 0 ? null : head;
+        }
+
+        /// <summary>The words in a level name's brackets: "A-01(FIRST FLOOR)" gives FIRST FLOOR; null without brackets.</summary>
+        public static string LevelPhrase(string levelName)
+        {
+            var n = levelName ?? "";
+            var open = n.IndexOf('(');
+            if (open < 0) return null;
+            var close = n.IndexOf(')', open + 1);
+            var inner = (close > open ? n.Substring(open + 1, close - open - 1) : n.Substring(open + 1)).Trim();
+            return inner.Length == 0 ? null : inner;
+        }
+
+        /// <summary>
+        /// The reset method (reset_to): the elements a plan moves to the default workset. Everything not already claimed by a
+        /// move, not on a kept workset (the datum workset and keep_worksets), not in a kept group (keep_keys) and not already on
+        /// the target; elements borrowed
+        /// by others or changed in central are skipped and reported.
+        /// </summary>
+        public static (List<long> Move, List<long> Borrowed, List<long> Central) ResetPick(IEnumerable<(long Id, long Ws, string Key, bool Borrowed, bool Central)> elements,
+            ICollection<long> claimed, ICollection<long> keepWorksets, ICollection<string> keepKeys, long toId)
+        {
+            var move = new List<long>(); var borrowed = new List<long>(); var central = new List<long>();
+            foreach (var (id, ws, key, b, c) in elements ?? Enumerable.Empty<(long, long, string, bool, bool)>())
+            {
+                if ((claimed != null && claimed.Contains(id)) || (keepWorksets != null && keepWorksets.Contains(ws)) || (toId != 0 && ws == toId)) continue;
+                if (keepKeys != null && key != null && keepKeys.Contains(key)) continue;   // a group that stays where it is
+                if (b) borrowed.Add(id);
+                else if (c) central.Add(id);
+                else move.Add(id);
+            }
+            return (move, borrowed, central);
+        }
+
         /// <summary>Why a workset named for deletion is kept: what it still holds after the moves (types are never moved by a plan).</summary>
         public static string KeptWhy(int elements, int types) =>
             types > 0 && elements == types ? $"holds {types} type{(types == 1 ? "" : "s")} (a plan moves instances only)"
@@ -40,6 +93,9 @@ namespace AceRevitMcp.Rules
             public int Elements;             // move: elements that move; delete: elements on it after the moves
             public List<long> Ids = new List<long>();
             public List<long> TypeIds = new List<long>();   // move: link / CAD import types moved with their instances
+            public string Row;               // move: the line in the decision file (information only, not in the hash)
+            public List<long> Followers = new List<long>(); // move: sub-elements that go with the moved elements (not in the hash)
+            public int NonModel;             // delete: sketches and other non-model items that go to the receiving workset (not in the hash)
             public Dictionary<string, int> ByCategory = new Dictionary<string, int>(StringComparer.Ordinal);
             public string Safety; public long SafetyId;   // a delete: receives anything the count missed (not in the hash)
         }

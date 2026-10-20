@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.13.3 (20 Oct 2026)
+- **workset_plan from the first live run (8 models):** levels match whole codes only (the code before "(" after an
+  "X-" prefix, the bracketed words as a phrase, the add-in's level code / phrase, vault naming.levelAliases; never a
+  substring or a single letter: BASE, GRID-B, GROUND BEAMS are no levels); "01" is a level when a code 01 exists; a
+  category word counts as the head of the name, never inside a zone phrase ("POOL & Pump Room"); vault categoryTokens
+  always count (phrases, one token -> several categories); FOUNDATIONS is Structural Foundations even with a FOUNDATION
+  level; empty-but-expected and catch-all worksets are never proposed for deletion; Workset1 keeps its name unless the
+  vault sets naming.defaultName; sketches, sub-elements and legend components get no row.
+- **The standard:** vault worksets-standard.json (clauses, confirmed once by the user), else the project list, else the
+  office worksets.json; every reply names it. **status** (read-only): % correct, wrong with where to, empty, not in the
+  standard, missing, visibility, borrowed; each group applied by ACE / changed after apply / correct already / still to
+  do (from the apply records); HTML + CSV and the model_dashboard tile. **propose refresh** keeps decisions and marks
+  new / changed / gone; applied rows are not re-proposed. **apply only** (rows, worksets, categories, models) and
+  **reset: "default"** (end state, each element moves once); moves already done are skipped; pins unpinned / moved /
+  re-pinned (counts said); borrowed elements become pending actions in the vault, retried first next time; every apply
+  writes an apply record and shows the status again.
+
 ## 1.13.2 (20 Oct 2026)
 - **Optional local code signing:** `trust-ace.ps1` (run once per user, no administrator rights) creates a code-signing
   certificate in CurrentUser\My (RSA 3072, SHA256, 5 years, private key not exportable), trusts its public part in

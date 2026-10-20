@@ -29,7 +29,13 @@ export function namingOf(section) {
   const tokens = n.categoryTokens == null ? undefined : n.categoryTokens;
   if (tokens != null && (typeof tokens !== "object" || Array.isArray(tokens) || Object.values(tokens).some((v) => !Array.isArray(v))))
     throw new Error("naming.categoryTokens must be { \"TOKEN\": [\"Category\", ...] } (e.g. { \"PCC\": [\"Structural Foundations\"] }).");
-  return { pattern, source: n.pattern ?? null, allowed: [...list(n.allowed), ...list(n.names)], rename, ...(tokens ? { categoryTokens: tokens } : {}) };
+  // workset_plan: levelAliases { TOKEN: [level names or regex] }, manualOnly [names], defaultName (renaming Workset1 is opt-in).
+  const aliases = n.levelAliases == null ? undefined : n.levelAliases;
+  if (aliases != null && (typeof aliases !== "object" || Array.isArray(aliases) || Object.values(aliases).some((v) => !Array.isArray(v) && typeof v !== "string")))
+    throw new Error("naming.levelAliases must be { \"TOKEN\": [\"level name or regex\", ...] } (e.g. { \"GF\": [\"C-GF(GROUND FLOOR)\"] }).");
+  const defaultName = typeof n.defaultName === "string" && n.defaultName.trim() ? n.defaultName.trim() : null;
+  return { pattern, source: n.pattern ?? null, allowed: [...list(n.allowed), ...list(n.names)], rename, ...(tokens ? { categoryTokens: tokens } : {}),
+    ...(aliases ? { levelAliases: aliases } : {}), ...(list(n.manualOnly).length ? { manualOnly: list(n.manualOnly) } : {}), ...(defaultName ? { defaultName } : {}) };
 }
 
 /** Does a name keep the rule: the pattern (when given) and the allowed list (when given). null without a rule. */

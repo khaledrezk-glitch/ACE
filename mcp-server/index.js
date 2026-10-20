@@ -253,7 +253,20 @@ tool("model_dashboard", {
   description: "Read-only health check of the open model: a 0-100 health score with every audit finding (warnings, imported CAD, in-place families, rooms not enclosed or without doors, narrow doors, duplicate marks, views not on sheets, view templates, parameter completeness, sheet title block data, project information), warnings by type, per-level statistics, Claude's activity and the status of every ACE tool. Saves an ACE-branded HTML report (path in htmlReport) in Documents\\ACE Insights. show: true also opens the dashboard inside Revit. Use for 'how healthy is this model', 'dashboard', 'status report', 'audit'.",
   inputSchema: { show: z.boolean().optional().describe("Also open the dashboard window in Revit") },
   annotations: readOnly,
-}, async (a) => text(await callRevit("get_model_insights", a, 600)));
+}, async (a) => {
+  const r = await callRevit("get_model_insights", a, 600);
+  // The worksets tile: the latest workset_plan status of this model (vault 04 Audits/<model>/worksets/worksets-status.json).
+  try {
+    const { files } = await worksetFiles({}, r);
+    if (fs.existsSync(files.status)) {
+      const t = JSON.parse(fs.readFileSync(files.status, "utf8"));
+      const out = text({ ...r, tiles: [...(r?.tiles ?? []), t] });
+      out.content.push({ type: "text", text: `Worksets: ${t.value} (${t.at}; standard: ${t.standard})${t.pending ? `; ${t.pending} pending action(s)` : ""}.` });
+      return out;
+    }
+  } catch { /* no tile */ }
+  return text(r);
+});
 
 tool("list_warnings", {
   title: "Revit warnings",
@@ -1027,11 +1040,78 @@ async function worksetFactsFor(a, timeout) {
 }
 const notWorkshared = (list) => list.filter((x) => x.facts?.workshared === false).map((x) => x.facts?.model ?? x.path);
 
+/**
+ * The workset standard, in priority order (every reply names it): (a) the vault's rules/worksets-standard.json, rules
+ * with a clause each, used once the user confirmed it (confirmed: true); (b) the project's confirmed list
+ * (project-requirements.json worksets rules); (c) the office worksets.json. Unconfirmed clauses are listed, never trusted.
+ */
+async function worksetStandard(a) {
+  const vdir = await projectVaultDir(a);
+  const sf = vdir ? path.join(vdir, "rules", "worksets-standard.json") : null;
+  let note = "";
+  if (sf && fs.existsSync(sf)) {
+    let j;
+    try { j = JSON.parse(fs.readFileSync(sf, "utf8")); } catch (e) { throw new RevitError(`${sf} is not valid JSON (${e.message}): fix it first.`); }
+    const rules = (Array.isArray(j.rules) ? j.rules : []).filter((r) => r?.workset);
+    if (a.confirm_standard && j.confirmed !== true) {
+      if (!Vault.trusted(path.dirname(CONFIG_PATH), vdir)) throw new RevitError(`The vault ${vdir} is not trusted for writing yet: ask the user, then vault with consent: true.`);
+      j = { ...j, confirmed: true, confirmedAt: localDate(new Date(), { time: true }) };
+      fs.writeFileSync(`${sf}.tmp`, JSON.stringify(j, null, 2)); fs.renameSync(`${sf}.tmp`, sf);
+      journal({ title: "Workset standard confirmed", outcome: `${rules.length} rule(s) in ${sf} confirmed by the user` });
+    }
+    const noClause = rules.filter((r) => !r.clause);
+    if (j.confirmed === true && rules.length && !noClause.length) return { std: { label: "the vault documents (worksets-standard.json, confirmed)", file: sf, rules, strict: true }, note };
+    note = j.confirmed === true ? `${sf}: ${noClause.length} rule(s) without a clause reference: not used until each names its clause.`
+      : `Candidate clauses in ${sf} (NOT used until the user confirms them: workset_plan with confirm_standard: true):\n${rules.slice(0, 20).map((r) => `- ${WorksetPlan.ruleText(r)}${r.clause ? ` [${r.clause}]` : " [no clause]"}`).join("\n")}`;
+  }
+  let r = null;
+  try { r = await callRevit("project_rules", { section: "worksets" }, 30); } catch { r = null; }
+  const rules = (r?.rules?.rules ?? []).filter((x) => x?.workset);
+  if (rules.length) {
+    const project = /^project/i.test(String(r.source ?? ""));
+    return { std: { label: project ? "the project's confirmed list (project-requirements.json)" : "the office fallback (worksets.json)", file: String(r.source ?? "").replace(/^\w+:\s*/, "") || null, rules }, note };
+  }
+  return { std: null, note };
+}
+/** The vault files of a model's workset work: apply records and pending (borrowed) actions, in its audit folder. */
+async function worksetFiles(a, facts) {
+  const storeKey = ClashResolve.storeKeyOf(facts, facts?.model ?? "model");
+  const { dir, note } = await auditFolder(a, storeKey, { sub: "worksets", reports: "worksets" });
+  const read = (f, d) => { try { return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : d; } catch { return d; } };
+  const applied = path.join(dir, "worksets-applied.json"), pending = path.join(dir, "pending-actions.json"), status = path.join(dir, "worksets-status.json");
+  const save = (f, j) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(`${f}.tmp`, JSON.stringify(j, null, 1)); fs.renameSync(`${f}.tmp`, f); };
+  return { dir, note, storeKey, files: { applied, pending, status },
+    records: () => read(applied, { records: [] }).records ?? [], pending: () => read(pending, { actions: [] }).actions ?? [],
+    addRecord: (rec) => { const j = read(applied, { schema: "ace.worksets-applied/1", records: [] }); j.records = [...(j.records ?? []), rec]; save(applied, j); },
+    setPending: (actions) => save(pending, { schema: "ace.pending-actions/1", kind: "worksets", model: facts?.model, storeKey, updated: localDate(new Date(), { time: true }), actions }),
+    setStatus: (tile) => save(status, tile) };
+}
+/** Status of each model (read-only): the standard, apply records and pending actions; HTML / CSV and the dashboard tile. */
+async function worksetStatus(a, timeout, list) {
+  list ??= (await worksetFactsFor(a, timeout)).filter((x) => x.facts?.workshared !== false);
+  const { std, note } = await worksetStandard(a);
+  const out = [], texts = [];
+  for (const x of list) {
+    const vf = await worksetFiles(a, x.facts);
+    const ctx = WorksetPlan.nameCtx(x.facts?.levels ?? [], x.naming, (x.facts?.worksets ?? []).map((w) => w.name));
+    const s = WorksetPlan.statusOf(x.facts, { std, ctx, records: vf.records(), pending: vf.pending() });
+    const when = localDate(new Date(), { time: true });
+    const dir = a.out_dir ?? vf.dir;
+    const stem = ParamExec.fileStem("worksets-status", s.model, when);
+    const files = [writeOut(dir, `${stem}.html`, WorksetPlan.statusHtml(s, { when, brand: brand() })), writeOut(dir, `${stem}.csv`, WorksetPlan.statusCsv(s))];
+    try { vf.setStatus(WorksetPlan.statusTile(s, when)); } catch { /* the tile is a convenience */ }
+    out.push({ ...s, files });
+    texts.push(WorksetPlan.statusText(s, { files }) + (vf.note ? `\n${vf.note}` : ""));
+  }
+  if (note) texts.push(note);
+  return { statuses: out, text: texts.join("\n\n") };
+}
+
 tool("workset_plan", {
   title: "Plan the worksets (propose, confirm, apply)",
-  description: "propose (read-only): for the active model or each of paths (identical models once), one row per target workset (spelling twins merged) with what it holds from its NAME (category decides, then level / zone, a material mismatch never matches; visibility worksets manual only), counts, export-view visibility; element groups as detail; CSV + xlsx with a decision column. confirm: reads the edited file (rule-level, group-level or hand-made) against the model, writes a plan per model and shows the rules; save_rules + confirm: true saves them into the vault. apply: plan_file: check_only, dry_run, then the identical call, ONE undo step; borrowed elements skipped.",
+  description: "Worksets against the standard (vault worksets-standard.json confirmed, else the project list, else office; every reply names it). propose (read-only; refresh: the previous file keeps decisions, marks new / changed / gone; applied rows not re-proposed): one row per target workset from its NAME, groups as detail, CSV + xlsx with a decision column. confirm: the edited file -> a plan per model + rules; save_rules + confirm: true saves them. status (read-only): % correct, wrong (and where to), empty, missing, applied by ACE / changed after apply, pending; HTML / CSV, dashboard tile. apply: plan_file (only: partial; reset: default), check_only, dry_run, identical call, ONE undo step; borrowed -> pending actions.",
   inputSchema: {
-    action: z.enum(["propose", "confirm", "apply"]),
+    action: z.enum(["propose", "confirm", "apply", "status"]),
     paths: z.array(z.string().max(1000)).max(30).optional().describe("Models to open in turn (default: the active model)"),
     detach: z.enum(["none", "preserve_worksets"]).optional().describe("How paths open (default preserve_worksets)"),
     views: z.array(z.string().max(200)).max(20).optional().describe("Export views to check visibility in (default: 3D views named NAVISWORKS / NWC)"),
@@ -1042,6 +1122,10 @@ tool("workset_plan", {
     overlaps_ok: z.boolean().optional().describe("save_rules: also save rules that overlap existing ones (after the user agreed)"),
     vault: z.string().optional(),
     plan_file: z.string().optional().describe("apply: a plan JSON written by confirm"),
+    refresh: z.string().optional().describe("propose: the previous proposal or edited file"),
+    confirm_standard: z.boolean().optional().describe("Mark the vault's worksets-standard.json confirmed (after the user agreed)"),
+    only: z.object({ rows: z.array(z.union([z.number(), z.string()])).optional(), worksets: z.array(z.string()).optional(), categories: z.array(z.string()).optional(), models: z.array(z.string()).optional(), keys: z.array(z.string()).optional() }).optional().describe("apply: part of the plan"),
+    reset: z.enum(["default"]).optional().describe("apply: everything to the default workset, then the rules (end state: one move per element)"),
     max_ids: z.number().int().min(0).max(500).optional(),
     check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().max(600).optional(),
     report_dir: z.string().optional(), timeout_seconds: z.number().int().min(10).max(3600).optional(),
@@ -1054,7 +1138,11 @@ tool("workset_plan", {
     const ok = list.filter((x) => x.facts?.workshared !== false);
     const skip = notWorkshared(list);
     if (!ok.length) return text(`Not workshared, no worksets to plan: ${skip.join(", ")}.`);
+    for (const x of ok) x.records = (await worksetFiles(a, x.facts)).records();
+    const { std, note: stdNote } = await worksetStandard(a);
     const p = WorksetPlan.propose(ok);
+    p.standard = WorksetPlan.standardText(std);
+    if (a.refresh) { try { WorksetPlan.refresh(p, await WorksetPlan.readTables(a.refresh)); } catch (e) { throw new RevitError(`refresh: ${e.message}`); } }
     const first = p.models[0].model;
     const dir = a.out_dir ?? (await auditFolder(a, first, { sub: "worksets", reports: "worksets" })).dir;
     const stem = ParamExec.fileStem("worksets-plan", p.models.length > 1 ? `${p.models.length}-models` : first);
@@ -1062,7 +1150,14 @@ tool("workset_plan", {
     const xlsx = await WorksetPlan.proposalXlsx(p, writeOut(dir, `${stem}.xlsx`, ""));
     const notes = list.flatMap((x) => (x.facts?.notes ?? []).map((n) => `${x.facts?.model}: ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`));
     const out = text({ models: p.models, counts: p.counts, exportViews: [...new Set(ok.flatMap((x) => x.facts?.exportViews ?? []))], files: [xlsx, csv, detail] });
-    out.content.push({ type: "text", text: `${WorksetPlan.proposalText(p, [xlsx, csv, detail])}${skip.length ? `\nNot workshared (skipped): ${skip.join(", ")}.` : ""}${notes.length ? `\nNotes:\n${notes.map((n) => `- ${n}`).join("\n")}` : ""}` });
+    out.content.push({ type: "text", text: `${WorksetPlan.proposalText(p, [xlsx, csv, detail])}${skip.length ? `\nNot workshared (skipped): ${skip.join(", ")}.` : ""}${notes.length ? `\nNotes:\n${notes.map((n) => `- ${n}`).join("\n")}` : ""}${stdNote ? `\n${stdNote}` : ""}` });
+    return out;
+  }
+  if (action === "status") {
+    const st = await worksetStatus(a, timeout);
+    if (!st.statuses.length) return text("Not workshared: no worksets to check.");
+    const out = text({ models: st.statuses.map(({ groups, ...x }) => x) });
+    out.content.push({ type: "text", text: st.text });
     return out;
   }
   if (action === "confirm") {
@@ -1078,7 +1173,7 @@ tool("workset_plan", {
     let results, rules, others = [], unused = [];
     let rr = null;
     if (useRules) {
-      const ctx = { levels: WorksetPlan.levelTokens(list.flatMap((x) => x.facts?.levels ?? [])), table: Worksets.tokenTable(list[0]?.naming), noise: WorksetPlan.commonTokens(ruleT.rows.map((r) => r.proposed)), manualOnly: list[0]?.naming?.manualOnly ?? [] };
+      const ctx = WorksetPlan.nameCtx(list.flatMap((x) => x.facts?.levels ?? []), list[0]?.naming, ruleT.rows.map((r) => r.proposed));
       rr = WorksetPlan.rulesFromRows(ruleT.rows, ctx);
       results = list.map((x) => ({ ...WorksetPlan.planFromRules(rr.rules, x.facts), flagged: rr.flagged, undecided: rr.undecided, skipped: rr.skipped, confirmed: rr.confirmed }));
       rules = { rules: WorksetPlan.vaultRules(rr.rules, [...new Set(list.flatMap((x) => x.facts?.zones ?? []))]), ambiguous: [] };
@@ -1096,7 +1191,8 @@ tool("workset_plan", {
     if (!results.length) return text(`No rows in ${a.file} are for the open model (${list.map((x) => x.facts?.model).join(", ")}). Models in the file: ${others.join(", ") || "none"}. Open one (or pass paths) and confirm again.`);
     const dir = path.dirname(a.file), stem = path.basename(a.file).replace(/\.(csv|xlsx)$/i, "");
     const files = results.map((c) => writeOut(dir, `${stem}.plan-${ParamExec.safeName(c.model)}.json`,
-      JSON.stringify({ schema: "ace.workset-plan/1", model: c.model, source: a.file, layout: useRules && useGroups ? "both sheets" : table.layout, at: localDate(new Date(), { time: true }), plan: c.plan, flagged: c.flagged, undecided: c.undecided.length, notes: c.notes ?? [] }, null, 1)));
+      JSON.stringify({ schema: "ace.workset-plan/1", model: c.model, source: a.file, layout: useRules && useGroups ? "both sheets" : table.layout, at: localDate(new Date(), { time: true }), plan: c.plan, flagged: c.flagged, undecided: c.undecided.length, notes: c.notes ?? [],
+        ...(rr ? { rules: rr.rules } : {}), skipKeys: [...(c.skipKeys ?? [])] }, null, 1)));
     rules ??= WorksetPlan.deriveRules(results);
     let merge = null, saved = false;
     if (a.save_rules) {
@@ -1121,15 +1217,90 @@ tool("workset_plan", {
   if (!a.plan_file) throw new RevitError("apply needs plan_file: the plan JSON that workset_plan action confirm wrote.");
   let pf;
   try { pf = WorksetPlan.readPlanFile(JSON.parse(fs.readFileSync(a.plan_file, "utf8"))); } catch (e) { throw new RevitError(`${a.plan_file}: ${e.message}`); }
-  const req = { action: "apply_plan", workset_plan: pf.plan, max_ids: a.max_ids ?? 20, expect_version: VERSION };
-  return planExecute({
-    name: "workset plan", command: "workset_admin", req, ident: { action: "apply_plan", plan: pf.plan, model: pf.model }, modelMust: pf.model,
+  if (a.only) {
+    const given = Object.entries(a.only).filter(([, v]) => v !== undefined);
+    const empty = given.filter(([, v]) => Array.isArray(v) && !v.length).map(([k]) => k);
+    if (!given.length || empty.length) throw new RevitError(`only: ${empty.length ? `${empty.join(", ")} ${empty.length > 1 ? "are" : "is"} empty` : "names nothing"}. Give the rows, worksets, categories, models or keys to apply (or leave only out for the whole plan).`);
+  }
+  // The model now (read-only): moves already done are dropped, reset is computed as the end state, only filters the rest.
+  const [cur] = await worksetFactsFor({ ...a, paths: undefined }, timeout);
+  const vf = await worksetFiles(a, cur.facts);
+  const lines = [];
+  let plan = pf.plan, rs = null;
+  if (a.reset) {
+    if (!pf.rules) throw new RevitError("reset: \"default\" needs a rule-level plan (confirm the Worksets sheet): without rules every correctly placed element would go to the default workset.");
+    rs = WorksetPlan.resetPlan(pf, cur.facts, { manualOnly: cur.naming?.manualOnly ?? [] });
+    plan = rs.plan;
+    lines.push(`Reset to ${Worksets.q(rs.defaultName)} (end state, each element moves once): ${rs.toDefault.elements} element(s) in ${rs.toDefault.groups} group(s) no rule takes go to the default (${rs.stay.onDefault} already there); kept: datum ${rs.stay.datum}, manual-only ${rs.stay.manual}, skipped on the Groups sheet ${rs.stay.skipped}${rs.borrowed ? `; ${rs.borrowed} borrowed by others (pending)` : ""}.`);
+  }
+  const sd = WorksetPlan.skipDone(plan, cur.facts);
+  plan = sd.plan;
+  if (sd.already.length) lines.push(`Already at their target (an earlier apply; skipped): ${sd.already.reduce((n, x) => n + x.elements, 0)} element(s) in ${sd.already.length} group(s).`);
+  const part = WorksetPlan.filterPlan(plan, a.only, pf.model);
+  if (a.only) lines.push(part.outOfModel ? `only: ${pf.model} is not among the models named: nothing to do.` : `Partial apply (only ${JSON.stringify(a.only)}): ${part.kept} move(s) of ${part.kept + part.dropped}; its own plan and planHash.`);
+  plan = part.plan;
+  const pendingNow = vf.pending().filter((p) => !p.model || WorksetPlan.modelKey(p.model) === WorksetPlan.modelKey(pf.model));
+  // Under only: just the pending entries in its scope are retried.
+  const retry = WorksetPlan.pendingInScope(pendingNow, a.only, pf.model).filter((p) => p.id != null && p.to).map((p) => ({ id: p.id, to: p.to }));
+  // reset_to: instances no move claims go to the default, except the kept worksets and the groups that stay (keep_keys):
+  // every group whose move only / skipDone dropped stays where it is too (dropped means kept, never swept to the default).
+  const sent = new Set(plan.moves.map((m) => m.key));
+  const keepWorksets = rs ? rs.manualWorksets : undefined;
+  const keepKeys = rs ? [...new Set([...rs.keepKeys, ...rs.plan.moves.filter((m) => !sent.has(m.key)).map((m) => m.key)])] : undefined;
+  const req = { action: "apply_plan", workset_plan: plan, max_ids: a.max_ids ?? 20, expect_version: VERSION,
+    ...(rs ? { reset_to: rs.defaultName, keep_worksets: keepWorksets, keep_keys: keepKeys } : {}), ...(retry.length ? { pending_retry: retry } : {}) };
+  let last = null;
+  const res = await planExecute({
+    name: "workset plan", command: "workset_admin", req, ident: { action: "apply_plan", plan, model: pf.model, reset: a.reset ?? null, only: a.only ?? null, retry: retry.map((r) => r.id) }, modelMust: pf.model,
     // The bridge field "plan" is the workset plan here, so no panel checklist (plan / step) is sent.
     check_only, dry_run, explanation, plan: undefined, step: undefined, state: wplanState, timeout, a, folder: { sub: "worksets", reports: "worksets" },
     planOf: WorksetPlan.planOf, identity: Worksets.planIdentity, blocksOf: (r) => Worksets.blocksOf(r).map(Worksets.blockWithHow), rolledBackOf: Worksets.rolledBackOf,
-    render: (r, mode, model, rolledBack) => WorksetPlan.applyText(r, { model, mode, rolledBack }),
+    render: (r, mode, model, rolledBack) => {
+      last = { r, mode, rolledBack };
+      const t = [WorksetPlan.applyText(r, { model, mode, rolledBack }), ...lines];
+      if (mode !== "apply" && !(Array.isArray(r?.worksetCounts) && r.worksetCounts.length)) t.push(WorksetPlan.endStateText(WorksetPlan.endState(cur.facts, plan)));
+      if (retry.length && mode !== "apply") t.push(`Pending from earlier runs: ${retry.length} element(s) retried first.`);
+      return t.join("\n");
+    },
     nothing: (model) => `Nothing to do in ${model}: the plan is empty (or already applied).`,
   });
+  // A borrowed-only plan (no step to run, borrowed elements skipped): the pending actions are still written.
+  if (last?.mode === "check" && !check_only && !WorksetPlan.planOf(last.r).length && (last.r?.pending?.length || last.r?.skipped?.length)) {
+    const at = localDate(new Date(), { time: true });
+    const byKey = new Map(plan.moves.map((m) => [m.key, m]));
+    const add = last.r.pending?.length ? last.r.pending : (last.r.skipped ?? []).flatMap((x) => (x.ids ?? []).map((id) => ({ id, owner: x.holder, why: x.why ?? "borrowed", from: byKey.get(x.key)?.from, to: byKey.get(x.key)?.to, category: byKey.get(x.key)?.category })));
+    const merged = WorksetPlan.mergePending(pendingNow, add, { model: pf.model, at });
+    try { vf.setPending(merged); res.content.push({ type: "text", text: `${WorksetPlan.pendingText(merged, { planFile: a.plan_file })}\nPending actions: ${vf.files.pending}` }); }
+    catch (e) { res.content.push({ type: "text", text: `Pending actions not written: ${e.message}` }); }
+  }
+  // After a real apply: the record (what ACE moved), the pending actions (borrowed), then the status again.
+  if (last?.mode === "apply" && last.r?.success && !last.rolledBack) {
+    const at = localDate(new Date(), { time: true });
+    const extra = [];
+    try {
+      const rec = WorksetPlan.applyRecord({ model: pf.model, storeKey: vf.storeKey, plan, result: last.r, at, only: a.only });
+      vf.addRecord(rec);
+      const stillIds = new Set((last.r.pending ?? []).map((p) => String(p.id)));
+      // The add-in answers retried [{ id, ok, why }] (older: [ids]); without it, sent and no longer pending counts as done.
+      const done = Array.isArray(last.r.retried) ? last.r.retried.filter((x) => typeof x !== "object" || x?.ok !== false).map((x) => typeof x === "object" ? x.id : x)
+        : retry.map((x) => x.id).filter((id) => !stillIds.has(String(id)));
+      const notDone = Array.isArray(last.r.retried) ? last.r.retried.filter((x) => typeof x === "object" && x?.ok === false && !x.drop) : [];
+      // Permanent failures (not found, read-only, kept): the add-in says drop: true; they leave the pending list.
+      const dropped = Array.isArray(last.r.retried) ? last.r.retried.filter((x) => typeof x === "object" && x?.drop) : [];
+      done.push(...dropped.map((x) => x.id));
+      const merged = WorksetPlan.mergePending(pendingNow, last.r.pending ?? [], { model: pf.model, done, at });
+      vf.setPending(merged);
+      extra.push(`Apply record: ${vf.files.applied} (${rec.rows.length} row(s), plan ${rec.planId ?? "?"}).`);
+      if (retry.length) extra.push(`Pending retried: ${done.length - dropped.length} moved now, ${notDone.length || Math.max(0, retry.length - done.length)} still pending${notDone.length ? ` (${[...new Set(notDone.map((x) => x.why).filter(Boolean))].slice(0, 4).join("; ")})` : ""}.`);
+      if (dropped.length) extra.push(`Dropped from the pending actions (cannot be done: ${[...new Set(dropped.map((x) => x.why).filter(Boolean))].slice(0, 4).join("; ") || "permanent"}): ${dropped.length} element(s), ids ${dropped.slice(0, 12).map((x) => x.id).join(", ")}.`);
+      if (Number(last.r.movedTotal)) extra.push(`Moved ${last.r.movedTotal} element(s); recorded per element${last.r.movedTotal > (last.r.movedElements?.length ?? 0) ? ` (first ${last.r.movedElements?.length ?? 0})` : ""}.`);
+      if (merged.length) extra.push(WorksetPlan.pendingText(merged, { planFile: a.plan_file }), `Pending actions: ${vf.files.pending}`);
+      const st = await worksetStatus({ ...a, paths: undefined }, timeout);
+      extra.push(`Status after the apply:\n${st.text}`);
+    } catch (e) { extra.push(`Apply record / status not written: ${e.message}`); }
+    res.content.push({ type: "text", text: extra.join("\n") });
+  }
+  return res;
 });
 
 /**

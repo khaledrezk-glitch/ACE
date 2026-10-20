@@ -41,7 +41,7 @@ const bridge = http.createServer((req, res) => {
       case "project_rules": {
         const ex = JSON.parse(fs.readFileSync(new URL("../bep/worksets.example.json", import.meta.url), "utf8"));
         // The worksets section carries the generic naming rule (pattern, allowed names, renames); synthetic TST_ names.
-        const naming = { pattern: "^TST_[A-Za-z]+$", allowed: ["TST_Columns", "TST_Walls", "TST_Empty", "TST_Beams", "TST_Old", "TST_Verifyfail", "TST_Drift"], rename: [{ from: "Workset1", to: "TST_Walls" }] };
+        const naming = { pattern: "^TST_[A-Za-z]+$", allowed: ["TST_Columns", "TST_Walls", "TST_Empty", "TST_Beams", "TST_Old", "TST_Verifyfail", "TST_Drift"], rename: [{ from: "Workset1", to: "TST_Walls" }], defaultName: "TST_Walls" };
         return reply({ ok: true, result: { model: "Test", section: args.section, source: "project: C:/Projects/Test/ACE Vault/project-requirements.json", hash: "abc", rules: args.section === "worksets" ? { ...ex, naming } : ex } });
       }
       case "compliance":
@@ -173,10 +173,12 @@ const bridge = http.createServer((req, res) => {
             levels: [{ name: "TST-GF(GROUND FLOOR)", elevation: 0 }, { name: "TST-01", elevation: 3000 }, { name: "TST-RF(ROOF)", elevation: 6000 }], zones: ["TST ZONE A"], worksets: wsF, groups, echo: args } });
           const p = args.workset_plan ?? {};   // 1.13.1: the plan travels as workset_plan (plan is the panel checklist)
           const steps = [...(p.create ?? []).map((n) => ({ id: `create:${n}`, kind: "create", workset: n })), ...(p.rename ?? []).map((r) => ({ id: `rename:${r.from}`, kind: "rename", workset: r.from, from: r.from, to: r.to })),
-            ...(p.moves ?? []).map((m) => ({ id: `move:${m.key}`, kind: "move", workset: m.from, key: m.key, from: m.from, to: m.to, elements: m.elements })), ...(p.delete ?? []).map((n) => ({ id: `delete:${n}`, kind: "delete", workset: n, elements: 0 }))];
+            // max_ids 3: the borrowed groups are wholly borrowed (no step left for them; only skipped).
+            ...(p.moves ?? []).filter((m) => !(args.max_ids === 3 && groups.find((x) => x.key === m.key)?.borrowed)).map((m) => ({ id: `move:${m.key}`, kind: "move", workset: m.from, key: m.key, from: m.from, to: m.to, elements: m.elements })), ...(p.delete ?? []).map((n) => ({ id: `delete:${n}`, kind: "delete", workset: n, elements: 0 }))];
           const changed = (p.moves ?? []).filter((m) => { const g = groups.find((x) => x.key === m.key); return !g || g.elements !== m.elements; }).map((m) => ({ key: m.key, expected: m.elements, found: groups.find((x) => x.key === m.key)?.elements ?? 0 }));
           const blockedP = changed.map((c) => ({ what: `move ${c.key}`, why: `${c.expected} planned, ${c.found} found`, code: "plan-changed" }));
-          const skipped = (p.moves ?? []).filter((m) => groups.find((x) => x.key === m.key)?.borrowed).map((m) => ({ key: m.key, ids: [501, 502], count: 2, holder: "jane", why: "borrowed" }));
+          const retriedOk = (args.check_only ? [] : args.pending_retry ?? []).filter((r) => r.id === 501).map((r) => r.id);   // 501 is free now, 502 still held
+          const skipped = (p.moves ?? []).filter((m) => groups.find((x) => x.key === m.key)?.borrowed).map((m) => { const ids = [501, 502].filter((id) => !retriedOk.includes(id)); return { key: m.key, ids, count: ids.length, holder: "jane", why: "borrowed" }; });
           const planHash = `wp-${steps.map((s) => s.id + (s.to ?? "")).join(",")}`;
           const visibility = (p.moves ?? []).filter((m) => m.to === "TST-ST-STAIRS").map((m) => ({ move: `move:${m.key}`, key: m.key, to: m.to, view: "TST NAVISWORKS", wouldHide: m.elements, wouldShow: 0, sampleIds: [7] }));
           const baseP = { model: "Test", aceVersion: SERVER_VERSION, planHash, plan: steps, skipped, changed, exportViews: ["TST NAVISWORKS"], visibility, echo: args };
@@ -186,7 +188,15 @@ const bridge = http.createServer((req, res) => {
           const moved = (p.moves ?? []).reduce((n, m) => n + m.elements, 0) - skipped.length * 2;
           const np = args.dry_run ? { notPreviewed: steps.filter((x) => x.kind === "move" && x.to === "TST-ST-CAD LINKS").map((x) => x.id) } : {};
           const keptP = args.dry_run ? { kept: [{ name: "TST-ST-OLD", elements: 0, types: 2, why: "holds 2 types (a plan moves instances only)" }], notPreviewedCounts: { moves: 1, elements: 1, linkTypes: 1 } } : {};
-          return reply({ ok: true, result: { ...baseP, ...np, ...keptP, success: true, blocked: [], rolledBack: !!args.dry_run, verify: { ok: true, checked: 9, mismatches: [] },
+          // 1.13.3: borrowed elements -> pending [{ id, owner, from, to }]; pins; reset_to; pending_retry (501 moves now, 502 is still held).
+          const pend = skipped.flatMap((x) => { const m = (p.moves ?? []).find((y) => y.key === x.key); return x.ids.map((id) => ({ id, category: m.category, owner: "jane", holder: "jane", why: "borrowed", from: m.from, to: m.to })); });
+          const retryP = args.pending_retry ?? [];
+          const x13 = { pending: [...pend, ...retryP.filter((r) => r.id === 502 && !pend.some((q) => q.id === 502)).map((r) => ({ id: 502, owner: "jane", why: "borrowed", from: "Workset1", to: r.to }))], pendingTotal: pend.length,
+            pinned: { count: 3, sampleIds: [9], directOk: 2, unpinRepin: 1 }, ...(retryP.length ? { retried: retryP.map((r) => r.id === 502 ? { id: 502, ok: false, why: "still borrowed by jane" } : r.id === 503 ? { id: 503, ok: false, drop: true, why: "not found" } : { id: r.id, ok: true, why: "moved" }) } : {}),
+            ...(!args.dry_run && !args.check_only ? { movedElements: [{ id: 501, from: "Workset1", to: "TST-ST-GF COLUMNS" }], movedTotal: 1 } : {}),
+            ...(args.reset_to ? { reset: { to: args.reset_to, elements: 4, kept: args.keep_worksets ?? [], skippedBorrowed: 2, skippedCentral: 0, readOnly: 0 } } : {}),
+            ...(args.dry_run ? { worksetCounts: [{ workset: "Workset1", id: 13, before: 54, after: 3 }, { workset: "TST-ST-GF COLUMNS", id: 2, before: 10, after: 42 }] } : {}) };
+          return reply({ ok: true, result: { ...baseP, ...np, ...keptP, ...x13, success: true, blocked: [], rolledBack: !!args.dry_run, verify: { ok: true, checked: 9, mismatches: [] },
             done: args.dry_run ? { created: 0, renamed: 0, moved: 0, deleted: 0 } : { created: (p.create ?? []).length, renamed: (p.rename ?? []).length, moved, deleted: (p.delete ?? []).length } } });
         }
         const ws = [
@@ -1440,7 +1450,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(pt, /- \[By category\] TST-ST-STAIRS: keep; Stairs, on levels without their own workset \(catch-all\)\. Receives 1\. \(WOULD HIDE 1 element\(s\) in "TST NAVISWORKS"\)/, "a move that hides elements in an export view is flagged");
   assert.match(pt, /- \[Visibility\] TST-ST-HIDE ALL: keep \(manual only\); Visibility workset: assigned by hand only, never by rules\./);
   assert.match(pt, /- \[General\] TST Shared Views, Levels, Grids: keep \(the datum workset: never renamed or deleted\)/, "the datum workset by the add-in's flag, a name with commas kept whole");
-  assert.match(pt, /- \[General\] TST_Walls: rename from Workset1;/, "Workset1 gets the naming rule's default name");
+  assert.match(pt, /- \[General\] TST_Walls: rename from Workset1;.*the vault's default name \(naming\.defaultName\)/, "1.13.3: Workset1 is renamed only through the vault's naming.defaultName");
   assert.match(pt, /- \[Links\] TST-ST-CAD LINKS: keep; CAD imports .* Receives 1\. \(empty, but elements are expected here \(not deleted\)\)/, "an empty but expected CAD LINKS is never deleted");
   assert.match(pt, /- \[Delete\] TST-ST-OLD: delete;.*\(holds 2 type\(s\): a plan moves instances only, so it is kept unless the types move by hand\)/, "facts types: said on the row");
   assert.match(rule("TST-ST-STAIRS").rule, /"categories":\["Stairs"/);
@@ -1522,7 +1532,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   // Apply: no apply without its dry run; check, dry run, identical apply; borrowed skipped; visibility; another model or a changed count blocks.
   const wadm = () => seen.filter((x) => x.command === "workset_admin");
   const n0 = wadm().length;
-  assert.ok((await call("workset_plan", { action: "apply", plan_file: planFile, explanation: "TST plan" })).isError && wadm().length === n0, "no apply without its dry run, before Revit is asked");
+  assert.ok((await call("workset_plan", { action: "apply", plan_file: planFile, explanation: "TST plan" })).isError && wadm().slice(n0).every((x) => x.args.action === "facts"), "no apply without its dry run: only the read-only facts are asked");
   const ck = (await call("workset_plan", { action: "apply", plan_file: planFile, check_only: true })).content.at(-1).text;
   assert.match(ck, /WORKSET PLAN in Test \(check, read-only, nothing changed\)\.\nPlan: 13 step\(s\) \(create 0, rename 2, move 9, delete 2\)/, ck);
   assert.match(ck, /Skipped \(borrowed by others.*\n- Workset1\|Structural Columns.*: 2 element\(s\), held by jane/);
@@ -1533,8 +1543,16 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(dr.content.at(-1).text, /Kept \(not empty after the moves\): "TST-ST-OLD" 0 \(holds 2 types \(a plan moves instances only\)\)/);
   assert.match(dr.content.at(-1).text, /Would move \(not previewed: not yours yet\): 1 group\(s\), 1 element\(s\), 1 link type\(s\)\. The apply borrows those worksets first\./);
   const ap = await call("workset_plan", { action: "apply", plan_file: planFile, explanation: "TST plan" });
-  assert.ok(!ap.isError && /applied as ONE undo step/.test(ap.content.at(-1).text) && /Changes: renamed 2, moved 52 element\(s\), deleted 2 done\./.test(ap.content.at(-1).text), ap.content.at(-1).text);
-  assert.ok(wadm().at(-1).args.expect_plan && wadm().at(-1).args.expect_model === "Test", "the apply names its plan and model");
+  const apT = ap.content.slice(1).map((c) => c.text).join("\n");
+  assert.ok(!ap.isError && /applied as ONE undo step/.test(apT) && /Changes: renamed 2, moved 52 element\(s\), deleted 2 done\./.test(apT), apT);
+  // 1.13.3: every apply writes a record (what ACE moved, by row) and shows the status again.
+  const recF = apT.match(/Apply record: (\S+worksets-applied\.json)/)?.[1];
+  const recJ = recF && JSON.parse(fs.readFileSync(recF, "utf8"));
+  assert.ok(recJ?.records?.length === 1 && recJ.records[0].planId && recJ.records[0].rows.length === 9 && recJ.records[0].rows.every((r) => r.from && r.to && r.identity && r.origin && r.identity !== "|||||"), "the apply record: date, plan id, rows with from / to");
+  const brow = recJ.records[0].rows.find((r) => r.key.startsWith("Workset1|Structural Columns|TST Col : 400x400"));
+  assert.ok(brow.elements === 28 && brow.skippedIds.join() === "501,502", "a partly borrowed row records the moved ones and lists the skipped ids");
+  assert.match(apT, /Status after the apply:\nWORKSET STATUS for Test \(read-only; standard: /, "status runs again after the apply");
+  assert.ok(wadm().filter((x) => x.args.action === "apply_plan").at(-1).args.expect_plan && wadm().filter((x) => x.args.action === "apply_plan").at(-1).args.expect_model === "Test", "the apply names its plan and model");
   const other = path.join(wpDir, "other.json"); fs.writeFileSync(other, JSON.stringify({ ...pj0, model: "TST Other" }));
   assert.match((await call("workset_plan", { action: "apply", plan_file: other, check_only: true })).content[0].text, /it is for TST Other, the active model is Test/);
   const drift = path.join(wpDir, "drift.json"); const pj = JSON.parse(JSON.stringify(pj0)); pj.plan.moves[0].elements += 1; fs.writeFileSync(drift, JSON.stringify(pj));
@@ -1565,6 +1583,181 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(seen.filter((x) => x.command === "open_model").slice(-2).every((x) => x.args.detach === "preserve_worksets") && seen.filter((x) => x.command === "open_model").at(-2).args.close_previous === false, "the user's model is never closed");
   assert.deepEqual(seen.filter((x) => x.command === "workset_admin").at(-1).args.views, ["TST NWC"]);
   assert.match(Methods.descriptionLine("workset_plan"), /methods\/workset-cleanup/);
+  // --- 1.13.3: the name parser (whole level codes, head category words, vault tokens), deletes, Workset1, sketches ---
+  {
+    const lvls = ["A-01(FIRST FLOOR)", "B-01(TST PODIUM)", "C-GF(GROUND FLOOR)", "C-FDN(FOUNDATION)", "C-RF(ROOF)", "C-B1(BASEMENT)"];
+    const cx = WP.nameCtx(lvls, { categoryTokens: { FRAMING: ["Structural Framing", "Floors"], "GROUND BEAMS": ["Structural Framing"] }, levelAliases: { L1: ["A-01(FIRST FLOOR)"] } });
+    const pn = (n, c = cx) => WP.parseName(n, c);
+    assert.deepEqual(pn("TST-ST-BASE COLUMNS").levels, [], "BASE is no level (no level code BASE)");
+    assert.deepEqual(pn("TST-ST-GRID-B").levels, [], "a single letter is never a level");
+    assert.ok(!pn("TST-ST-GROUND BEAMS").levels.length && pn("TST-ST-GROUND BEAMS").categories.join() === "Structural Framing", "GROUND BEAMS: the vault's category phrase, not the level GROUND FLOOR");
+    assert.ok(!WP.parseName("TST-ST-GROUND BEAMS", WP.nameCtx(lvls, null)).levels.length, "GROUND alone never matches the phrase GROUND FLOOR");
+    assert.deepEqual(pn("TST-ST-01 COLUMNS").levels, ["A-01(FIRST FLOOR)", "B-01(TST PODIUM)"], "01 is a level when a level code 01 exists (both buildings)");
+    assert.deepEqual(pn("TST-ST-GROUND FLOOR WALLS").levels, ["C-GF(GROUND FLOOR)"], "the bracketed words as a phrase");
+    assert.deepEqual(pn("TST-ST-L1 WALLS").levels, ["A-01(FIRST FLOOR)"], "a vault level alias");
+    const pool = pn("TST-POOL & Pump Room");
+    assert.ok(!pool.categories.includes("Rooms") && pool.words.includes("ROOM"), "a category word inside a zone phrase is a zone word");
+    assert.ok(pn("TST-ST-WALLS & COLUMNS").categories.includes("Walls") && pn("TST-ST-WALLS & COLUMNS").categories.includes("Structural Columns"), "a list of categories stays categories");
+    assert.deepEqual(pn("TST-ST-FRAMING").categories, ["Structural Framing", "Floors"], "vault categoryTokens: one token, several categories");
+    assert.deepEqual(pn("TST-ST-FOUNDATIONS").categories, ["Structural Foundations"], "FOUNDATIONS is the category even with a FOUNDATION level");
+    assert.deepEqual(pn("TST-ST-FOUNDATION").categories, ["Structural Foundations"], "a level word that is also the only category word: the category");
+    assert.ok(pn("TST-ST-ROOF STEEL").levels.includes("C-RF(ROOF)") && pn("TST-ST-ROOF STEEL").material === "steel", "ROOF with a material: the level");
+    assert.deepEqual(WP.levelTokens([{ name: "TST level", code: "07", phrase: "TST TOP" }])[0].codes, new Set(["7"]), "the add-in's level code is used when sent");
+    const W13 = await import("../lib/worksets.js");
+    const nm = W13.namingOf({ naming: { categoryTokens: { FRAMING: ["Structural Framing", "Floors"] }, levelAliases: { L1: ["A-01(FIRST FLOOR)"] }, manualOnly: ["TST-MASK"], defaultName: "TST-GENERAL" } });
+    assert.ok(nm.categoryTokens.FRAMING.length === 2 && nm.levelAliases.L1 && nm.manualOnly[0] === "TST-MASK" && nm.defaultName === "TST-GENERAL", "the vault naming keeps categoryTokens, levelAliases, manualOnly, defaultName");
+    assert.throws(() => W13.namingOf({ naming: { levelAliases: ["x"] } }), /levelAliases must be/);
+    // FOUNDATIONS through propose: the foundations go to it (not "category has no workset of its own").
+    const G = (workset, category, type, level, elements, extra = {}) => ({ workset, category, type, level, material: "concrete", zone: "", option: "", elements, borrowed: 0, ...extra });
+    const fx13 = { model: "TST_P13", levels: lvls.map((name) => ({ name })), worksets: [{ name: "Workset1", elements: 25, isDefault: true }, { name: "TST-ST-FOUNDATIONS", elements: 0 }, { name: "TST-ST-WALLS", elements: 0 },
+      { name: "TST-ST-GF STAIRS", elements: 0 }, { name: "TST-ST-RF COLUMNS", elements: 0 }, { name: "TST-POOL & Pump Room", elements: 0 }, { name: "TST-ST-CAD LINKS", elements: 0 }],
+      groups: [G("Workset1", "Structural Foundations", "TST Pad : A", "C-FDN(FOUNDATION)", 4), G("Workset1", "CAD Imports", "TST_site.dwg", "", 1), G("Workset1", "<Sketch>", "", "", 9), G("Workset1", "<Stair/Ramp Sketch: Boundary>", "", "", 3), G("Workset1", "Legend Components", "", "", 8)] };
+    const p13 = WP.propose([{ facts: fx13, naming: { rename: [{ from: "Workset1", to: "TST-X" }] } }]);
+    const rr = (n) => p13.rules.find((r) => r["Proposed workset"] === n);
+    assert.match(rr("TST-ST-FOUNDATIONS")["What it holds (from its name)"], /^Structural Foundations/, "FOUNDATIONS -> Structural Foundations");
+    assert.equal(p13.detail.find((d) => d.Category === "Structural Foundations")["Proposed workset"], "TST-ST-FOUNDATIONS");
+    assert.ok(rr("TST-ST-WALLS").Action === "keep" && /catch-all for its category/.test(rr("TST-ST-WALLS").Note), "an empty catch-all (category, no level) is kept");
+    assert.equal(rr("TST-ST-RF COLUMNS").Action, "delete", "an empty level workset nothing is expected for may go");
+    assert.ok(rr("TST-ST-CAD LINKS").Action === "keep", "empty but expected (imports on Workset1): never deleted");
+    assert.ok(rr("Workset1").Action === "keep Workset1 (default)" && rr("Workset1")["Proposed workset"] === "Workset1", "no rename of Workset1 without naming.defaultName (a rename list is not enough)");
+    assert.ok(!p13.detail.some((d) => /^</.test(d.Category) || d.Category === "Legend Components"), "sketches and legend components never get a row");
+    const p13b = WP.propose([{ facts: fx13, naming: { defaultName: "TST-GENERAL" } }]);
+    assert.ok(p13b.rules.find((r) => r["Proposed workset"] === "TST-GENERAL")?.Action === "rename from Workset1", "naming.defaultName opts in to the rename");
+    // Decision "skip" on the default row keeps Workset1.
+    assert.equal(WP.rulesFromRows([{ line: 2, proposed: "Workset1", action: "keep Workset1 (default)", decision: "skip", rule: JSON.stringify({ workset: "Workset1", isDefault: true, categories: [], levels: [], words: [], codes: [] }) }]).rules.length, 0);
+  }
+  // --- 1.13.3: status (four states), apply records, reset end state, partial apply, already done, pending, refresh, standard ---
+  {
+    const G = (workset, category, type, level, elements, extra = {}) => ({ workset, category, type, level, material: "concrete", zone: "", option: "", elements, borrowed: 0, ...extra });
+    const fs13 = { model: "TST_S13", levels: [{ name: "TST-GF(GROUND FLOOR)" }], worksets: [{ name: "Workset1", elements: 5, isDefault: true }, { name: "TST-ST-GF COLUMNS", elements: 10 }, { name: "TST-ST-WALLS", elements: 6 }, { name: "TST-ST-BEAMS", elements: 0 }],
+      groups: [G("TST-ST-GF COLUMNS", "Structural Columns", "TST Col : A", "TST-GF(GROUND FLOOR)", 10), G("TST-ST-WALLS", "Walls", "TST Wall : A", "TST-GF(GROUND FLOOR)", 4), G("TST-ST-WALLS", "Walls", "TST Wall : B", "TST-GF(GROUND FLOOR)", 2),
+        G("Workset1", "Structural Framing", "TST Beam : A", "TST-GF(GROUND FLOOR)", 5)] };
+    const recs = [{ at: "2026-10-20_1000", planId: "wp-TST1", rows: [{ identity: "Structural Columns|TST Col : A|TST-GF(GROUND FLOOR)|concrete||", origin: "Workset1", from: "Workset1", to: "TST-ST-GF COLUMNS" },
+      { identity: "Walls|TST Wall : B|TST-GF(GROUND FLOOR)|concrete||", origin: "Workset1", from: "Workset1", to: "TST-ST-GF COLUMNS" }] }];
+    const s13 = WP.statusOf(fs13, { ctx: WP.nameCtx(fs13.levels, null, fs13.worksets.map((w) => w.name)), records: recs, pending: [{ id: 77, owner: "jane", to: "TST-ST-BEAMS", model: "TST_S13" }] });
+    const stOf = (type) => s13.groups.find((g) => g.type === type).state;
+    assert.equal(stOf("TST Col : A"), "applied", "applied by ACE: it sits where ACE put it");
+    assert.equal(stOf("TST Wall : B"), "changed after apply", "ACE moved it, it sits elsewhere now");
+    assert.equal(stOf("TST Wall : A"), "correct already", "correct, not by ACE");
+    assert.equal(stOf("TST Beam : A"), "still to do");
+    assert.ok(s13.pct === 100 * 16 / 21 | 0 || s13.pct === Math.round(100 * 16 / 21), "the headline: % correctly assigned");
+    const s13t = WP.statusText(s13);
+    assert.match(s13t, /^WORKSET STATUS for TST_S13 \(read-only; standard: the workset names \(no standard rules\)\): 76% correctly assigned \(16 of 21 element\(s\)\); wrong 5;/);
+    assert.match(s13t, /Groups: applied by ACE 1 \(last 2026-10-20_1000, plan wp-TST1\); changed after apply 1; correct already 1; still to do 1\./);
+    assert.match(s13t, /"Workset1": 5 wrong: 5 Structural Framing @ TST-GF\(GROUND FLOOR\) -> "TST-ST-BEAMS"/, "where each wrong group should go");
+    assert.match(s13t, /Empty: "TST-ST-BEAMS" \(empty, expected\)\./);
+    assert.match(s13t, /Pending actions \(borrowed by others.*\n- 1 element\(s\) held by jane -> "TST-ST-BEAMS": ids 77/);
+    // propose does not re-propose applied rows; a changed-after-apply row is flagged for review.
+    const pa = WP.propose([{ facts: { ...fs13, worksets: [...fs13.worksets, { name: "Workset1x", elements: 0 }] }, records: recs }]);
+    assert.ok(pa.counts.applied.groups === 1 && pa.counts.applied.changed === 1 && pa.detail.some((d) => /^changed after apply: ACE moved it to "TST-ST-GF COLUMNS"/.test(d.Reason) && d["Proposed action"] === "review"));
+    // A standard: rules first (clause named), missing worksets, not in the standard.
+    const s13s = WP.statusOf(fs13, { std: { label: "TST standard", rules: [{ workset: "TST-ST-BEAMS", category: ["Structural Framing"], clause: "TST BEP 4.2" }, { workset: "TST-ST-SLABS", category: ["Floors"], clause: "TST BEP 4.3" }] }, ctx: WP.nameCtx(fs13.levels, null) });
+    assert.ok(s13s.missing.includes("TST-ST-SLABS") && s13s.rows.find((r) => r.workset === "TST-ST-WALLS").inStandard === false && /\(TST BEP 4\.2\)/.test(s13s.rows.find((r) => r.workset === "Workset1").to[0].why), "standard: missing, not in it, the clause");
+    // skipDone: a move done by an earlier apply is dropped (and said); partly done keeps the rest.
+    const sdn = WP.skipDone({ create: [], rename: [], delete: [], moves: [{ key: "Workset1|Structural Columns|TST Col : A|TST-GF(GROUND FLOOR)|concrete||", category: "Structural Columns", type: "TST Col : A", level: "TST-GF(GROUND FLOOR)", material: "concrete", zone: "", option: "", from: "Workset1", to: "TST-ST-GF COLUMNS", elements: 10 }] }, fs13);
+    assert.ok(!sdn.plan.moves.length && sdn.already[0].elements === 10, "already at its target: skipped");
+    // filterPlan: only categories / worksets / rows / models; renames a kept move needs stay.
+    const pl = { create: ["TST-NEW"], rename: [{ from: "TST-OLD", to: "TST-ST-WALLS2" }], delete: ["TST-GONE"], moves: [{ key: "k1", category: "Walls", from: "Workset1", to: "TST-ST-WALLS2", elements: 2, row: 3 }, { key: "k2", category: "Floors", from: "Workset1", to: "TST-NEW", elements: 1, row: 4 }] };
+    const fp = WP.filterPlan(pl, { categories: ["Walls"] }, "TST_S13");
+    assert.ok(fp.plan.moves.length === 1 && fp.plan.rename.length === 1 && !fp.plan.create.length && !fp.plan.delete.length, "categories: its moves and the renames they need");
+    assert.equal(WP.filterPlan(pl, { rows: [4] }, "TST_S13").plan.create[0], "TST-NEW", "rows: the create its move needs");
+    assert.ok(WP.filterPlan(pl, { models: ["TST other"] }, "TST_S13").outOfModel);
+    // Pending: merged by id, done ids dropped.
+    assert.deepEqual(WP.mergePending([{ id: 1, owner: "a" }, { id: 2 }], [{ id: 2, owner: "b" }, { id: 3 }], { model: "M", done: [1] }).map((p) => [p.id, p.owner ?? null]), [[2, "b"], [3, null]]);
+
+    // The tool: reset end state, only, pins, pending retry, status files and the dashboard tile.
+    const wadm13 = () => seen.filter((x) => x.command === "workset_admin" && x.args.action === "apply_plan");
+    const rsc = (await call("workset_plan", { action: "apply", plan_file: planFile, reset: "default", check_only: true })).content.at(-1).text;
+    const rq = wadm13().at(-1).args;
+    assert.ok(rq.keep_worksets.includes("TST-ST-HIDE ALL") && rq.keep_keys.some((k) => k.startsWith("Workset1|Generic Models")) && rq.keep_keys.every((k) => !rq.workset_plan.moves.some((m) => m.key === k)), "groups that stay are named (keep_keys), so the add-in's reset never moves them");
+    assert.ok(rq.reset_to === "TST_Walls" && Array.isArray(rq.keep_worksets) && new Set(rq.workset_plan.moves.map((m) => m.key)).size === rq.workset_plan.moves.length, "reset: the default by its final name, kept worksets, each group moves once");
+    assert.ok(!rq.workset_plan.moves.some((m) => m.key.startsWith("TST-ST-HIDE ALL|")) && rq.workset_plan.moves.every((m) => m.from !== m.to), "manual-only groups stay; no move to where a group already is");
+    assert.ok(rq.workset_plan.moves.some((m) => m.key.startsWith("TST-ST-ROOF STEEL|Structural Framing|TST UB") && m.to === "TST-ST-RF BEAMS"), "ROOF STEEL was skipped: its steel beams go where the confirmed rules put them (straight, one move)");
+    assert.ok(!rq.workset_plan.moves.some((m) => m.key.startsWith("Workset1|Generic Models")), "what no rule takes and already sits on the default stays");
+    assert.match(rsc, /Reset to "TST_Walls" \(end state, each element moves once\): 0 element\(s\) in 0 group\(s\) no rule takes go to the default \(3 already there\); kept: datum 0, manual-only 5/);
+    const rsu = WP.resetPlan({ plan: { create: [], rename: [], moves: [], delete: [] }, rules: [{ workset: "TST-ST-GF COLUMNS", from: "TST-ST-GF COLUMNS", categories: ["Structural Columns"], levels: [], words: [], codes: [] }] },
+      { worksets: [{ name: "Workset1", isDefault: true, elements: 0 }, { name: "TST-ST-GF COLUMNS", elements: 3 }, { name: "TST-ST-ODD", elements: 6 }],
+        groups: [{ workset: "TST-ST-ODD", category: "Generic Models", type: "TST X", level: "", elements: 4 }, { workset: "TST-ST-ODD", category: "Structural Columns", type: "TST C", level: "", elements: 2 }] });
+    assert.deepEqual(rsu.plan.moves.map((m) => [m.from, m.to, m.elements]), [["TST-ST-ODD", "Workset1", 4], ["TST-ST-ODD", "TST-ST-GF COLUMNS", 2]], "reset: straight to the final workset, the rest to the default");
+    assert.deepEqual(rsu.endState.filter((e) => e.workset !== "TST-ST-GF COLUMNS").map((e) => [e.workset, e.before, e.after]), [["Workset1", 0, 4], ["TST-ST-ODD", 6, 0]], "the end state per workset");
+    assert.match(rsc, /End state per workset \(before -> after\):\n/, "the end state is shown before the apply");
+    const gOnly = path.join(wpDir, "groups-only.json"); const { rules: _r, ...pjNoRules } = JSON.parse(fs.readFileSync(planFile, "utf8")); fs.writeFileSync(gOnly, JSON.stringify(pjNoRules));
+    const gor = await call("workset_plan", { action: "apply", plan_file: gOnly, reset: "default", check_only: true });
+    assert.ok(gor.isError && /reset: "default" needs a rule-level plan/.test(gor.content[0].text), "reset needs the rules: never everything to the default");
+    const oc = (await call("workset_plan", { action: "apply", plan_file: planFile, only: { categories: ["Stairs"] }, check_only: true })).content.at(-1).text;
+    const oq = wadm13().at(-1).args;
+    assert.ok(oq.workset_plan.moves.length && oq.workset_plan.moves.every((m) => m.category === "Stairs") && /Partial apply \(only \{"categories":\["Stairs"\]\}\): 2 move\(s\) of /.test(oc), oc);
+    assert.ok(!("pending_retry" in oq), "only Stairs: the pending columns are out of its scope");
+    await call("workset_plan", { action: "apply", plan_file: planFile, only: { categories: ["Stairs", "Structural Columns"] }, check_only: true });
+    assert.ok(wadm13().at(-1).args.pending_retry?.some((p) => p.id === 501), "pending ids in scope are retried first");
+    const dro = await call("workset_plan", { action: "apply", plan_file: planFile, only: { categories: ["Stairs", "Structural Columns"] }, dry_run: true, explanation: "TST stairs only" });
+    assert.match(dro.content.at(-1).text, /Pinned elements: 3 \(moved directly 2; unpinned, moved, re-pinned: 1/, "pins: the add-in's counts");
+    assert.match(dro.content.at(-1).text, /Per workset \(before -> after\):\n- "Workset1": 54 -> 3/, "the add-in's per-workset counts in the dry run");
+    const apo = await call("workset_plan", { action: "apply", plan_file: planFile, only: { categories: ["Stairs", "Structural Columns"] }, explanation: "TST stairs only" });
+    const apoT = apo.content.slice(1).map((c) => c.text).join("\n");
+    assert.ok(!apo.isError && /applied as ONE undo step/.test(apoT), apoT);
+    assert.match(apoT, /Pending retried: 1 moved now, 1 still pending \(still borrowed by jane\)\./, "the add-in's retried [{ id, ok, why }]");
+    const pendF = apoT.match(/Pending actions: (\S+pending-actions\.json)/)?.[1];
+    const pendJ = pendF && JSON.parse(fs.readFileSync(pendF, "utf8"));
+    assert.ok(pendJ && !pendJ.actions.some((p) => p.id === 501) && pendJ.actions.some((p) => p.id === 502 && p.owner === "jane"), "a retried id that moved is dropped; one still held stays");
+    assert.match(apoT, /Follow-up: workset_plan \{ action: "apply", plan_file: /, "a ready-to-run follow-up");
+    // drop: true (permanent failure) leaves the pending list and is said.
+    fs.writeFileSync(pendF, JSON.stringify({ ...pendJ, actions: [...pendJ.actions, { id: 503, owner: "jane", category: "Stairs", from: "Workset1", to: "TST-ST-GF STAIRS", model: "Test" }] }));
+    await call("workset_plan", { action: "apply", plan_file: planFile, only: { categories: ["Stairs"] }, dry_run: true, explanation: "TST retry" });
+    const apd = (await call("workset_plan", { action: "apply", plan_file: planFile, only: { categories: ["Stairs"] }, explanation: "TST retry" })).content.slice(1).map((c) => c.text).join("\n");
+    assert.ok(/Dropped from the pending actions \(cannot be done: not found\): 1 element\(s\), ids 503\./.test(apd) && !JSON.parse(fs.readFileSync(pendF, "utf8")).actions.some((p) => p.id === 503), apd);
+    // A borrowed-only plan (no step to run): the pending actions are still written.
+    const bOnly = path.join(wpDir, "borrowed-only.json"); const pjB = JSON.parse(fs.readFileSync(planFile, "utf8"));
+    fs.writeFileSync(bOnly, JSON.stringify({ ...pjB, plan: { create: [], rename: [], delete: [], moves: pjB.plan.moves.filter((m) => m.key.startsWith("Workset1|Structural Columns|TST Col : 400x400")) } }));
+    fs.writeFileSync(pendF, JSON.stringify({ ...pendJ, actions: [] }));
+    const bo = (await call("workset_plan", { action: "apply", plan_file: bOnly, max_ids: 3, dry_run: true, explanation: "TST borrowed" })).content.map((c) => c.text).join("\n");
+    assert.ok(/Nothing to do in Test/.test(bo) && JSON.parse(fs.readFileSync(pendF, "utf8")).actions.length === 2 && /Pending actions \(borrowed/.test(bo), bo);
+    const recAll = JSON.parse(fs.readFileSync(apoT.match(/Apply record: (\S+)/)[1], "utf8")).records;
+    assert.ok(recAll.length >= 2 && recAll.some((r) => r.only?.categories?.[0] === "Stairs" && r.retry?.includes(501)) && !recAll.some((r) => r.rows.some((x) => x.identity === "|||||")), "the partial apply has its own record; the retry in its own section");
+    const st = await call("workset_plan", { action: "status", out_dir: path.join(tmp, "wstat") });
+    const stT = st.content.at(-1).text;
+    assert.ok(!st.isError && /WORKSET STATUS for Test \(read-only; standard: the project's confirmed list/.test(stT) && /Pending actions \(borrowed/.test(stT), stT);
+    assert.ok(fs.readdirSync(path.join(tmp, "wstat")).some((f) => f.endsWith(".html")) && fs.readdirSync(path.join(tmp, "wstat")).some((f) => f.endsWith(".csv")), "status: HTML and CSV");
+    const md13 = await call("model_dashboard", {});
+    assert.match(md13.content.at(-1).text, /^Worksets: \d+% correct \(/, "the dashboard tile");
+    // Review fixes: reset + only keeps every group outside the filter where it is; only with empty arrays is refused.
+    await call("workset_plan", { action: "apply", plan_file: planFile, reset: "default", only: { categories: ["Structural Columns"] }, check_only: true });
+    const ro = wadm13().at(-1).args;
+    const gk = ro.workset_plan.moves;
+    assert.ok(gk.every((m) => m.category === "Structural Columns") && ro.keep_keys.some((k) => k.startsWith("TST-ST-ROOF STEEL|Structural Framing|TST UB")) && ro.keep_keys.some((k) => k.startsWith("Workset1|Stairs")),
+      "reset + only: groups outside the filter (framing, stairs) are kept, never swept to the default");
+    const emp = await call("workset_plan", { action: "apply", plan_file: planFile, only: { categories: [] }, check_only: true });
+    assert.ok(emp.isError && /only: categories is empty/.test(emp.content[0].text), "only with an empty list is refused, not read as no filter");
+    await call("workset_plan", { action: "apply", plan_file: planFile, only: { rows: [9999] }, check_only: true });
+    assert.ok(!("pending_retry" in wadm13().at(-1).args), "only by rows: pending entries are out of its scope");
+    // appliedState: identity AND workset; new elements of that type elsewhere are classified as usual.
+    const idx = WP.appliedIndex([{ at: "T1", planId: "p1", rows: [{ identity: "Walls|TST W|L1|||", origin: "Workset1", from: "Workset1", to: "TST-A" }] }]);
+    const gA = { workset: "TST-A", category: "Walls", type: "TST W", level: "L1", material: "", zone: "", option: "", elements: 3 }, gB = { ...gA, workset: "TST-B", elements: 2 };
+    assert.equal(WP.appliedState(gA, idx, [gA, gB]).kind, "applied");
+    assert.equal(WP.appliedState(gB, idx, [gA, gB]), null, "new elements of that type on another workset: not 'changed after apply'");
+    assert.equal(WP.appliedState(gB, idx, [gB]).kind, "changed", "ACE's elements left its target: changed after apply");
+    const sDiff = WP.statusOf({ model: "M", worksets: [{ name: "TST-A", elements: 3 }], groups: [gA] }, { std: { label: "TST", rules: [{ workset: "TST-C", category: ["Walls"], clause: "TST 1" }] }, records: [{ at: "T1", planId: "p1", rows: [{ identity: "Walls|TST W|L1|||", origin: "Workset1", from: "Workset1", to: "TST-A" }] }] });
+    assert.match(WP.statusText(sDiff), /Applied by ACE, now differs from the standard:\n- 3 Walls @ L1 on "TST-A" \(ACE T1\); the standard says "TST-C"/);
+    assert.deepEqual([...WP.levelTokens(["ST-L1-01"])[0].phrases[0]], ["L1", "1"], "a single 1-3 letter prefix is dropped, as the add-in does");
+    // refresh: earlier decisions kept, rows marked new / changed / same / gone.
+    const rf = await call("workset_plan", { action: "propose", out_dir: path.join(tmp, "wref"), refresh: edited });
+    const rfT = rf.content.at(-1).text;
+    assert.match(rfT, /Refreshed against the previous file: \d+ new, \d+ changed, \d+ same, \d+ gone; \d+ earlier decision\(s\) kept/, rfT);
+    const rfRows = parseCsvSmoke(fs.readFileSync(JSON.parse(rf.content[0].text).files[1], "utf8"));
+    const rh = rfRows[0];
+    assert.ok(rh.includes("Since last proposal") && rfRows.some((r) => r[rh.indexOf(WP.DECISION)] === "change to TST-ST-RF BEAMS"), "the earlier decision is carried over");
+    assert.match(rfT, /Standard: the project's confirmed list/);
+    // The vault standard: unconfirmed clauses are listed, never used; confirm_standard after the user agreed.
+    const sv13 = path.join(tmp, "wstd-vault");
+    fs.mkdirSync(path.join(sv13, "ACE Vault", "rules"), { recursive: true });
+    fs.writeFileSync(path.join(sv13, "ACE Vault", "rules", "worksets-standard.json"), JSON.stringify({ schema: "ace.worksets-standard/1", confirmed: false, rules: [{ workset: "TST-ST-GF COLUMNS", category: ["Structural Columns"], clause: "TST BEP 5.1" }] }));
+    const su = (await call("workset_plan", { action: "status", vault: sv13, out_dir: path.join(tmp, "wstat2") })).content.at(-1).text;
+    assert.ok(/Candidate clauses in .*worksets-standard\.json \(NOT used until the user confirms them/.test(su) && /\[TST BEP 5\.1\]/.test(su) && !/standard: the vault documents/.test(su), su);
+    fs.writeFileSync(path.join(sv13, "ACE Vault", "rules", "worksets-standard.json"), JSON.stringify({ schema: "ace.worksets-standard/1", confirmed: true, rules: [{ workset: "TST-ST-GF COLUMNS", category: ["Structural Columns"], clause: "TST BEP 5.1" }] }));
+    const sc = (await call("workset_plan", { action: "status", vault: sv13, out_dir: path.join(tmp, "wstat3") })).content.at(-1).text;
+    assert.match(sc, /standard: the vault documents \(worksets-standard\.json, confirmed\) \(.*\), 1 rule\(s\)\)/, "a confirmed vault standard comes first and is named");
+    assert.match(sc, /Not in the standard: .*"TST-ST-RF FRAMING"/);
+  }
 }
 // --- register_update (no Revit): check first, write with confirm after the identical check, never the register ---
 {

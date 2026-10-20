@@ -8,6 +8,8 @@ import { parseCsv } from "./paramlist.js";
 import { toCsv } from "./report.js";
 import { blockLine } from "./paramexec.js";
 import * as W from "./worksets.js";
+import { esc } from "./vault.js";
+import { brandedPage, chips } from "./interference.js";
 
 export const DECISION = "Your decision (OK / change to ... / skip)";
 /** The rule-level sheet: one row per target workset (spelling twins merged). Rule is the parsed name (JSON, hidden). */
@@ -31,7 +33,6 @@ export const twinKey = (n) => words(n).map((w) => w.length > 3 && w.endsWith("S"
 export const MATERIAL_TOKENS = { STEEL: "steel", STL: "steel", MS: "steel", METAL: "steel", CONCRETE: "concrete", CONC: "concrete", RC: "concrete", RCC: "concrete", PCC: "concrete", PRECAST: "concrete" };
 /** The add-in sends concrete | steel | other; "other" (timber, masonry, links, imports) is no evidence either way. */
 const known = (m) => m && m !== "other";
-const LEVEL_ALIASES = { GF: ["GROUND"], FF: ["FIRST"], SF: ["SECOND"], TF: ["THIRD"], RF: ["ROOF"], FN: ["FOUNDATION", "FOUNDATIONS", "FDN"], BASE: ["BASEMENT"], B: ["BASEMENT"] };
 const LEVEL_NOISE = new Set(["FLOOR", "LEVEL", "LVL", "L", "STOREY", "STORY"]);
 const STOP = new Set(["AND", "THE", "OF", "WORKSET", "ALL", "NEW", "OLD", "MODEL", "ELEMENTS", "IN"]);
 const MANUAL = new Set(["HIDE", "HIDDEN", "TEMP", "TEMPORARY"]);
@@ -39,15 +40,52 @@ const DATUM = /^(levels|grids|reference planes|scope boxes|matchline)$/i;
 const LINK_WORDS = new Set(["LINK", "LINKS", "RVT", "CAD", "DWG", "IMPORT", "IMPORTS"]);
 /** Workset-plan words beyond the audit's table (stairs and their parts). */
 const EXTRA_TOKENS = { STAIR: ["Stairs", "Runs", "Landings", "Stair Runs", "Stair Landings"], STAIRS: ["Stairs", "Runs", "Landings", "Stair Runs", "Stair Landings"] };
+/** Groups that never get a row: sketches and sub-elements ("<Sketch>", "<Stair/Ramp Sketch: ...>") and legend components. */
+export const modelGroup = (g) => !!g && Number(g.elements) > 0 && !/^</.test(String(g.category ?? "").trim()) && !/^legend components$/i.test(String(g.category ?? "").trim());
 
-/** Each level's words (minus generic ones), numbers normalised, plus abbreviations it implies (GROUND -> GF). */
-export function levelTokens(levels) {
+/**
+ * Each level's codes and phrases, matched as WHOLE words only: the code before "(" after an "X-" prefix ("A-01(FIRST
+ * FLOOR)" -> 01, "C-GF(GROUND FLOOR)" -> GF; numbers compare as numbers), the bracketed words as one phrase ("GROUND
+ * FLOOR"), a level name without either as its phrase ("LEVEL 1"); never a single letter. Vault aliases
+ * (naming.levelAliases { TOKEN: [level names or regex] }) add codes or phrases. -> [{ name, codes: Set, phrases: [[words]] }]
+ */
+export function levelTokens(levels, aliases = {}) {
   const seen = new Set();
-  return (levels ?? []).map((l) => typeof l === "string" ? l : l?.name).filter((n) => n && !seen.has(n) && seen.add(n)).map((name) => {
-    const set = new Set(words(name).filter((t) => t.length > 1 && !LEVEL_NOISE.has(t)).map(num));
-    for (const [abbr, al] of Object.entries(LEVEL_ALIASES)) if (al.some((x) => set.has(x)) || set.has(abbr)) { set.add(abbr); al.forEach((x) => set.add(x)); }
-    return { name, tokens: set };
+  const given = new Map((levels ?? []).filter((l) => l && typeof l === "object" && l.name).map((l) => [l.name, l]));
+  const list = (levels ?? []).map((l) => typeof l === "string" ? l : l?.name).filter((n) => n && !seen.has(n) && seen.add(n)).map((name) => {
+    const codes = new Set(), phrases = [];
+    // The add-in's own code / phrase (1.13.3) when it sends them; else derived here the same way.
+    const f = given.get(name);
+    if (f && ("code" in f || "phrase" in f)) {
+      const cw = words(f.code ?? "").map(num);
+      if (cw.length === 1 && (cw[0].length > 1 || /^\d$/.test(cw[0]))) codes.add(cw[0]); else if (cw.length > 1) phrases.push(cw);
+      if (f.phrase && words(f.phrase).length) phrases.push(words(f.phrase).map(num));
+      return { name, codes, phrases };
+    }
+    const m = String(name).match(/^([^(]*)\((.*)\)\s*$/);
+    // As the add-in: one leading prefix of 1-3 letters and "-" is dropped ("ST-L1-01" -> "L1-01", "C-GF" -> "GF").
+    const head = (m ? m[1] : String(name)).trim().replace(/^[A-Za-z]{1,3}-/, "");
+    const hw = words(head).map(num);
+    if (hw.length === 1 && (hw[0].length > 1 || /^\d$/.test(hw[0]))) codes.add(hw[0]);
+    else if (hw.length > 1 && hw.some((w) => !LEVEL_NOISE.has(w))) phrases.push(hw);
+    if (m && words(m[2]).length) phrases.push(words(m[2]).map(num));
+    return { name, codes, phrases };
   });
+  for (const [tok, targets] of Object.entries(aliases ?? {})) {
+    const ph = words(tok).map(num);
+    if (!ph.length) continue;
+    for (const t of [].concat(targets).map(String)) {
+      let re = null;
+      try { re = new RegExp(t, "i"); } catch { re = null; }
+      for (const l of list) if (norm(l.name) === norm(t) || (re && re.test(l.name))) { if (ph.length === 1) l.codes.add(ph[0]); else l.phrases.push(ph); }
+    }
+  }
+  return list;
+}
+/** The parse context of a proposal or a confirm: levels (with the vault's aliases), the token table, the vault's own tokens. */
+export function nameCtx(levels, naming, names = []) {
+  return { levels: levelTokens(levels, naming?.levelAliases), table: W.tokenTable(naming), strong: new Set(Object.keys(naming?.categoryTokens ?? {}).map((k) => up(k).trim())),
+    noise: commonTokens(names), manualOnly: naming?.manualOnly ?? [] };
 }
 
 /** Tokens shared by most workset names (a project prefix such as "XX-ST"): noise for matching. */
@@ -63,24 +101,65 @@ export function commonPrefix(names) {
   return [...count].filter(([, c]) => c / Math.max(1, names.length) > 0.5).sort((a, b) => b[0].length - a[0].length)[0]?.[0] ?? "";
 }
 
+const isZoneWord = (x) => x.kind === "other" && x.w.length >= 3 && !STOP.has(x.w) && !MANUAL.has(x.w) && !/^\d+$/.test(x.w);
 /**
  * A workset name as a rule: the categories, levels, material, link / CAD and manual (visibility) words it carries, and the
- * remaining words (zone or asset). A word that names a level AND a category (ROOF) counts as the level only.
+ * remaining words (zone or asset). Levels match whole codes and phrases only (levelTokens). A built-in category word
+ * counts only as the head of the name (no zone word after it, or first in its part) and never inside a zone phrase joined
+ * by "&" / "+" / AND ("POOL & Pump Room" is a zone); the vault's naming.categoryTokens always count, phrases included
+ * ("GROUND BEAMS"). A word that is a level AND a category (ROOF) is the level when the name has another category or a
+ * material, else the category (FOUNDATIONS).
  */
-export function parseName(name, { levels = [], table = W.CATEGORY_TOKENS, noise = new Set(), manualOnly = [], isProtected = false } = {}) {
+export function parseName(name, { levels = [], table = W.CATEGORY_TOKENS, strong = new Set(), noise = new Set(), manualOnly = [], isProtected = false } = {}) {
   const t = { ...table, ...EXTRA_TOKENS };
+  for (const k of strong) if (table[k]) t[k] = table[k];
   const out = { workset: name, categories: [], levels: [], words: [], material: null, links: false, cad: false, codes: [],
     manual: manualOnly.some((m) => norm(m) === norm(name)), isDefault: W.isDefaultName(name), protected: !!isProtected };
-  for (const w of words(name)) {
+  // The name's parts (split at - _ ( ) / , ;) and its words, each with its part and whether the part is a "&" list.
+  const parts = String(name ?? "").split(/[-_()\/,;|]+/);
+  const ws = [];
+  parts.forEach((p, seg) => words(p).forEach((w) => ws.push({ w, seg })));
+  const listParts = new Map(parts.map((p, i) => [i, /&|\+|\bAND\b/i.test(p) ? p.split(/&|\+|\bAND\b/i).map((c) => words(c)) : null]));
+  const strongPh = [...strong].map((k) => ({ k, ph: words(k) })).filter((x) => x.ph.length > 1 && t[x.k]).sort((a, b) => b.ph.length - a.ph.length);
+  const levelPh = levels.flatMap((l) => l.phrases.filter((p) => p.length > 1).map((ph) => ({ l: l.name, ph }))).sort((a, b) => b.ph.length - a.ph.length);
+  const at = (i, ph) => ph.every((x, j) => ws[i + j] && num(ws[i + j].w) === x);
+  const items = [];
+  for (let i = 0; i < ws.length;) {
+    const { w, seg } = ws[i];
+    const sp = strongPh.find((x) => at(i, x.ph));
+    if (sp) { items.push({ w: sp.k, seg, kind: "strong", cats: t[sp.k] }); i += sp.ph.length; continue; }
+    const lp = levelPh.filter((x) => at(i, x.ph));
+    if (lp.length) { const n = lp[0].ph.length; items.push({ w: ws.slice(i, i + n).map((x) => x.w).join(" "), seg, kind: "level", levels: [...new Set(lp.filter((x) => x.ph.length === n).map((x) => x.l))] }); i += n; continue; }
+    i++;
     if (MANUAL.has(w)) out.manual = true;
     if (noise.has(w)) continue;
     if (LINK_WORDS.has(w)) { if (w === "CAD" || w === "DWG") out.cad = true; else out.links = true; continue; }
     if (MATERIAL_TOKENS[w]) { out.material = MATERIAL_TOKENS[w]; continue; }
-    const lv = levels.filter((l) => l.tokens.has(num(w))).map((l) => l.name);
-    if (lv.length) { lv.forEach((l) => out.levels.includes(l) || out.levels.push(l)); continue; }
-    if (t[w]) { t[w].forEach((c) => out.categories.includes(c) || out.categories.push(c)); continue; }
-    if (w.length >= 2 && w.length <= 3 && !STOP.has(w)) out.codes.push(w);   // a discipline code (EL, MV, PL ...) for links
-    if (w.length >= 3 && !STOP.has(w) && !MANUAL.has(w) && !/^\d+$/.test(w)) out.words.push(w);
+    if (strong.has(w) && t[w]) { items.push({ w, seg, kind: "strong", cats: t[w] }); continue; }
+    const lv = levels.filter((l) => l.codes.has(num(w)) || l.phrases.some((p) => p.length === 1 && p[0] === num(w))).map((l) => l.name);
+    if (lv.length) { items.push({ w, seg, kind: t[w] ? "levelcat" : "level", levels: lv, cats: t[w] }); continue; }
+    if (t[w]) { items.push({ w, seg, kind: "cat", cats: t[w] }); continue; }
+    items.push({ w, seg, kind: "other" });
+  }
+  // A built-in category word inside a zone list, or followed by a zone word while not first in its part, is a zone word.
+  const before = items.map((x) => ({ ...x }));
+  items.forEach((x, i) => {
+    if (x.kind !== "cat") return;
+    const list = listParts.get(x.seg);
+    const kindOf = (w) => before.find((y) => y.seg === x.seg && y.w === w)?.kind;
+    if (list) { if (!list.every((c) => c.filter((w) => ["cat", "strong", "other"].includes(kindOf(w))).every((w) => ["cat", "strong"].includes(kindOf(w))))) x.kind = "other"; return; }
+    const firstInPart = !before.slice(0, i).some((y) => y.seg === x.seg && isZoneWord(y));
+    if (!firstInPart && before.slice(i + 1).some(isZoneWord)) x.kind = "other";
+  });
+  const otherCat = items.some((x) => x.kind === "cat" || x.kind === "strong") || !!out.material;
+  for (const x of items) {
+    if (x.kind === "levelcat") x.kind = otherCat ? "level" : "cat";
+    if (x.kind === "level") x.levels.forEach((l) => out.levels.includes(l) || out.levels.push(l));
+    else if (x.kind === "cat" || x.kind === "strong") x.cats.forEach((c) => out.categories.includes(c) || out.categories.push(c));
+    else if (x.kind === "other") {
+      if (x.w.length >= 2 && x.w.length <= 3 && !STOP.has(x.w)) out.codes.push(x.w);   // a discipline code (EL, MV, PL ...) for links
+      if (isZoneWord(x)) out.words.push(x.w);
+    }
   }
   if (out.cad) out.links = false;
   return out;
@@ -200,14 +279,13 @@ const section = (r, empty) => r.protected || r.isDefault ? "General" : r.manual 
  */
 export function propose(list) {
   const models = [], byHash = new Map();
-  for (const { facts, naming } of list) {
+  for (const { facts, naming, records } of list) {
     const hash = factsHash(facts), same = byHash.get(hash);
-    models.push({ model: facts?.model ?? "model", facts, naming, hash, sameAs: same ?? null });
+    models.push({ model: facts?.model ?? "model", facts, naming, hash, sameAs: same ?? null, applied: appliedIndex(records) });
     if (!same) byHash.set(hash, facts?.model ?? "model");
   }
   const uniq = models.filter((m) => !m.sameAs);
   const naming = uniq[0]?.naming ?? null;
-  const table = W.tokenTable(naming);
   // Worksets across models, by spelling twin; the canonical name is the most used spelling (trimmed).
   const fam = new Map();
   for (const m of uniq) for (const w of m.facts?.worksets ?? []) {
@@ -223,20 +301,27 @@ export function propose(list) {
     f.canonical = f.protected ? ranked[0][0] : ranked[0][0].trim().replace(/\s+/g, " ");
   }
   const canonOf = (name, w) => (isProt(w ?? { name }) ? fam.get("\u0000datum") : fam.get(twinKey(name) || name))?.canonical ?? name;
-  const levels = levelTokens(uniq.flatMap((m) => m.facts?.levels ?? []));
   const names = [...fam.values()].map((f) => f.canonical);
-  const noise = commonTokens(names);
-  const manualOnly = naming?.manualOnly ?? [];
-  const rules = [...fam.values()].map((f) => ({ ...parseName(f.canonical, { levels, table, noise, manualOnly, isProtected: f.protected }), fam: f }));
-  const detail = [], receives = new Map(), hides = new Map();
+  const ctx = nameCtx(uniq.flatMap((m) => m.facts?.levels ?? []), naming, names);
+  const rules = [...fam.values()].map((f) => ({ ...parseName(f.canonical, { ...ctx, isProtected: f.protected }), fam: f }));
+  const detail = [], receives = new Map(), hides = new Map(), done = { groups: 0, elements: 0, changed: 0 };
   for (const m of uniq) {
-    const groups = (m.facts?.groups ?? []).filter((g) => g && Number(g.elements) > 0).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
+    const groups = (m.facts?.groups ?? []).filter(modelGroup).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
     const wsByName = new Map((m.facts?.worksets ?? []).map((w) => [w.name, w]));
     const protectedNames = new Set((m.facts?.worksets ?? []).filter(isProt).map((w) => norm(w.name)));
     for (const g of groups) {
       if (DATUM.test(g.category)) continue;
       const cur = rules.find((r) => r.workset === canonOf(g.workset, wsByName.get(g.workset)));
       if (cur?.manual) continue;
+      // Applied by ACE earlier: not proposed again; moved elsewhere since: flagged for review, never silently re-proposed.
+      const as = appliedState(g, m.applied, groups), rec = as?.rec;
+      if (as?.kind === "applied") { done.groups++; done.elements += Number(g.elements); continue; }
+      if (as?.kind === "changed") {
+        done.changed++;
+        detail.push({ Model: m.model, Row: "MOVE", "Current workset": g.workset, Category: g.category, "Type / link / contents": g.type ?? "", Level: g.level ?? "", Elements: Number(g.elements), "Proposed workset": "", "Proposed action": "review",
+          Reason: `changed after apply: ACE moved it to ${q(rec.to)} on ${rec.at}${rec.planId ? ` (plan ${rec.planId})` : ""}, now on ${q(g.workset)}`, Confidence: "low", [DECISION]: "", Key: g.key });
+        continue;
+      }
       const dflt = onDefault(g, protectedNames), wrong = !dflt && contradicts(g, cur);
       if (!dflt && !wrong) continue;
       const pl = place(g, rules, groups);
@@ -252,7 +337,6 @@ export function propose(list) {
         Confidence: pl.confidence, [DECISION]: "", Key: g.key });
     }
   }
-  const prefix = commonPrefix(names.filter((n) => !W.isDefaultName(n)));
   const all = uniq.map((m) => m.model);
   const ruleRows = rules.map((r) => {
     const f = r.fam;
@@ -262,24 +346,29 @@ export function propose(list) {
     const twins = [...f.names.keys()].filter((n) => n !== r.workset);
     const inModel = (mm) => (uniq.find((x) => x.model === mm)?.facts?.worksets ?? []).filter((w) => f.names.has(w.name));
     const emptyIn = where.filter((mm) => inModel(mm).every((w) => !Number(w.elements)));
-    const expected = r.cad || r.links || r.categories.length ? uniq.some((m) => (m.facts?.groups ?? []).some((g) => (r.cad && W.isCad(g.category)) || (r.links && /^rvt links$/i.test(g.category)))) : false;
+    // Expected: elements its name asks for exist in a model (wherever they sit now, Workset1 included): never deleted.
+    const expected = uniq.some((m) => (m.facts?.groups ?? []).filter(modelGroup).some((g) => (r.cad && W.isCad(g.category)) || (r.links && /^rvt links$/i.test(g.category))
+      || (!r.cad && !r.links && r.categories.length && catIs(g.category, r.categories) && (!r.levels.length || r.levels.includes(g.level)))));
+    // A catch-all (a category, no level): kept even when empty.
+    const catchAll = !r.cad && !r.links && r.categories.length > 0 && !r.levels.length;
     let action = "keep", note = [];
-    const defaultName = naming ? W.suggestedName("Workset1", naming) : null;
+    const defaultName = naming?.defaultName && !W.isDefaultName(naming.defaultName) ? naming.defaultName : null;
     if (r.protected) action = "keep (the datum workset: never renamed or deleted)";
-    else if (r.isDefault) action = `rename from ${r.workset}`;
+    else if (r.isDefault) action = defaultName ? `rename from ${r.workset}` : `keep ${r.workset} (default)`;
     else if (r.manual) action = "keep (manual only)";
-    else if (!holds && !recv && !expected) action = "delete";
-    else if (emptyIn.length && emptyIn.length < where.length && !recv && !expected) action = "keep where used, delete where empty";
+    else if (!holds && !recv && !expected && !catchAll) action = "delete";
+    else if (emptyIn.length && emptyIn.length < where.length && !recv && !expected && !catchAll) action = "keep where used, delete where empty";
     if (twins.length && !r.protected) note.push(`merge spelling twins into it: ${twins.map(q).join(", ")}`);
     if (r.workset !== [...f.names.keys()].sort((a, b) => f.names.get(b).elements - f.names.get(a).elements)[0]) note.push("spelling fixed");
     if (emptyIn.length && emptyIn.length < where.length) note.push(`empty in ${emptyIn.length} of ${where.length} models`);
-    if (expected && !holds) note.push("empty, but elements are expected here (not deleted)");
+    if (expected && !holds && (r.cad || r.links || !recv)) note.push("empty, but elements are expected here (not deleted)");
+    else if (catchAll && !holds && !recv && !expected) note.push("empty, kept: the catch-all for its category");
     const types = uniq.reduce((n, m) => n + (m.facts?.worksets ?? []).filter((w) => f.names.has(w.name)).reduce((k, w) => k + Number(w.types ?? 0), 0), 0);
     if (types) note.push(`holds ${types} type(s): a plan moves instances only, so it is kept unless the types move by hand`);
     const hid = hides.get(r.workset) ?? [];
     if (hid.length) note.push(`WOULD HIDE ${hid.reduce((n, h) => n + h.n, 0)} element(s) in ${[...new Set(hid.map((h) => h.v))].map(q).join(", ")}`);
-    const proposed = r.isDefault ? defaultName ?? (prefix ? `${prefix}GENERAL` : "") : r.workset;
-    if (r.isDefault) note.push(defaultName ? "the naming rule's default name" : proposed ? "a new default workset name from the project prefix" : "name the default workset (change to ...)");
+    const proposed = r.isDefault ? defaultName ?? r.workset : r.workset;
+    if (r.isDefault) note.push(defaultName ? "the vault's default name (naming.defaultName)" : "the default workset keeps its name (renaming it is opt-in: naming.defaultName in the vault)");
     const rule = { workset: r.workset, categories: r.categories, levels: r.levels, words: r.words, material: r.material, links: r.links, cad: r.cad, codes: r.codes, manual: r.manual, isDefault: r.isDefault, protected: r.protected, twins };
     return { Group: section(r, action === "delete"), "Proposed workset": proposed, Action: action, Models: where.length === all.length && all.length > 1 ? `All ${all.length}` : `${where.join(", ")}${where.length > 1 ? ` (${where.length})` : ""}`,
       "What it holds (from its name)": describe(r), "Holds now": holds, "Would receive": recv, "Open / visibility": visText(f.vis), Note: note.join("; "), [DECISION]: "", Rule: JSON.stringify(rule) };
@@ -289,13 +378,14 @@ export function propose(list) {
   const counts = { worksets: ruleRows.length, keep: ruleRows.filter((r) => /^keep/.test(r.Action)).length, delete: ruleRows.filter((r) => r.Action === "delete").length,
     twins: ruleRows.filter((r) => /spelling twins/.test(r.Note)).length, moves: detail.filter((d) => d["Proposed action"] === "move").length,
     moveElements: detail.filter((d) => d["Proposed action"] === "move").reduce((n, d) => n + d.Elements, 0), review: detail.filter((d) => d["Proposed action"] === "review").length,
-    sameAs: models.filter((m) => m.sameAs).map((m) => ({ model: m.model, sameAs: m.sameAs })) };
+    sameAs: models.filter((m) => m.sameAs).map((m) => ({ model: m.model, sameAs: m.sameAs })), applied: done };
   return { rules: ruleRows, detail, models: models.map(({ model, hash, sameAs }) => ({ model, hash, sameAs })), counts };
 }
 
 const tableOf = (cols, rows) => [cols, ...rows.map((r) => cols.map((c) => r[c] ?? ""))];
-export const proposalCsv = (p) => toCsv(tableOf(RULE_COLUMNS, p.rules));
-export const detailCsv = (p) => toCsv(tableOf(COLUMNS, p.detail));
+const colsOf = (p, cols) => p.refreshed ? [...cols, SINCE] : cols;
+export const proposalCsv = (p) => toCsv(tableOf(colsOf(p, RULE_COLUMNS), p.rules));
+export const detailCsv = (p) => toCsv(tableOf(colsOf(p, COLUMNS), p.detail));
 /** The xlsx: "Worksets" (the rule rows, the Rule column hidden) and "Groups" (the detail, the Key hidden). */
 export async function proposalXlsx(p, file) {
   const wb = new ExcelJS.Workbook();
@@ -309,8 +399,8 @@ export async function proposalXlsx(p, file) {
     sh.getColumn(cols.indexOf(hide) + 1).hidden = true;
     sh.getColumn(cols.indexOf(DECISION) + 1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF2CC" } };
   };
-  sheet("Worksets", RULE_COLUMNS, p.rules, "Rule", { "Proposed workset": 32, "What it holds (from its name)": 60, Note: 50, "Open / visibility": 36, Action: 24, [DECISION]: 34 });
-  sheet("Groups", COLUMNS, p.detail, "Key", { Reason: 60, "Type / link / contents": 36, [DECISION]: 34 });
+  sheet("Worksets", colsOf(p, RULE_COLUMNS), p.rules, "Rule", { "Proposed workset": 32, "What it holds (from its name)": 60, Note: 50, "Open / visibility": 36, Action: 24, [DECISION]: 34 });
+  sheet("Groups", colsOf(p, COLUMNS), p.detail, "Key", { Reason: 60, "Type / link / contents": 36, [DECISION]: 34 });
   await wb.xlsx.writeFile(file);
   return file;
 }
@@ -319,6 +409,9 @@ export function proposalText(p, files) {
   const c = p.counts;
   const lines = [`WORKSET PLAN proposal for ${p.models.map((m) => m.model).join(", ")} (read-only, nothing changed): ${c.worksets} worksets (keep ${c.keep}, delete ${c.delete}, ${c.twins} with spelling twins merged); ${c.moves} element group(s) move (${c.moveElements} elements); ${c.review} group(s) to review (no confident home: left blank).`];
   for (const s of c.sameAs) lines.push(`${s.model}: same as ${s.sameAs} (identical facts), proposed once.`);
+  if (p.standard) lines.push(`Standard: ${p.standard}.`);
+  if (c.applied?.groups || c.applied?.changed) lines.push(`Applied by ACE earlier (not proposed again): ${c.applied.groups} group(s), ${c.applied.elements} element(s)${c.applied.changed ? `; ${c.applied.changed} group(s) changed after apply: flagged for review` : ""}.`);
+  if (p.refreshed) lines.push(`Refreshed against the previous file: ${p.refreshed.new} new, ${p.refreshed.changed} changed, ${p.refreshed.same} same, ${p.refreshed.gone} gone; ${p.refreshed.kept} earlier decision(s) kept (column "${SINCE}").`);
   lines.push(...p.rules.map((r) => `- [${r.Group}] ${r["Proposed workset"] || "(name it)"}: ${r.Action}; ${r["What it holds (from its name)"]}${r["Would receive"] ? ` Receives ${r["Would receive"]}.` : ""}${r.Note ? ` (${r.Note})` : ""}`).slice(0, 60));
   if (files?.length) lines.push(`Files (edit "${DECISION}": OK / change to <name> / skip; the Groups sheet / -groups.csv is the detail):\n${files.map((f) => `- ${f}`).join("\n")}`);
   lines.push("Next: the user edits the file, then workset_plan action confirm with file.");
@@ -380,7 +473,7 @@ export function decisionOf(cell) {
 }
 
 const finalPlan = () => ({ create: [], rename: [], moves: [], delete: [] });
-const moveOf = (g, from, to) => ({ key: g.key, from, to, category: g.category, type: g.type ?? "", level: g.level ?? "", material: g.material ?? "", zone: g.zone ?? "", option: g.option ?? "", elements: Number(g.elements) });
+const moveOf = (g, from, to, row) => ({ key: g.key, from, to, category: g.category, type: g.type ?? "", level: g.level ?? "", material: g.material ?? "", zone: g.zone ?? "", option: g.option ?? "", elements: Number(g.elements), ...(row != null ? { row } : {}) });
 
 /**
  * Group-level (and hand-made) rows + live facts -> { model, plan, creates, flagged, undecided, skipped, confirmed }.
@@ -390,10 +483,10 @@ const moveOf = (g, from, to) => ({ key: g.key, from, to, category: g.category, t
 export function confirm(rowsIn, facts) {
   const model = facts?.model ?? "model";
   const mine = rowsIn.filter((r) => modelKey(r.model) === modelKey(model));
-  const groups = (facts?.groups ?? []).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
+  const groups = (facts?.groups ?? []).filter(modelGroup).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
   const existing = new Map((facts?.worksets ?? []).map((w) => [norm(w.name), w]));
   const plan = finalPlan();
-  const flagged = [], undecided = [], skipped = [], confirmed = [], decidedKeys = new Set();
+  const flagged = [], undecided = [], skipped = [], confirmed = [], decidedKeys = new Set(), skipKeys = new Set();
   const findGroups = (r) => r.key ? groups.filter((g) => g.key === r.key)
     : groups.filter((g) => norm(g.workset) === norm(r.current) && (norm(g.category) === norm(r.category) || (W.isCad(g.category) && W.isCad(r.category))) && typeKey(g.type) === typeKey(r.type) && norm(g.level) === norm(r.level));
   const flag = (r, why) => flagged.push({ line: r.line, what: `${r.row} ${r.current}${r.category ? ` ${r.category}` : ""}${r.level ? ` @ ${r.level}` : ""}`, why });
@@ -402,7 +495,7 @@ export function confirm(rowsIn, facts) {
     const d = decisionOf(r.decision);
     if (d.kind === "none") { undecided.push(r.line); continue; }
     if (d.kind === "unclear") { flag(r, `decision "${r.decision}" not understood (OK / change to <workset> / skip)`); continue; }
-    if (d.kind === "skip") { skipped.push(r.line); if (r.row === "MOVE") findGroups(r).forEach((g) => decidedKeys.add(g.key)); continue; }
+    if (d.kind === "skip") { skipped.push(r.line); if (r.row === "MOVE") findGroups(r).forEach((g) => { decidedKeys.add(g.key); skipKeys.add(g.key); }); continue; }
     if (r.row === "RENAME" || (r.row === "WORKSET" && d.kind === "change")) {
       const to = d.kind === "change" ? d.to : r.proposed;
       const w = existing.get(norm(r.current));
@@ -433,10 +526,10 @@ export function confirm(rowsIn, facts) {
     const target = finalOf(to);
     if (isProt(existing.get(norm(target))) && !DATUM.test(r.category)) { flag(r, "model elements do not go on the datum workset"); continue; }
     if (!names.has(norm(target)) && !plan.create.some((c) => norm(c) === norm(target))) plan.create.push(target);
-    for (const g of found) { decidedKeys.add(g.key); if (norm(finalOf(g.workset)) !== norm(target)) plan.moves.push(moveOf(g, finalOf(g.workset), target)); }
+    for (const g of found) { decidedKeys.add(g.key); if (norm(finalOf(g.workset)) !== norm(target)) plan.moves.push(moveOf(g, finalOf(g.workset), target, r.line)); }
     confirmed.push(r.line);
   }
-  return { model, plan, creates: plan.create, flagged, undecided, skipped, confirmed, rowsForModel: mine.length, decidedKeys };
+  return { model, plan, creates: plan.create, flagged, undecided, skipped, confirmed, rowsForModel: mine.length, decidedKeys, skipKeys };
 }
 
 /**
@@ -471,7 +564,7 @@ export function rulesFromRows(rows, ctx = {}) {
 export function planFromRules(R, facts) {
   const model = facts?.model ?? "model";
   const ws = facts?.worksets ?? [];
-  const groups = (facts?.groups ?? []).filter((g) => Number(g.elements) > 0).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
+  const groups = (facts?.groups ?? []).filter(modelGroup).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
   const plan = finalPlan(), notes = [];
   const has = (n) => ws.find((w) => norm(w.name) === norm(n));
   const finalName = new Map(), mergeInto = new Map();
@@ -498,7 +591,7 @@ export function planFromRules(R, facts) {
     }
     if (!to || norm(to) === norm(g.workset)) continue;
     if (!exists.has(norm(to)) && !plan.create.some((c) => norm(c) === norm(to))) plan.create.push(to);
-    plan.moves.push(moveOf(g, cur, to));
+    plan.moves.push(moveOf(g, cur, to, ruleOf(to)?.line));
     left.set(g.workset, (left.get(g.workset) ?? 0) - Number(g.elements));
   }
   for (const [n] of mergeInto) if (!isProt(has(n))) plan.delete.push(n);
@@ -516,12 +609,12 @@ export function combine(rp, gp) {
   const fin = (n) => ren.get(norm(n)) ?? n;
   const keys = gp.decidedKeys ?? new Set();
   const both = rp.plan.moves.filter((m) => keys.has(m.key)).length;
-  const moves = [...rp.plan.moves.filter((m) => !keys.has(m.key)), ...gp.plan.moves.map((m) => ({ ...m, from: fin(m.from), to: fin(m.to) }))].filter((m) => norm(m.from) !== norm(m.to));
+  const moves = [...rp.plan.moves.filter((m) => !keys.has(m.key)), ...gp.plan.moves.map((m) => ({ ...m, from: fin(m.from), to: fin(m.to), ...(m.row != null ? { row: `Groups ${m.row}` } : {}) }))].filter((m) => norm(m.from) !== norm(m.to));
   const create = [...rp.plan.create];
   for (const c of gp.plan.create.map(fin)) if (!create.some((x) => norm(x) === norm(c)) && !rp.plan.rename.some((r) => norm(r.to) === norm(c))) create.push(c);
   const del = rp.plan.delete.filter((d) => !moves.some((m) => norm(m.to) === norm(d)));
   const sheetNotes = both ? [`${both} group(s) decided on both sheets: the Groups sheet wins for them.`] : [];
-  return { ...rp, plan: { create, rename: rp.plan.rename, moves, delete: del }, creates: create, flagged: [...(rp.flagged ?? []), ...gp.flagged.map((f) => ({ ...f, what: `Groups sheet: ${f.what}` }))], sheetNotes, both };
+  return { ...rp, plan: { create, rename: rp.plan.rename, moves, delete: del }, creates: create, flagged: [...(rp.flagged ?? []), ...gp.flagged.map((f) => ({ ...f, what: `Groups sheet: ${f.what}` }))], sheetNotes, both, skipKeys: gp.skipKeys };
 }
 
 /** Models named in the file that are not among the checked ones. */
@@ -663,6 +756,8 @@ export function notPreviewedOf(r) {
   const c = r?.notPreviewedCounts;
   return { steps: ids.size || Number(c?.moves ?? 0), moves: c?.moves ?? moves.length, elements: c?.elements ?? moves.reduce((n, p) => n + Number(p.elements ?? 0), 0), linkTypes: Number(c?.linkTypes ?? 0) };
 }
+/** Pin counts of an apply (the add-in's pinned object, else its top-level counts). */
+export const pinsOf = (r) => ({ touched: Number(r?.pinned?.count ?? r?.pinnedTouched ?? 0), directOk: Number(r?.pinned?.directOk ?? r?.pinnedDirectOk ?? 0), unpinRepin: Number(r?.pinned?.unpinRepin ?? r?.pinnedUnpinRepin ?? r?.pinnedNeededUnpin ?? 0) });
 export function applyText(r, { model, mode, rolledBack = false }) {
   const plan = planOf(r);
   const head = mode === "check" ? "check, read-only, nothing changed" : mode === "dry run" ? "dry run" : rolledBack ? "NOT applied: rolled back" : "applied as ONE undo step";
@@ -674,7 +769,14 @@ export function applyText(r, { model, mode, rolledBack = false }) {
   if (r?.skipped?.length) lines.push(`Skipped (borrowed by others; ask them to relinquish, then run again for these):\n${r.skipped.map((s) => `- ${s.key}: ${(s.ids ?? []).length} element(s)${s.holder ? `, held by ${s.holder}` : ""}`).join("\n")}`);
   if (r?.changed?.length) lines.push(`Changed since the plan (the whole plan is refused; propose and confirm again):\n${r.changed.map((c) => `- ${c.key}: ${c.expected} planned, ${c.found} found`).join("\n")}`);
   if (r?.visibility?.length) lines.push(`Visibility in the export views (${(r.exportViews ?? []).map(W.q).join(", ") || "none"}):\n${r.visibility.slice(0, 20).map((v) => `- ${v.wouldHide ? `WOULD HIDE ${v.wouldHide}` : ""}${v.wouldHide && v.wouldShow ? ", " : ""}${v.wouldShow ? `would show ${v.wouldShow}` : ""} element(s) in ${W.q(v.view)}: ${v.key ?? v.move} -> ${v.to}`).join("\n")}`);
-  if (r?.kept?.length) lines.push(`Kept (not empty after the moves): ${r.kept.map((x) => `${W.q(x.name)} ${x.elements}${x.why ? ` (${x.why})` : Number(x.types) ? ` (holds ${x.types} type(s))` : ""}`).join("; ")}.`);
+  if (r?.kept?.length) lines.push(`Kept (not empty after the moves): ${r.kept.map((x) => `${W.q(x.name)} ${x.elements}${x.why ? ` (${x.why})` : Number(x.types) ? ` (holds ${x.types} type(s))` : ""}${Number(x.nonModel) ? `, ${x.nonModel} non-model item(s)` : ""}`).join("; ")}.`);
+  const fh = plan.filter((p) => p.kind === "move").reduce((n, p) => n + Number(p.followsHost ?? 0), 0);
+  if (fh) lines.push(`${fh} sub-element(s) (stair runs, rails, panels, nested parts) follow their host.`);
+  if (r?.reset) lines.push(`Reset to ${W.q(r.reset.to)}: ${r.reset.elements ?? 0} element(s) no rule takes go to the default workset${r.reset.kept?.length ? `; kept as they are: ${r.reset.kept.map(W.q).join(", ")}` : ""}${r.reset.keptByKey ? `; ${r.reset.keptByKey} element(s) of groups that stay untouched` : ""}${r.reset.skippedBorrowed ? `; ${r.reset.skippedBorrowed} borrowed (pending)` : ""}${r.reset.skippedCentral ? `; ${r.reset.skippedCentral} changed in central (pending)` : ""}${r.reset.readOnly ? `; ${r.reset.readOnly} read-only` : ""}.`);
+  const pin = pinsOf(r);
+  if (pin.touched) lines.push(`Pinned elements: ${pin.touched} (moved directly ${pin.directOk}; unpinned, moved, re-pinned: ${pin.unpinRepin}; the self-check confirms every pin state).`);
+  if (Array.isArray(r?.worksetCounts) && r.worksetCounts.length) lines.push(`Per workset (before -> after${mode === "check" ? ", planned" : r.worksetCounts.some((c) => c.measured != null) ? ", measured" : ""}):\n${r.worksetCounts.filter((c) => c.before || c.after || c.deleted).map((c) => `- ${W.q(c.workset)}: ${c.before} -> ${c.measured ?? c.after}${c.deleted ? " (deleted)" : ""}`).join("\n")}`);
+  if (r?.pending?.length) lines.push(pendingText(r.pending) + (Number(r.pendingTotal) > r.pending.length ? `\n- ... ${r.pendingTotal - r.pending.length} more (capped)` : ""));
   const np = notPreviewedOf(r);
   if (np.steps) lines.push(`Would move (not previewed: not yours yet): ${np.moves} group(s), ${np.elements} element(s)${np.linkTypes ? `, ${np.linkTypes} link type(s)` : ""}${np.steps > np.moves ? `; ${np.steps - np.moves} other step(s)` : ""}. The apply borrows those worksets first.`);
   if (r?.notes?.length) lines.push(`Notes:\n${r.notes.map((n) => `- ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`).join("\n")}`);
@@ -692,5 +794,341 @@ export function readPlanFile(json) {
   if (json?.schema !== "ace.workset-plan/1" || !json.plan) throw new Error("Not a workset_plan plan file (schema ace.workset-plan/1): run workset_plan action confirm first.");
   const p = json.plan;
   for (const k of ["create", "rename", "moves", "delete"]) if (!Array.isArray(p[k])) throw new Error(`The plan file has no ${k} list.`);
-  return { model: json.model, plan: p };
+  return { model: json.model, plan: p, rules: Array.isArray(json.rules) ? json.rules : null, skipKeys: Array.isArray(json.skipKeys) ? json.skipKeys : [], standard: json.standard ?? null };
+}
+
+// ---- 1.13.3: the standard, status, reset, partial apply, apply records, pending (borrowed) actions ---------------------
+
+/** A rule regex from the vault ("(?i)..." allowed); matching is case-insensitive. */
+const jsRx = (s) => { if (s == null || s === "") return null; const src = String(s).replace(/^\(\?i\)/, ""); try { return new RegExp(src, "i"); } catch { return null; } };
+/**
+ * A group's home by the standard's rules (assign_worksets format, first match wins): category, level, material, zone,
+ * type / family (on "Family : Type"); {level} / {zone} / {category} in the workset name are filled in. Rules on
+ * conditions a group does not carry (function, parameter, department) are skipped. -> { workset, rule, why } | null
+ */
+export function stdTarget(g, rules = []) {
+  for (const r of rules ?? []) {
+    if (!r?.workset || r.function || r.parameter || r.department) continue;
+    const cats = [].concat(r.category ?? []);
+    if (cats.length && !catIs(g.category, cats)) continue;
+    if (r.level && !jsRx(r.level)?.test(g.level ?? "")) continue;
+    if (r.material && r.material !== g.material) continue;
+    if (r.zone && !jsRx(r.zone)?.test(g.zone ?? "")) continue;
+    if (r.type && !jsRx(r.type)?.test(g.type ?? "")) continue;
+    if (r.family && !jsRx(r.family)?.test(g.type ?? "")) continue;
+    const workset = String(r.workset).replace(/\{level\}/g, g.level ?? "").replace(/\{zone\}/g, g.zone ?? "").replace(/\{category\}/g, g.category ?? "");
+    return { workset, rule: r, why: `standard rule ${r.id ?? ruleText(r)}${r.clause ? ` (${r.clause})` : ""}` };
+  }
+  return null;
+}
+/** The standard in words, for every reply. */
+export const standardText = (std) => !std ? "the workset names (no standard rules)" : `${std.label}${std.file ? ` (${std.file})` : ""}, ${std.rules.length} rule(s)`;
+
+/** Group identity without its workset: how an applied row is found again after it moved. */
+const identity = (g) => [g.category, g.type, g.level, g.material, g.zone, g.option].map((x) => x ?? "").join("|");
+/** The apply records of a model (vault worksets-applied.json) -> by identity, the record rows (latest first). */
+export function appliedIndex(records = []) {
+  const idx = new Map();
+  for (const rec of records ?? []) for (const r of rec.rows ?? []) { const k = r.identity ?? identity(r); idx.set(k, [{ ...r, at: rec.at, planId: rec.planId }, ...(idx.get(k) ?? [])]); }
+  return { get: (k) => idx.get(k) ?? null, size: idx.size };
+}
+/**
+ * A group against the apply records: "applied" (it sits where ACE put it), "pending" (still where ACE found it: not
+ * moved, e.g. borrowed), "changed" (ACE moved it, it sits elsewhere now), or null (ACE never moved it). -> { kind, rec }
+ */
+export function appliedState(g, idx, groups = []) {
+  const recs = idx?.get(identity(g));
+  if (!recs?.length) return null;
+  const on = (n) => norm(n) === norm(g.workset);
+  // Applied: the same identity on the workset ACE put it on.
+  const hit = recs.find((r) => on(r.to));
+  if (hit) return { kind: "applied", rec: hit };
+  // Changed after apply: ACE's elements are here (ids), or that identity left ACE's target entirely (none on it now).
+  const ids = new Set((g.sampleIds ?? []).map(String));
+  const byId = recs.find((r) => (r.ids ?? []).some((id) => ids.has(String(id))));
+  if (byId) return { kind: "changed", rec: byId };
+  const gone = recs.find((r) => !on(r.origin ?? r.from) && !on(r.from) && !groups.some((o) => identity(o) === identity(g) && norm(o.workset) === norm(r.to)));
+  if (gone) return { kind: "changed", rec: gone };
+  return null;   // new elements of that type elsewhere, or still where ACE found them: classified as usual
+}
+/**
+ * An apply record from the plan that ran and the add-in's answer: rows per group move (a partly skipped row keeps its
+ * moved count and lists the skipped ids; only a fully skipped row is left out), reset and retry steps in their own
+ * sections, per element pairs (movedElements) when given; counts from movedElements when present.
+ */
+export function applyRecord({ model, storeKey, plan, result, at, only }) {
+  const all = planOf(result).filter((p) => p.kind === "move");
+  const isReset = (p) => p.key === "reset" || /^reset:/.test(String(p.id ?? ""));
+  const isRetry = (p) => /^retry:/.test(String(p.id ?? "")) || p.key === "retry";
+  const steps = all.filter((p) => !isReset(p) && !isRetry(p));
+  const skipped = new Map();
+  for (const x of result?.skipped ?? []) skipped.set(x.key, [...(skipped.get(x.key) ?? []), ...(x.ids ?? [])].concat(x.ids ? [] : Array(Number(x.count ?? 0)).fill(null)));
+  for (const x of result?.pending ?? []) if (x.key) skipped.set(x.key, [...(skipped.get(x.key) ?? []), x.id]);
+  const byKey = new Map((plan?.moves ?? []).map((m) => [m.key, m]));
+  const src = steps.length ? steps.map((p) => ({ ...byKey.get(p.key), ...p })) : (plan?.moves ?? []);
+  const rows = src.filter((m) => m.key && identity(m) !== "|||||").map((m) => {
+    const sk = [...new Set(skipped.get(m.key) ?? [])], total = Number(m.elements ?? 0), moved = Math.max(0, total - sk.length);
+    return { key: m.key, identity: identity(m), row: m.row ?? null, origin: String(m.key).split("|")[0], from: m.from, to: m.to, category: m.category ?? "", level: m.level ?? "", elements: moved,
+      ...(sk.length ? { skippedIds: sk.filter((id) => id != null) } : {}), ...(m.ids ? { ids: m.ids } : {}) };
+  }).filter((r) => r.elements > 0);
+  const elements = Array.isArray(result?.movedElements) ? result.movedElements.map((e) => ({ id: e.id, from: e.from, to: e.to })) : undefined;
+  const reset = all.filter(isReset).map((p) => ({ from: p.from ?? p.workset, to: p.to, elements: Number(p.elements ?? 0) }));
+  const retried = (result?.retried ?? []).filter((x) => typeof x !== "object" || x.ok !== false).map((x) => typeof x === "object" ? x.id : x);
+  const moved = Number(result?.movedTotal ?? elements?.length ?? 0) || rows.reduce((n, r) => n + r.elements, 0) + reset.reduce((n, r) => n + r.elements, 0);
+  return { at, model, storeKey, planId: result?.planHash ?? null, ...(only ? { only } : {}), moved, rows, ...(reset.length ? { reset } : {}), ...(retried.length ? { retry: retried } : {}), ...(elements ? { elements } : {}) };
+}
+/**
+ * Read-only status of one model against the standard (else the workset names): per workset correct / wrong (with where
+ * each group should go and why) / no rule / empty (expected or unused) / in the standard; standard worksets missing from
+ * the model; visibility and borrowed counts; every group in one of four states: applied by ACE (date, plan id), changed
+ * after apply, correct already, still to do. -> { model, pct, totals, rows, missing, groups, pending, standard }
+ */
+export function statusOf(facts, { std = null, ctx = {}, records = [], pending = [] } = {}) {
+  const model = facts?.model ?? "model";
+  const ws = facts?.worksets ?? [];
+  const groups = (facts?.groups ?? []).filter(modelGroup).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
+  const rules = ws.map((w) => parseName(w.name, { ...ctx, isProtected: isProt(w) }));
+  const ruleOf = (n) => rules.find((r) => r.workset === n);
+  const protectedNames = new Set(ws.filter(isProt).map((w) => norm(w.name)));
+  const datum = ws.find(isProt)?.name ?? null;
+  const applied = appliedIndex(records);
+  const row = new Map(ws.map((w) => [w.name, { workset: w.name, elements: Number(w.elements ?? 0), correct: 0, wrong: 0, noRule: 0, manual: 0, to: [], open: w.open ?? null,
+    visibleByDefault: w.visibleByDefault ?? null, views: w.views ?? {}, borrowed: 0, isDefault: !!w.isDefault || W.isDefaultName(w.name), protected: isProt(w), types: Number(w.types ?? 0) }]));
+  const out = [];
+  for (const g of groups) {
+    const r = row.get(g.workset) ?? row.set(g.workset, { workset: g.workset, elements: 0, correct: 0, wrong: 0, noRule: 0, manual: 0, to: [], views: {}, borrowed: 0 }).get(g.workset);
+    const n = Number(g.elements);
+    r.borrowed += Number(g.borrowed ?? 0);
+    let target = null, why = "";
+    if (DATUM.test(g.category)) { target = datum ?? g.workset; why = "datum: the datum workset"; }
+    else if (ruleOf(g.workset)?.manual) { r.manual += n; out.push({ ...g, state: "manual", target: g.workset }); continue; }
+    else {
+      const s = stdTarget(g, std?.rules);
+      if (s) { target = s.workset; why = s.why; }
+      else if (!std?.rules?.length || !std.strict) {
+        const cur = ruleOf(g.workset);
+        if (!onDefault(g, protectedNames) && !contradicts(g, cur)) { target = g.workset; why = "its workset's name fits it"; }
+        else { const pl = place(g, rules, groups); target = pl.workset; why = pl.reason; }
+      }
+    }
+    const as = appliedState(g, applied, groups), rec = as?.rec;
+    const ok = !!target && norm(target) === norm(g.workset);
+    if (!target) r.noRule += n;
+    else if (ok) r.correct += n;
+    else { r.wrong += n; r.to.push({ to: target, elements: n, category: g.category, level: g.level ?? "", why, sampleIds: g.sampleIds ?? [] }); }
+    // Four states: applied by ACE (it sits where ACE put it), changed after apply, correct already (not by ACE), still to do.
+    const state = as?.kind === "applied" ? "applied" : as?.kind === "changed" ? "changed after apply" : ok ? "correct already" : "still to do";
+    out.push({ ...g, target, why, state, ...(state === "applied" && target && !ok ? { differs: true } : {}), ...(rec ? { appliedAt: rec.at, planId: rec.planId, appliedTo: rec.to } : {}) });
+  }
+  const stdNames = new Set((std?.rules ?? []).filter((r) => r.workset && !/\{/.test(r.workset)).map((r) => norm(r.workset)));
+  const wanted = new Set(out.filter((g) => g.target).map((g) => norm(g.target)));
+  const rows = [...row.values()].map((r) => ({ ...r, empty: r.elements ? "" : wanted.has(norm(r.workset)) ? "empty, expected" : r.isDefault || r.protected ? "" : "empty, unused",
+    inStandard: std?.rules?.length ? (stdNames.has(norm(r.workset)) || r.isDefault || r.protected) : null }));
+  const missing = [...stdNames].filter((n) => !ws.some((w) => norm(w.name) === n)).map((n) => (std.rules.find((r) => norm(r.workset) === n) ?? {}).workset);
+  const sum = (k) => rows.reduce((t, r) => t + Number(r[k] ?? 0), 0);
+  const totals = { correct: sum("correct"), wrong: sum("wrong"), noRule: sum("noRule"), manual: sum("manual"), borrowed: sum("borrowed") };
+  const state = (s) => out.filter((g) => g.state === s);
+  const states = Object.fromEntries(["applied", "changed after apply", "correct already", "still to do"].map((s) => [s, { groups: state(s).length, elements: state(s).reduce((t, g) => t + Number(g.elements), 0) }]));
+  const pct = totals.correct + totals.wrong ? Math.round((100 * totals.correct) / (totals.correct + totals.wrong)) : 100;
+  return { model, pct, totals, states, rows, missing, groups: out, pending: (pending ?? []).filter((p) => !p.model || modelKey(p.model) === modelKey(model)), standard: standardText(std), records: records.length };
+}
+const lastApply = (s) => s.groups.filter((g) => g.state === "applied").sort((a, b) => String(b.appliedAt).localeCompare(String(a.appliedAt)))[0];
+export function statusText(s, { files = [] } = {}) {
+  const t = s.totals, st = s.states, la = lastApply(s);
+  const lines = [`WORKSET STATUS for ${s.model} (read-only; standard: ${s.standard}): ${s.pct}% correctly assigned (${t.correct} of ${t.correct + t.wrong} element(s)); wrong ${t.wrong}; no rule ${t.noRule}; manual-only ${t.manual}; borrowed by others ${t.borrowed}; pending actions ${s.pending.length}.`];
+  const differ = s.groups.filter((g) => g.differs);
+  lines.push(`Groups: applied by ACE ${st.applied.groups}${la ? ` (last ${la.appliedAt}, plan ${la.planId ?? "?"})` : ""}${differ.length ? `, ${differ.length} of them now differ from the standard` : ""}; changed after apply ${st["changed after apply"].groups}; correct already ${st["correct already"].groups}; still to do ${st["still to do"].groups}.`);
+  const wrong = s.rows.filter((r) => r.wrong);
+  if (wrong.length) lines.push(`Wrong (where each should go):\n${wrong.slice(0, 30).map((r) => `- ${W.q(r.workset)}: ${r.wrong} wrong: ${r.to.slice(0, 6).map((x) => `${x.elements} ${x.category}${x.level ? ` @ ${x.level}` : ""} -> ${W.q(x.to)} (${x.why})`).join("; ")}`).join("\n")}`);
+  if (differ.length) lines.push(`Applied by ACE, now differs from the standard:\n${differ.slice(0, 15).map((g) => `- ${g.elements} ${g.category}${g.level ? ` @ ${g.level}` : ""} on ${W.q(g.workset)} (ACE ${g.appliedAt}); the standard says ${W.q(g.target)} (${g.why})`).join("\n")}`);
+  const changed = s.groups.filter((g) => g.state === "changed after apply");
+  if (changed.length) lines.push(`Changed after apply (ACE moved them; flagged, not re-proposed):\n${changed.slice(0, 15).map((g) => `- ${g.elements} ${g.category}${g.level ? ` @ ${g.level}` : ""}: ACE moved to ${W.q(g.appliedTo)} on ${g.appliedAt}, now on ${W.q(g.workset)}`).join("\n")}`);
+  const empty = s.rows.filter((r) => r.empty);
+  if (empty.length) lines.push(`Empty: ${empty.map((r) => `${W.q(r.workset)} (${r.empty})`).join("; ")}.`);
+  const notStd = s.rows.filter((r) => r.inStandard === false);
+  if (notStd.length) lines.push(`Not in the standard: ${notStd.map((r) => W.q(r.workset)).join(", ")}.`);
+  if (s.missing.length) lines.push(`In the standard, missing from the model: ${s.missing.map(W.q).join(", ")}.`);
+  const hid = s.rows.filter((r) => r.elements && Object.values(r.views ?? {}).some((v) => v === false));
+  if (hid.length) lines.push(`Hidden in an export view: ${hid.map((r) => `${W.q(r.workset)} (${Object.entries(r.views).filter(([, v]) => v === false).map(([v]) => v).join(", ")})`).join("; ")}.`);
+  if (s.pending.length) lines.push(pendingText(s.pending));
+  if (files.length) lines.push(`Files:\n${files.map((f) => `- ${f}`).join("\n")}`);
+  return lines.join("\n");
+}
+export const STATUS_COLUMNS = ["Workset", "Elements", "Correct", "Wrong", "Should go to", "No rule", "Manual only", "Empty", "In the standard", "Open", "Visible by default", "Export views", "Borrowed"];
+const yn = (v) => v == null ? "" : v ? "yes" : "no";
+const statusRow = (r) => [r.workset, r.elements, r.correct, r.wrong, r.to.map((x) => `${x.elements} ${x.category} -> ${x.to}`).join(" | "), r.noRule, r.manual, r.empty, yn(r.inStandard), yn(r.open), yn(r.visibleByDefault),
+  Object.entries(r.views ?? {}).map(([v, on]) => `${v}: ${on === false ? "HIDDEN" : on ? "visible" : "?"}`).join("; "), r.borrowed];
+export const statusCsv = (s) => toCsv([STATUS_COLUMNS, ...s.rows.map(statusRow)]);
+export function statusHtml(s, { when = "", brand = {} } = {}) {
+  const body = `<tbody>${s.rows.map((r) => `<tr>${statusRow(r).map((c, i) => `<td${[1, 2, 3, 5, 6, 12].includes(i) ? ' class="num"' : ""}>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  return brandedPage({ title: `Workset status - ${s.model}`, heading: "Workset Status", brand,
+    meta: [["Model", esc(s.model)], ["Date", esc(when)], ["Standard", esc(s.standard)], ["Correctly assigned", `${s.pct}%`],
+      ["Elements", chips({ correct: s.totals.correct, wrong: s.totals.wrong, "no rule": s.totals.noRule, borrowed: s.totals.borrowed })],
+      ["Groups", chips(Object.fromEntries(Object.entries(s.states).map(([k, v]) => [k === "applied" ? "applied by ACE" : k, v.groups])))],
+      ["Missing from the model", esc(s.missing.join(", ") || "none")], ["Pending actions", String(s.pending.length)]],
+    head: STATUS_COLUMNS.map((c, i) => [1, 2, 3, 5, 6, 12].includes(i) ? `#${c}` : c), body: s.rows.length ? body : "", empty: "No worksets",
+    footer: `Generated by ACE (read-only status of ${esc(s.model)}). Nothing was changed.` });
+}
+/** The dashboard tile (model_dashboard reads the latest one). */
+export const statusTile = (s, at) => ({ id: "worksets", title: "Worksets", value: `${s.pct}% correct`, model: s.model, at, standard: s.standard, wrong: s.totals.wrong, pending: s.pending.length, states: s.states });
+
+/**
+ * reset: "default" (move everything to the default workset first, then the rules), computed as the END STATE so each
+ * element moves at most once, straight from its current workset to its final one: a group the plan moves keeps that
+ * target; a group the Groups sheet skipped stays; the datum workset, manual-only worksets and datum categories stay;
+ * every other group goes where the confirmed rules place it, else to the default workset. Borrowed elements are
+ * planned and skipped by the add-in (pending). -> { plan, defaultName, endState, toDefault, stay, borrowed }
+ */
+export function resetPlan(pf, facts, { manualOnly = [] } = {}) {
+  const R = pf.rules ?? [];
+  const ws = facts?.worksets ?? [];
+  const groups = (facts?.groups ?? []).filter(modelGroup).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
+  const ren = new Map((pf.plan.rename ?? []).map((r) => [norm(r.from), r.to]));
+  const fin = (n) => ren.get(norm(n)) ?? n;
+  const dflt = ws.find((w) => w.isDefault || W.isDefaultName(w.name))?.name ?? "Workset1";
+  const defaultName = fin(dflt);
+  const manual = new Set([...R.filter((r) => r.manual).flatMap((r) => [r.from, r.workset, ...(r.twins ?? [])]), ...manualOnly, ...ws.filter((w) => words(w.name).some((x) => MANUAL.has(x))).map((w) => w.name)].filter(Boolean).map(norm));
+  const planned = new Map((pf.plan.moves ?? []).map((m) => [m.key, m]));
+  const skip = new Set(pf.skipKeys ?? []);
+  const plan = { create: [...(pf.plan.create ?? [])], rename: [...(pf.plan.rename ?? [])], moves: [], delete: [] };
+  const stay = { datum: 0, manual: 0, skipped: 0, onDefault: 0 };
+  let toDefault = { groups: 0, elements: 0 }, borrowed = 0;
+  const keepKeys = [];   // groups that stay where they are: the add-in's reset never touches them
+  for (const g of groups) {
+    const n = Number(g.elements), cur = fin(g.workset);
+    if (manual.has(norm(g.workset))) { stay.manual += n; keepKeys.push(g.key); continue; }
+    if (DATUM.test(g.category)) { stay.datum += n; keepKeys.push(g.key); continue; }
+    if (skip.has(g.key)) { stay.skipped += n; keepKeys.push(g.key); continue; }
+    let to = planned.get(g.key)?.to ?? null, row = planned.get(g.key)?.row;
+    if (!to) { const pl = place(g, R, groups); to = pl.workset; row = R.find((r) => norm(r.workset) === norm(to ?? ""))?.line; }
+    if (!to) {
+      if (isProt(ws.find((w) => w.name === g.workset))) { stay.datum += n; keepKeys.push(g.key); continue; }
+      to = defaultName;
+      if (norm(to) === norm(cur)) { stay.onDefault += n; keepKeys.push(g.key); continue; }
+      toDefault.groups++; toDefault.elements += n;
+    }
+    if (norm(to) === norm(cur)) { keepKeys.push(g.key); continue; }
+    if (Number(g.borrowed ?? 0)) borrowed += Number(g.borrowed);
+    plan.moves.push(moveOf(g, cur, to, row));
+  }
+  const names = new Set(ws.map((w) => norm(fin(w.name))));
+  for (const m of plan.moves) if (!names.has(norm(m.to)) && !plan.create.some((c) => norm(c) === norm(m.to))) plan.create.push(m.to);
+  plan.delete = (pf.plan.delete ?? []).filter((d) => !plan.moves.some((m) => norm(m.to) === norm(d)));
+  return { plan, defaultName, endState: endState(facts, plan), toDefault, stay, borrowed, keepKeys, manualWorksets: ws.filter((w) => manual.has(norm(w.name))).map((w) => w.name) };
+}
+/** Elements per workset before and after a plan (final names; renames applied). */
+export function endState(facts, plan) {
+  const ren = new Map((plan.rename ?? []).map((r) => [norm(r.from), r.to]));
+  const fin = (n) => ren.get(norm(n)) ?? n;
+  const m = new Map();
+  const at = (n) => m.get(norm(n)) ?? m.set(norm(n), { workset: n, before: 0, after: 0 }).get(norm(n));
+  for (const w of facts?.worksets ?? []) { const e = at(fin(w.name)); e.before += Number(w.elements ?? 0); e.after += Number(w.elements ?? 0); }
+  for (const c of plan.create ?? []) at(c);
+  for (const mv of plan.moves ?? []) { at(mv.from).after -= Number(mv.elements); at(mv.to).after += Number(mv.elements); }
+  for (const d of plan.delete ?? []) at(d).deleted = true;
+  return [...m.values()];
+}
+export const endStateText = (es) => `End state per workset (before -> after):\n${es.filter((e) => e.before || e.after || e.deleted).map((e) => `- ${W.q(e.workset)}: ${e.before} -> ${e.after}${e.deleted ? " (deleted)" : ""}${e.before !== e.after ? ` (${e.after > e.before ? "+" : ""}${e.after - e.before})` : ""}`).join("\n")}`;
+
+/**
+ * Partial apply: only { rows, worksets, categories, models, keys } of the confirmed plan. Moves are kept when they match
+ * every given filter; renames a kept move needs (it names the final workset) stay, as do renames, creates and deletes of
+ * the named worksets or rows. -> { plan, kept, dropped, outOfModel }
+ */
+export function filterPlan(plan, only, model) {
+  if (!only) return { plan, kept: plan.moves.length, dropped: 0 };
+  if (only.models?.length && !only.models.some((m) => modelKey(m) === modelKey(model))) return { plan: finalPlan(), kept: 0, dropped: plan.moves.length, outOfModel: true };
+  const rows = only.rows?.length ? new Set(only.rows.map(String)) : null;
+  const wsSet = only.worksets?.length ? new Set(only.worksets.map(norm)) : null;
+  const cats = only.categories?.length ? only.categories : null;
+  const keys = only.keys?.length ? new Set(only.keys) : null;
+  const moves = plan.moves.filter((m) => (!rows || rows.has(String(m.row))) && (!wsSet || wsSet.has(norm(m.to)) || wsSet.has(norm(m.from)))
+    && (!cats || catIs(m.category, cats)) && (!keys || keys.has(m.key)));
+  const used = new Set(moves.flatMap((m) => [norm(m.from), norm(m.to)]));
+  const named = (n) => !!wsSet?.has(norm(n));
+  const rename = plan.rename.filter((r) => used.has(norm(r.to)) || named(r.from) || named(r.to));
+  const create = plan.create.filter((c) => moves.some((m) => norm(m.to) === norm(c)) || named(c));
+  const del = plan.delete.filter((d) => named(d) && !moves.some((m) => norm(m.to) === norm(d)));
+  return { plan: { create, rename, moves, delete: del }, kept: moves.length, dropped: plan.moves.length - moves.length };
+}
+/**
+ * Moves already done (the group's key is gone and its elements sit on the target now: an earlier apply) are dropped;
+ * apply says so. -> { plan, already: [{ key, to, elements }] }
+ */
+export function skipDone(plan, facts) {
+  const groups = (facts?.groups ?? []).map((g) => ({ ...g, key: g.key ?? groupKey(g) }));
+  const keys = new Set(groups.map((g) => g.key));
+  const already = [];
+  const now = new Map(groups.map((g) => [g.key, Number(g.elements)]));
+  const moves = plan.moves.map((m) => {
+    if (keys.has(m.key) && now.get(m.key) < Number(m.elements)) {
+      // Partly done (an earlier apply moved the rest; borrowed ones stayed): the move is for what is left.
+      const there = groups.filter((g) => identity(g) === identity(m) && norm(g.workset) === norm(m.to)).reduce((n, g) => n + Number(g.elements), 0);
+      if (there + now.get(m.key) >= Number(m.elements)) { already.push({ key: m.key, to: m.to, elements: Number(m.elements) - now.get(m.key), partly: true }); return { ...m, elements: now.get(m.key) }; }
+    }
+    return m;
+  }).filter((m) => {
+    if (keys.has(m.key)) return true;
+    const there = groups.filter((g) => identity(g) === identity(m) && norm(g.workset) === norm(m.to)).reduce((n, g) => n + Number(g.elements), 0);
+    if (there >= Number(m.elements)) { already.push({ key: m.key, to: m.to, elements: Number(m.elements) }); return false; }
+    return true;
+  });
+  return { plan: { ...plan, moves, delete: plan.delete }, already };
+}
+
+/** Pending (borrowed) actions: the add-in's pending [{ id, owner, from, to }], merged by element id. */
+export function mergePending(old = [], add = [], { model, done = [], at } = {}) {
+  const m = new Map((old ?? []).map((p) => [String(p.id), p]));
+  for (const id of done ?? []) m.delete(String(id));
+  for (const p of add ?? []) if (p?.id != null) m.set(String(p.id), { ...m.get(String(p.id)), ...p, model: p.model ?? model, since: m.get(String(p.id))?.since ?? at });
+  return [...m.values()];
+}
+export function pendingText(list, { planFile } = {}) {
+  if (!list?.length) return "";
+  const by = new Map();
+  for (const p of list) { const k = `${p.owner ?? "?"}|${p.to ?? "?"}`; by.set(k, [...(by.get(k) ?? []), p]); }
+  return `Pending actions (borrowed by others: move these once they are relinquished; the next apply retries them first):\n${[...by.values()].slice(0, 20).map((ps) => `- ${ps.length} element(s) held by ${ps[0].owner ?? "?"} -> ${W.q(ps[0].to ?? "?")}: ids ${ps.slice(0, 12).map((p) => p.id).join(", ")}${ps.length > 12 ? ", ..." : ""}`).join("\n")}${planFile ? `\nFollow-up: workset_plan { action: "apply", plan_file: ${JSON.stringify(planFile)}, dry_run: true } (pending ids first), then the identical call without dry_run.` : ""}`;
+}
+
+/**
+ * Refresh: the new proposal against the previous file. Earlier decisions are carried over (rule rows by workset name,
+ * group rows by key, else model + current workset + category + type + level); each row is marked new, changed (count
+ * or target differs), same, or gone (appended, decision kept for the record). Applied groups are not proposed again.
+ */
+export const SINCE = "Since last proposal";
+export function refresh(p, tables) {
+  const oldR = tables.find((t) => t.layout === "rules")?.rows ?? [], oldG = tables.find((t) => t.layout === "groups")?.rows ?? [];
+  const rk = (n) => twinKey(n);
+  const oldRules = new Map(oldR.map((r) => [rk(r.proposed), r]));
+  const gk = (r) => [modelKey(r.model ?? r.Model), norm(r.current ?? r["Current workset"]), norm(r.category ?? r.Category), typeKey(r.type ?? r["Type / link / contents"]), norm(r.level ?? r.Level)].join("|");
+  const oldGroups = new Map(oldG.map((r) => [r.key || gk(r), r]));
+  const oldByLoose = new Map(oldG.map((r) => [gk(r), r]));
+  const seenR = new Set(), seenG = new Set();
+  const counts = { new: 0, changed: 0, same: 0, gone: 0, kept: 0 };
+  const mark = (row, old, changed) => { const s = !old ? "new" : changed ? "changed" : "same"; counts[s]++; if (old && old.decision) { row[DECISION] = old.decision; counts.kept++; } row[SINCE] = s + (changed ? `: ${changed}` : ""); };
+  for (const row of p.rules) {
+    const old = oldRules.get(rk(row["Proposed workset"])) ?? (row.Rule ? oldRules.get(rk(JSON.parse(row.Rule).workset)) : null);
+    if (old) seenR.add(old);
+    const diff = old ? [String(old.action) !== String(row.Action) ? `action ${old.action} -> ${row.Action}` : ""].filter(Boolean).join("; ") : "";
+    mark(row, old, diff);
+  }
+  for (const row of p.detail) {
+    const old = oldGroups.get(row.Key) ?? oldByLoose.get(gk(row));
+    if (old) seenG.add(old);
+    const diff = old ? [String(old.elements).trim() !== "" && Number(old.elements) !== Number(row.Elements) ? `count ${old.elements} -> ${row.Elements}` : "", norm(old.proposed) !== norm(row["Proposed workset"]) ? `target ${old.proposed || "(none)"} -> ${row["Proposed workset"] || "(none)"}` : ""].filter(Boolean).join("; ") : "";
+    mark(row, old, diff);
+  }
+  for (const r of oldR.filter((x) => !seenR.has(x))) { counts.gone++; p.rules.push({ Group: r.group || "Gone", "Proposed workset": r.proposed, Action: r.action, Models: r.models, "What it holds (from its name)": "", "Holds now": "", "Would receive": "", "Open / visibility": "", Note: "no longer proposed", [DECISION]: r.decision, Rule: r.rule, [SINCE]: "gone" }); }
+  for (const r of oldG.filter((x) => !seenG.has(x))) { counts.gone++; p.detail.push({ Model: r.model, Row: r.row, "Current workset": r.current, Category: r.category, "Type / link / contents": r.type, Level: r.level, Elements: r.elements, "Proposed workset": r.proposed, "Proposed action": r.action, Reason: "no longer proposed (moved, applied or deleted)", Confidence: "", [DECISION]: r.decision, Key: r.key, [SINCE]: "gone" }); }
+  p.refreshed = counts;
+  return p;
+}
+
+/** Pending entries in an only filter's scope (by target or origin workset, category, model); rows / keys alone: none. */
+export function pendingInScope(list, only, model) {
+  if (!only) return list;
+  if (only.models?.length && !only.models.some((m) => modelKey(m) === modelKey(model))) return [];
+  if (!only.worksets?.length && !only.categories?.length) return [];
+  const ws = only.worksets?.length ? new Set(only.worksets.map(norm)) : null;
+  return list.filter((p) => (!ws || ws.has(norm(p.to)) || ws.has(norm(p.from))) && (!only.categories?.length || (p.category && catIs(p.category, only.categories))));
 }

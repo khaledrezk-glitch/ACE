@@ -103,7 +103,15 @@ namespace AceRevitMcp.Companion
                     .Where(k => k != "plan" || (kind == "workset_admin" && args["plan"] is JsonObject))
                     .Where(k => kind != "parameter_fill" || k is not ("impact" or "register"))
                     .OrderBy(k => k, StringComparer.Ordinal);
-                material = kind + "\n" + string.Join("\n", keys.Select(k => $"{k}={part(k)}"));
+                // A workset plan's moves[].row is the line in the decision file: information only, not part of the change.
+                string planPart(string k)
+                {
+                    if (kind != "workset_admin" || !(k is "workset_plan" or "plan") || !(args[k] is JsonObject po) || !(po["moves"] is JsonArray)) return part(k);
+                    var clone = (JsonObject)po.DeepClone();
+                    foreach (var mv in ((JsonArray)clone["moves"]).OfType<JsonObject>()) mv.Remove("row");
+                    return clone.ToJsonString();
+                }
+                material = kind + "\n" + string.Join("\n", keys.Select(k => $"{k}={planPart(k)}"));
             }
             return Util.Compat.Sha256Hex(material);
         }

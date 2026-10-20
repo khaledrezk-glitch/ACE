@@ -564,6 +564,10 @@ class P {
     Check(FpW("{" + wpA + "}") != FpW("{" + wpB + "}") && FpW("{" + wpA + "}") == FpW("{" + wpA + @", ""dry_run"": true, ""plan"": [""checklist""], ""step"": 2 }")
       && FpW(@"{ ""action"": ""apply_plan"", ""plan"": { ""create"": [""TST_A""] } }") != FpW(@"{ ""action"": ""apply_plan"", ""plan"": { ""create"": [""TST_B""] } }"),
       "fingerprint: two workset plans are two changes (workset_plan, and the 1.13.0 plan object); the panel's checklist plan is not part of it");
+    var wpRow1 = @"{ ""action"": ""apply_plan"", ""workset_plan"": { ""moves"": [{ ""key"": ""TST_A|Walls||||"", ""to"": ""TST_NEW"", ""row"": 4 }] } }";
+    var wpRow2 = @"{ ""action"": ""apply_plan"", ""workset_plan"": { ""moves"": [{ ""key"": ""TST_A|Walls||||"", ""to"": ""TST_NEW"", ""row"": 9 }] } }";
+    var wpRow3 = @"{ ""action"": ""apply_plan"", ""workset_plan"": { ""moves"": [{ ""key"": ""TST_A|Walls||||"", ""to"": ""TST_OTHER"", ""row"": 4 }] } }";
+    Check(FpW(wpRow1) == FpW(wpRow2) && FpW(wpRow1) != FpW(wpRow3), "fingerprint: a workset move's row (the decision file line) is information only");
 
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }

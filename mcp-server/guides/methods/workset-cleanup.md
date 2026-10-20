@@ -19,3 +19,5 @@ section uses the project's alone). project_rules section "worksets" shows what i
   (plan per model, rules shown; save_rules + confirm: true writes them to the vault) -> apply (check_only, dry_run, then
   the identical call). Assignment follows the workset NAMES: the category word decides, level / zone narrows, material
   never mismatches; visibility worksets are manual only; the next model needs no CSV (assign_worksets with the saved rules).
+- workset_plan action status (read-only) before and after: % correct against the standard, what ACE applied, what changed
+  after, pending (borrowed) actions. Apply part of the plan with only; reset: "default" when the model is a mess.

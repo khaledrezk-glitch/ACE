@@ -967,6 +967,14 @@
           "value": 2
         }
       ]
+    },
+    {
+      "name": "Workset facts (1.13.3): read-only; no sketch, sub-element or legend group; levels carry code / phrase",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "workset_admin",
+      "args": { "action": "facts", "check_only": true, "max_ids": 2 },
+      "maxMs": 120000,
+      "expect": [{ "path": "model", "op": "exists" }, { "path": "levels", "op": "exists" }]
     }
   ]
 }

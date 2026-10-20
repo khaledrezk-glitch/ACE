@@ -15,7 +15,8 @@ namespace AceRevitMcp.Rules
 {
     /// <summary>
     /// workset_admin "facts" and "apply_plan" (workset_plan). facts reads, in one pass, every element on a user workset (model
-    /// elements, RVT links, CAD imports; not view-specific, not types, not levels and grids) grouped by
+    /// elements, RVT links, CAD imports; not types, levels and grids, not sketches or view-only items ("nonModel"), not
+    /// sub-elements such as stair runs, rail parts and curtain panels, which follow their host ("followsHost")) grouped by
     /// [workset, category, type, level, material, zone, option], with the worksets, levels and zones. apply_plan runs
     /// { create, rename, moves, delete } as ONE native change in that order, with the same gate as rename / delete_empty
     /// (check_only, dry_run, expect_model, expect_version, expect_plan) and a self-check that rolls everything back.
@@ -43,8 +44,66 @@ namespace AceRevitMcp.Rules
         /// One pass over the model's instances: the elements per user workset (as audit counts them) and the facts of every
         /// element that can be grouped. Types, levels, materials and zones are looked up once each.
         /// </summary>
-        private static List<Fact> Scan(Document doc, List<L.Workset> worksets, bool checkout)
+        /// <summary>What a scan leaves out of the groups: sub-elements (with their host) and non-model items, by element id.</summary>
+        private sealed class ScanInfo
         {
+            public Dictionary<long, (long Ws, long Host)> Followers = new Dictionary<long, (long, long)>();
+            public Dictionary<long, long> NonModel = new Dictionary<long, long>();   // id > workset
+        }
+
+        private static readonly HashSet<BuiltInCategory> ViewOnlyCategories = new HashSet<BuiltInCategory>
+        {
+            BuiltInCategory.OST_LegendComponents, BuiltInCategory.OST_Cameras, BuiltInCategory.OST_Viewers, BuiltInCategory.OST_SectionBox,
+            BuiltInCategory.OST_VolumeOfInterest, BuiltInCategory.OST_Matchline,
+        };
+
+        /// <summary>Never grouped: views and view-only items, reference planes, sketches (their planes and lines), non-model categories.</summary>
+        private static bool IsNonModel(Element e, string category)
+        {
+            if (e.ViewSpecific) return true;   // 2D view-specific imports too: only model-space links and imports group
+            if (e is RevitLinkInstance || e is ImportInstance) return false;
+            if (e is View || e is ReferencePlane || e is Sketch || e is SketchPlane || P.IsSketchCategory(category)) return true;
+            try
+            {
+                var c = e.Category;
+                return c == null || c.CategoryType != CategoryType.Model || ViewOnlyCategories.Contains(c.BuiltInCategory);
+            }
+            catch { return true; }
+        }
+
+        /// <summary>The element a sub-element belongs to (0 = none): a nested part, a stair run or landing, a railing's top or hand rail.</summary>
+        private static long HostOf(Element e)
+        {
+            try
+            {
+                switch (e)
+                {
+                    case FamilyInstance fi when fi.SuperComponent != null: return fi.SuperComponent.Id.Value;
+                    case Autodesk.Revit.DB.Architecture.StairsRun run: return run.GetStairs()?.Id.Value ?? 0;
+                    case Autodesk.Revit.DB.Architecture.StairsLanding landing: return landing.GetStairs()?.Id.Value ?? 0;
+                    case Autodesk.Revit.DB.Architecture.ContinuousRail rail: return rail.HostRailingId == null || rail.HostRailingId == ElementId.InvalidElementId ? 0 : rail.HostRailingId.Value;
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        /// <summary>Sub-elements only their host names: a stair's supports, a curtain wall's panels and mullions.</summary>
+        private static IEnumerable<ElementId> SubsOf(Element e)
+        {
+            try
+            {
+                if (e is Autodesk.Revit.DB.Architecture.Stairs st) return st.GetStairsSupports();
+                if (e is Wall w && w.CurtainGrid is CurtainGrid g) return g.GetPanelIds().Concat(g.GetMullionIds()).ToList();
+            }
+            catch { }
+            return Enumerable.Empty<ElementId>();
+        }
+
+        private static List<Fact> Scan(Document doc, List<L.Workset> worksets, bool checkout, ScanInfo info = null)
+        {
+            info = info ?? new ScanInfo();
+            var subHost = new Dictionary<long, long>();
             var byId = worksets.ToDictionary(w => w.Id);
             var facts = new List<Fact>();
             var typeNames = new Dictionary<long, string>();
@@ -80,13 +139,15 @@ namespace AceRevitMcp.Rules
                 w.Elements++;
                 w.ByCategory[cat] = w.ByCategory.TryGetValue(cat, out var c0) ? c0 + 1 : 1;
                 if (e is ElementType) { w.Types++; continue; }   // counted, never grouped or moved
-                if (e is Level || e is Grid) w.LevelsAndGrids++;
+                if (e is Level || e is Grid) { w.LevelsAndGrids++; continue; }
 
-                // Groupable: model elements, links and imports; not view-specific, not datums, not nested family parts.
-                if (e is View || e.ViewSpecific || e is Level || e is Grid || e is ReferencePlane) continue;
-                if (e is FamilyInstance nested && nested.SuperComponent != null) continue;
+                // Groupable: model elements, links and imports. Not grouped: non-model items (sketches, view-only, reference
+                // planes) and sub-elements, which follow their host.
+                if (IsNonModel(e, cat)) { info.NonModel[e.Id.Value] = ws; continue; }
+                var host = HostOf(e);
+                if (host != 0) { info.Followers[e.Id.Value] = (ws, host); continue; }
+                foreach (var sub in SubsOf(e)) if (sub != null && sub != ElementId.InvalidElementId) subHost[sub.Value] = e.Id.Value;
                 var isLink = e is RevitLinkInstance; var isImport = e is ImportInstance;
-                if (!isLink && !isImport && (e.Category == null || e.Category.CategoryType != CategoryType.Model)) continue;
 
                 var f = new Fact { Id = e.Id.Value, WorksetId = ws, Workset = w.Name };
                 f.Category = isImport ? P.CadImports : cat;
@@ -135,6 +196,18 @@ namespace AceRevitMcp.Rules
                     catch { /* not a worksharing element */ }
                 facts.Add(f);
             }
+            // Sub-elements named by their host (stair supports, curtain panels and mullions) leave the groups too.
+            foreach (var f in facts.Where(f => subHost.ContainsKey(f.Id) && f.Id != subHost[f.Id])) info.Followers[f.Id] = (f.WorksetId, subHost[f.Id]);
+            facts.RemoveAll(f => info.Followers.ContainsKey(f.Id));
+            // A part of a part follows the outermost host (the element a plan moves).
+            foreach (var id in info.Followers.Keys.ToList())
+            {
+                var (ws0, h) = info.Followers[id];
+                for (var i = 0; i < 10 && info.Followers.TryGetValue(h, out var up) && up.Host != id; i++) h = up.Host;
+                info.Followers[id] = (ws0, h);
+            }
+            foreach (var x in info.Followers.Values) if (byId.TryGetValue(x.Ws, out var fw)) fw.FollowsHost++;
+            foreach (var x in info.NonModel.Values) if (byId.TryGetValue(x, out var nw)) nw.NonModel++;
             return facts;
         }
 
@@ -181,7 +254,7 @@ namespace AceRevitMcp.Rules
         {
             var r = new JsonObject { ["model"] = doc.Title, ["aceVersion"] = aceVersion, ["action"] = "facts", ["checkOnly"] = true, ["workshared"] = doc.IsWorkshared };
             r["levels"] = new JsonArray(new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation)
-                .Select(l => (JsonNode)new JsonObject { ["name"] = l.Name, ["elevation"] = Math.Round(Lengths.Mm(l.Elevation)) }).ToArray());
+                .Select(l => (JsonNode)new JsonObject { ["name"] = l.Name, ["code"] = P.LevelCode(l.Name), ["phrase"] = P.LevelPhrase(l.Name), ["elevation"] = Math.Round(Lengths.Mm(l.Elevation)) }).ToArray());
             r["zones"] = new JsonArray(new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_VolumeOfInterest).WhereElementIsNotElementType()
                 .Select(z => z.Name).Where(n => !string.IsNullOrWhiteSpace(n)).Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal).Select(n => (JsonNode)n).ToArray());
             if (!doc.IsWorkshared) { r["worksets"] = new JsonArray(); r["groups"] = new JsonArray(); r["note"] = "The model is not workshared: it has no worksets."; return r; }
@@ -202,8 +275,8 @@ namespace AceRevitMcp.Rules
                 foreach (var v in views) { try { inViews[v.Name] = VisibleIn(v, w.Id, defaults); } catch { inViews[v.Name] = null; } }
                 return (JsonNode)new JsonObject
                 {
-                    ["id"] = w.Id, ["name"] = w.Name, ["elements"] = w.Elements, ["types"] = w.Types, ["byCategory"] = Counts(w.ByCategory),
-                    ["isDefault"] = w.IsDefault, ["protected"] = L.IsProtected(w), ["editable"] = w.Editable,
+                    ["id"] = w.Id, ["name"] = w.Name, ["elements"] = w.Elements, ["types"] = w.Types, ["followsHost"] = w.FollowsHost, ["nonModel"] = w.NonModel,
+                    ["byCategory"] = Counts(w.ByCategory), ["isDefault"] = w.IsDefault, ["protected"] = L.IsProtected(w), ["editable"] = w.Editable,
                     ["owner"] = string.IsNullOrWhiteSpace(w.Owner) ? null : w.Owner, ["open"] = w.Open,
                     ["visibleByDefault"] = byDefault, ["views"] = inViews,
                 };
@@ -267,7 +340,8 @@ namespace AceRevitMcp.Rules
             JsonArray Arr(params string[] names) => names.Select(n => planArg[n] as JsonArray).FirstOrDefault(a => a != null) ?? new JsonArray();
 
             var worksets = UserWorksets(doc);
-            var facts = Scan(doc, worksets, checkout: true);
+            var info = new ScanInfo();
+            var facts = Scan(doc, worksets, checkout: true, info);
             L.MarkDatum(worksets, DatumName(doc, args));
             var before = CountByCategory(doc);
             var me = app.Application.Username;
@@ -301,7 +375,104 @@ namespace AceRevitMcp.Rules
             var byKey = facts.GroupBy(f => f.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
             var moveSteps = new List<P.Step>();
             var claimed = new Dictionary<long, string>();
+            var claimedTo = new Dictionary<long, string>();
             var typeClaims = new Dictionary<long, (string Step, string To)>();   // a link type moves once, to one workset
+            var pinnedIds = new List<long>();
+            var repinned = new List<(long Id, long To)>();   // pinned elements the move had to unpin, set and pin again
+            var pinnedDirect = 0;                              // pinned elements Revit moved without unpinning
+            var pinBefore = new Dictionary<long, bool>();      // the pin state of every element the run set: the same after (else roll back)
+            var pinFailed = new List<long>();                  // pinned elements whose workset could not be set even unpinned: skipped, pinned again
+            var retried = new JsonArray();
+            var retrySteps = new Dictionary<string, P.Step>(StringComparer.OrdinalIgnoreCase);   // pending_retry answers and steps
+            var pending = new JsonArray(); var pendingTotal = 0; var pendingIds = new HashSet<long>();
+            void PendingOne(long id, string category, bool borrowed, string holder, string from, string to)
+            {
+                if (!pendingIds.Add(id)) return;   // one entry per element, with the first (the group's) target
+                pendingTotal++;
+                if (pending.Count < 1000)
+                    pending.Add(new JsonObject { ["id"] = id, ["category"] = category, ["owner"] = borrowed ? holder : null, ["holder"] = borrowed ? holder : null, ["why"] = borrowed ? "borrowed" : "changed in central", ["from"] = from, ["to"] = to });
+            }
+            void Pending(IEnumerable<Fact> held, string to)
+            {
+                foreach (var f in held) PendingOne(f.Id, f.Category, f.Borrowed, f.Holder, f.Workset, to);
+            }
+            // What stays where it is: the datum workset, keep_worksets (by name now or after the renames) and keep_keys groups.
+            var keepNames = (planArg["keep_worksets"] as JsonArray ?? args["keep_worksets"] as JsonArray ?? new JsonArray()).Select(n => n?.ToString()?.Trim()).Where(n => !string.IsNullOrEmpty(n)).ToList();
+            var keep = new HashSet<long>(worksets.Where(w => L.IsProtected(w) || keepNames.Any(n => string.Equals(n, w.Name, StringComparison.OrdinalIgnoreCase) || string.Equals(n, finalName[w.Id], StringComparison.OrdinalIgnoreCase))).Select(w => w.Id));
+            var keepKeys = new HashSet<string>((planArg["keep_keys"] as JsonArray ?? args["keep_keys"] as JsonArray ?? new JsonArray()).Select(k => k?.ToString()).Where(k => k != null), StringComparer.Ordinal);
+            var datumIds = new HashSet<long>(worksets.Where(L.IsProtected).Select(w => w.Id));
+            void Take(P.Step step, Fact f, (long Id, string Name) to, string what, List<long> readOnly)
+            {
+                // An element named twice: the same target is one move (a retry and its group row), two targets are a conflict.
+                if (claimed.TryGetValue(f.Id, out var other) && other.StartsWith("retry:", StringComparison.Ordinal) && !step.Id.StartsWith("retry:", StringComparison.Ordinal)
+                    && !string.Equals(claimedTo[f.Id], to.Name, StringComparison.OrdinalIgnoreCase) && retrySteps.TryGetValue(claimedTo[f.Id], out var rs))
+                {
+                    // A stale retry: this plan puts the element elsewhere, and the plan wins.
+                    rs.Ids.Remove(f.Id); rs.Elements = rs.Ids.Count;
+                    foreach (var ro in retried.OfType<JsonObject>().Where(x => (long)x["id"] == f.Id)) { ro["ok"] = false; ro["why"] = $"superseded: this plan moves it to {to.Name}"; ro["drop"] = true; }
+                    claimed.Remove(f.Id);
+                }
+                if (claimed.TryGetValue(f.Id, out other))
+                {
+                    if (!string.Equals(claimedTo[f.Id], to.Name, StringComparison.OrdinalIgnoreCase))
+                        blocks.Add(new L.Block { What = what, Code = "naming", Detail = $"element {f.Id} is also moved by {other} (to {claimedTo[f.Id]})", SampleIds = new List<long> { f.Id } });
+                    return;
+                }
+                claimed[f.Id] = step.Id; claimedTo[f.Id] = to.Name;   // claimed even when already there: reset leaves it alone
+                if (to.Id != 0 && f.WorksetId == to.Id) return;   // already there
+                var e = doc.GetElement(new ElementId(f.Id));
+                var p = e?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
+                var isPinned = false;
+                try { isPinned = e.Pinned; } catch { isPinned = false; }
+                if (p == null || (p.IsReadOnly && !isPinned)) { readOnly.Add(f.Id); return; }   // pinned: the move unpins, sets and pins again if Revit refuses
+                step.Ids.Add(f.Id);
+                if (isPinned) pinnedIds.Add(f.Id);
+                // A link or CAD import: its type moves with it (RevitLinkType / CADLinkType carry a workset of their own).
+                if (f.TypeId != 0 && !(to.Id != 0 && f.TypeWorksetId == to.Id))
+                {
+                    if (!f.TypeEditable) skipped.Add(new JsonObject { ["key"] = step.Key, ["ids"] = new JsonArray(f.TypeId), ["count"] = 1, ["holder"] = null, ["why"] = "the link type's workset cannot be set: the instance moves, its type stays" });
+                    else if (typeClaims.TryGetValue(f.TypeId, out var tc))
+                    {
+                        if (!string.Equals(tc.To, to.Name, StringComparison.OrdinalIgnoreCase))
+                            blocks.Add(new L.Block { What = what, Code = "naming", Detail = $"the link type {f.TypeId} would go to {tc.To} and to {to.Name}: its instances must share one workset", SampleIds = new List<long> { f.TypeId } });
+                    }
+                    else { typeClaims[f.TypeId] = (step.Id, to.Name); step.TypeIds.Add(f.TypeId); }
+                }
+                step.ByCategory[f.Category] = step.ByCategory.TryGetValue(f.Category, out var c) ? c + 1 : 1;
+            }
+            JsonObject SkipJson(string key, IEnumerable<long> ids, int count, string holder, string why) =>
+                new JsonObject { ["key"] = key, ["ids"] = new JsonArray(ids.Take(Math.Max(1, maxIds)).Select(i => (JsonNode)i).ToArray()), ["count"] = count, ["holder"] = holder, ["why"] = why };
+            // 3a. pending_retry: elements borrowed on the last run go first, if this user can take them now; the rest stay pending.
+            var retryArr = planArg["pending_retry"] as JsonArray ?? args["pending_retry"] as JsonArray;
+            if (retryArr != null)
+            {
+                var retryReadOnly = new List<long>();
+                foreach (var o in retryArr.OfType<JsonObject>())
+                {
+                    if (o["id"] == null || !long.TryParse(o["id"].ToString(), out var id)) continue;
+                    var to = Target(o["to"]?.ToString());
+                    // drop: a permanent answer (the server removes the id from its pending file); without it the id is retried again.
+                    void Retried(bool ok, string why, bool drop = false)
+                    {
+                        var ro = new JsonObject { ["id"] = id, ["ok"] = ok, ["why"] = why };
+                        if (drop) ro["drop"] = true;
+                        retried.Add(ro);
+                    }
+                    if (to == null) { Retried(false, $"no workset is called {o["to"]} after the creates and renames", true); continue; }
+                    if (!factById.TryGetValue(id, out var f)) { Retried(false, info.Followers.ContainsKey(id) ? "a sub-element: it follows its host" : "not found on a user workset (deleted, or no longer a model element)", true); continue; }
+                    if (to.Value.Id != 0 && f.WorksetId == to.Value.Id) { Retried(true, "already there"); continue; }
+                    if (keep.Contains(f.WorksetId) || keepKeys.Contains(f.Key) || datumIds.Contains(to.Value.Id)) { Retried(false, "kept", true); continue; }
+                    if (f.Borrowed || f.Central) { Pending(new[] { f }, to.Value.Name); Retried(false, f.Borrowed ? "still borrowed" + (f.Holder != null ? " by " + f.Holder : "") : "changed in central: synchronize first"); continue; }
+                    if (!retrySteps.TryGetValue(to.Value.Name, out var st))
+                        retrySteps[to.Value.Name] = st = new P.Step { Id = "retry:" + to.Value.Name, Kind = "move", Workset = to.Value.Name, ToId = to.Value.Id, Key = "retry" };
+                    var r0 = retryReadOnly.Count; var b0 = blocks.Count;
+                    Take(st, f, to.Value, "retry " + id + " > " + to.Value.Name, retryReadOnly);
+                    if (retryReadOnly.Count > r0) Retried(false, "its workset cannot be set (read-only: e.g. hosted by or part of another element)", true);
+                    else if (blocks.Count > b0) Retried(false, "named twice in pending_retry with different targets", true);
+                    else Retried(true, st.Ids.Contains(id) ? "moved" : "already there");
+                }
+                foreach (var st in retrySteps.Values) { st.Elements = st.Ids.Count; moveSteps.Add(st); }
+            }
             var moveIndex = 0;
             foreach (var mv in Arr("moves").OfType<JsonObject>())
             {
@@ -320,7 +491,13 @@ namespace AceRevitMcp.Rules
                     {
                         if (n == null || !long.TryParse(n.ToString(), out var id)) continue;
                         if (factById.TryGetValue(id, out var fx)) found.Add(fx);
-                        else skipped.Add(new JsonObject { ["key"] = "ids", ["ids"] = new JsonArray(id), ["holder"] = null, ["why"] = "not found on a user workset (deleted, a type, view-specific or a datum)" });
+                        else skipped.Add(new JsonObject
+                        {
+                            ["key"] = "ids", ["ids"] = new JsonArray(id), ["holder"] = null,
+                            ["why"] = info.Followers.ContainsKey(id) ? "a sub-element: it follows its host (move the host)"
+                                : info.NonModel.ContainsKey(id) ? "not a model element (a sketch, view-only item or reference plane): never moved by a plan"
+                                : "not found on a user workset (deleted, a type, view-specific or a datum)",
+                        });
                     }
                 }
                 else if (key != null) found = byKey.TryGetValue(key, out var list) ? list : new List<Fact>();
@@ -333,36 +510,17 @@ namespace AceRevitMcp.Rules
                     blocks.Add(new L.Block { What = what, Code = "plan-changed", Detail = $"the group holds {found.Count} element{(found.Count == 1 ? "" : "s")} now, the plan counted {expected.Value}" });
                     continue;
                 }
-                var step = new P.Step { Id = "move:" + moveIndex + ":" + (key ?? "ids"), Kind = "move", Workset = to.Value.Name, ToId = to.Value.Id, Key = key ?? "ids" };
+                var step = new P.Step { Id = "move:" + moveIndex + ":" + (key ?? "ids"), Kind = "move", Workset = to.Value.Name, ToId = to.Value.Id, Key = key ?? "ids", Row = mv["row"]?.ToString() };
                 if (key != null) step.From = found.FirstOrDefault()?.Workset;
                 foreach (var grpSkip in found.Where(f => f.Borrowed).GroupBy(f => f.Holder))
                     skipped.Add(new JsonObject { ["key"] = step.Key, ["ids"] = new JsonArray(grpSkip.Take(Math.Max(1, maxIds)).Select(f => (JsonNode)f.Id).ToArray()), ["count"] = grpSkip.Count(), ["holder"] = grpSkip.Key, ["why"] = "borrowed" });
                 foreach (var grpSkip in found.Where(f => !f.Borrowed && f.Central).GroupBy(f => f.Workset))
                     skipped.Add(new JsonObject { ["key"] = step.Key, ["ids"] = new JsonArray(grpSkip.Take(Math.Max(1, maxIds)).Select(f => (JsonNode)f.Id).ToArray()), ["count"] = grpSkip.Count(), ["holder"] = null, ["why"] = "changed in central: synchronize first" });
+                Pending(found.Where(f => (f.Borrowed || f.Central) && !(to.Value.Id != 0 && f.WorksetId == to.Value.Id)), to.Value.Name);
+                // Held elements belong to this move (pending with its target): reset never picks them up again.
+                foreach (var f in found.Where(f => (f.Borrowed || f.Central) && !claimed.ContainsKey(f.Id))) { claimed[f.Id] = step.Id; claimedTo[f.Id] = to.Value.Name; }
                 var readOnly = new List<long>();
-                foreach (var f in found.Where(f => !f.Borrowed && !f.Central))
-                {
-                    if (to.Value.Id != 0 && f.WorksetId == to.Value.Id) continue;   // already there
-                    var e = doc.GetElement(new ElementId(f.Id));
-                    var p = e?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                    if (p == null || p.IsReadOnly) { readOnly.Add(f.Id); continue; }
-                    if (claimed.TryGetValue(f.Id, out var other)) { blocks.Add(new L.Block { What = what, Code = "naming", Detail = $"element {f.Id} is also moved by {other}", SampleIds = new List<long> { f.Id } }); continue; }
-                    claimed[f.Id] = step.Id;
-                    step.Ids.Add(f.Id);
-                    // A link or CAD import: its type moves with it (RevitLinkType / CADLinkType carry a workset of their own).
-                    if (f.TypeId != 0 && !(to.Value.Id != 0 && f.TypeWorksetId == to.Value.Id))
-                    {
-                        if (!f.TypeEditable) skipped.Add(new JsonObject { ["key"] = step.Key, ["ids"] = new JsonArray(f.TypeId), ["count"] = 1, ["holder"] = null, ["why"] = "the link type's workset cannot be set: the instance moves, its type stays" });
-                        else if (typeClaims.TryGetValue(f.TypeId, out var tc))
-                        {
-                            if (!string.Equals(tc.To, to.Value.Name, StringComparison.OrdinalIgnoreCase))
-                                blocks.Add(new L.Block { What = what, Code = "naming", Detail = $"the link type {f.TypeId} would go to {tc.To} and to {to.Value.Name}: its instances must share one workset", SampleIds = new List<long> { f.TypeId } });
-                        }
-                        else { typeClaims[f.TypeId] = (step.Id, to.Value.Name); step.TypeIds.Add(f.TypeId); }
-                    }
-                    var cat = f.Category;
-                    step.ByCategory[cat] = step.ByCategory.TryGetValue(cat, out var c) ? c + 1 : 1;
-                }
+                foreach (var f in found.Where(f => !f.Borrowed && !f.Central)) Take(step, f, to.Value, what, readOnly);
                 if (readOnly.Count > 0)
                     skipped.Add(new JsonObject { ["key"] = step.Key, ["ids"] = new JsonArray(readOnly.Take(Math.Max(1, maxIds)).Select(i => (JsonNode)i).ToArray()), ["count"] = readOnly.Count, ["holder"] = null, ["why"] = "its workset cannot be set (read-only: e.g. hosted by or part of another element)" });
                 step.Elements = step.Ids.Count;
@@ -374,13 +532,84 @@ namespace AceRevitMcp.Rules
                 if (step.Elements > 0) moveSteps.Add(step);
             }
 
-            // 4. delete: only what is empty after the moves (else kept), or moved to move_to_for_delete.
+            // 3b. reset (reset_to): every other instance on a user workset goes to the default workset, except on the datum workset
+            // and keep_worksets; borrowed ones are skipped. One step per source workset, in the same undo step.
+            var resetTo = Args.Str(planArg, "reset_to") ?? Args.Str(args, "reset_to");
+            JsonObject resetJson = null;
+            if (!string.IsNullOrWhiteSpace(resetTo))
+            {
+                var to = Target(resetTo);
+                if (to == null) blocks.Add(new L.Block { What = "reset_to " + resetTo.Trim(), Code = "not-found", Detail = $"no workset is called {resetTo.Trim()} after the creates and renames" });
+                else
+                {
+                    foreach (var n in keepNames.Where(n => !worksets.Any(w => string.Equals(n, w.Name, StringComparison.OrdinalIgnoreCase) || string.Equals(n, finalName[w.Id], StringComparison.OrdinalIgnoreCase))))
+                        notes.Add($"keep_worksets names {n}, which is not a workset of this model.");
+                    // keep_keys: groups that stay where they are (already placed, skipped rows, datum categories).
+                    var (pick, held, central) = P.ResetPick(facts.Select(f => (f.Id, f.WorksetId, f.Key, f.Borrowed, f.Central)), claimed.Keys.ToList(), keep, keepKeys, to.Value.Id);
+                    foreach (var g in held.Select(id => factById[id]).GroupBy(f => f.Holder)) skipped.Add(SkipJson("reset", g.Select(f => f.Id), g.Count(), g.Key, "borrowed"));
+                    if (central.Count > 0) skipped.Add(SkipJson("reset", central, central.Count, null, "changed in central: synchronize first"));
+                    Pending(held.Concat(central).Select(id => factById[id]), to.Value.Name);
+                    var readOnly = new List<long>();
+                    var resetCount = 0;
+                    foreach (var g in pick.Select(id => factById[id]).GroupBy(f => f.WorksetId).OrderBy(g => g.First().Workset, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var src = g.First().Workset;
+                        var step = new P.Step { Id = "reset:" + src, Kind = "move", Workset = to.Value.Name, ToId = to.Value.Id, Key = "reset", From = src };
+                        foreach (var f in g) Take(step, f, to.Value, "reset " + src + " > " + to.Value.Name, readOnly);
+                        step.Elements = step.Ids.Count;
+                        resetCount += step.Elements;
+                        if (step.Elements > 0) moveSteps.Add(step);
+                    }
+                    if (readOnly.Count > 0) skipped.Add(SkipJson("reset", readOnly, readOnly.Count, null, "its workset cannot be set (read-only: e.g. hosted by or part of another element)"));
+                    resetJson = new JsonObject
+                    {
+                        ["to"] = to.Value.Name, ["elements"] = resetCount,
+                        ["kept"] = new JsonArray(worksets.Where(w => keep.Contains(w.Id)).Select(w => (JsonNode)finalName[w.Id]).ToArray()),
+                        ["keptByKey"] = facts.Count(f => keepKeys.Contains(f.Key)), ["skippedBorrowed"] = held.Count, ["skippedCentral"] = central.Count, ["readOnly"] = readOnly.Count,
+                    };
+                }
+            }
+
+            // Sub-elements go with their host: the move sets them too where Revit does not (and the self-check looks).
+            // Retry steps the plan emptied (stale targets) are dropped; the rest count what they still move.
+            moveSteps.RemoveAll(st => st.Key == "retry" && st.Ids.Count == 0);
+            foreach (var st in moveSteps.Where(st => st.Key == "retry"))
+                st.ByCategory = st.Ids.GroupBy(id => factById[id].Category).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+            var followersOf = info.Followers.GroupBy(kv => kv.Value.Host).ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).ToList());
+            foreach (var st in moveSteps)
+                foreach (var id in st.Ids)
+                    if (followersOf.TryGetValue(id, out var subs))
+                        foreach (var x in subs.Where(x => !claimed.ContainsKey(x)))
+                        {
+                            // A sub-element borrowed by someone else (or changed in central) cannot go with its host now: pending.
+                            var held = false; var central = false; string holder = null;
+                            try
+                            {
+                                var xe = new ElementId(x);
+                                held = WorksharingUtils.GetCheckoutStatus(doc, xe, out var owner) == CheckoutStatus.OwnedByOtherUser;
+                                if (held) holder = string.IsNullOrWhiteSpace(owner) ? null : owner.Trim();
+                                else { var up = WorksharingUtils.GetModelUpdatesStatus(doc, xe); central = up == ModelUpdatesStatus.UpdatedInCentral || up == ModelUpdatesStatus.DeletedInCentral; }
+                            }
+                            catch { }
+                            if (held || central)
+                            {
+                                var fws = info.Followers[x].Ws;
+                                PendingOne(x, CategoryName(doc.GetElement(new ElementId(x))), held, holder, worksets.FirstOrDefault(w => w.Id == fws)?.Name, st.Workset);
+                                continue;
+                            }
+                            st.Followers.Add(x);
+                        }
+
+            // 4. delete: only what is empty after the moves (else kept), or moved to move_to_for_delete. Non-model items (sketches,
+            // reference planes, view-only items) never block a delete: they go to the receiving workset with it.
             var now = worksets.ToDictionary(w => w.Id, w => w.Elements);
-            var after = P.AfterMoves(now, moveSteps.SelectMany(s => s.Ids.Select(id => (factById[id].WorksetId, s.ToId, 1))));
+            var after = P.AfterMoves(now, moveSteps.SelectMany(s => s.Ids.Select(id => (factById[id].WorksetId, s.ToId, 1))
+                .Concat(s.Followers.Select(id => (info.Followers[id].Ws, s.ToId, 1)))));
+            var nonModelOn = info.NonModel.GroupBy(kv => kv.Value).ToDictionary(g => g.Key, g => g.Count());
             var afterWs = worksets.Select(w => new L.Workset
             {
                 Id = w.Id, Name = w.Name, Owner = w.Owner, Open = w.Open, Editable = w.Editable, IsDefault = w.IsDefault, Protected = w.Protected, LevelsAndGrids = w.LevelsAndGrids, Types = w.Types,
-                Elements = after.TryGetValue(w.Id, out var a) ? a : w.Elements, ByCategory = w.ByCategory, SampleIds = w.SampleIds,
+                Elements = (after.TryGetValue(w.Id, out var a) ? a : w.Elements) - (nonModelOn.TryGetValue(w.Id, out var nm) ? nm : 0), ByCategory = w.ByCategory, SampleIds = w.SampleIds,
             }).ToList();
             var deleteNames = Arr("delete").Select(n => n?.ToString()).Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()).ToList();
             var moveToForDelete = Args.Str(planArg, "move_to_for_delete") ?? Args.Str(args, "move_to_for_delete");
@@ -394,7 +623,7 @@ namespace AceRevitMcp.Rules
                     {
                         var w = afterWs.First(x => "delete " + x.Name == b.What);
                         var why = P.KeptWhy(w.Elements, w.Types);
-                        kept.Add(new JsonObject { ["name"] = w.Name, ["elements"] = w.Elements, ["types"] = w.Types, ["byCategory"] = Counts(w.ByCategory), ["why"] = why });
+                        kept.Add(new JsonObject { ["name"] = w.Name, ["elements"] = w.Elements, ["types"] = w.Types, ["nonModel"] = nonModelOn.TryGetValue(w.Id, out var kn) ? kn : 0, ["byCategory"] = Counts(w.ByCategory), ["why"] = why });
                     }
                     else blocks.Add(b);
                 }
@@ -415,6 +644,7 @@ namespace AceRevitMcp.Rules
                 {
                     Id = s.Id, Kind = s.Kind, Workset = s.Workset, WorksetId = s.WorksetId, To = s.MoveTo, ToId = s.MoveToId, Elements = s.Elements,
                     ByCategory = s.ByCategory ?? new Dictionary<string, int>(), Safety = s.Safety, SafetyId = s.SafetyId,
+                    NonModel = nonModelOn.TryGetValue(s.WorksetId, out var dnm) ? dnm : 0,
                 })));
             var planHash = P.PlanHash(steps);
 
@@ -444,6 +674,25 @@ namespace AceRevitMcp.Rules
                 }
             }
             var planJson = new JsonArray(steps.Select(s => (JsonNode)PlanStepJson(s, maxIds)).ToArray());
+            // Elements per workset before and after the plan (all elements, as audit counts them); verify adds what it measured.
+            var planned = new Dictionary<long, int>(after);
+            foreach (var st in deleteSteps)
+            {
+                var left = planned.TryGetValue(st.WorksetId, out var l0) ? l0 : 0;
+                planned.Remove(st.WorksetId);
+                var rx = st.Kind == "move-and-delete" ? st.MoveToId : st.SafetyId;
+                if (rx != 0) planned[rx] = (planned.TryGetValue(rx, out var r0) ? r0 : 0) + left;
+            }
+            var worksetCounts = new JsonArray(worksets.Select(w => (JsonNode)new JsonObject
+                {
+                    ["workset"] = finalName[w.Id], ["id"] = w.Id, ["before"] = w.Elements, ["after"] = planned.TryGetValue(w.Id, out var pa) ? pa : (int?)null,
+                    ["deleted"] = !planned.ContainsKey(w.Id),
+                })
+                .Concat(createSteps.Select(c => (JsonNode)new JsonObject
+                {
+                    ["workset"] = c.Workset, ["id"] = null, ["before"] = 0,
+                    ["after"] = moveSteps.Where(m => m.ToId == 0 && string.Equals(m.Workset, c.Workset, StringComparison.OrdinalIgnoreCase)).Sum(m => m.Ids.Count + m.Followers.Count), ["deleted"] = false,
+                })).ToArray());
             var blockedJson = new JsonArray(blocks.Select(b => (JsonNode)ToJson(b, maxIds)).ToArray());
             var checkedOut = new JsonArray();
             JsonObject Common(JsonObject r)
@@ -453,6 +702,11 @@ namespace AceRevitMcp.Rules
                 r["changed"] = changed.DeepClone(); r["skipped"] = skipped.DeepClone(); r["kept"] = kept.DeepClone();
                 r["exportViews"] = new JsonArray(views.Select(v => (JsonNode)v.Name).ToArray()); r["visibility"] = visibility.DeepClone();
                 r["notes"] = new JsonArray(notes.Select(n => (JsonNode)n).ToArray());
+                r["worksetCounts"] = worksetCounts.DeepClone();
+                if (resetJson != null) r["reset"] = resetJson.DeepClone();
+                r["pending"] = pending.DeepClone(); r["pendingTotal"] = pendingTotal;
+                if (retryArr != null) r["retried"] = retried.DeepClone();   // borrowed / changed in central: the rest moves, these wait
+                r["pinned"] = new JsonObject { ["count"] = pinnedIds.Count, ["sampleIds"] = new JsonArray(pinnedIds.Take(Math.Max(1, maxIds)).Select(i => (JsonNode)i).ToArray()), ["directOk"] = 0, ["unpinRepin"] = 0 };
                 return r;
             }
             JsonObject Zero() => new JsonObject { ["created"] = 0, ["renamed"] = 0, ["moved"] = 0, ["deleted"] = 0 };
@@ -515,7 +769,7 @@ namespace AceRevitMcp.Rules
                     }
                     catch { return false; }
                 }
-                foreach (var id in moveSteps.SelectMany(s => s.Ids.Concat(s.TypeIds))) if (!Mine(id)) notYours.Add(id);
+                foreach (var id in moveSteps.SelectMany(s => s.Ids.Concat(s.TypeIds).Concat(s.Followers))) if (!Mine(id)) notYours.Add(id);
                 if (notYours.Count > 0)
                 {
                     // A delete whose workset still holds elements the dry run did not move cannot be previewed either.
@@ -548,6 +802,38 @@ namespace AceRevitMcp.Rules
             }
 
             var ran = new List<P.Step>();
+            // Sets an element's workset; a pinned element Revit refuses is unpinned, set and pinned again (same undo step).
+            bool SetWorkset(Document d, long id, long toId)
+            {
+                var e = d.GetElement(new ElementId(id));
+                var p = e?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
+                if (p == null) return false;
+                var wasPinned = e.Pinned;
+                pinBefore[id] = wasPinned;
+                bool TrySet()
+                {
+                    try { return !p.IsReadOnly && p.Set((int)toId); }
+                    catch (Autodesk.Revit.Exceptions.ApplicationException) { return false; }
+                    catch (InvalidOperationException) { return false; }
+                    catch (ArgumentException) { return false; }
+                }
+                if (TrySet()) { if (wasPinned) pinnedDirect++; return true; }
+                if (!wasPinned) return false;
+                var ok = false;
+                try { e.Pinned = false; ok = TrySet(); }
+                catch (Autodesk.Revit.Exceptions.ApplicationException) { ok = false; }
+                catch (InvalidOperationException) { ok = false; }
+                catch (ArgumentException) { ok = false; }
+                finally
+                {
+                    try { if (!e.Pinned) e.Pinned = true; }
+                    catch (Autodesk.Revit.Exceptions.ApplicationException) { }
+                    catch (InvalidOperationException) { }
+                    catch (ArgumentException) { }
+                }
+                if (ok) repinned.Add((id, toId)); else pinFailed.Add(id);
+                return ok;
+            }
             var created = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
             int OnWorkset(Document d, long id) => new FilteredElementCollector(d).WherePasses(new ElementWorksetFilter(new WorksetId((int)id), false)).GetElementCount();
             var result = NativeChange.Run(app, args, "workset_admin", "ACE: apply the workset plan", (d, plan) =>
@@ -556,7 +842,7 @@ namespace AceRevitMcp.Rules
                 var done = Zero();
                 r["done"] = done; r["verify"] = null;
                 if (plan) return r;
-                ran.Clear(); created.Clear();
+                ran.Clear(); created.Clear(); repinned.Clear(); pinBefore.Clear(); pinFailed.Clear(); pinnedDirect = 0;
                 void Count(string k, int n) => done[k] = (int)done[k] + n;
                 foreach (var st in steps)
                 {
@@ -577,23 +863,30 @@ namespace AceRevitMcp.Rules
                             foreach (var id in st.Ids)
                             {
                                 if (notYours.Contains(id)) continue;
-                                var p = d.GetElement(new ElementId(id))?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                                if (p == null || p.IsReadOnly || !p.Set((int)toId))
+                                if (!SetWorkset(d, id, toId) && !pinFailed.Contains(id))
                                     throw new CommandException($"Nothing was changed: element {id} could not be moved to {st.Workset}. Run the dry run again.");
                             }
                             foreach (var id in st.TypeIds)
                             {
                                 if (notYours.Contains(id)) continue;
-                                var p = d.GetElement(new ElementId(id))?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
-                                if (p == null || p.IsReadOnly || !p.Set((int)toId))
+                                if (!SetWorkset(d, id, toId) && !pinFailed.Contains(id))
                                     throw new CommandException($"Nothing was changed: the link type {id} could not be moved to {st.Workset}. Run the dry run again.");
                             }
-                            Count("moved", st.Ids.Count(id => !notYours.Contains(id)));
+                            // Sub-elements: Revit usually moves them with their host; set the ones it left (when their workset can be set).
+                            foreach (var id in st.Followers)
+                            {
+                                if (notYours.Contains(id)) continue;
+                                var e = d.GetElement(new ElementId(id));
+                                if (e == null || e.WorksetId.IntegerValue == toId) continue;
+                                SetWorkset(d, id, toId);   // direct, or unpin-set-repin when pinned; what stays behind the self-check reports
+                            }
+                            Count("moved", st.Ids.Count(id => !notYours.Contains(id) && !pinFailed.Contains(id)));
                             break;
                         }
                         default:
                         {
-                            var nowCount = OnWorkset(d, st.WorksetId);
+                            // Non-model items (sketches, reference planes, view-only items) go with the workset to the receiving one.
+                            var nowCount = new FilteredElementCollector(d).WherePasses(new ElementWorksetFilter(new WorksetId((int)st.WorksetId), false)).ToElementIds().Count(id => !info.NonModel.ContainsKey(id.Value));
                             if (nowCount != st.Elements)
                                 throw new CommandException($"Nothing was changed: {st.Workset} holds {nowCount} element{(nowCount == 1 ? "" : "s")} after the moves, the plan counted {st.Elements}. Run the dry run again.");
                             var settings = st.Kind == "move-and-delete"
@@ -606,6 +899,18 @@ namespace AceRevitMcp.Rules
                     }
                     ran.Add(st);
                 }
+                // Which path Revit took for pinned elements: set directly, or unpin, set and pin again.
+                // A real apply lists what it moved, per element (the server's apply record); dropped again if it rolls back.
+                if (!dryRun)
+                {
+                    var moved = ran.Where(x => x.Kind == "move").SelectMany(x => x.Ids.Where(id => !pinFailed.Contains(id)).Select(id => (id, x.Workset))).ToList();
+                    r["movedElements"] = new JsonArray(moved.Take(20000).Select(m => (JsonNode)new JsonObject { ["id"] = m.id, ["from"] = factById[m.id].Workset, ["to"] = m.Workset }).ToArray());
+                    r["movedTotal"] = moved.Count;
+                }
+                if (pinFailed.Count > 0 && r["skipped"] is JsonArray sk)
+                    sk.Add(SkipJson("pinned", pinFailed, pinFailed.Count, null, "pinned, and its workset could not be set even unpinned: left where it is, pinned again"));
+                if (r["pinned"] is JsonObject pj) { pj["directOk"] = pinnedDirect; pj["unpinRepin"] = repinned.Count; }
+                r["pinnedTouched"] = pinnedDirect + repinned.Count; r["pinnedDirectOk"] = pinnedDirect; r["pinnedUnpinRepin"] = repinned.Count;
                 if (notPreviewed.Count > 0) r["notPreviewed"] = new JsonArray(notPreviewed.Select(x => (JsonNode)x).ToArray());
                 if (notYours.Count > 0)
                     r["notPreviewedCounts"] = new JsonObject
@@ -633,10 +938,14 @@ namespace AceRevitMcp.Rules
                         case "move":
                         {
                             var toId = st.ToId != 0 ? st.ToId : created.TryGetValue(st.Workset, out var c2) ? c2 : -1;
-                            var checkIds = st.Ids.Concat(st.TypeIds).Where(id => !notYours.Contains(id)).ToList();   // the dry run moved only these
+                            var checkIds = st.Ids.Concat(st.TypeIds).Where(id => !notYours.Contains(id) && !pinFailed.Contains(id)).ToList();   // the dry run moved only these
                             var off = checkIds.Where(id => { var e = d.GetElement(new ElementId(id)); return e == null || e.WorksetId.IntegerValue != toId; }).ToList();
                             var all = checkIds.Count;
                             if (off.Count > 0) mismatches.Add(($"elements moved to {st.Workset}", all.ToString(), $"{all - off.Count} (not there: {string.Join(", ", off.Take(5))})"));
+                            // Sub-elements end with their host (unless the host was not moved: a dry run leaves what is not yours).
+                            var subsChecked = st.Followers.Where(id => !notYours.Contains(id) && !notYours.Contains(info.Followers[id].Host) && !pinFailed.Contains(info.Followers[id].Host) && d.GetElement(new ElementId(id)) != null).ToList();
+                            var subsOff = subsChecked.Where(id => d.GetElement(new ElementId(id)).WorksetId.IntegerValue != toId).ToList();
+                            if (subsOff.Count > 0) mismatches.Add(($"sub-elements that follow their host to {st.Workset}", subsChecked.Count.ToString(), $"{subsChecked.Count - subsOff.Count} (not there: {string.Join(", ", subsOff.Take(5))})"));
                             break;
                         }
                         default:
@@ -644,6 +953,39 @@ namespace AceRevitMcp.Rules
                             break;
                     }
                 }
+                // Pins: every element the run set keeps its pin state; the ones it unpinned are pinned again, on their target.
+                var pinLost = pinBefore.Where(kv => { var e = d.GetElement(new ElementId(kv.Key)); return e == null || e.Pinned != kv.Value; }).Select(kv => kv.Key).ToList();
+                if (pinLost.Count > 0) mismatches.Add(("pin state of the moved elements", "unchanged", $"changed on {pinLost.Count} (e.g. {string.Join(", ", pinLost.Take(5))})"));
+                var notRepinned = repinned.Where(x => { var e = d.GetElement(new ElementId(x.Id)); return e == null || !e.Pinned || e.WorksetId.IntegerValue != x.To; }).Select(x => x.Id).ToList();
+                if (notRepinned.Count > 0) mismatches.Add(("pinned elements pinned again on their target", repinned.Count.ToString(), $"{repinned.Count - notRepinned.Count} (not: {string.Join(", ", notRepinned.Take(5))})"));
+                // reset_to: every instance ends where the plan puts it (moved, or staying), nothing else moved.
+                if (resetJson != null)
+                {
+                    var plannedWs = facts.ToDictionary(f => f.Id, f => f.WorksetId);
+                    foreach (var st in ran.Where(x => x.Kind == "move"))
+                    {
+                        var toId = st.ToId != 0 ? st.ToId : created.TryGetValue(st.Workset, out var c3) ? c3 : -1;
+                        foreach (var id in st.Ids.Where(i => !notYours.Contains(i) && !pinFailed.Contains(i))) plannedWs[id] = toId;
+                    }
+                    foreach (var st in ran.Where(x => x.Kind == "move-and-delete"))
+                        foreach (var k in plannedWs.Where(kv => kv.Value == st.WorksetId).Select(kv => kv.Key).ToList()) plannedWs[k] = st.ToId;
+                    var wrong = new Dictionary<string, List<long>>(StringComparer.Ordinal);
+                    foreach (var kv in plannedWs)
+                    {
+                        var e = d.GetElement(new ElementId(kv.Key));
+                        if (e == null || e.WorksetId.IntegerValue == kv.Value) continue;
+                        var where = names.TryGetValue(e.WorksetId.IntegerValue, out var wn) ? wn : e.WorksetId.IntegerValue.ToString();
+                        (wrong.TryGetValue(where, out var lst) ? lst : wrong[where] = new List<long>()).Add(kv.Key);
+                    }
+                    foreach (var w in wrong) mismatches.Add(($"instances on {w.Key} the plan did not put there", "0", $"{w.Value.Count} (e.g. {string.Join(", ", w.Value.Take(5))})"));
+                }
+                // What each workset holds now (all elements, as audit counts them).
+                if (r["worksetCounts"] is JsonArray wc)
+                    foreach (var o in wc.OfType<JsonObject>())
+                    {
+                        long wid = o["id"] is JsonValue iv && iv.TryGetValue<long>(out var x0) ? x0 : created.TryGetValue(o["workset"]?.ToString() ?? "", out var x1) ? x1 : 0;
+                        o["measured"] = wid != 0 && names.ContainsKey(wid) ? OnWorkset(d, wid) : (int?)null;
+                    }
                 r["verify"] = new JsonObject
                 {
                     ["ok"] = mismatches.Count == 0, ["checked"] = before.Count,
@@ -658,6 +1000,7 @@ namespace AceRevitMcp.Rules
             {
                 result["wouldDo"] = dn.DeepClone();
                 result["done"] = Zero();
+                if (result["movedElements"] != null) { result.Remove("movedElements"); result["movedTotal"] = 0; }
                 if (result["transaction"]?.ToString() == "VerifyFailed")
                     result["note"] = "The self-check found a change beyond the plan (see verify.mismatches): the whole change was rolled back. Nothing was changed.";
             }
@@ -675,10 +1018,13 @@ namespace AceRevitMcp.Rules
                     o["key"] = s.Key; o["from"] = s.From; o["to"] = s.Workset; o["elements"] = s.Elements; o["byCategory"] = Counts(s.ByCategory);
                     o["sampleIds"] = new JsonArray(s.Ids.Take(Math.Max(1, maxIds)).Select(i => (JsonNode)i).ToArray());
                     if (s.TypeIds.Count > 0) o["linkTypes"] = new JsonArray(s.TypeIds.Select(i => (JsonNode)i).ToArray());
+                    if (s.Followers.Count > 0) o["followsHost"] = s.Followers.Count;
+                    if (s.Row != null) o["row"] = s.Row;   // echoed from the request: information only
                     break;
                 case "delete": case "move-and-delete":
                     o["elements"] = s.Elements; o["byCategory"] = Counts(s.ByCategory);
                     if (s.Kind == "move-and-delete") o["moveTo"] = s.To; else o["safetyTarget"] = s.Safety;
+                    if (s.NonModel > 0) o["nonModel"] = s.NonModel;   // sketches and other non-model items: go to moveTo / safetyTarget
                     break;
             }
             return o;

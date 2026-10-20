@@ -802,6 +802,28 @@ class P {
     Check((string)WP("KeptWhy").Invoke(null, new object[] { 3, 3 })! == "holds 3 types (a plan moves instances only)" && ((string)WP("KeptWhy").Invoke(null, new object[] { 5, 2 })!).StartsWith("not empty after the moves (5 elements, 2 of them types")
       && (string)WP("KeptWhy").Invoke(null, new object[] { 1, 0 })! == "not empty after the moves (1 element)", "workset plan: a workset holding only types is kept (\"holds N types\"), never a plan-wide rollback");
 
+    // 1.13.3: sketches are never grouped; level code and phrase; the reset method's pick.
+    Check((bool)WP("IsSketchCategory").Invoke(null, new object[] { "<Sketch>" })! && (bool)WP("IsSketchCategory").Invoke(null, new object[] { "<Stair/Ramp Sketch: Boundary>" })!
+      && !(bool)WP("IsSketchCategory").Invoke(null, new object[] { "Walls" })! && !(bool)WP("IsSketchCategory").Invoke(null, new object[] { "<" })!, "workset plan: sketch categories (<...>) are recognised");
+    string? LCode(string n) => (string?)WP("LevelCode").Invoke(null, new object[] { n });
+    string? LPhrase(string n) => (string?)WP("LevelPhrase").Invoke(null, new object[] { n });
+    Check(LCode("A-01(FIRST FLOOR)") == "01" && LCode("C-GF(GROUND FLOOR)") == "GF" && LCode("ST-B1 (BASEMENT)") == "B1" && LCode("Level 1") == "Level 1" && LCode("-01") == "-01" && LCode("(ROOF)") == null
+      && LPhrase("A-01(FIRST FLOOR)") == "FIRST FLOOR" && LPhrase("C-GF ( GROUND FLOOR )") == "GROUND FLOOR" && LPhrase("Level 1") == null && LPhrase("A-02()") == null,
+      "workset plan: level code (before \"(\", prefix removed) and phrase (the words in brackets)");
+    var rpEls = new List<(long, long, string?, bool, bool)> { (1, 10, "TST_A|Walls", false, false), (2, 10, "TST_A|Walls", true, false), (3, 11, "TST_K|Floors", false, false), (4, 12, "TST_B|Doors", false, true),
+        (5, 20, "TST_D|Doors", false, false), (6, 30, "TST_C|Columns", false, false), (7, 10, "TST_A|Walls", false, false), (8, 30, "TST_C|Beams", false, false), (9, 12, "TST_C|Beams", true, false) };
+    object RP(ICollection<string> keys) => WP("ResetPick").Invoke(null, new object[] { rpEls, (ICollection<long>)new List<long> { 7 }, (ICollection<long>)new HashSet<long> { 11 }, keys, 20L })!;
+    List<long> RpF(object r, string f) => (List<long>)r.GetType().GetField(f)!.GetValue(r)!;
+    var rp = RP(new HashSet<string>());
+    Check(RpF(rp, "Item1").SequenceEqual(new long[] { 1, 6, 8 }) && RpF(rp, "Item2").SequenceEqual(new long[] { 2, 9 }) && RpF(rp, "Item3").SequenceEqual(new long[] { 4 }),
+      "workset plan: reset moves the rest to the default workset, leaves claimed, kept and already-there elements, skips borrowed and changed-in-central ones");
+    var rpk = RP(new HashSet<string>(StringComparer.Ordinal) { "TST_C|Beams" });
+    Check(RpF(rpk, "Item1").SequenceEqual(new long[] { 1, 6 }) && RpF(rpk, "Item2").SequenceEqual(new long[] { 2 }),
+      "workset plan: reset with keep_keys leaves those groups' elements alone (borrowed ones too: they are not pending)");
+    var rpc = WP("ResetPick").Invoke(null, new object[] { rpEls, (ICollection<long>)new List<long> { 7, 2, 9 }, (ICollection<long>)new HashSet<long> { 11 }, (ICollection<string>)new HashSet<string>(), 20L })!;
+    Check(RpF(rpc, "Item1").SequenceEqual(new long[] { 1, 6, 8 }) && RpF(rpc, "Item2").Count == 0,
+      "workset plan: borrowed elements a group move already claimed (pending with the group's target) are not picked up again by reset");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

@@ -178,8 +178,12 @@ CAD imports to the CAD / LINKS workset), the elements it holds and would receive
 visibility (views, default 3D views named NAVISWORKS / NWC; a move that would hide elements there is flagged), and a
 decision column; the moving element groups are the detail (second sheet, -groups.csv); no confident home = review.
 Visibility worksets (HIDE, HIDDEN, TEMP, or the vault's worksets.naming.manualOnly) are manual only; the datum workset
-(the add-in's protected flag) is never renamed or deleted; Workset1 gets the naming rule's default name (else
-<prefix>GENERAL). The user edits the file; action confirm (file: rule-level, group-level or the hand-made CSV, matched
+(the add-in's protected flag) is never renamed or deleted; Workset1 keeps its name ("keep Workset1 (default)"; a rename
+only with the vault's naming.defaultName). Levels match whole codes only (the code before "(" after an "X-" prefix:
+"A-01(...)" -> 01, the bracketed words as one phrase, vault naming.levelAliases { TOKEN: [level names or regex] }); a
+category word counts as the head of the name, never inside a zone phrase ("POOL & Pump Room" is a zone); vault
+naming.categoryTokens always count (phrases too, one token may map to several categories). Empty-but-expected and
+catch-all worksets (a category, no level) are never proposed for deletion; sketches and legend components get no row. The user edits the file; action confirm (file: rule-level, group-level or the hand-made CSV, matched
 by Model + Current workset + Category + Type + Level and the element count: a changed count is flagged, never applied)
 writes a plan per model beside the file and shows the rules; save_rules + confirm: true saves them into the vault's
 project-requirements.json (each new rule before the first less specific one, category-free rules last; a conflicting
@@ -188,6 +192,18 @@ overlaps_ok: true after the user agreed). An xlsx is read on both sheets: rule r
 group, the Groups sheet wins. action apply with plan_file:
 check_only, dry_run, then the identical call (ONE undo step: create, rename, move, delete; borrowed elements skipped
 and listed; a changed group count refuses the whole plan). Office method: revit_guide methods/workset-cleanup.
+The standard (every reply names it): the vault's rules/worksets-standard.json (each rule with its clause, used only once
+the user confirmed it: confirm_standard: true), else the project's list (project-requirements.json worksets), else the
+office worksets.json; else the workset names. propose refresh: <previous file> keeps the decisions and marks rows new /
+changed / same / gone; rows ACE applied are not proposed again, a row changed after apply is flagged for review. action
+status (read-only): % correctly assigned, wrong (with where to and why), empty (expected / unused), not in the standard,
+missing, visibility, borrowed, and each group applied by ACE (date, plan) / changed after apply / correct already / still
+to do; HTML + CSV and the model_dashboard "Worksets: N% correct" tile. apply only: { rows, worksets, categories, models }
+applies part of the plan (its own planHash); reset: "default" (rule-level plans only) computes the end state so each
+element moves once: no rule -> the default workset; datum, manual-only and skipped groups stay. Pinned elements are
+unpinned, moved and re-pinned in the same undo step (counts said). Borrowed elements: the rest moves; they become pending
+actions (vault 04 Audits/<model>/worksets/pending-actions.json, with holder and target), retried first on the next apply.
+Every apply writes worksets-applied.json and shows the status again; moves already done are skipped and said.
 
 ## Parameter requirements (AIS, LOIN, Model Checker, shared parameter files)
 
