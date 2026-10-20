@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.14.3 (20 Oct 2026)
+- MCP server only (`install.cmd -SkipAddin`).
+- **register_update output opens in Excel again:** exceljs 4.4 reads Excel's tables as headerless (Excel omits
+  headerRowCount when it is 1) and wrote `headerRowCount="0"` with an autoFilter, which Excel refuses. The written file
+  now gets each table's XML back from the source register, and a self-check re-reads the file and validates every
+  table (no autoFilter on a headerless table, ref within the used range, column count, unique ids); on failure the
+  output is deleted and nothing is reported as written.
+- An id pattern without a capture group (e.g. an anchored prefix from the vault) only filters ids, it no longer
+  extracts them; `discipline` defaults to the template's only discipline; a confirm after an MCP restart says the check
+  must be run again.
+
 ## 1.14.2 (20 Oct 2026)
 - MCP server only (`install.cmd -SkipAddin`; the 1.14.1 add-in works with it).
 - **register_update from a live run:** the report CSV never lands beside the output (it would be uploaded with the

@@ -1957,7 +1957,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   fs.writeFileSync(path.join(rDir, "cde", "TST-001_A.pdf"), "x"); fs.writeFileSync(path.join(rDir, "cde", "TST-999.pdf"), "x");
   const ru = { register: reg, id_column: "Doc No", stage_columns: ["Stage 1"], delivered_dir: path.join(rDir, "cde"), submission_date: "2026-10-20", label: "SUB 01", output: path.join(rDir, "out.xlsx") };
   assert.match((await call("register_update", { ...ru, output: reg })).content[0].text, /output is the register itself/, "never the register");
-  assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /has not been checked/, "a write needs the identical check");
+  assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /^No check from this server process\. Run the check again first; checks don't survive an MCP restart\./, "a write needs the identical check (none in this process yet)");
   const chk = (await call("register_update", ru)).content.at(-1).text;
   assert.match(chk, /\(check, nothing written\)[\s\S]*Matched \(delivered, date set\): 1: TST-001 <- TST-001_A\.pdf\.\nDelivered but not in the register: 1: TST-999\.pdf\.\nIn the register but not delivered: 1: TST-002\.\nDates later than the submission, cleared: 1: TST-002 Stage 1 2026-12-01\./);
   assert.ok(!fs.existsSync(ru.output), "a check writes nothing");
@@ -2010,6 +2010,21 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match((await call("register_update", { ...tr, discipline: "AR" })).content[0].text, /Discipline "AR" is not in .*register\.json: known ST\./);
   assert.match((await call("register_update", { ...tr, stage: "CONCEPT" })).content[0].text, /Stage "CONCEPT" is not in .* for ST: known IFC\./);
   assert.match((await call("register_update", { ...ru, discipline: "ST" })).content[0].text, /discipline needs the project's template/);
+  // 1.14.2 #29: one discipline in the template: discipline may be left out; an anchored prefix idPattern (no capture
+  // group) in the template only filters ids, it never extracts them (it would match only the start of a file name).
+  const tv3 = path.join(rDir, "tplproj3");
+  fs.mkdirSync(path.join(tv3, "ACE Vault", "rules"), { recursive: true });
+  fs.copyFileSync(reg, path.join(tv3, "TST register.xlsx"));
+  fs.writeFileSync(path.join(tv3, "ACE Vault", "rules", "register.json"), JSON.stringify({ file: "../TST register*.xlsx", headerRow: 1, idColumn: "Doc No", idPattern: "^TST-0",
+    disciplines: { ST: { sheet: "TST_REG" } }, stages: { IFC: ["Stage 1"] } }));
+  const t3 = (await call("register_update", { vault: tv3, stage: "IFC", submission_date: "2026-10-20", label: "SUB 10", delivered_dir: path.join(rDir, "cde"), output: path.join(rDir, "tpl3-out.xlsx") })).content.at(-1).text;
+  assert.match(t3, /Matched \(delivered, date set\): 2: TST-001 <- TST-001_A\.pdf; TST-002 <- TST-002\.pdf\./, "a prefix pattern filters, the ids are still found");
+  assert.match(t3, /Id pattern: no capture group, so it only filters the ids/);
+  assert.match(t3, /From the project template \(.*\): register, sheet, header_row, id_column, id_pattern, stage_columns, stage;/, "discipline: the template's only one");
+  // Several disciplines and none named: the call's own register / id_column / stage_columns still work.
+  fs.writeFileSync(path.join(tv3, "ACE Vault", "rules", "register.json"), JSON.stringify({ file: "../TST register*.xlsx", idColumn: "Doc No", disciplines: { ST: { sheet: "TST_REG" }, AR: { sheet: "TST_REG" } } }));
+  assert.ok(!(await call("register_update", { ...ru, vault: tv3, stage: ["Stage 1"] })).isError, "own arguments without discipline");
+  assert.match((await call("register_update", { vault: tv3, stage: "IFC", submission_date: "2026-10-20", label: "SUB 10", delivered_dir: path.join(rDir, "cde"), output: path.join(rDir, "tpl3-out.xlsx") })).content[0].text, /Give discipline: one of ST, AR/);
   const wrong = await call("register_update", { ...ru, id_column: "Stage 1", force_id_column: false });
   assert.ok(wrong.isError && /The id column looks wrong/.test(wrong.content[0].text));
 }

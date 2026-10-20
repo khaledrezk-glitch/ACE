@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
-import { asDate, checkTemplate, matchDelivered, nearMatches, reportRows, reportText, resolveRegisterFile, sha, splitIds, summaryOf, templateArgs, updateRegister } from "../lib/registerupdate.js";
+import { createRequire } from "node:module";
+import { asDate, checkTables, writeWorkbook, patternUse, checkTemplate, matchDelivered, nearMatches, reportRows, reportText, resolveRegisterFile, sha, splitIds, summaryOf, templateArgs, updateRegister } from "../lib/registerupdate.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-reg-"));
 const wb = new ExcelJS.Workbook();
@@ -32,6 +33,9 @@ const m = matchDelivered(["TST-ST-001", "TST-ST-002", "TST-ST-0021"], ["tst-st-0
 assert.deepEqual([...m.matched.keys()], ["TST-ST-001", "TST-ST-0021"], "contained, case-insensitive; the longer id wins");
 assert.deepEqual(m.unmatched, ["OTHER-9.pdf"]);
 assert.deepEqual([...matchDelivered(["TST-ST-001"], ["P1_TST-ST-001_R02.pdf"], "_(TST-ST-\\d+)_").matched.keys()], ["TST-ST-001"], "the vault naming regex");
+// 1.14.2 #29: an anchored prefix pattern without a capture group never extracts (it finds only the start of a name): it filters.
+assert.deepEqual([patternUse("^TST-P1-"), patternUse("_(TST-ST-\\d+)_"), patternUse("^TST-(?:P1)-"), patternUse(null)], ["filter", "extract", "filter", null]);
+assert.deepEqual([...matchDelivered(["TST-P1-AR-ZZ-DR-100001", "TST-P2-AR-ZZ-DR-100001X", "OTHER-1"], ["TST-P1-AR-ZZ-DR-100001_C01.pdf", "X_TST-P1-AR-ZZ-DR-100001.dwg", "OTHER-1.pdf"], "^TST-P1-").matched], [["TST-P1-AR-ZZ-DR-100001", ["TST-P1-AR-ZZ-DR-100001_C01.pdf", "X_TST-P1-AR-ZZ-DR-100001.dwg"]]], "found as they are, kept when the prefix fits");
 
 const o = { sheet: "TST_REG", header_row: 2, id_column: "Doc No", stage_columns: ["Stage 1", "Stage 2"], stage: "Stage 1", submission_date: "2026-10-20", label: "SUB 01",
   files: ["tst-st-001_A.pdf", "TST-ST-002 rev B.pdf", "UNKNOWN-9.pdf"] };
@@ -219,6 +223,42 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   assert.equal(rows6.filter((x) => x[0] === "matched").length, 25, "the report file holds every item");
   assert.equal(rows6.filter((x) => x[0] === "date cleared (later than the submission)").length, 30);
   assert.ok(rows6.some((x) => x[0] === "merged cells in id / stage columns" && x[1] === "C16:C17"));
+}
+// 1.14.2 #28: a table with a header row and an autoFilter, as Excel writes it (no headerRowCount attribute: default 1).
+// exceljs reads it as headerless and writes headerRowCount="0" plus the autoFilter, which Excel refuses; writeWorkbook
+// restores the register's table XML and checkTables proves it.
+{
+  const JSZip = createRequire(createRequire(import.meta.url).resolve("exceljs"))("jszip");
+  const w7 = new ExcelJS.Workbook();
+  const s7 = w7.addWorksheet("TST_REG7");
+  s7.getCell("A1").value = "TST MIDP";
+  s7.addTable({ name: "TST_Table", ref: "A3", headerRow: true, totalsRow: false, columns: [{ name: "Doc", filterButton: true }, { name: "Stage 1", filterButton: true }],
+    rows: [["TST-DOC-001", null], ["TST-DOC-002", null], ["TST-DOC-003", null]] });
+  const z = await JSZip.loadAsync(await w7.xlsx.writeBuffer());
+  const tf = Object.keys(z.files).find((f) => /^xl\/tables\/.*\.xml$/.test(f));
+  const excelXml = (await z.file(tf).async("string")).replace(/\sheaderRowCount="1"/, "");
+  assert.ok(/<autoFilter\b/.test(excelXml) && !/headerRowCount/.test(excelXml), "the source table as Excel writes it");
+  z.file(tf, excelXml);
+  const srcBuf7 = await z.generateAsync({ type: "nodebuffer" });
+  assert.deepEqual(await checkTables(srcBuf7), [], "the source passes the self-check");
+  const o7 = { header_row: 3, id_column: "Doc", stage_columns: ["Stage 1"], submission_date: "2026-10-20", label: "S7", files: ["TST-DOC-001.pdf"], force_id_column: true };
+  const { wb: out7 } = await updateRegister(srcBuf7, o7);
+  const raw = await out7.xlsx.writeBuffer();
+  assert.match((await checkTables(raw)).join(), /table TST_Table: no header row but an autoFilter/, "exceljs alone writes a file Excel refuses; the self-check catches it");
+  const { buf: fixed, restored } = await writeWorkbook(out7, srcBuf7);
+  assert.deepEqual(restored, ["TST_Table"]);
+  assert.deepEqual(await checkTables(fixed), [], "the restored output passes the self-check");
+  const zf = await JSZip.loadAsync(fixed);
+  const outXml = await zf.file(Object.keys(zf.files).find((f) => /^xl\/tables\/.*\.xml$/.test(f))).async("string");
+  assert.ok(/<autoFilter\b/.test(outXml) && !/headerRowCount="0"/.test(outXml) && /ref="A3:B6"/.test(outXml), "the table keeps its header row and its autoFilter");
+  const back7 = new ExcelJS.Workbook(); await back7.xlsx.load(fixed);
+  assert.ok(back7.worksheets[0].getCell("B4").value instanceof Date && back7.worksheets[0].name === "S7", "the update itself is kept");
+  // The self-check's other rules.
+  const bad = await JSZip.loadAsync(fixed);
+  bad.file(tf, outXml.replace(/ref="A3:B6"/, 'ref="A3:C6"'));
+  assert.match((await checkTables(await bad.generateAsync({ type: "nodebuffer" }))).join(), /2 column\(s\), ref A3:C6 is 3 wide/);
+  bad.file(tf, outXml.replace(/ref="A3:B6"/, 'ref="A3:B60"').replace(/<autoFilter ref="[^"]*"/, '<autoFilter ref="A3:B60"'));
+  assert.match((await checkTables(await bad.generateAsync({ type: "nodebuffer" }))).join(), /outside the sheet's used range/);
 }
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("registerupdate test passed");

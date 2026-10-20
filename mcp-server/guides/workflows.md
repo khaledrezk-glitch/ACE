@@ -319,7 +319,11 @@ The project's layout lives in the vault's rules/register.json (see bep/register.
 methods/midp-register-update): with it the call is vault, discipline, stage (a stage name, e.g. IFC: its columns get the
 date), submission_date, label, delivered and output; explicit arguments win, and the reply says which came from where.
 Rows whose id cell is not an id (section headings) are skipped and listed (id_pattern, or the vault's rules/naming.json
-"idPattern"). stage can be a list (e.g. the stage's planned and actual columns). "Probably the same, confirm" pairs
+"idPattern"). An id pattern with a capture group extracts the id from file names (group 1); without one (e.g. an
+anchored prefix "^XX01-") it only filters the ids found in file names as they are. discipline may be left out when the
+template has one discipline (or when register, id_column and stage_columns are given). Tables in the sheet are kept as
+in the register, and the written file is self-checked (tables Excel would refuse): a failing file is deleted, never
+reported as written. A confirm after an MCP restart finds no check: run the check again. stage can be a list (e.g. the stage's planned and actual columns). "Probably the same, confirm" pairs
 (same final number block, one naming field different) are never set by themselves: ask the user, then pass
 accept_near: [ids]. "The id column looks wrong" stops the check: show the sample values and fix id_column;
 force_id_column: true only when the user confirms the column.

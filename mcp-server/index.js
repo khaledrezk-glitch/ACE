@@ -1786,6 +1786,7 @@ tool("capture_method", {
 // register_update: a deliverables register (xlsx) updated for one submission, no Revit. A check writes nothing; the write
 // needs confirm: true and the identical check first (same inputs, same register bytes, same delivered list).
 const registerChecks = new Set();
+let registerCheckedHere = false;   // any check in this server process (a confirm after an MCP restart finds none)
 tool("register_update", {
   title: "Update a deliverables register for a submission (xlsx, no Revit)",
   description: "MIDP-style register: copies the register sheet into a new workbook named by label (formulas naming the sheet follow; formulas into other tabs become values; other tabs dropped), sets the stage date of delivered rows to the submission date and clears later dates. Delivered = file names or a folder; an id matches when the file name contains it (or id_pattern, the vault naming regex). Without confirm it only checks (output not written); confirm: true writes output after the identical check. Reply: counts and the first 10 of each list; the full report CSV goes to report_dir, the trusted vault or ACE reports, never beside output. Never writes the register itself.",
@@ -1817,7 +1818,12 @@ tool("register_update", {
   // call's own arguments win. Without a template the arguments work alone.
   let fromTemplate = [], tplFile = null;
   const tplPath = a.vault ? path.join(Vault.vaultDir(a.vault), "rules", RegisterUpdate.TEMPLATE_FILE) : null;
-  if (tplPath && fs.existsSync(tplPath)) {
+  // A template with several disciplines and no discipline named: the call's own register, id_column and stage_columns
+  // work without it (as before templates); otherwise templateArgs names the choices.
+  let tplCodes = [];
+  try { if (tplPath && fs.existsSync(tplPath) && !a.discipline) tplCodes = Object.keys(JSON.parse(fs.readFileSync(tplPath, "utf8").replace(/^\uFEFF/, "")).disciplines ?? {}); } catch { tplCodes = []; }
+  const ownArgs = !a.discipline && tplCodes.length > 1 && a.register && a.id_column && a.stage_columns;
+  if (tplPath && fs.existsSync(tplPath) && !ownArgs) {
     tplFile = tplPath;
     let t;
     try {
@@ -1856,26 +1862,33 @@ tool("register_update", {
   let res;
   try { res = await RegisterUpdate.updateRegister(buf, { ...a, files }); } catch (e) { throw new RevitError(e.message); }
   if (!confirm) {
-    registerChecks.add(key);
+    registerChecks.add(key); registerCheckedHere = true;
     let rf = null;
     try { rf = writeOut(rd.dir, `${reportStem} - check report.csv`, Report.toCsv(RegisterUpdate.reportRows(res.report))); } catch (e) { rd.note = `the check report could not be written to ${rd.dir} (${e.message}).`; }
     const out = text(RegisterUpdate.summaryOf(res.report, rf));
     out.content.push({ type: "text", text: `${RegisterUpdate.reportText(res.report, { mode: "check", reportFile: rf })}${rf ? `\nFull report (every item): ${rf}` : ""}${rd.note ? `\nNote: ${rd.note}` : ""}${sourceLine ? `\n${sourceLine}` : ""}${idPatternFrom ? `\nId pattern from the vault: ${idPatternFrom}.` : ""}\nNothing written. Show the user this report; to write ${a.output}, repeat the identical call with confirm: true.` });
     return out;
   }
-  if (!registerChecks.has(key)) throw new RevitError("Blocked for safety: this exact update has not been checked (the inputs, the register file or the delivered list differ). Run the same call without confirm, show the user the report, then confirm.");
+  if (!registerChecks.has(key)) throw new RevitError(registerCheckedHere ? "Blocked for safety: this exact update has not been checked (the inputs, the register file or the delivered list differ). Run the same call without confirm, show the user the report, then confirm." : "No check from this server process. Run the check again first; checks don't survive an MCP restart. (Run the same call without confirm, show the user the report, then confirm.)");
   const r = res.report;
   // Every refusal before anything is written: an existing workbook, merged id / stage cells. The report never overwrites (a counter).
   for (const f of [a.output]) if (fs.existsSync(f) && !overwrite) throw new RevitError(`${f} exists: give another output path, or overwrite: true after the user agreed. Nothing was written.`);
   if (r.merged.length && !allow_merged) throw new RevitError(`Blocked: merged cells in the id or stage columns (${r.merged.join(", ")}): dates could land in the wrong row. Unmerge them in the register, or repeat with allow_merged: true after the user checked. Nothing was written.`);
   fs.mkdirSync(path.dirname(path.resolve(a.output)), { recursive: true });
-  await res.wb.xlsx.writeFile(a.output);
+  // Tables restored from the register (exceljs loses their header row), then every table checked on the written file:
+  // a file Excel would refuse is deleted and nothing counts as written.
+  let tables;
+  try { tables = await RegisterUpdate.writeWorkbook(res.wb, buf); } catch (e) { throw new RevitError(`The workbook could not be written: ${e.message}. Nothing was written.`); }
+  fs.writeFileSync(a.output, tables.buf);
+  let tableProblems;
+  try { tableProblems = await RegisterUpdate.checkTables(fs.readFileSync(a.output)); } catch (e) { tableProblems = [`the written file could not be re-read (${e.message})`]; }
+  if (tableProblems.length) { try { fs.unlinkSync(a.output); } catch {} throw new RevitError(`Blocked: the written workbook failed its self-check (${tableProblems.join("; ")}); it was deleted, nothing was written. Report this to the ACE team.`); }
   registerChecks.delete(key);
   let csv = null;
   try { csv = writeOut(rd.dir, `${reportStem} - report.csv`, Report.toCsv(RegisterUpdate.reportRows(r))); } catch (e) { rd.note = `the report could not be written to ${rd.dir} (${e.message}).`; }
   journal({ title: `Register update: ${r.sheet} -> ${r.label}`, outcome: `Written ${a.output}`, details: { matched: r.matched.length, notInRegister: r.deliveredNotInRegister.length, notDelivered: r.notDelivered.length, cleared: r.cleared.length } });
   const out = text({ ...RegisterUpdate.summaryOf(r, csv), output: a.output });
-  out.content.push({ type: "text", text: `${RegisterUpdate.reportText(r, { mode: "write", output: a.output, reportFile: csv })}\nReport: ${csv ?? "not written"} (not beside the output)${rd.note ? `\nNote: ${rd.note}` : ""}\nThe register itself was not changed.` });
+  out.content.push({ type: "text", text: `${RegisterUpdate.reportText(r, { mode: "write", output: a.output, reportFile: csv })}${tables.restored.length || tables.stripped.length ? `\nTables: ${tables.restored.length} kept as in the register${tables.stripped.length ? `; ${tables.stripped.length} without a header row lost their filter (${tables.stripped.join(", ")})` : ""}; self-check ok.` : ""}\nReport: ${csv ?? "not written"} (not beside the output)${rd.note ? `\nNote: ${rd.note}` : ""}\nThe register itself was not changed.` });
   return out;
 });
 

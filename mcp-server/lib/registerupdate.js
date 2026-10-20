@@ -5,7 +5,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import ExcelJS from "exceljs";
+
+// JSZip is exceljs's own zip library (resolved from exceljs, so the two always travel together).
+const JSZip = createRequire(createRequire(import.meta.url).resolve("exceljs"))("jszip");
 
 const lc = (s) => String(s ?? "").trim().toLowerCase();
 const cellText = (v) => v == null ? "" : typeof v === "object" ? (v.richText ? v.richText.map((t) => t.text).join("") : v.text ?? (v.result != null ? String(v.result) : v.formula ? "" : String(v))) : String(v);
@@ -48,9 +52,16 @@ const day = (d) => d.toISOString().slice(0, 10);
  * the longest id wins when several are contained), or, with idPattern (the vault naming regex), when the pattern's first
  * group (or whole match) equals the id. -> { matched: Map(id -> [files]), unmatched: [files], ambiguous: [{ file, ids }] }
  */
+/**
+ * How an id pattern is used: with a capture group it EXTRACTS the id from a file name (group 1); without one (e.g. an
+ * anchored prefix "^PRJ01-...", which finds only the start of a name) it only FILTERS the ids the default matching found.
+ */
+export const patternUse = (idPattern) => !idPattern ? null : new RegExp(`${idPattern}|`).exec("").length > 1 ? "extract" : "filter";
 export function matchDelivered(idsIn, files, idPattern) {
-  const ids = [...new Map(idsIn.map((id) => [lc(id), id])).values()];   // an id listed twice is one id here
-  const re = idPattern ? new RegExp(idPattern, "i") : null;
+  const all = [...new Map(idsIn.map((id) => [lc(id), id])).values()];   // an id listed twice is one id here
+  const use = patternUse(idPattern);
+  const re = use === "extract" ? new RegExp(idPattern, "i") : null;
+  const ids = use === "filter" ? all.filter((id) => new RegExp(idPattern, "i").test(id)) : all;
   const byLc = new Map(ids.map((id) => [lc(id), id]));
   const matched = new Map(), unmatched = [], ambiguous = [];
   for (const f of files) {
@@ -271,7 +282,7 @@ export async function updateRegister(buf, o) {
     near: near.filter((n) => !n.accepted).map(({ id, file, differs }) => ({ id, file, differs })), nearAccepted: near.filter((n) => n.accepted).map(({ id, file }) => ({ id, file })),
     skipped: skipped.map((x) => ({ row: x.r, value: x.id })),
     cleared, formulaDates, ambiguous: m.ambiguous, duplicateIds: [...new Set(dupIds)], formulas, notDates,
-    merged, mergedIgnored, definedNames, validations,
+    merged, mergedIgnored, definedNames, validations, idPatternUse: patternUse(o.id_pattern),
   };
   return { wb, report };
 }
@@ -310,6 +321,7 @@ export function reportText(rep, { mode, output, reportFile }) {
   const uniqMatched = rep.matched.filter((x, i, l) => l.findIndex((y) => y.id === x.id) === i);
   return [`REGISTER UPDATE ${rep.sheet} -> "${rep.label}" for the submission of ${rep.submissionDate} (${mode === "write" ? `written to ${output}` : "check, nothing written"}).`,
     `${rep.rows} register row(s); stage column(s) ${rep.stageColumn}.`,
+    rep.idPatternUse === "filter" ? "Id pattern: no capture group, so it only filters the ids (ids are found in file names as they are); give id_pattern with a group, e.g. (PRJ01-[^_ .]+), to extract." : "",
     `Matched (delivered, date set): ${uniqMatched.length}${few(uniqMatched, (x) => `${xn(x.id)} <- ${x.files.join(", ")}`)}.`,
     rep.near.length ? `Probably the same, confirm (one naming field differs; set only with accept_near: [ids]): ${rep.near.length}${few(rep.near, (x) => `${xn(x.id)} ~ ${x.file} (${x.differs})`)}.` : "",
     rep.nearAccepted.length ? `Near matches accepted (date set): ${rep.nearAccepted.length}${few(rep.nearAccepted, (x) => `${x.id} <- ${x.file}`)}.` : "",
@@ -372,6 +384,8 @@ export function resolveRegisterFile(spec, baseDir) {
  */
 export function templateArgs(t, { discipline, stage }, { file, baseDir }) {
   const codes = Object.keys(t.disciplines);
+  // No discipline: the only one the template has; with several, the caller must name it.
+  if (!discipline && codes.length === 1) discipline = codes[0];
   if (!discipline) throw new Error(`Give discipline: one of ${codes.join(", ")} (from ${file}).`);
   const code = codes.find((c) => c.toLowerCase() === String(discipline).toLowerCase());
   if (!code) throw new Error(`Discipline "${discipline}" is not in ${file}: known ${codes.join(", ")}.`);
@@ -394,4 +408,71 @@ export function templateArgs(t, { discipline, stage }, { file, baseDir }) {
     else if (Object.keys(stages).length) throw new Error(`Stage "${stage}" is not in ${file} for ${code}: known ${Object.keys(stages).join(", ")}.`);
   }
   return { args, from, discipline: code };
+}
+
+// ---- tables: exceljs does not round-trip them (a missing headerRowCount, Excel's default 1, is read as 0, and an
+// autoFilter is always written: Excel refuses a headerless table with an autoFilter). The written zip gets each table's
+// source XML back (same name), and every table is checked before the output counts as written. ---------------------
+
+const attrsOf = (xml) => {
+  const open = xml.match(/<table\b[^>]*>/)?.[0] ?? "";
+  return Object.fromEntries([...open.matchAll(/([\w:]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
+};
+const cellRef = (r) => { const m = /^\$?([A-Z]+)\$?(\d+)$/i.exec(String(r).trim()); return m ? { c: m[1].toUpperCase().split("").reduce((x, ch) => x * 26 + ch.charCodeAt(0) - 64, 0), r: Number(m[2]) } : null; };
+const rangeOf = (ref) => { const [a, b = a] = String(ref ?? "").split(":"); const p = cellRef(a), q = cellRef(b); return p && q ? { c1: Math.min(p.c, q.c), r1: Math.min(p.r, q.r), c2: Math.max(p.c, q.c), r2: Math.max(p.r, q.r) } : null; };
+const tableFiles = (zip) => Object.keys(zip.files).filter((f) => /^xl\/tables\/[^/]+\.xml$/i.test(f));
+
+/** The workbook as xlsx bytes, its tables restored from the source register (by table name). -> { buf, restored, stripped } */
+export async function writeWorkbook(wb, srcBuf) {
+  const out = await JSZip.loadAsync(await wb.xlsx.writeBuffer());
+  const src = await JSZip.loadAsync(srcBuf);
+  const byName = new Map();
+  for (const f of tableFiles(src)) { const xml = await src.file(f).async("string"); const a = attrsOf(xml); byName.set(lc(a.name ?? a.displayName), xml); }
+  const restored = [], stripped = [];
+  for (const f of tableFiles(out)) {
+    const xml = await out.file(f).async("string");
+    const a = attrsOf(xml);
+    const orig = byName.get(lc(a.name ?? a.displayName));
+    if (orig && attrsOf(orig).ref === a.ref) { out.file(f, orig); restored.push(a.name); continue; }
+    if (a.headerRowCount === "0" && /<autoFilter\b/.test(xml)) { out.file(f, xml.replace(/<autoFilter\b[^>]*\/>|<autoFilter\b[\s\S]*?<\/autoFilter>/, "")); stripped.push(a.name); }
+  }
+  return { buf: await out.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), restored, stripped };
+}
+
+/** Every table of an xlsx checked: no autoFilter without a header row, ref inside the sheet's used range, as many columns
+ * as the ref is wide, unique ids and names. -> problems (empty = ok) */
+export async function checkTables(buf) {
+  const zip = await JSZip.loadAsync(buf);
+  const problems = [], ids = new Map(), names = new Map();
+  // Which sheet holds which table (the sheet's relationships), and the sheet's used range (<dimension>, else its cells).
+  const sheetOf = new Map();
+  for (const rf of Object.keys(zip.files).filter((f) => /^xl\/worksheets\/_rels\/[^/]+\.rels$/i.test(f))) {
+    const rels = await zip.file(rf).async("string");
+    const sheet = `xl/worksheets/${path.posix.basename(rf).replace(/\.rels$/i, "")}`;
+    for (const m of rels.matchAll(/Target="([^"]*tables\/[^"]+\.xml)"/g)) sheetOf.set(`xl/tables/${path.posix.basename(m[1])}`, sheet);
+  }
+  const used = new Map();
+  const usedOf = async (sheet) => {
+    if (used.has(sheet)) return used.get(sheet);
+    const xml = zip.file(sheet) ? await zip.file(sheet).async("string") : "";
+    let u = rangeOf(xml.match(/<dimension\s+ref="([^"]+)"/)?.[1]);
+    if (!u || (u.r2 === 1 && u.c2 === 1)) {
+      u = null;
+      for (const m of xml.matchAll(/<c\s[^>]*\br="([A-Z]+\d+)"/g)) { const p = cellRef(m[1]); if (!p) continue; u = u ? { c1: Math.min(u.c1, p.c), r1: Math.min(u.r1, p.r), c2: Math.max(u.c2, p.c), r2: Math.max(u.r2, p.r) } : { c1: p.c, r1: p.r, c2: p.c, r2: p.r }; }
+    }
+    used.set(sheet, u);
+    return u;
+  };
+  for (const f of tableFiles(zip)) {
+    const xml = await zip.file(f).async("string");
+    const a = attrsOf(xml), name = a.name ?? a.displayName ?? f, ref = rangeOf(a.ref);
+    if (a.headerRowCount === "0" && /<autoFilter\b/.test(xml)) problems.push(`table ${name}: no header row but an autoFilter (Excel refuses the file)`);
+    if (!ref) { problems.push(`table ${name}: ref "${a.ref}" is not a range`); continue; }
+    const cols = [...xml.matchAll(/<tableColumn\b/g)].length;
+    if (cols !== ref.c2 - ref.c1 + 1) problems.push(`table ${name}: ${cols} column(s), ref ${a.ref} is ${ref.c2 - ref.c1 + 1} wide`);
+    const u = sheetOf.has(f) ? await usedOf(sheetOf.get(f)) : null;
+    if (u && (ref.c1 < u.c1 || ref.r1 < u.r1 || ref.c2 > u.c2 || ref.r2 > u.r2)) problems.push(`table ${name}: ref ${a.ref} is outside the sheet's used range`);
+    for (const [k, m] of [[a.id, ids], [lc(name), names]]) { if (m.has(k)) problems.push(`table ${name}: ${m === ids ? `id ${k}` : "name"} also used by table ${m.get(k)}`); else m.set(k, name); }
+  }
+  return problems;
 }
