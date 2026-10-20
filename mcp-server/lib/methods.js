@@ -26,5 +26,5 @@ export const listText = (list = registry()) => list.length
   : "No office methods yet.";
 export const read = (name, list = registry()) => {
   const m = list.find((x) => x.name === name);
-  return m ? fs.readFileSync(path.join(METHODS_DIR, m.file), "utf8") : null;
+  return m ? fs.readFileSync(path.join(METHODS_DIR, m.file), "utf8").replace(/\r\n/g, "\n") : null;
 };
