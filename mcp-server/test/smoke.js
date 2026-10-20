@@ -1965,16 +1965,18 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /has not been checked/, "a changed delivered folder needs a new check");
   await call("register_update", ru);
   const wr = (await call("register_update", { ...ru, confirm: true })).content.at(-1).text;
-  assert.ok(fs.existsSync(ru.output) && /written to .*out\.xlsx/.test(wr) && /Report: .*out - report\.csv/.test(wr));
+  assert.ok(fs.existsSync(ru.output) && /written to .*out\.xlsx/.test(wr) && /Report: .*out - report\.csv \(not beside the output\)/.test(wr));
+  // 1.14.2: the report never lands beside the output (a submission folder): ACE's reports folder here; report_dir there is refused.
+  const repF = wr.match(/Report: (.*out - report\.csv)/)[1];
+  assert.ok(fs.existsSync(repF) && path.dirname(repF) !== rDir && !fs.readdirSync(rDir).some((f) => /report\.csv$/.test(f)), "no report CSV beside the output");
+  assert.match(chk, /Full report \(every item\): .*out - check report\.csv/, "the check names its full report");
   assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /has not been checked/, "a check is used once");
   await call("register_update", ru);
   assert.match((await call("register_update", { ...ru, confirm: true })).content[0].text, /exists: give another output path, or overwrite: true/);
-  // The report CSV follows the same rule, checked before the workbook is written.
-  const ru2 = { ...ru, output: path.join(rDir, "out2.xlsx") };
-  fs.writeFileSync(path.join(rDir, "out2 - report.csv"), "keep");
-  await call("register_update", ru2);
-  const csvNo = (await call("register_update", { ...ru2, confirm: true })).content[0].text;
-  assert.ok(/out2 - report\.csv exists: .*Nothing was written\./.test(csvNo) && !fs.existsSync(ru2.output) && fs.readFileSync(path.join(rDir, "out2 - report.csv"), "utf8") === "keep", "an existing report CSV stops the write before the workbook");
+  assert.match((await call("register_update", { ...ru, report_dir: rDir })).content[0].text, /is the output's folder: the report never goes beside the output/);
+  const rdx = path.join(tmp, "register-reports");
+  const chkR = (await call("register_update", { ...ru, report_dir: rdx })).content.at(-1).text;
+  assert.ok(new RegExp(`Full report \\(every item\\): ${rdx.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(chkR), "report_dir is used");
   // Merged id / stage cells: reported by the check, the write refuses unless allow_merged.
   const wm = new ExcelJS.Workbook();
   const shm = wm.addWorksheet("TST_REG");

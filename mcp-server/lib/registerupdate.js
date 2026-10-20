@@ -208,7 +208,7 @@ export async function updateRegister(buf, o) {
     let nf = f.replace(selfRe, (all, pre) => `${pre}${quoteSheet(label)}!`);
     if (nf !== f) formulas.renamed++;
     if (/!/.test(nf.replace(new RegExp(`${esc(quoteSheet(label))}!`, "g"), ""))) {
-      cell.value = v.result ?? null; formulas.toValues++; if (formulas.cells.length < 20) formulas.cells.push(cell.address);
+      cell.value = v.result ?? null; formulas.toValues++; formulas.cells.push(cell.address);
       return;
     }
     cell.value = { formula: nf, result: v.result };
@@ -221,7 +221,7 @@ export async function updateRegister(buf, o) {
     for (const [, c] of stageCols) {
       const cell = ws.getRow(r).getCell(c);
       const d = asDate(cell.value);
-      if (cell.value != null && cell.value !== "" && !d && !isFormula(cell.value)) { if (notDates.length < 20) notDates.push(`${id} ${header(c)}: ${cellText(cell.value)}`); continue; }
+      if (cell.value != null && cell.value !== "" && !d && !isFormula(cell.value)) { notDates.push(`${id} ${header(c)}: ${cellText(cell.value)}`); continue; }
       if (!d || day(d) <= day(sub)) continue;   // whole days: the submission day itself (any time) stays
       if (isFormula(cell.value)) { formulaDates.push({ id, column: header(c), was: day(d) }); continue; }   // computed: reported, never cleared silently
       cleared.push({ id, column: header(c), was: day(d) }); cell.value = null;
@@ -240,12 +240,16 @@ export async function updateRegister(buf, o) {
   // What the copy can break: merged cells in the id / stage columns (the write refuses unless allowed), defined names
   // and data validations that point into the tabs being dropped (warnings).
   const watched = new Set([idCol, ...stageCols.map(([, c]) => c), ...setCols.map(([, c]) => c)]);
+  // Only merges that reach the data rows (below the header row) in those columns count; title-block merges above are ignored.
   const colNum = (ref) => ref.replace(/[0-9$]/g, "").split("").reduce((x, ch) => x * 26 + ch.toUpperCase().charCodeAt(0) - 64, 0);
-  const merged = (ws.model.merges ?? []).filter((rg) => {
+  const rowNum = (ref) => Number(ref.replace(/[^0-9]/g, "")) || 0;
+  const allMerges = ws.model.merges ?? [];
+  const merged = allMerges.filter((rg) => {
     const [a, b = a] = rg.split(":");
-    const lo = colNum(a), hi = colNum(b);
-    return [...watched].some((c) => c >= lo && c <= hi);
+    const lo = colNum(a), hi = colNum(b), bottom = Math.max(rowNum(a), rowNum(b));
+    return bottom > hr && [...watched].some((c) => c >= lo && c <= hi);
   });
+  const mergedIgnored = allMerges.length - merged.length;
   const dropped = wb.worksheets.filter((w) => w.id !== ws.id).map((w) => w.name);
   const intoDropped = (f) => dropped.some((n) => new RegExp(`(^|[^A-Za-z0-9_])(?:'${esc(n.replace(/'/g, "''"))}'|${esc(n)})!`, "i").test(String(f ?? "")));
   const definedNames = [];
@@ -267,32 +271,61 @@ export async function updateRegister(buf, o) {
     near: near.filter((n) => !n.accepted).map(({ id, file, differs }) => ({ id, file, differs })), nearAccepted: near.filter((n) => n.accepted).map(({ id, file }) => ({ id, file })),
     skipped: skipped.map((x) => ({ row: x.r, value: x.id })),
     cleared, formulaDates, ambiguous: m.ambiguous, duplicateIds: [...new Set(dupIds)], formulas, notDates,
-    merged, definedNames, validations,
+    merged, mergedIgnored, definedNames, validations,
   };
   return { wb, report };
 }
 
-/** The report in words (counts first, then the first items of each list). */
-export function reportText(rep, { mode, output }) {
+/** The lists of a report, as they go to the report file and the reply. */
+const LISTS = ["matched", "near", "nearAccepted", "skipped", "deliveredNotInRegister", "notDelivered", "cleared", "formulaDates", "ambiguous", "duplicateIds", "notDates", "merged", "definedNames", "validations"];
+export const FIRST = 10;
+
+/** The reply's data: every count, the first 10 of each list (the full lists are in the report file). */
+export function summaryOf(rep, reportFile) {
+  const out = { sheet: rep.sheet, label: rep.label, submissionDate: rep.submissionDate, rows: rep.rows, stageColumn: rep.stageColumn, mergedIgnored: rep.mergedIgnored ?? 0,
+    formulas: { renamed: rep.formulas?.renamed ?? 0, toValues: rep.formulas?.toValues ?? 0 }, idsListedMoreThanOnce: Object.keys(rep.timesInRegister ?? {}).length, report: reportFile ?? null, counts: {}, first: {} };
+  for (const k of LISTS) { const l = rep[k] ?? []; out.counts[k] = l.length; if (l.length) out.first[k] = l.slice(0, FIRST); }
+  return out;
+}
+
+/** The report file's rows (CSV): every item of every list. */
+export function reportRows(rep) {
+  return [["result", "id or file", "column", "date / files"],
+    ...rep.matched.map((x) => ["matched", x.id, x.column, x.files.join("; ")]), ...rep.nearAccepted.map((x) => ["near match accepted", x.id, "", x.file]),
+    ...rep.deliveredNotInRegister.map((f) => ["delivered, not in register", f, "", ""]),
+    ...rep.notDelivered.map((id) => ["not delivered", id, "", ""]), ...rep.cleared.map((x) => ["date cleared (later than the submission)", x.id, x.column, x.was]),
+    ...rep.formulaDates.map((x) => ["formula date later than submission, left", x.id, x.column, x.was]),
+    ...rep.near.map((x) => ["probably the same, confirm", x.id, x.differs, x.file]), ...rep.skipped.map((x) => ["heading/skipped", x.value, `row ${x.row}`, ""]),
+    ...rep.ambiguous.map((x) => ["ambiguous file name", x.file, "", x.ids.join("; ")]), ...rep.duplicateIds.map((id) => ["id listed twice", id, "", ""]),
+    ...rep.notDates.map((x) => ["not a date (left)", x, "", ""]), ...rep.merged.map((x) => ["merged cells in id / stage columns", x, "", ""]),
+    ...rep.definedNames.map((x) => ["defined name into a dropped tab", x, "", ""]), ...rep.validations.map((x) => ["validation into a dropped tab", x, "", ""]),
+    ...rep.formulas.cells.map((x) => ["formula became its value", x, "", ""])];
+}
+
+/** The report in words (counts first, then the first 10 items of each list; the rest are in the report file). */
+export function reportText(rep, { mode, output, reportFile }) {
   const xn = (id) => rep.timesInRegister?.[id] > 1 ? `${id} (x${rep.timesInRegister[id]} in register)` : id;
-  const few = (l, f = (x) => x) => l.length ? `: ${l.slice(0, 10).map(f).join("; ")}${l.length > 10 ? `; ... ${l.length - 10} more` : ""}` : "";
+  const more = (n) => `; ... ${n} more${reportFile ? ` in ${reportFile}` : ""}`;
+  const few = (l, f = (x) => x, sep = "; ") => l.length ? `: ${l.slice(0, FIRST).map(f).join(sep)}${l.length > FIRST ? more(l.length - FIRST) : ""}` : "";
+  const uniqMatched = rep.matched.filter((x, i, l) => l.findIndex((y) => y.id === x.id) === i);
   return [`REGISTER UPDATE ${rep.sheet} -> "${rep.label}" for the submission of ${rep.submissionDate} (${mode === "write" ? `written to ${output}` : "check, nothing written"}).`,
     `${rep.rows} register row(s); stage column(s) ${rep.stageColumn}.`,
-    `Matched (delivered, date set): ${new Set(rep.matched.map((x) => x.id)).size}${few(rep.matched.filter((x, i, l) => l.findIndex((y) => y.id === x.id) === i), (x) => `${xn(x.id)} <- ${x.files.join(", ")}`)}.`,
+    `Matched (delivered, date set): ${uniqMatched.length}${few(uniqMatched, (x) => `${xn(x.id)} <- ${x.files.join(", ")}`)}.`,
     rep.near.length ? `Probably the same, confirm (one naming field differs; set only with accept_near: [ids]): ${rep.near.length}${few(rep.near, (x) => `${xn(x.id)} ~ ${x.file} (${x.differs})`)}.` : "",
-    rep.nearAccepted.length ? `Near matches accepted (date set): ${rep.nearAccepted.map((x) => `${x.id} <- ${x.file}`).join("; ")}.` : "",
+    rep.nearAccepted.length ? `Near matches accepted (date set): ${rep.nearAccepted.length}${few(rep.nearAccepted, (x) => `${x.id} <- ${x.file}`)}.` : "",
     rep.skipped.length ? `Headings/skipped (not ids): ${rep.skipped.length}${few(rep.skipped, (x) => `row ${x.row} "${x.value}"`)}.` : "",
     `Delivered but not in the register: ${rep.deliveredNotInRegister.length}${few(rep.deliveredNotInRegister)}.`,
     `In the register but not delivered: ${rep.notDelivered.length}${few(rep.notDelivered, xn)}.`,
     `Dates later than the submission, cleared: ${rep.cleared.length}${few(rep.cleared, (x) => `${x.id} ${x.column} ${x.was}`)}.`,
-    rep.ambiguous.length ? `Ambiguous file names (match several ids, all set): ${rep.ambiguous.map((a) => `${a.file} -> ${a.ids.join(", ")}`).join("; ")}.` : "",
-    rep.duplicateIds.length ? `Ids listed twice in the register: ${rep.duplicateIds.join(", ")}.` : "",
+    rep.ambiguous.length ? `Ambiguous file names (match several ids, all set): ${rep.ambiguous.length}${few(rep.ambiguous, (a) => `${a.file} -> ${a.ids.join(", ")}`)}.` : "",
+    rep.duplicateIds.length ? `Ids listed twice in the register: ${rep.duplicateIds.length}${few(rep.duplicateIds)}.` : "",
     rep.formulaDates.length ? `Formula date later than submission, left (computed, not cleared): ${rep.formulaDates.length}${few(rep.formulaDates, (x) => `${x.id} ${x.column} ${x.was}`)}.` : "",
-    rep.merged.length ? `Merged cells in the id or stage columns: ${rep.merged.join(", ")} (the write refuses unless allow_merged: unmerge them, or allow after the user checked).` : "",
-    rep.definedNames.length ? `Warning: defined names that point into dropped tabs (broken in the copy): ${rep.definedNames.join("; ")}.` : "",
-    rep.validations.length ? `Warning: data validations that point into dropped tabs (broken in the copy): ${rep.validations.join("; ")}.` : "",
-    rep.notDates.length ? `Cells in the stage columns that are not dates (left as they are): ${rep.notDates.join("; ")}.` : "",
-    `Formulas: ${rep.formulas.renamed} now name "${rep.label}"; ${rep.formulas.toValues} pointed into other tabs and became their values${rep.formulas.cells.length ? ` (${rep.formulas.cells.join(", ")})` : ""}. Other tabs are dropped from the copy.`,
+    rep.merged.length ? `Merged cells in the id or stage columns: ${rep.merged.slice(0, FIRST).join(", ")}${rep.merged.length > FIRST ? more(rep.merged.length - FIRST) : ""} (the write refuses unless allow_merged: unmerge them, or allow after the user checked).` : "",
+    rep.mergedIgnored ? `Merged cells elsewhere (title block, other columns) ignored: ${rep.mergedIgnored}.` : "",
+    rep.definedNames.length ? `Warning: defined names that point into dropped tabs (broken in the copy): ${rep.definedNames.length}${few(rep.definedNames)}.` : "",
+    rep.validations.length ? `Warning: data validations that point into dropped tabs (broken in the copy): ${rep.validations.length}${few(rep.validations)}.` : "",
+    rep.notDates.length ? `Cells in the stage columns that are not dates (left as they are): ${rep.notDates.length}${few(rep.notDates)}.` : "",
+    `Formulas: ${rep.formulas.renamed} now name "${rep.label}"; ${rep.formulas.toValues} pointed into other tabs and became their values${rep.formulas.cells.length ? ` (${rep.formulas.cells.slice(0, FIRST).join(", ")}${rep.formulas.cells.length > FIRST ? more(rep.formulas.cells.length - FIRST) : ""})` : ""}. Other tabs are dropped from the copy.`,
   ].filter(Boolean).join("\n");
 }
 

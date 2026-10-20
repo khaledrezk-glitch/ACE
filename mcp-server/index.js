@@ -1788,15 +1788,15 @@ tool("capture_method", {
 const registerChecks = new Set();
 tool("register_update", {
   title: "Update a deliverables register for a submission (xlsx, no Revit)",
-  description: "MIDP-style register: copies the register sheet into a new workbook named by label (formulas naming the sheet follow; formulas into other tabs become values; other tabs dropped), sets the stage date of delivered rows to the submission date and clears later dates. Delivered = file names or a folder; an id matches when the file name contains it (or id_pattern, the vault naming regex). Without confirm it only checks (writes nothing); confirm: true writes output after the identical check. Never writes the register itself.",
+  description: "MIDP-style register: copies the register sheet into a new workbook named by label (formulas naming the sheet follow; formulas into other tabs become values; other tabs dropped), sets the stage date of delivered rows to the submission date and clears later dates. Delivered = file names or a folder; an id matches when the file name contains it (or id_pattern, the vault naming regex). Without confirm it only checks (output not written); confirm: true writes output after the identical check. Reply: counts and the first 10 of each list; the full report CSV goes to report_dir, the trusted vault or ACE reports, never beside output. Never writes the register itself.",
   inputSchema: {
     register: z.string().optional().describe("The register .xlsx (default: the vault template's file)"),
     discipline: z.string().max(20).optional().describe("With vault rules/register.json: the discipline (its tab, header row, id column, stages)"),
     sheet: z.string().max(31).optional().describe("Default: the first sheet"),
     header_row: z.number().int().min(1).max(100).optional(),
     id_column: z.string().max(80).optional().describe("Header name or column letter (default: the template's)"),
-    stage_columns: z.array(z.string().max(80)).min(1).max(40).optional().describe("Every stage date column (later dates are cleared in all of them; default: the template's)"),
-    stage: z.union([z.string().max(80), z.array(z.string().max(80)).max(20)]).optional().describe("A template stage name (e.g. IFC), or the stage column(s) that get the submission date"),
+    stage_columns: z.array(z.string().max(80)).min(1).max(60).optional().describe("Every stage date column (later dates are cleared in all of them; default: the template's)"),
+    stage: z.union([z.string().max(80), z.array(z.string().max(80)).max(60)]).optional().describe("A template stage name (e.g. IFC), or the stage column(s) that get the submission date"),
     delivered: z.array(z.string().max(300)).max(20000).optional().describe("Delivered file names"),
     delivered_dir: z.string().optional().describe("Folder whose files were delivered (recursive)"),
     submission_date: z.string().max(20).describe("YYYY-MM-DD"),
@@ -1809,6 +1809,7 @@ tool("register_update", {
     overwrite: z.boolean().optional(),
     confirm: z.boolean().optional().describe("Write the output (after the user saw the check)"),
     allow_merged: z.boolean().optional().describe("Write although the id or stage columns hold merged cells"),
+    report_dir: z.string().optional().describe("Folder for the report CSV (default: the trusted vault's 04 Audits/registers, else ACE's reports folder; never beside output)"),
   },
   annotations: benign,
 }, async ({ confirm, ...a }) => {
@@ -1845,33 +1846,36 @@ tool("register_update", {
     catch (e) { throw new RevitError(`${f} is not valid JSON (${e.message}).`); }
   }
   if (a.id_pattern) { try { new RegExp(a.id_pattern, "i"); } catch (e) { throw new RevitError(`id_pattern is not a valid regex: ${e.message}`); } }
-  const { overwrite, allow_merged, idPatternFrom, ...ident } = a;
+  // The report never goes beside the output (a submission folder): report_dir, else the trusted vault's 04 Audits/registers,
+  // else ACE's reports folder.
+  const rd = registerReportDir(a);
+  if (same(rd.dir, path.dirname(path.resolve(a.output)))) throw new RevitError(`report_dir ${rd.dir} is the output's folder: the report never goes beside the output (it would land in the submission). Give another report_dir.`);
+  const reportStem = path.basename(a.output).replace(/\.xlsx$/i, "");
+  const { overwrite, allow_merged, idPatternFrom, report_dir: _rd, ...ident } = a;
   const key = fingerprint("register_update", { ...ident, files: [...files].sort(), register: RegisterUpdate.sha(buf) });
   let res;
   try { res = await RegisterUpdate.updateRegister(buf, { ...a, files }); } catch (e) { throw new RevitError(e.message); }
   if (!confirm) {
     registerChecks.add(key);
-    const out = text(res.report);
-    out.content.push({ type: "text", text: `${RegisterUpdate.reportText(res.report, { mode: "check" })}${sourceLine ? `\n${sourceLine}` : ""}${idPatternFrom ? `\nId pattern from the vault: ${idPatternFrom}.` : ""}\nNothing written. Show the user this report; to write ${a.output}, repeat the identical call with confirm: true.` });
+    let rf = null;
+    try { rf = writeOut(rd.dir, `${reportStem} - check report.csv`, Report.toCsv(RegisterUpdate.reportRows(res.report))); } catch (e) { rd.note = `the check report could not be written to ${rd.dir} (${e.message}).`; }
+    const out = text(RegisterUpdate.summaryOf(res.report, rf));
+    out.content.push({ type: "text", text: `${RegisterUpdate.reportText(res.report, { mode: "check", reportFile: rf })}${rf ? `\nFull report (every item): ${rf}` : ""}${rd.note ? `\nNote: ${rd.note}` : ""}${sourceLine ? `\n${sourceLine}` : ""}${idPatternFrom ? `\nId pattern from the vault: ${idPatternFrom}.` : ""}\nNothing written. Show the user this report; to write ${a.output}, repeat the identical call with confirm: true.` });
     return out;
   }
   if (!registerChecks.has(key)) throw new RevitError("Blocked for safety: this exact update has not been checked (the inputs, the register file or the delivered list differ). Run the same call without confirm, show the user the report, then confirm.");
-  const csv = a.output.replace(/\.xlsx$/i, " - report.csv");
   const r = res.report;
-  // Every refusal before anything is written: existing files (the workbook and its report), merged id / stage cells.
-  for (const f of [a.output, csv]) if (fs.existsSync(f) && !overwrite) throw new RevitError(`${f} exists: give another output path, or overwrite: true after the user agreed. Nothing was written.`);
+  // Every refusal before anything is written: an existing workbook, merged id / stage cells. The report never overwrites (a counter).
+  for (const f of [a.output]) if (fs.existsSync(f) && !overwrite) throw new RevitError(`${f} exists: give another output path, or overwrite: true after the user agreed. Nothing was written.`);
   if (r.merged.length && !allow_merged) throw new RevitError(`Blocked: merged cells in the id or stage columns (${r.merged.join(", ")}): dates could land in the wrong row. Unmerge them in the register, or repeat with allow_merged: true after the user checked. Nothing was written.`);
   fs.mkdirSync(path.dirname(path.resolve(a.output)), { recursive: true });
   await res.wb.xlsx.writeFile(a.output);
   registerChecks.delete(key);
-  fs.writeFileSync(csv, Report.toCsv([["result", "id or file", "column", "date / files"],
-    ...r.matched.map((x) => ["matched", x.id, x.column, x.files.join("; ")]), ...r.deliveredNotInRegister.map((f) => ["delivered, not in register", f, "", ""]),
-    ...r.notDelivered.map((id) => ["not delivered", id, "", ""]), ...r.cleared.map((x) => ["date cleared (later than the submission)", x.id, x.column, x.was]),
-    ...r.formulaDates.map((x) => ["formula date later than submission, left", x.id, x.column, x.was]),
-    ...r.near.map((x) => ["probably the same, confirm", x.id, x.differs, x.file]), ...r.skipped.map((x) => ["heading/skipped", x.value, `row ${x.row}`, ""])]));
+  let csv = null;
+  try { csv = writeOut(rd.dir, `${reportStem} - report.csv`, Report.toCsv(RegisterUpdate.reportRows(r))); } catch (e) { rd.note = `the report could not be written to ${rd.dir} (${e.message}).`; }
   journal({ title: `Register update: ${r.sheet} -> ${r.label}`, outcome: `Written ${a.output}`, details: { matched: r.matched.length, notInRegister: r.deliveredNotInRegister.length, notDelivered: r.notDelivered.length, cleared: r.cleared.length } });
-  const out = text({ ...r, output: a.output, report: csv });
-  out.content.push({ type: "text", text: `${RegisterUpdate.reportText(r, { mode: "write", output: a.output })}\nReport: ${csv}\nThe register itself was not changed.` });
+  const out = text({ ...RegisterUpdate.summaryOf(r, csv), output: a.output });
+  out.content.push({ type: "text", text: `${RegisterUpdate.reportText(r, { mode: "write", output: a.output, reportFile: csv })}\nReport: ${csv ?? "not written"} (not beside the output)${rd.note ? `\nNote: ${rd.note}` : ""}\nThe register itself was not changed.` });
   return out;
 });
 
@@ -2087,6 +2091,17 @@ async function auditFolder(a, model, { sub = "parameters", reports = "parameter-
   if (dir && fs.existsSync(dir)) {
     if (Vault.trusted(path.dirname(CONFIG_PATH), dir)) return { dir: path.join(dir, "04 Audits", ParamExec.safeName(model), sub) };
     return { dir: fallback, note: `vault not trusted: files written to ${fallback} (ACE writes into ${dir} once the user allows it: vault with consent: true).` };
+  }
+  return { dir: fallback };
+}
+/** register_update's report folder: report_dir, else the trusted vault's 04 Audits/registers, else ACE's reports folder. */
+function registerReportDir(a) {
+  if (a.report_dir) return { dir: path.resolve(a.report_dir) };
+  const fallback = path.join(REPORTS_DIR, "register-update");
+  const vd = a.vault ? Vault.vaultDir(a.vault) : null;
+  if (vd && fs.existsSync(vd)) {
+    if (Vault.trusted(path.dirname(CONFIG_PATH), vd)) return { dir: path.join(vd, "04 Audits", "registers") };
+    return { dir: fallback, note: `vault not trusted: the report went to ${fallback} (ACE writes into ${vd} once the user allows it: vault with consent: true).` };
   }
   return { dir: fallback };
 }

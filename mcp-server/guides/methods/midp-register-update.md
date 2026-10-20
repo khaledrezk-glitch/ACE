@@ -15,4 +15,4 @@ submission_date, label, the delivered files and output.
   delivered but not in the register, not delivered, cleared dates, headings skipped, and what came from the template.
 - accept_near only for pairs the user confirmed; force_id_column only when the user confirms "the id column looks wrong"
   is a false alarm.
-- The identical call with confirm: true writes the new workbook and a report CSV; the register itself is never written.
+- The identical call with confirm: true writes the new workbook; the report CSV (every item; the reply shows counts and the first 10) goes to report_dir, the trusted vault's 04 Audits/registers or ACE's reports folder, never beside the output. The register itself is never written.

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.14.2 (20 Oct 2026)
+- MCP server only (`install.cmd -SkipAddin`; the 1.14.1 add-in works with it).
+- **register_update from a live run:** the report CSV never lands beside the output (it would be uploaded with the
+  submission): `report_dir`, else the trusted vault's `04 Audits/registers`, else ACE's reports folder; never
+  overwritten; a check writes its report too. Merged cells block only where they reach data rows in the id or stage
+  columns (title-block merges are counted and ignored). The reply gives counts and the first 10 of each list, the full
+  detail is in the report. `stage_columns` and `stage` take up to 60 columns.
+
 ## 1.14.1 (20 Oct 2026)
 - First update meant to load through the loader with Revit open (no restart once 1.14.0 is installed).
 - **Same-name models:** run_clash_test resolves models by path first (`with_model_path`); the active model is always

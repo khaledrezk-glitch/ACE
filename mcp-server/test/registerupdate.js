@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
-import { asDate, checkTemplate, matchDelivered, nearMatches, reportText, resolveRegisterFile, sha, splitIds, templateArgs, updateRegister } from "../lib/registerupdate.js";
+import { asDate, checkTemplate, matchDelivered, nearMatches, reportRows, reportText, resolveRegisterFile, sha, splitIds, summaryOf, templateArgs, updateRegister } from "../lib/registerupdate.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-reg-"));
 const wb = new ExcelJS.Workbook();
@@ -93,8 +93,8 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   const t2 = reportText(r2, { mode: "check" });
   assert.match(t2, /Formula date later than submission, left \(computed, not cleared\): 1: TST-A-002 Stage 2 2026-11-19\./);
   assert.match(t2, /Merged cells in the id or stage columns: D5:D6 \(the write refuses unless allow_merged/);
-  assert.match(t2, /Warning: defined names that point into dropped tabs \(broken in the copy\): TST_Choices/);
-  assert.match(t2, /Warning: data validations that point into dropped tabs \(broken in the copy\): A2: TST_LISTS!\$A\$1:\$A\$3/);
+  assert.match(t2, /Warning: defined names that point into dropped tabs \(broken in the copy\): 1: TST_Choices/);
+  assert.match(t2, /Warning: data validations that point into dropped tabs \(broken in the copy\): 1: A2: TST_LISTS!\$A\$1:\$A\$3/);
   assert.ok(out2.worksheets[0].getCell("C2").value instanceof Date, "the same-day date stays");
   await assert.rejects(updateRegister(fs.readFileSync(f2), { ...o2, id_column: "ZZ" }), /The id column "ZZ" is not in header row 1/, "a letter outside the used columns is refused");
   assert.equal((await updateRegister(fs.readFileSync(f2), { ...o2, id_column: "B" })).report.rows, 4, "a letter inside the used columns works");
@@ -187,6 +187,38 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   assert.throws(() => checkTemplate({ ...ex, stages: { IFC: "Actual" } }, "f"), /stages\.IFC must be a list of column names/);
   fs.writeFileSync(path.join(tmp, "tpl", "TST_Registers", "TST-MIDP-R04.xlsx"), "x");
   assert.throws(() => resolveRegisterFile("../TST_Registers/TST-MIDP-*.xlsx", tdir), /matches 2 files/);
+}
+// 1.14.2: title-block merges above the header row are ignored (counted); only merges in the data rows of the id / stage
+// columns block. The reply is counts + the first 10 of each list; the report file holds every item.
+{
+  const w6 = new ExcelJS.Workbook();
+  const s6 = w6.addWorksheet("TST_REG6");
+  s6.getCell("A1").value = "TST MIDP";
+  for (const rg of ["A2:B2", "B3:B10", "B11:E13", "AI11:AP11"]) s6.mergeCells(rg);
+  s6.getRow(14).values = ["Doc", "Title", "Stage 1", "Stage 2"];
+  const ids6 = Array.from({ length: 30 }, (_, i) => `TST-P1-AR-ZZ-DR-3000${10 + i}`);
+  ids6.forEach((id, i) => { s6.getRow(15 + i).values = [id, "t", null, new Date("2026-12-01T00:00:00Z")]; });
+  s6.mergeCells("C16:C17"); s6.mergeCells("E16:F16");
+  const f6 = path.join(tmp, "TST register 6.xlsx");
+  await w6.xlsx.writeFile(f6);
+  const o6 = { header_row: 14, id_column: "Doc", stage_columns: ["Stage 1", "Stage 2"], stage: "Stage 1", submission_date: "2026-10-20", label: "S6",
+    files: [...ids6.slice(0, 25).map((id) => `${id}.pdf`), ...Array.from({ length: 12 }, (_, i) => `TST-OTHER-${i}.pdf`)], force_id_column: true };
+  const { report: r6 } = await updateRegister(fs.readFileSync(f6), o6);
+  assert.deepEqual(r6.merged, ["C16:C17"], "only a merge in the data rows of an id / stage column blocks");
+  assert.equal(r6.mergedIgnored, 5, "title-block merges above the header row (and other columns) are ignored");
+  const t6 = reportText(r6, { mode: "check", reportFile: "TST check report.csv" });
+  assert.match(t6, /Merged cells in the id or stage columns: C16:C17 \(the write refuses/);
+  assert.match(t6, /Merged cells elsewhere \(title block, other columns\) ignored: 5\./);
+  assert.match(t6, /Matched \(delivered, date set\): 25: (?:[^;]+; ){9}[^;]+; \.\.\. 15 more in TST check report\.csv\./, "the first 10, then N more in the report");
+  assert.match(t6, /Dates later than the submission, cleared: 30: (?:[^;]+; ){9}[^;]+; \.\.\. 20 more in TST check report\.csv\./);
+  assert.match(t6, /Delivered but not in the register: 12: (?:[^;]+; ){9}[^;]+; \.\.\. 2 more in TST check report\.csv\./);
+  const sm = summaryOf(r6, "TST check report.csv");
+  assert.ok(sm.counts.matched === 25 && sm.first.matched.length === 10 && sm.counts.cleared === 30 && sm.first.cleared.length === 10 && sm.report === "TST check report.csv" && !("matched" in sm && Array.isArray(sm.matched)), "the reply's data: counts and the first 10");
+  assert.ok(JSON.stringify(sm).length < JSON.stringify(r6).length / 2, "the reply is much smaller than the full report");
+  const rows6 = reportRows(r6);
+  assert.equal(rows6.filter((x) => x[0] === "matched").length, 25, "the report file holds every item");
+  assert.equal(rows6.filter((x) => x[0] === "date cleared (later than the submission)").length, 30);
+  assert.ok(rows6.some((x) => x[0] === "merged cells in id / stage columns" && x[1] === "C16:C17"));
 }
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("registerupdate test passed");

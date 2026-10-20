@@ -308,10 +308,13 @@ register_update (no Revit) updates a deliverables register (xlsx) for one submis
 a new workbook named by label, the stage column of delivered rows gets submission_date, later dates in stage_columns
 are cleared. Delivered = file names or a folder (e.g. the export out_dir); an id matches when the file name contains it,
 or id_pattern (the vault naming regex). Without confirm it only checks: show the report (matched, delivered but not in
-the register, not delivered, cleared, ambiguous); then the identical call with confirm: true writes output and a report
-CSV. The register itself is never written. Columns are found by header text first (a column letter only when no
-header matches). A later date computed by a formula is reported and left. Merged cells in the id or stage columns stop
-the write (allow_merged: true only after the user checked); defined names and validations into dropped tabs are warnings.
+the register, not delivered, cleared, ambiguous: counts and the first 10 of each; every item is in the report CSV it
+names); then the identical call with confirm: true writes output and its report CSV. The report never goes beside the
+output (a submission folder): report_dir, else the trusted vault's 04 Audits/registers, else ACE's reports folder; give
+the user its path. The register itself is never written. Columns are found by header text first (a column letter only
+when no header matches). A later date computed by a formula is reported and left. Merged cells in the data rows of the id
+or stage columns stop the write (allow_merged: true only after the user checked); title-block merges above header_row
+are ignored and counted; defined names and validations into dropped tabs are warnings.
 The project's layout lives in the vault's rules/register.json (see bep/register.example.json and revit_guide
 methods/midp-register-update): with it the call is vault, discipline, stage (a stage name, e.g. IFC: its columns get the
 date), submission_date, label, delivered and output; explicit arguments win, and the reply says which came from where.
