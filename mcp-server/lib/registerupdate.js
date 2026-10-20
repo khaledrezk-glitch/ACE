@@ -612,7 +612,11 @@ export function excelOpenTest(file, { timeoutMs = 90000, spawnSync = spawnSyncDe
     return { ok: false, skipped: false, why: `Excel did not open it within ${Math.round(timeoutMs / 1000)} s (probably a repair prompt)` };
   }
   if (r.error) return { ok: true, skipped: true, why: `PowerShell could not run (${r.error.message})` };
-  if (/NOEXCEL/.test(outTxt)) return { ok: true, skipped: true, why: `Excel is not installed (${outTxt.match(/NOEXCEL: (.*)/)?.[1] ?? "no Excel.Application"})` };
+  if (/NOEXCEL/.test(outTxt)) {
+    // "Class not registered" is the normal answer on a PC without Excel; anything else is worth showing.
+    const detail = outTxt.match(/NOEXCEL: (.*)/)?.[1] ?? "";
+    return { ok: true, skipped: true, why: !detail || /80040154|REGDB_E_CLASSNOTREG/.test(detail) ? "Excel is not installed" : `Excel could not start (${detail})` };
+  }
   if (/^OK$/m.test(outTxt)) return { ok: true, skipped: false };
   return { ok: false, skipped: false, why: (outTxt.match(/FAIL: (.*)/)?.[1] ?? (outTxt || String(r.stderr ?? "").trim())) || `PowerShell exit ${r.status}` };
 }

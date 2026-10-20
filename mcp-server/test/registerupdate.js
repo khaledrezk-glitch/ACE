@@ -321,7 +321,8 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   const fake = (out) => () => ({ stdout: out, status: 0 });
   assert.deepEqual(excelOpenTest("x.xlsx", { platform: "linux" }), { ok: true, skipped: true, why: "not on Windows" });
   assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("OK\n") }), { ok: true, skipped: false });
-  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("NOEXCEL: TST no class\n") }), { ok: true, skipped: true, why: "Excel is not installed (TST no class)" });
+  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("NOEXCEL: Retrieving the COM class factory failed: 80040154 Class not registered\n") }), { ok: true, skipped: true, why: "Excel is not installed" });
+  assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("NOEXCEL: TST access denied\n") }), { ok: true, skipped: true, why: "Excel could not start (TST access denied)" });
   assert.deepEqual(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("PID: 42\nFAIL: Unable to get the Open property of the Workbooks class\n") }), { ok: false, skipped: false, why: "Unable to get the Open property of the Workbooks class" });
   assert.equal(excelOpenTest("x.xlsx", { platform: "win32", spawnSync: fake("PID: 42\nFAIL: Excel repaired the file (opened as x [Repaired].xlsx)\n") }).ok, false, "a repaired open fails");
   // 1.14.5 #31: a hang (a repair prompt) is a failure, never a skip; the Excel this test started is ended by its id.
