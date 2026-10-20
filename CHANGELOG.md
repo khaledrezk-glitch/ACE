@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.14.1 (20 Oct 2026)
+- First update meant to load through the loader with Revit open (no restart once 1.14.0 is installed).
+- **Same-name models:** run_clash_test resolves models by path first (`with_model_path`); the active model is always
+  "this" model; a name or path that fits more than one open document is blocked with the candidates listed (it used to
+  test one copy against the other). coordination_report no longer looks up a name two documents share. Still open:
+  clash_view colours by name, and the clash status store is keyed by title.
+- **save_model** takes `handle` or `path` and saves a model that is not active; a shared title is refused. Lookups by
+  path (close, activate, save) need exactly one match and never guess between a central and its copy.
+- **capture_method stop with an untrusted vault** now stops before Revit is asked (the capture keeps running) and says
+  how to give consent once (`vault consent: true`); the note says "not trusted" instead of "no trusted vault".
+
 ## 1.14.0 (20 Oct 2026)
 - **ACE loader (G8): updates without a Revit restart.** A small, stable `AceRevitMcp.Loader.dll` (own version 1.0.0) is
   now the only DLL in the Revit `.addin` file; it owns the ribbon (proxy commands), the bridge's ExternalEvent and the

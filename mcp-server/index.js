@@ -212,7 +212,8 @@ tool("run_clash_test", {
     a_categories: z.array(z.string()).optional(), b_categories: z.array(z.string()).optional(),
     a_disciplines: z.array(z.string()).optional(), b_disciplines: z.array(z.string()).optional(),
     ...materialInputs,
-    with_model: z.string().optional().describe("Secondary model: compare the primary with this linked or open model only (its name, from sources: true)"),
+    with_model: z.string().optional().describe("Secondary model: compare the primary with this linked or open model only (its name, from sources: true). A name two open documents share is refused with the candidates: then give with_model_path"),
+    with_model_path: z.string().max(400).optional().describe("Secondary model by its file path (wins over with_model): use it when two open models share a name"),
     primary_model: z.string().optional().describe("Primary model (default: this model). A BIM manager can set a link here to check link against link"),
     models: z.array(z.string().max(260)).max(20).optional().describe("Other open models to test too (default: none; links always take part)"),
     show: z.boolean().optional(),
@@ -718,15 +719,20 @@ tool("close_model", {
 
 tool("save_model", {
   title: "Save a model",
-  description: "Save an open model to its own file (Save, never Save As; a workshared local is saved locally, NOT synchronized with central). It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and never-saved models. model: its title (default: the active model).",
-  inputSchema: { model: z.string().min(1).max(260).optional(), allow_risky: z.boolean().optional().describe("Only after the user explicitly agreed to save") },
+  description: "Save an open model to its own file (Save, never Save As; a workshared local is saved locally, NOT synchronized with central); it need not be the active model. It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and never-saved models. Which model: handle (from open_model), else path, else model (a title only one open model has; a shared title is refused); none: the active model.",
+  inputSchema: {
+    handle: z.string().max(80).optional().describe("The handle open_model returned"),
+    path: z.string().max(400).optional().describe("The model's file path (or the file ACE opened it from)"),
+    model: z.string().min(1).max(260).optional().describe("Its title, when only one open model has it"),
+    allow_risky: z.boolean().optional().describe("Only after the user explicitly agreed to save"),
+  },
   annotations: writes,
 }, async (a) => {
   if (!a.allow_risky)
     throw new RevitError("Blocked for safety: saving writes the model file and cannot be undone. Tell the user which model would be saved; only if they agree, call again with allow_risky: true.");
   await pinSession();
-  const r = await callRevit("save_model", { ...(a.model ? { model: a.model } : {}), allow_risky: true }, 900);
-  journal({ title: `Save model ${r?.model ?? a.model ?? "(active)"}`, outcome: r?.saved ? `Saved (${r.kind}) in ${r.ms} ms` : "Not saved", details: r });
+  const r = await callRevit("save_model", { ...(a.handle ? { handle: a.handle } : {}), ...(a.path ? { path: a.path } : {}), ...(a.model ? { model: a.model } : {}), allow_risky: true }, 900);
+  journal({ title: `Save model ${r?.model ?? a.model ?? a.path ?? a.handle ?? "(active)"}`, outcome: r?.saved ? `Saved (${r.kind}) in ${r.ms} ms` : "Not saved", details: r });
   return text(r);
 });
 
@@ -1692,7 +1698,7 @@ async function casesFolder(a) {
   if (dir && fs.existsSync(dir) && Vault.trusted(path.dirname(CONFIG_PATH), dir)) return { dir: path.join(dir, "cases") };
   if (a.out_dir) return { dir: a.out_dir, note: dir && fs.existsSync(dir) ? `vault not trusted: case written to out_dir (ACE writes into ${dir} once the user allows it: vault with consent: true).` : null };
   const fallback = path.join(REPORTS_DIR, "cases");
-  return { dir: fallback, note: `no trusted vault and no out_dir: case written to ${fallback}.` };
+  return { dir: fallback, note: dir && fs.existsSync(dir) ? `vault ${dir} not trusted and no out_dir: case written to ${fallback} (ACE writes into the vault once the user allows it: vault with consent: true).` : `no vault found and no out_dir: case written to ${fallback}.` };
 }
 
 /** The latest clash_resolve run record with a plan for this model (vault 04 Audits/<model>/clashes, report_dir-less fallback). */
@@ -1731,6 +1737,14 @@ tool("capture_method", {
     out.content.push({ type: "text", text: action === "start" ? `Capture "${r?.label ?? a.label}" started in ${r?.model ?? "the model"}: ${r?.elements ?? "?"} element(s) recorded. Let the user work in Revit as usual, then call capture_method stop.`
       : r?.active ? `Capture "${r.label}" running in ${r.model} since ${r.startedAt} (${r.elements ?? "?"} element(s)).` : "No capture is running." });
     return out;
+  }
+  // An explicit vault is where the case goes: checked before the stop (which ends the capture), so a vault that is missing
+  // or not yet trusted for writing (the user's consent, once per vault) stops nothing and the capture keeps running.
+  if (a.vault) {
+    const vdir = Vault.vaultDir(a.vault);
+    if (!fs.existsSync(vdir)) throw new RevitError(`The vault ${vdir} does not exist: check the path (the capture is still running).`);
+    if (!Vault.trusted(path.dirname(CONFIG_PATH), vdir) && !a.out_dir)
+      throw new RevitError(`The vault ${vdir} is not trusted for writing yet: ask the user, then vault with consent: true, and call capture_method stop again (the capture is still running).`);
   }
   const r = await callRevit("capture_method", { action: "stop" }, 600);
   if (r?.success === false) throw new RevitError(r.error ?? "The capture could not be stopped.");

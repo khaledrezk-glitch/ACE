@@ -143,10 +143,18 @@ namespace AceRevitMcp.Commands
             {
                 var full = Normalize(path.Trim().Trim('"'));
                 Entry(null);
-                var byPath = OpenedByAce.FirstOrDefault(x => string.Equals(Normalize(x.Source), full, StringComparison.OrdinalIgnoreCase))?.Doc
-                             ?? docs.FirstOrDefault(d => SamePath(d, full));
-                if (byPath == null) error = $"No open model comes from {path}.";
-                return byPath;
+                // The model whose own file this is, or the one ACE opened from it; else a local whose central is this file. Exactly
+                // one, or the call is refused: two documents from one file (a central and a copy of it) need the handle.
+                var direct = new List<Document>();
+                foreach (var d in docs.Where(d => !string.IsNullOrEmpty(d.PathName) && string.Equals(Normalize(d.PathName), full, StringComparison.OrdinalIgnoreCase))
+                    .Concat(OpenedByAce.Where(x => string.Equals(Normalize(x.Source), full, StringComparison.OrdinalIgnoreCase)).Select(x => x.Doc)))
+                    if (!direct.Any(x => x.Equals(d))) direct.Add(d);
+                var matches = direct.Count > 0 ? direct : docs.Where(d => SamePath(d, full)).ToList();
+                if (matches.Count == 1) return matches[0];
+                error = matches.Count > 1
+                    ? $"{matches.Count} open models come from {path} ({string.Join("; ", matches.Select(d => $"{d.Title}: {(string.IsNullOrEmpty(d.PathName) ? "no file path" : d.PathName)}"))}): give handle (from open_model)."
+                    : $"No open model comes from {path}.";
+                return null;
             }
             if (string.IsNullOrWhiteSpace(name)) { error = "Give handle (from open_model), path or model (the title)."; return null; }
             var byTitle = docs.Where(d => string.Equals(d.Title, name, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -379,7 +387,7 @@ namespace AceRevitMcp.Commands
         }
 
         /// <summary>
-        /// save_model { model, allow_risky }: saves an open model to its own file (never Save As, never Synchronize with Central):
+        /// save_model { handle | path | model, allow_risky }: saves an open model (active or not) to its own file (never Save As, never Synchronize with Central):
         /// a local, detached-and-saved or non-workshared file and a workshared local copy are saved in place; a central opened
         /// directly is saved with SaveOptions. Refuses without allow_risky, in a dry run, and for read-only, cloud, linked or
         /// never-saved documents. { model, path, saved, sizeBefore, sizeAfter, ms, kind }.
@@ -390,12 +398,17 @@ namespace AceRevitMcp.Commands
                 throw new CommandException("save_model cannot be previewed: saving is not undoable. Nothing was saved.");
             if (!Args.Bool(args, "allow_risky"))
                 throw new CommandException("save_model writes the model file and cannot be undone: it needs allow_risky: true after the user agreed. Nothing was saved.");
-            var name = Args.Str(args, "model");
-            var docs = app.Application.Documents.Cast<Document>().ToList();
-            var doc = string.IsNullOrWhiteSpace(name) ? app.ActiveUIDocument?.Document
-                : docs.FirstOrDefault(d => string.Equals(d.Title, name, StringComparison.OrdinalIgnoreCase))
-                  ?? docs.FirstOrDefault(d => !string.IsNullOrEmpty(d.PathName) && string.Equals(d.PathName, name, StringComparison.OrdinalIgnoreCase));
-            if (doc == null) throw new CommandException(string.IsNullOrWhiteSpace(name) ? "No model is open." : $"No open model is called '{name}'.");
+            // Which model: handle (from open_model), path, or a title only one open model has; none: the active model. The model
+            // need not be active: Document.Save saves any open project document.
+            var named = new[] { "handle", "path", "model" }.Any(k => !string.IsNullOrWhiteSpace(Args.Str(args, k)));
+            Document doc;
+            if (!named) { doc = app.ActiveUIDocument?.Document; if (doc == null) throw new CommandException("No model is open. Nothing was saved."); }
+            else
+            {
+                doc = FindDoc(app, args, out var which);
+                if (doc == null) throw new CommandException(which + " Nothing was saved.");
+            }
+            if (doc.IsFamilyDocument) throw new CommandException($"{doc.Title} is a family: save_model saves project models. Nothing was saved.");
             if (doc.IsLinked) throw new CommandException($"{doc.Title} is a linked model: save it from its own file. Nothing was saved.");
             if (doc.IsModelInCloud) throw new CommandException($"{doc.Title} is a cloud model: ACE does not save cloud models (use Synchronize in Revit). Nothing was saved.");
             if (doc.IsReadOnly || doc.IsReadOnlyFile) throw new CommandException($"{doc.Title} is read-only. Nothing was saved.");

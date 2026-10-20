@@ -639,6 +639,13 @@ class P {
     Check(hm.SequenceEqual(new[] { "hosted" }), $"guard: a trimmed wall that lost a hosted element is a mismatch ({string.Join(",", hm)})");
     var clg = a.GetType("AceRevitMcp.Coordination.ClashLogic");
     MethodInfo CLG(string n) => clg.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!;
+    // 1.14.1: with_model by path first; a name two documents share is refused with the candidates (synthetic models).
+    var pmSrc = new List<(string, int, string)> { ("TST_A", 0, "C:\\tst\\TST_A.rvt"), ("TST_A", 1, "D:\\copy\\TST_A.rvt"), ("TST_LINK", 2, "C:\\tst\\TST_LINK.rvt"), ("TST_LINK", 2, "C:\\tst\\TST_LINK.rvt"), ("TST_B", 3, null) };
+    (int, List<int>) PickM(string? n, string? p) { var t = CLG("PickModel").Invoke(null, new object?[] { pmSrc, n, p })!; return ((int)t.GetType().GetField("Item1")!.GetValue(t)!, (List<int>)t.GetType().GetField("Item2")!.GetValue(t)!); }
+    var pmDup = PickM("tst_a", null); var pmPath = PickM(null, "d:/copy/TST_A.rvt"); var pmLink = PickM("TST_LINK", null); var pmNone = PickM("TST_X", null); var pmB = PickM("TST_B", null); var pmNoPath = PickM(null, "E:\\x.rvt");
+    Check(pmDup.Item1 == -1 && pmDup.Item2.SequenceEqual(new[] { 0, 1 }) && pmPath.Item1 == 1 && pmPath.Item2.Count == 0 && pmLink.Item1 == 2 && pmLink.Item2.Count == 0
+      && pmNone.Item1 == -1 && pmNone.Item2.Count == 0 && pmB.Item1 == 4 && pmNoPath.Item1 == -1 && pmNoPath.Item2.Count == 0,
+      "with_model: a name two open documents share is refused with both candidates; by path the copy is picked; a link placed twice is one model");
     string SK(bool ws, string central, string cloud, string path, string title) => (string)CLG("StoreKey").Invoke(null, new object[] { ws, central, cloud, path, title })!;
     string H8(string x) { using var h = System.Security.Cryptography.SHA1.Create(); return string.Concat(h.ComputeHash(System.Text.Encoding.UTF8.GetBytes(x)).Select(b => b.ToString("X2"))).Substring(0, 8); }
     var skC1 = SK(true, "\\\\srv\\TST\\TST_CENTRAL.rvt", null, "C:\\local\\TST_CENTRAL_user1.rvt", "TST_CENTRAL_user1");

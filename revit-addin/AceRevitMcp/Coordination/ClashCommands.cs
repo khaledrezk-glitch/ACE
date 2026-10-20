@@ -14,7 +14,7 @@ namespace AceRevitMcp.Coordination
 {
     internal static class ClashCommands
     {
-        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, primary_model, with_model, models, show }</summary>
+        /// <summary>{ test: "STR vs MEP" | "all" | custom, tolerance_mm, clearance_mm, level, max_elements, primary_model, with_model, with_model_path, models, show }; a name more than one open document has is refused (blocked, with the candidates and their paths)</summary>
         public static JsonNode Run(UIApplication app, JsonObject args)
         {
             var host = Args.RequireDoc(app);
@@ -27,22 +27,24 @@ namespace AceRevitMcp.Coordination
             var notes = new List<string>();
             // Once per run: the models taking part, and each element's geometry (shared by every test and both sides).
             // Other open models take part only when named (with_model, primary_model or models); links of this model always do.
-            var named = new HashSet<string>(Args.Strings(args, "models"), StringComparer.OrdinalIgnoreCase);
-            foreach (var n in new[] { Args.Str(args, "with_model"), Args.Str(args, "primary_model") }) if (!string.IsNullOrWhiteSpace(n)) named.Add(n.Trim());
             var allSources = Clashes.Sources(app, host);
-            var sources = allSources.Where(x => x.Relation != "open model" || named.Contains(x.Name)).ToList();
+            // Models are resolved to documents, by path first (with_model_path), else by a name only one document has: two open
+            // models may share a title (a copy of this model). The active model is always "this" model.
+            var resolved = ResolveModels(allSources, args, out var ambiguous);
+            if (ambiguous != null) return ambiguous;
+            var withModel = resolved.With?.Name ?? Args.Str(args, "with_model");
+            var primaryModel = resolved.Primary?.Name ?? Args.Str(args, "primary_model");
+            var sources = allSources.Where(x => x.Relation != "open model" || resolved.Docs.Any(d => d.Equals(x.Doc))).ToList();
             var ignoredModels = allSources.Where(x => !sources.Contains(x)).Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             var geometry = new Clashes.SolidCache();
             var loaded = new HashSet<string>(sources.Select(x => x.Name), StringComparer.OrdinalIgnoreCase);
-            var withModel = Args.Str(args, "with_model");
-            var primaryModel = Args.Str(args, "primary_model");
             var storedAll = new List<Clash>();
             if (ignoredModels.Count > 0) notes.Add($"Other open models were not tested (name them in models or with_model to include them): {string.Join(", ", ignoredModels)}.");
             foreach (var t in tests)
             {
                 var testNotes = new List<string>();
                 var filtered = new Clashes.FilterReport();
-                var found = Clashes.Run(host, sources, geometry, t, level, max, testNotes, out var complete, withModel, primaryModel, filtered);
+                var found = Clashes.Run(host, sources, geometry, t, level, max, testNotes, out var complete, withModel, primaryModel, filtered, resolved.With?.Doc, resolved.Primary?.Doc);
                 // Only what this run looked at can become resolved: one level, one compared model, or nothing if it was cut short.
                 bool InLevel(Clash c) => level == null || string.Equals(c.Level, level, StringComparison.OrdinalIgnoreCase);
                 var primaryName = primaryModel ?? host.Title;
@@ -134,6 +136,56 @@ namespace AceRevitMcp.Coordination
                 ["seconds"] = Math.Round(sw.ElapsedMilliseconds / 1000.0, 1),
                 ["note"] = "Ids are ids inside the model named in brackets; only ids of this model can be selected here. Status is kept between runs (new, active, resolved, approved; a resolved clash that comes back is new again and counted as reopened). Issues group the clashes of one element that has to move: coordinate issue by issue, not clash by clash.",
             };
+        }
+
+        /// <summary>
+        /// The models a run names, as documents: with_model_path (or with_model), primary_model, models. Other open models take
+        /// part only when named. A name (or path) that matches more than one document is refused: the answer lists the
+        /// candidates with their paths (blocked), so a copy of this model is never tested against it by mistake.
+        /// </summary>
+        private static (Source With, Source Primary, List<Document> Docs) ResolveModels(List<Source> all, JsonObject args, out JsonObject blocked)
+        {
+            blocked = null;
+            var docs = new List<Document>();
+            int DocNo(Document d) { var i = docs.FindIndex(x => x.Equals(d)); if (i < 0) { docs.Add(d); i = docs.Count - 1; } return i; }
+            string PathOf(Document d) { try { return string.IsNullOrEmpty(d.PathName) ? null : System.IO.Path.GetFullPath(d.PathName); } catch { return d.PathName; } }
+            var keys = all.Select(s => (s.Name, DocNo(s.Doc), PathOf(s.Doc))).ToList();
+            var problems = new JsonArray();
+            Source Pick(string what, string name, string path)
+            {
+                if (string.IsNullOrWhiteSpace(name) && string.IsNullOrWhiteSpace(path)) return null;
+                string full = null;
+                if (!string.IsNullOrWhiteSpace(path)) { try { full = System.IO.Path.GetFullPath(path.Trim().Trim('"')); } catch { full = path.Trim().Trim('"'); } }
+                var (chosen, candidates) = ClashLogic.PickModel(keys, name, full);
+                if (chosen >= 0) return all[chosen];
+                if (candidates.Count > 0)
+                    problems.Add(new JsonObject
+                    {
+                        ["what"] = what, ["value"] = full ?? name.Trim(),
+                        ["why"] = $"{candidates.Count} models match {(full != null ? "this path" : $"the name {name.Trim()}")}: the run would not know which one to test",
+                        ["how"] = what == "with_model" ? "Give with_model_path: the file path of the model to compare with." : "Close the other copy, or name a model only one document has.",
+                        ["candidates"] = new JsonArray(candidates.Select(i => (JsonNode)new JsonObject
+                        {
+                            ["name"] = all[i].Name, ["relation"] = all[i].Relation, ["path"] = keys[i].Item3,
+                        }).ToArray()),
+                    });
+                else if (full != null)
+                    problems.Add(new JsonObject { ["what"] = what, ["value"] = full, ["why"] = "no open model or loaded link has this path", ["how"] = "Open the model or load the link, or check the path.", ["candidates"] = new JsonArray() });
+                return null;
+            }
+            var with = Pick("with_model", Args.Str(args, "with_model"), Args.Str(args, "with_model_path"));
+            var primary = Pick("primary_model", Args.Str(args, "primary_model"), null);
+            var picked = new List<Document>();
+            foreach (var n in Args.Strings(args, "models")) if (Pick("models", n, null) is Source m) picked.Add(m.Doc);
+            if (with != null) picked.Add(with.Doc);
+            if (primary != null) picked.Add(primary.Doc);
+            if (problems.Count > 0)
+                blocked = new JsonObject
+                {
+                    ["success"] = false, ["stage"] = "blocked", ["blocked"] = problems,
+                    ["error"] = $"Nothing was tested: {problems[0]?["why"]}. {problems[0]?["how"]}",
+                };
+            return (with, primary, picked);
         }
 
         /// <summary>Stored results a run did not look at: { count, open, models }.</summary>

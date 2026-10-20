@@ -262,18 +262,25 @@ namespace AceRevitMcp.Coordination
         private const double GridCellFeet = 10;
 
         /// <param name="filtered">Optional: receives what the material filter left out (also summarised in notes).</param>
+        /// <param name="withDoc">The document with_model resolved to (by path, or by a name only one document has): matched by document, not by name.</param>
+        /// <param name="primaryDoc">The document primary_model resolved to; without primary_model the primary is the active model itself.</param>
         public static List<Clash> Run(Document host, List<Source> sources, SolidCache geometry, TestSpec test, string levelFilter, int maxElements, List<string> notes, out bool complete, string withModel = null, string primaryModel = null,
-            FilterReport filtered = null)
+            FilterReport filtered = null, Document withDoc = null, Document primaryDoc = null)
         {
             complete = true;
             filtered = filtered ?? ((test.A.FiltersMaterial || test.B.FiltersMaterial) ? new FilterReport() : null);
             var aSources = Pick(sources, test.A); var bSources = Pick(sources, test.B);
             // Compare two chosen models only (Clash Browser): the primary (this model, or a link for a BIM manager) and the secondary.
             var primary = string.IsNullOrEmpty(primaryModel) ? host.Title : primaryModel;
-            var comparingSelf = withModel != null && string.Equals(withModel, primary, StringComparison.OrdinalIgnoreCase);
+            // Documents, not names, when known: two open models may share a title (a copy of this model), and the active
+            // model is always "this" model, never its namesake.
+            var primaryD = primaryDoc ?? (string.IsNullOrEmpty(primaryModel) ? host : null);
+            bool IsPrimary(Source s) => primaryD != null ? s.Doc.Equals(primaryD) : string.Equals(s.Name, primary, StringComparison.OrdinalIgnoreCase);
+            bool IsWith(Source s) => withDoc != null ? s.Doc.Equals(withDoc) : string.Equals(s.Name, withModel, StringComparison.OrdinalIgnoreCase);
+            var comparingSelf = withModel != null && (withDoc != null && primaryD != null ? withDoc.Equals(primaryD) : string.Equals(withModel, primary, StringComparison.OrdinalIgnoreCase));
             if (withModel != null)
             {
-                bool Allowed(Source s) => string.Equals(s.Name, primary, StringComparison.OrdinalIgnoreCase) || string.Equals(s.Name, withModel, StringComparison.OrdinalIgnoreCase);
+                bool Allowed(Source s) => IsPrimary(s) || IsWith(s);
                 aSources = aSources.Where(Allowed).ToList(); bSources = bSources.Where(Allowed).ToList();
                 if (aSources.Count == 0 || bSources.Count == 0) { notes.Add($"Nothing to compare with {withModel} in this test."); return new List<Clash>(); }
             }
@@ -327,7 +334,7 @@ namespace AceRevitMcp.Coordination
                 foreach (var sb in bSources)
                 {
                     if (withModel != null && !comparingSelf && sa.Doc.Equals(sb.Doc)) continue;   // only across the two models
-                    if (withModel == null && primaryModel != null && !string.Equals(sa.Name, primary, StringComparison.OrdinalIgnoreCase) && !string.Equals(sb.Name, primary, StringComparison.OrdinalIgnoreCase)) continue;   // a link as primary: only its clashes
+                    if (withModel == null && primaryModel != null && !IsPrimary(sa) && !IsPrimary(sb)) continue;   // a link as primary: only its clashes
                     var (grid, items) = IndexOf(sb);
                     if (grid.Count == 0) continue;
                     // A's geometry in B's coordinates: A -> host -> B (only for solids that have candidates).

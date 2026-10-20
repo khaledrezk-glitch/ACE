@@ -54,6 +54,26 @@ namespace AceRevitMcp.Coordination
     /// </summary>
     internal static class ClashLogic
     {
+        /// <summary>
+        /// with_model / primary_model / models: which model a name or a path means, among the models of a run (sources: name, a
+        /// number per document, the document's file path; a link placed twice is one document). By path when given, else by
+        /// name. Chosen: a source index of the one document matched, or -1; candidates: one source index per document when a
+        /// name or path matches several documents (the caller blocks and lists them), else empty.
+        /// </summary>
+        public static (int Chosen, List<int> Candidates) PickModel(IList<(string Name, int Doc, string Path)> sources, string name, string path)
+        {
+            string P(string x) => (x ?? "").Trim().Trim('"').Replace('/', '\\').TrimEnd('\\');
+            var list = sources ?? new List<(string, int, string)>();
+            List<int> hits;
+            if (!string.IsNullOrWhiteSpace(path))
+                hits = Enumerable.Range(0, list.Count).Where(i => !string.IsNullOrWhiteSpace(list[i].Path) && string.Equals(P(list[i].Path), P(path), StringComparison.OrdinalIgnoreCase)).ToList();
+            else if (!string.IsNullOrWhiteSpace(name))
+                hits = Enumerable.Range(0, list.Count).Where(i => string.Equals(list[i].Name, name.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+            else return (-1, new List<int>());
+            var perDoc = hits.GroupBy(i => list[i].Doc).Select(g => g.First()).ToList();
+            return perDoc.Count == 1 ? (perDoc[0], new List<int>()) : perDoc.Count == 0 ? (-1, new List<int>()) : (-1, perDoc);
+        }
+
         /// <summary>The same pair of elements is one clash, whichever side it was found from.</summary>
         public static string PairKey(string test, string ua, string ub) =>
             string.CompareOrdinal(ua, ub) <= 0 ? $"{test}|{ua}|{ub}" : $"{test}|{ub}|{ua}";

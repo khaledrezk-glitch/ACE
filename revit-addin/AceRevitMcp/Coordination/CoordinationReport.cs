@@ -156,7 +156,11 @@ namespace AceRevitMcp.Coordination
 
             // Family and type from the model where the element can be found (this model and its loaded links), else from the stored names.
             var names = new Dictionary<string, (string Family, string Type)>(StringComparer.Ordinal);
-            var sources = Clashes.Sources(app, host).GroupBy(x => x.Name).ToDictionary(g => g.Key, g => g.First().Doc);
+            // By name (a stored clash keeps only the model's name): this model wins its own name; a name two other documents
+            // share is not looked up (the stored family and type names are used), so a copy is never read for this model.
+            var sources = Clashes.Sources(app, host).GroupBy(x => x.Name)
+                .Where(g => g.First().IsHost || g.All(x => x.Doc.Equals(g.First().Doc)))
+                .ToDictionary(g => g.Key, g => g.First().Doc);
             void Name(string model, string uid)
             {
                 if (uid == null || names.ContainsKey(uid) || model == null || !sources.TryGetValue(model, out var d)) return;
