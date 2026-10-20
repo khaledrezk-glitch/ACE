@@ -7,34 +7,29 @@ using System.Security.Cryptography.X509Certificates;
 namespace AceRevitMcp.Loader
 {
     /// <summary>
-    /// Authenticode checks for the optional local signing (trust-ace.ps1): when signing.json says signing is on, every
-    /// ACE DLL of a payload must carry a valid signature (WinVerifyTrust, no network) by the same certificate as the
-    /// loader itself.
+    /// Authenticode checks for the optional local signing (trust-ace.ps1). When signing.json turns signing on, the loader
+    /// itself and every ACE DLL of a payload (AceRevitMcp*.dll, the Compiler included) must carry a valid signature
+    /// (WinVerifyTrust, no network) by the certificate pinned in signing.json. Third-party DLLs (System.Text.Json, Roslyn)
+    /// can't carry ACE's signature: they are covered by the manifest hash in current.json, like every file.
+    /// The signature is checked on a private copy written from the verified bytes (held open, no writers), so the bytes
+    /// checked are the bytes loaded.
     /// </summary>
     internal static class Signature
     {
         public static string SigningFilePath =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ACE-RevitMCP", "signing.json");
 
-        /// <summary>True when trust-ace.ps1 turned signing on (a missing or unreadable file means off).</summary>
-        public static bool SigningOn()
-        {
-            try
-            {
-                var file = SigningFilePath;
-                if (!File.Exists(file)) return false;
-                var s = PayloadSelection.ParseJson<SigningFile>(File.ReadAllText(file));
-                return s != null && s.Enabled && !string.IsNullOrWhiteSpace(s.Thumbprint);
-            }
-            catch { return false; }
-        }
+        /// <summary>signing.json now (fails closed: unreadable = on, with a reason).</summary>
+        public static SigningState Read() => SigningState.Read(SigningFilePath);
 
         /// <summary>The signer's certificate thumbprint of a validly signed file, or null with the reason.</summary>
-        public static string Signer(string file, out string why)
+        public static string Signer(string file, out string why) => Signer(file, IntPtr.Zero, Path.GetFileName(file), out why);
+
+        private static string Signer(string file, IntPtr handle, string label, out string why)
         {
             why = null;
-            var status = Verify(file);
-            if (status != 0) { why = $"{Path.GetFileName(file)} has no valid signature (WinVerifyTrust 0x{status:X8})"; return null; }
+            var status = Verify(file, handle);
+            if (status != 0) { why = $"{label} has no valid signature (WinVerifyTrust 0x{status:X8})"; return null; }
             try
             {
 #pragma warning disable SYSLIB0057 // the documented way to read an Authenticode signer; the signature itself was verified above
@@ -42,23 +37,46 @@ namespace AceRevitMcp.Loader
 #pragma warning restore SYSLIB0057
                     return cert.Thumbprint;
             }
-            catch (Exception ex) { why = $"{Path.GetFileName(file)}: signer not readable ({ex.Message})"; return null; }
+            catch (Exception ex) { why = $"{label}: signer not readable ({ex.Message})"; return null; }
+        }
+
+        /// <summary>The signer of these bytes, checked on a private copy that no one else can write while it is checked.</summary>
+        private static string SignerOfBytes(byte[] bytes, string label, out string why)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "ACE-loader-verify");
+            Directory.CreateDirectory(dir);
+            var tmp = Path.Combine(dir, Guid.NewGuid().ToString("N") + ".dll");
+            try
+            {
+                using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read))
+                {
+                    fs.Write(bytes, 0, bytes.Length);
+                    fs.Flush(true);
+                    return Signer(tmp, fs.SafeFileHandle.DangerousGetHandle(), label, out why);
+                }
+            }
+            finally { try { File.Delete(tmp); } catch { } }
         }
 
         /// <summary>
-        /// null when every AceRevitMcp*.dll in the payload folder is validly signed by the loader's signer; else the reason.
-        /// Only called when signing is on.
+        /// null when the loader and every ACE DLL of the verified build are validly signed by the pinned certificate;
+        /// else the reason. Only called when signing is on.
         /// </summary>
-        public static string CheckPayload(string loaderDll, string payloadDir)
+        public static string CheckPayload(SigningState signing, string loaderDll, Candidate c)
         {
+            if (signing.Why != null) return signing.Why + ". Nothing is loaded: fix signing.json (trust-ace.ps1) or remove it (trust-ace.ps1 -Remove)";
+            var pinned = signing.Thumbprint;
             var mine = Signer(loaderDll, out var why);
             if (mine == null) return "signing is on, but the ACE loader itself is not validly signed: " + why + ". Run install.ps1 again (or trust-ace.ps1 -Remove to turn signing off)";
-            foreach (var dll in Directory.GetFiles(payloadDir, "AceRevitMcp*.dll", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+            if (!string.Equals(mine, pinned, StringComparison.OrdinalIgnoreCase))
+                return $"signing is on: the ACE loader is signed by {mine}, not by the certificate in signing.json ({pinned})";
+            if (c.AceDlls.Count == 0) return "signing is on, but the build has no ACE DLL to check";
+            foreach (var kv in c.AceDlls.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase))
             {
-                var theirs = Signer(dll, out why);
+                var theirs = SignerOfBytes(kv.Value, kv.Key, out why);
                 if (theirs == null) return "signing is on: " + why;
-                if (!string.Equals(theirs, mine, StringComparison.OrdinalIgnoreCase))
-                    return $"signing is on: {Path.GetFileName(dll)} is signed by {theirs}, not by the loader's certificate {mine}";
+                if (!string.Equals(theirs, pinned, StringComparison.OrdinalIgnoreCase))
+                    return $"signing is on: {kv.Key} is signed by {theirs}, not by the certificate in signing.json ({pinned})";
             }
             return null;
         }
@@ -99,9 +117,9 @@ namespace AceRevitMcp.Loader
         [DllImport("wintrust.dll", ExactSpelling = true, SetLastError = false, CharSet = CharSet.Unicode)]
         private static extern int WinVerifyTrust(IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid action, ref TrustData data);
 
-        private static int Verify(string file)
+        private static int Verify(string file, IntPtr handle)
         {
-            var info = new FileInfo { cbStruct = (uint)Marshal.SizeOf(typeof(FileInfo)), pcwszFilePath = file };
+            var info = new FileInfo { cbStruct = (uint)Marshal.SizeOf(typeof(FileInfo)), pcwszFilePath = file, hFile = handle };
             var pFile = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FileInfo)));
             try
             {

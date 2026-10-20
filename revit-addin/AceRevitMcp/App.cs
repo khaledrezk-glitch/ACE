@@ -55,6 +55,17 @@ namespace AceRevitMcp
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
                 InstanceRegistry.Attach(application);
                 Server.Start();
+                // A reload that can't listen has failed: the loader then starts the previous build again. (At Revit startup a
+                // missing port is reported by MCP Status, as before: the ribbon still works.)
+                if (!Server.IsRunning && PayloadEntry.Reloaded)
+                    throw new InvalidOperationException($"The bridge is not listening after the reload: {Server.LastError}");
+                // After a reload the documents are already open: the instance file names them now, not at the next switch.
+                var ui = PayloadEntry.Get<UIApplication>("uiApplication");
+                if (ui != null) InstanceRegistry.Update(ui);
+                // What the build before this one left in the loader's store (plain data): models ACE opened, the last
+                // undoable Claude run.
+                Commands.ModelFileCommands.Restore(PayloadEntry.Store);
+                ChangeTracker.Restore(PayloadEntry.Store);
             }
             catch (Exception ex)
             {
@@ -86,7 +97,8 @@ namespace AceRevitMcp
             Dispatcher = null;
             if (application != null) Step("document events", () => application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged);
             Step("change tracking", Tracking.ChangeTracking.Detach);
-            Step("models opened by ACE", Commands.ModelFileCommands.Forget);
+            Step("models opened by ACE", () => Commands.ModelFileCommands.SaveAndForget(PayloadEntry.Store));
+            Step("undo state", () => ChangeTracker.Save(PayloadEntry.Store));
             if (application != null) Step("companion", () => Companion.CompanionPane.Unregister(application));
             Step("instance registry", InstanceRegistry.Detach);
             Step("work modes", Ribbon.WorkModes.Detach);

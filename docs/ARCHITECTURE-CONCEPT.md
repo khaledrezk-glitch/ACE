@@ -519,10 +519,14 @@ is now the only DLL in the `.addin` manifest. It changes rarely; the ACE build (
   content). The payload's entry is `AceRevitMcp.PayloadEntry.Start(UIControlledApplication, IDictionary<string, object>)`
   / `Stop()`, found by reflection; the host dictionary holds only framework and Revit types, so there is no shared
   contracts assembly.
-- **Selection and trust:** `current.json` (written by install.ps1) names `{ version, path, sha256, previous }`. The
-  loader loads only a folder directly inside its own `payload\`, checks the DLL's SHA-256, and with signing on
-  (`signing.json`) that every ACE DLL of the build is signed by the loader's own certificate. A build that fails falls
-  back to `previous`. Pure logic in `PayloadSelection.cs`, tested offline in `tools/tracker-test`.
+- **Selection and trust:** `current.json` (written by install.ps1) names `{ version, path, sha256, files, previous }`;
+  `files` holds the SHA-256 of every file of the build. The loader loads only a folder directly inside its own
+  `payload\`, refuses junctions, links and unlisted files, reads each file once and loads the bytes it checked; the
+  payload's resolvers (dependencies, the compiler, Revit 2024's) read only through the loader's `readVerified`. With
+  signing on (`signing.json`, failing closed), the loader and every ACE DLL must be signed by the pinned certificate,
+  checked on a private copy of the verified bytes; third-party DLLs are covered by the hash. A build that fails falls back
+  to `previous` (warning in the log, `/health`, the pane). The hash guards against corruption and swapped files, not a
+  malicious program of the same user. Pure logic in `PayloadSelection.cs`, tested offline in `tools/tracker-test`.
 - **Load and reload:** Revit 2025: a collectible AssemblyLoadContext per build (dependencies from the build folder;
   Revit, WPF and the framework from the default context); the script compiler's context is collectible too while ACE
   is, and scripts see ACE's types from the build's context. Revit 2024: `Assembly.Load(bytes)`; an old copy cannot be
@@ -530,8 +534,10 @@ is now the only DLL in the `.addin` manifest. It changes rarely; the ACE build (
   done by the loader) runs the swap in Idling: no command, no open transaction. Stop releases the bridge port, the
   request queue, Revit events, the change tracker, the instance file, the Companion content, open ACE windows and the
   compiler; then the new build starts, or the old one starts again. The outcome `{loaderVersion, payloadVersion,
-  previous, ok, why}` is in `/health` (`loader.lastReload`). With no model open, the loader also switches by itself
-  when `current.json` changes.
+  previous, ok, why}` is in `/health` (`loader.lastReload`). A build waiting while models are open is switched in as
+  soon as none is. Plain data that must outlive a build (models ACE opened, the last undoable run, ribbon panels) is
+  kept in the loader's store. Every bridge answer carries the build id; the MCP server refuses an apply whose preview
+  ran on another build.
 
 ### Integration rule answers
 

@@ -435,6 +435,7 @@ public static class AceScript
 
         private static MethodInfo LoadCompiler()
         {
+            if (_stopped) throw new CommandException("ACE is stopping or loading a new build: the script compiler is not available. Send it again in a few seconds.");
             var addinDir = PayloadEntry.Directory ?? Path.GetDirectoryName(typeof(CodeRunner).Assembly.Location)!;
             var compilerDir = Path.Combine(addinDir, "Compiler");
             var path = Path.Combine(compilerDir, "AceRevitMcp.Compiler.dll");
@@ -444,7 +445,7 @@ public static class AceScript
             throw new CommandException(NotOnThisRevit);
 #else
             var alc = _compilerContext = new CompilerLoadContext(compilerDir);
-            var asm = alc.LoadFromAssemblyPath(path);
+            var asm = alc.LoadVerified(path) ?? throw new CommandException($"The C# compiler at {path} was refused (see the add-in log). Re-run install.ps1.");
             return asm.GetType("AceRevitMcp.Compiler.ScriptCompiler")!.GetMethod("Compile")!;
 #endif
         }
@@ -455,7 +456,8 @@ public static class AceScript
         /// </summary>
         public static void Shutdown()
         {
-            lock (CompilerGate) _compile = null;
+            // Under the gate: a warm-up or a compile that has not loaded the compiler yet can't load it after this.
+            lock (CompilerGate) { _stopped = true; _compile = null; }
             _references = null;
             lock (Compiled) Compiled.Clear();
 #if !NETFRAMEWORK
@@ -464,6 +466,9 @@ public static class AceScript
             if (alc != null && alc.IsCollectible) alc.Unload();
 #endif
         }
+
+        /// <summary>Set by Shutdown (payload Stop), under CompilerGate: no compiler is loaded again by this build.</summary>
+        private static bool _stopped;
 
         private static Tuple<int, string[]> _references;   // one reference: the count and the list always belong together
 
@@ -535,7 +540,7 @@ public static class AceScript
             }
 
             // Ensure the core Revit + bridge assemblies are always present (first wins on duplicates).
-            paths.Insert(0, typeof(ScriptContext).Assembly.Location);
+            paths.Insert(0, PayloadEntry.AssemblyPath);   // empty Location when the ACE loader loaded ACE from bytes
             paths.Insert(0, typeof(UIApplication).Assembly.Location);
             paths.Insert(0, typeof(Document).Assembly.Location);
             return paths.ToArray();
@@ -569,7 +574,22 @@ public static class AceScript
             protected override Assembly Load(AssemblyName name)
             {
                 var candidate = Path.Combine(_dir, name.Name + ".dll");
-                return File.Exists(candidate) ? LoadFromAssemblyPath(candidate) : null;
+                return File.Exists(candidate) ? LoadVerified(candidate) : null;
+            }
+
+            /// <summary>
+            /// Under the ACE loader only a file listed in current.json, from bytes checked against it (null when refused);
+            /// loaded directly, the file as it is.
+            /// </summary>
+            public Assembly LoadVerified(string file)
+            {
+                var read = PayloadEntry.ReadVerified;
+                if (read == null) return LoadFromAssemblyPath(file);
+                byte[] bytes;
+                try { bytes = read(file); }
+                catch (Exception ex) { Log.Warn($"Script compiler: {Path.GetFileName(file)} refused: {ex.Message}"); return null; }
+                using var ms = new MemoryStream(bytes);
+                return LoadFromStream(ms);
             }
         }
 #endif

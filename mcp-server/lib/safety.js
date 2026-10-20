@@ -2,11 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { JOURNAL_DIR, RevitError, localDate, pinSession, sessionKey, sessionLabel } from "./core.js";
+import { JOURNAL_DIR, RevitError, currentCall, healthAtPort, localDate, pinSession, sessionKey, sessionLabel } from "./core.js";
 
 export const PREVIEW_VALID_MS = 60 * 60 * 1000;
 
-export const previews = new Map(); // change fingerprint -> { at, session, label } of its successful dry run
+export const previews = new Map(); // change fingerprint -> { at, session, label, build } of its successful dry run
 
 function stable(value) {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
@@ -29,7 +29,7 @@ export async function gated(key, { apply, explanation, why }, send, ok) {
   const session = await pinSession();
   if (!apply) {
     const result = await send();
-    if (ok(result)) previews.set(key, { at: Date.now(), session: sessionKey(session), label: sessionLabel(session) });
+    if (ok(result)) previews.set(key, { at: Date.now(), session: sessionKey(session), label: sessionLabel(session), build: currentCall.getStore()?.build ?? null });
     return result;
   }
   requirePreview(key);
@@ -37,6 +37,16 @@ export async function gated(key, { apply, explanation, why }, send, ok) {
   const p = previews.get(key);
   if (p.session !== sessionKey(session))
     throw new RevitError(`Blocked for safety: the preview was made in Revit session ${p.label}, this call would go to ${sessionLabel(session)}: preview again in the session to change.`);
+  // A preview proves what the ACE build that ran it would do. If Revit now runs another build (install.ps1's reload, the
+  // loader's own switch with no model open, "Load ACE again"), the preview no longer counts.
+  if (p.build) {
+    const h = await healthAtPort(session?.port, 3000);
+    const now = h?.ok ? h.build ?? null : null;
+    if (now !== p.build) {
+      previews.delete(key);
+      throw new RevitError(`Blocked for safety: the preview was made on ACE build ${p.build}, but Revit ${now ? `now runs ${now} (ACE was reloaded)` : "did not confirm which ACE build it runs"}. Nothing changed: preview again, then apply.`);
+    }
+  }
   previews.delete(key);
   try {
     return await send();

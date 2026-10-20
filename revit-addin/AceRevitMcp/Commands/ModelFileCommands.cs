@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
@@ -28,16 +29,80 @@ namespace AceRevitMcp.Commands
 
         private static Opened Entry(Document d)
         {
+            if (d != null) Bind(d.Application);
             OpenedByAce.RemoveAll(x => { try { return !x.Doc.IsValidObject; } catch { return true; } });
             return d == null ? null : OpenedByAce.FirstOrDefault(x => x.Doc.Equals(d));
         }
 
+        // ---- across a reload (reload_addin): the list is kept in the loader's store as plain data ----------------------
+
+        private const string StoreKey = "modelFile.openedByAce";
+        /// <summary>Records left by the build before this one, not yet matched to an open document.</summary>
+        private static List<Dictionary<string, object>> _pending = new List<Dictionary<string, object>>();
+        private static bool _live;
+
         /// <summary>
-        /// Payload Stop (reload_addin): this build forgets the models it opened. The new build starts with an empty list, so
-        /// close_model refuses discard for them (the safe side) until ACE opens them again; it also drops this build's
-        /// Document references so the old build can unload.
+        /// Payload Stop: writes the models this build opened to the loader's store as plain data (handle, source, the
+        /// model's own path and title, detached, untouched; no Document), then forgets them so the old build holds no
+        /// Document. The next build matches them to the open documents again (Restore, Bind).
         /// </summary>
-        internal static void Forget() => OpenedByAce.Clear();
+        internal static void SaveAndForget(IDictionary<string, object> store)
+        {
+            if (!_live) return;   // nothing was restored or opened by this build since the last save (a second Stop)
+            _live = false;
+            var list = new List<object>();
+            foreach (var x in OpenedByAce)
+            {
+                try
+                {
+                    if (x.Doc == null || !x.Doc.IsValidObject) continue;
+                    list.Add(new Dictionary<string, object>
+                    {
+                        ["handle"] = x.Handle, ["source"] = x.Source, ["path"] = x.Doc.PathName ?? "", ["title"] = x.Doc.Title ?? "",
+                        ["detached"] = x.Detached, ["untouched"] = x.Untouched,
+                    });
+                }
+                catch { /* a closed model: dropped */ }
+            }
+            list.AddRange(_pending);   // not matched yet (no command since the reload): passed on unchanged
+            if (store != null) store[StoreKey] = list;
+            OpenedByAce.Clear();
+            _pending.Clear();
+        }
+
+        /// <summary>Payload Start: takes the records the build before this one left (matched to documents on first use).</summary>
+        internal static void Restore(IDictionary<string, object> store)
+        {
+            _live = true;
+            _pending = new List<Dictionary<string, object>>();
+            if (store == null || !store.TryGetValue(StoreKey, out var v) || !(v is System.Collections.IEnumerable items)) return;
+            foreach (var item in items) if (item is Dictionary<string, object> rec) _pending.Add(rec);
+            store.Remove(StoreKey);
+        }
+
+        /// <summary>
+        /// Matches the records from before the reload to open documents: by the model's own path, or (no path: a detached
+        /// copy never saved) by a title only one open model has. A record that matches nothing is dropped (the model was
+        /// closed), as is one that matches ambiguously: discard is then refused for it, the safe side.
+        /// </summary>
+        private static void Bind(Autodesk.Revit.ApplicationServices.Application app)
+        {
+            if (_pending.Count == 0 || app == null) return;
+            var docs = app.Documents.Cast<Document>().Where(d => !d.IsLinked).ToList();
+            foreach (var rec in _pending)
+            {
+                string S(string k) => rec.TryGetValue(k, out var o) ? o as string : null;
+                bool B(string k) => rec.TryGetValue(k, out var o) && o is bool b && b;
+                var path = S("path");
+                var title = S("title");
+                var matches = !string.IsNullOrEmpty(path)
+                    ? docs.Where(d => !string.IsNullOrEmpty(d.PathName) && string.Equals(Normalize(d.PathName), Normalize(path), StringComparison.OrdinalIgnoreCase)).ToList()
+                    : docs.Where(d => string.IsNullOrEmpty(d.PathName) && string.Equals(d.Title, title, StringComparison.Ordinal)).ToList();
+                if (matches.Count != 1 || OpenedByAce.Any(x => x.Doc.Equals(matches[0]))) continue;
+                OpenedByAce.Add(new Opened { Handle = S("handle"), Source = S("source"), Doc = matches[0], Detached = B("detached"), Untouched = B("untouched") });
+            }
+            _pending.Clear();
+        }
 
         /// <summary>A change made outside an ACE request (DocumentChanged while the bridge is idle): the user worked in that model.</summary>
         internal static void UserTouched(Document d)
@@ -64,6 +129,7 @@ namespace AceRevitMcp.Commands
             error = null;
             var docs = app.Application.Documents.Cast<Document>().Where(d => !d.IsLinked).ToList();
             var handle = Args.Str(args, "handle");
+            Bind(app.Application);
             if (!string.IsNullOrWhiteSpace(handle))
             {
                 Entry(null);
@@ -237,6 +303,8 @@ namespace AceRevitMcp.Commands
             if (dialogs.Any(d => d?["answer"] == null)) notes.Add("A dialog during the open needed a person (see dialogs).");
             Entry(null);
             var handle = Guid.NewGuid().ToString("N").Substring(0, 12);
+            Bind(app.Application);
+            _live = true;
             OpenedByAce.Add(new Opened { Handle = handle, Source = full, Doc = doc, Detached = detached });
 
             JsonNode closed = null;

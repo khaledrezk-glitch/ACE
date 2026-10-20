@@ -5,11 +5,29 @@ param([switch]$Purge)
 $ErrorActionPreference = 'Continue'
 if (Get-Process -Name 'Revit' -ErrorAction SilentlyContinue) { Write-Host "Close Revit first." -ForegroundColor Yellow; exit 1 }
 
+# Deletes a folder tree without following junctions or symbolic links (Remove-Item -Recurse in Windows PowerShell 5.1 can
+# delete inside a junction's target): a link is removed as a link, never what it points to.
+function Remove-Tree($path) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    $item = Get-Item -LiteralPath $path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($item.PSIsContainer) { [IO.Directory]::Delete($item.FullName) } else { [IO.File]::Delete($item.FullName) }
+        return
+    }
+    if ($item.PSIsContainer) {
+        foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force)) { Remove-Tree $child.FullName }
+        [IO.Directory]::Delete($item.FullName)
+    } else {
+        [IO.File]::SetAttributes($item.FullName, [IO.FileAttributes]::Normal)
+        [IO.File]::Delete($item.FullName)
+    }
+}
+
 foreach ($year in '2024', '2025') {
     $addinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$year"
     Remove-Item (Join-Path $addinRoot 'AceRevitMcp.addin') -Force -ErrorAction SilentlyContinue
     # The whole ACE folder: the ACE loader, current.json, every payload\<version>-<hash> build (and an older flat install).
-    Remove-Item (Join-Path $addinRoot 'AceRevitMcp') -Recurse -Force -ErrorAction SilentlyContinue
+    try { Remove-Tree (Join-Path $addinRoot 'AceRevitMcp') } catch { }
     if (Test-Path (Join-Path $addinRoot 'AceRevitMcp')) { Write-Host "Could not remove everything in $(Join-Path $addinRoot 'AceRevitMcp') (a file is in use?)." -ForegroundColor Yellow }
 }
 $reg = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\mcp-server\lib\register.js'

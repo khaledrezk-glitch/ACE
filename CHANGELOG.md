@@ -3,18 +3,26 @@
 ## 1.14.0 (20 Oct 2026)
 - **ACE loader (G8): updates without a Revit restart.** A small, stable `AceRevitMcp.Loader.dll` (own version 1.0.0) is
   now the only DLL in the Revit `.addin` file; it owns the ribbon (proxy commands), the bridge's ExternalEvent and the
-  Companion pane, and loads the ACE build from `payload\<version>-<hash>` named in `current.json` (own folder only,
-  SHA-256 checked, signer must equal the loader's when signing is on, previous build as fallback). Revit 2025: one
-  collectible AssemblyLoadContext per build; Revit 2024: loaded from bytes (old copies stay in memory, inactive, until
-  Revit closes).
+  Companion pane, and loads the ACE build from `payload\<version>-<hash>` named in `current.json` (own folder only).
+  `current.json` lists the SHA-256 of **every file** of the build (Compiler and dependencies included); the loader
+  refuses unlisted files, junctions and links, reads each file once and loads exactly the bytes it checked (the compiler
+  and dependencies too). With signing on, the loader and every ACE DLL must be signed by the certificate pinned in
+  `signing.json`; an unreadable `signing.json` counts as on and blocks the load. A build that fails its checks falls back
+  to the previous one, with a warning in the log, `/health` and the Companion pane. **What the hash does not do:** it
+  protects against corruption, incomplete copies and swapped files, not against a malicious program running as the same
+  Windows user (it could rewrite `current.json` too); signing narrows that, since the key can't be exported. Revit 2025:
+  one collectible AssemblyLoadContext per build; Revit 2024: loaded from bytes (old copies stay in memory, inactive,
+  until Revit closes).
 - **Upgrade:** the first install of 1.14.0 replaces the old `.addin` file, so a running Revit needs **one restart**.
   After that, `install.cmd` runs with Revit open: it adds the new build next to the running one and asks Revit to load
   it (`reload_addin`) when Revit is idle; if the new build fails to start, the previous one runs again. Only a new loader
   version needs a restart, and the installer says so. The unsigned-add-in prompt concerns only the loader, so it no
   longer comes back with every update.
-- **`reload_addin`** (MCP tool and bridge command): reports loaderVersion, payloadVersion, previous, ok, why; previews
-  made before a reload must be made again. With no model open the loader also switches by itself. A reload forgets the
-  models ACE opened (close_model then refuses discard for them, the safe side).
+- **`reload_addin`** (MCP tool and bridge command): reports loaderVersion, payloadVersion, previous, ok, why. Every bridge
+  answer names the ACE build that ran it, and an apply whose preview ran on another build is refused, however the swap
+  happened (installer, the loader's own switch when no model is open, "Load ACE again"). A reload keeps the models ACE
+  opened (for close_model discard) and the last undoable Claude run, as plain data held by the loader. A reload whose
+  bridge can't listen counts as failed (the previous build starts again).
 - **doctor / check_setup:** loader and build versions, a pending reload. **uninstall:** removes the loader and every
   build folder. Benchmark case for `reload_addin`.
 ## 1.13.7 (20 Oct 2026)

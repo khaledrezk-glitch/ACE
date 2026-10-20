@@ -29,6 +29,39 @@ namespace AceRevitMcp
 
         internal static string LoaderVersion => Get<string>("loaderVersion");
 
+        /// <summary>True when the loader started this build in place of another one (a reload in a running Revit).</summary>
+        internal static bool Reloaded => _host != null && _host.TryGetValue("reloaded", out var r) && r is bool b && b;
+
+        /// <summary>
+        /// This load of this build (the loader's buildId: version, hash and load number; loaded directly: version and module
+        /// id). Every bridge answer carries it, so the MCP server refuses an apply whose preview ran on another build.
+        /// </summary>
+        internal static string BuildId => Get<string>("buildId")
+            ?? $"{typeof(PayloadEntry).Assembly.GetName().Version?.ToString(3)}-direct-{typeof(PayloadEntry).Assembly.ManifestModule.ModuleVersionId.ToString("N").Substring(0, 12)}";
+
+        /// <summary>
+        /// The loader's store: plain data (strings, bools, lists and dictionaries of them, Revit UI objects the loader
+        /// outlives) that survives a reload. Loaded directly: a store of this build only.
+        /// </summary>
+        internal static IDictionary<string, object> Store => Get<IDictionary<string, object>>("store") ?? LocalStore;
+        private static readonly IDictionary<string, object> LocalStore = new Dictionary<string, object>();
+
+        /// <summary>
+        /// The bytes of one of this build's own files, checked against current.json by the loader (null when ACE was
+        /// loaded directly: then the file is used as it is).
+        /// </summary>
+        internal static Func<string, byte[]> ReadVerified => Get<Func<string, byte[]>>("readVerified");
+
+        /// <summary>This build's AceRevitMcp.dll on disk (Location is empty when the loader loaded it from bytes).</summary>
+        internal static string AssemblyPath
+        {
+            get
+            {
+                var loc = typeof(PayloadEntry).Assembly.Location;
+                return string.IsNullOrEmpty(loc) ? Path.Combine(Directory ?? "", "AceRevitMcp.dll") : loc;
+            }
+        }
+
         internal static T Get<T>(string key) where T : class =>
             _host != null && _host.TryGetValue(key, out var v) ? v as T : null;
 

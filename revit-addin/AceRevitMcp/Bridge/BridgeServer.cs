@@ -123,6 +123,8 @@ namespace AceRevitMcp.Bridge
                         ["pid"] = InstanceRegistry.ProcessId,
                         ["busy"] = RequestDispatcher.Busy is { } b ? $"{b.Command} since {b.Since:HH:mm:ss}" : null,
                         ["aceVersion"] = typeof(BridgeServer).Assembly.GetName().Version?.ToString(3),
+                        // This load of this ACE build: the MCP server refuses an apply whose preview ran on another one.
+                        ["build"] = PayloadEntry.BuildId,
                         // Under the ACE loader: loaderVersion, payloadVersion, previous, pending, lastReload (null when loaded directly).
                         ["loader"] = LoaderLink.LoaderStatus(),
                     });
@@ -177,7 +179,7 @@ namespace AceRevitMcp.Bridge
                 try
                 {
                     var result = await _dispatcher.EnqueueAsync(command, request["args"] as JsonObject, timeout, request["requestId"]?.ToString()).ConfigureAwait(false);
-                    await WriteAsync(ctx, 200, new JsonObject { ["ok"] = true, ["result"] = result });
+                    await WriteAsync(ctx, 200, new JsonObject { ["ok"] = true, ["result"] = result, ["build"] = PayloadEntry.BuildId });
                 }
                 catch (Exception ex)
                 {

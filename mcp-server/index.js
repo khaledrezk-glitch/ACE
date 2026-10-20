@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, forgetInstances, healthAtPort, preferredInstance, localDate, pinSession, preferInstance, readConfig, sessionKey, sessionLabel, text } from "./lib/core.js";
+import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, forgetInstances, healthAtPort, portOfPid, preferredInstance, localDate, pinSession, preferInstance, readConfig, sessionKey, sessionLabel, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
 import * as Report from "./lib/report.js";
 import * as ParamList from "./lib/paramlist.js";
@@ -2631,7 +2631,9 @@ tool("reload_addin", {
   let h = null;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, Number(process.env.ACE_RELOAD_POLL_MS) || 1000));
-    h = await healthAtPort(session?.port, 2000);
+    // The new build may listen on another port: the session's instance file (by pid) says where; the pid must match.
+    h = await healthAtPort(portOfPid(session?.pid) ?? session?.port, 2000);
+    if (h?.ok && session?.pid != null && h.pid != null && Number(h.pid) !== Number(session.pid)) continue;
     const last = h?.ok ? h.loader?.lastReload : null;
     if (!last?.at || last.at === before) continue;
     forgetInstances();

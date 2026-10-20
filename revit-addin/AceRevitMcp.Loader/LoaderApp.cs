@@ -42,6 +42,14 @@ namespace AceRevitMcp.Loader
         private DateTime? _seenStamp;
         private bool _pending;
         private string _pendingVersion;
+        private int _loadSeq;
+        /// <summary>Set while the previous build runs because the current one failed its checks (integrity or signature).</summary>
+        private string _fallbackNote;
+        /// <summary>
+        /// Plain data a build leaves for the next one in this Revit session (models ACE opened, the last undoable run, the
+        /// ribbon panels): the loader keeps it, so a reload does not forget it. Never Revit documents or ACE types.
+        /// </summary>
+        private readonly Dictionary<string, object> _store = new Dictionary<string, object>(StringComparer.Ordinal);
 
         private readonly Dictionary<string, int> _slotOf = new Dictionary<string, int>(StringComparer.Ordinal);
         private readonly string[] _slotClass = new string[SlotCount];
@@ -82,13 +90,21 @@ namespace AceRevitMcp.Loader
 
         // ---- the host the payload sees ------------------------------------------------------------------------------
 
-        private Dictionary<string, object> Host(LoadedPayload p, bool reloaded) => new Dictionary<string, object>
+        private Dictionary<string, object> Host(LoadedPayload p, bool reloaded, UIApplication ui) => new Dictionary<string, object>
         {
             ["contract"] = Contract,
             ["loaderVersion"] = _loaderVersion,
             ["loaderPath"] = _loaderDll,
             ["payloadDir"] = p.Directory,
+            ["payloadSha256"] = p.Sha256,
+            // This load of this build: a preview made on another one (another build, or the same build loaded again) is refused.
+            ["buildId"] = $"{p.Version}-{(p.Sha256 ?? "").Substring(0, Math.Min(12, (p.Sha256 ?? "").Length))}#{_loadSeq}",
             ["reloaded"] = reloaded,
+            // null at Revit startup; on a reload the session's UIApplication, so the build can read the open documents.
+            ["uiApplication"] = ui,
+            ["store"] = _store,
+            // The only way the build reads more of its own files (compiler, dependencies): checked against current.json.
+            ["readVerified"] = (Func<string, byte[]>)p.ReadVerified,
             ["bindCommand"] = (Func<string, string>)BindCommand,
             ["externalEvent"] = _event,
             ["setEventHandler"] = (Action<IExternalEventHandler>)(h => _forward.Target = h),
@@ -205,6 +221,8 @@ namespace AceRevitMcp.Loader
             s["pending"] = _pending;
             s["pendingVersion"] = _pending ? _pendingVersion : null;
             s["lastReload"] = _lastReload;
+            s["payloadSha256"] = _active?.Sha256;
+            s["fallback"] = _fallbackNote;
             if (_previousContext != null) s["previousUnloaded"] = !_previousContext.IsAlive;
             return s;
         }
@@ -225,16 +243,23 @@ namespace AceRevitMcp.Loader
                 _nextFileCheck = DateTime.UtcNow.AddSeconds(5);
                 var file = Path.Combine(_root, PayloadSelection.ManifestName);
                 DateTime? stamp = File.Exists(file) ? File.GetLastWriteTimeUtc(file) : (DateTime?)null;
-                if (stamp == _seenStamp) return;
-                _seenStamp = stamp;
-                var c = ReadCandidate(out _);
-                _pending = c != null && c.Ok && (_active == null || !PayloadSelection.SameHash(c.Sha256, _active.Sha256));
-                _pendingVersion = c?.Version;
+                if (stamp != _seenStamp)
+                {
+                    // A new current.json: check the build it names (once per change; the files are hashed).
+                    _seenStamp = stamp;
+                    var c = ReadCandidate(out _);
+                    _pending = c != null && c.Ok && (_active == null || !PayloadSelection.SameHash(c.Sha256, _active.Sha256));
+                    _pendingVersion = c?.Version;
+                    if (_pending) LoaderLog.Info($"current.json now names ACE {c.Version}; running {_active?.Version ?? "nothing"}.");
+                }
+                // A pending build waits while a model is open, and is swapped in at the first check with none open (or when
+                // nothing is loaded). A failed swap is not retried until current.json changes again.
                 if (!_pending) return;
-                LoaderLog.Info($"current.json now names ACE {c.Version}; running {_active?.Version ?? "nothing"}.");
-                // Swap by itself only when it disturbs nothing: no model open (switching documents), or nothing loaded.
                 if (_active == null || (ui != null && ui.Application.Documents.IsEmpty))
-                    Swap(ui, false, _active == null ? "current.json changed (nothing was loaded)" : "current.json changed, no model open");
+                {
+                    var r = Swap(ui, false, _active == null ? "current.json changed (nothing was loaded)" : "current.json changed, no model open");
+                    if (!true.Equals(r["ok"])) _pending = false;
+                }
             }
             catch (Exception ex) { LoaderLog.Error($"Idling: {ex}"); }
         }
@@ -247,9 +272,13 @@ namespace AceRevitMcp.Loader
             CurrentFile current;
             try { current = PayloadSelection.Parse(File.ReadAllText(file)); }
             catch (Exception ex) { why = $"{file} is not readable: {ex.Message}"; return null; }
-            Func<string, string> signer = null;
-            if (Signature.SigningOn()) signer = dir => Signature.CheckPayload(_loaderDll, dir);
-            return PayloadSelection.Select(_root, current, PayloadSelection.Sha256Of, signer);
+            var signing = Signature.Read();
+            Func<Candidate, string> signer = null;
+            if (signing.On) signer = cand => Signature.CheckPayload(signing, _loaderDll, cand);
+            else LoaderLog.Info($"Signing is off ({Signature.SigningFilePath} absent or disabled): the build is checked by its sha256 list only.");
+            var c = PayloadSelection.Select(_root, current, null, signer);
+            if (c != null && c.FromPrevious && c.Ok) LoaderLog.Warn($"Integrity: {c.CurrentWhy}. The previous build {c.Version} is used instead.");
+            return c;
         }
 
         /// <summary>
@@ -270,7 +299,7 @@ namespace AceRevitMcp.Loader
                 var c = ReadCandidate(out var why);
                 if (c == null || !c.Ok) return Done(result, false, "nothing to load: " + (c?.Why ?? why) + (_active != null ? $". ACE {_active.Version} keeps running." : ""));
                 result["direction"] = PayloadSelection.Direction(_active?.Version, c.Version);
-                if (c.FromPrevious) result["note"] = $"the current build failed its checks, so the previous one ({c.Version}) is used";
+                if (c.FromPrevious) result["note"] = $"the current build failed its checks ({c.CurrentWhy}), so the previous one ({c.Version}) is used";
                 if (!force && _active != null && PayloadSelection.SameHash(c.Sha256, _active.Sha256))
                     return Done(result, true, $"ACE {_active.Version} is already the installed build");
 
@@ -280,8 +309,9 @@ namespace AceRevitMcp.Loader
                 LoadedPayload next = null;
                 try
                 {
+                    _loadSeq++;
                     next = _starting = LoadedPayload.Load(c);
-                    next.Start(_app, Host(next, reloaded: old != null));
+                    next.Start(_app, Host(next, reloaded: old != null, ui));
                 }
                 catch (Exception ex)
                 {
@@ -294,7 +324,8 @@ namespace AceRevitMcp.Loader
                     try
                     {
                         _starting = old;
-                        try { old.Start(_app, Host(old, reloaded: true)); }
+                        _loadSeq++;
+                        try { old.Start(_app, Host(old, reloaded: true, ui)); }
                         finally { _starting = null; }
                         _active = old;
                         result["payloadVersion"] = old.Version;
@@ -313,6 +344,9 @@ namespace AceRevitMcp.Loader
                 _active = next;
                 _starting = null;
                 _lastWhy = null;
+                _fallbackNote = c.FromPrevious ? $"ACE {c.Version} (the previous build) runs: the installed build failed its checks ({c.CurrentWhy}). Run install.ps1 again." : null;
+                _pane?.SetNote(_fallbackNote);
+                if (_fallbackNote != null) result["fallback"] = _fallbackNote;
                 _pending = false;
                 _seenStamp = File.GetLastWriteTimeUtc(Path.Combine(_root, PayloadSelection.ManifestName));
                 if (old != null)

@@ -166,6 +166,9 @@ namespace AceRevitMcp.Ribbon
                 try { _combo.CurrentChanged -= _comboChanged; } catch { }
             _combo = null;
             _comboChanged = null;
+            // Hidden panels are shown again before the reload, so the next build finds every panel it looks for; its own
+            // Restore() hides them again for the current mode.
+            foreach (var p in Panels.Values) try { p.Visible = true; } catch { }
             Panels.Clear();
             Buttons.Clear();
             Changed = null;

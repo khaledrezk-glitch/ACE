@@ -103,8 +103,16 @@ foreach ($year in $RevitYears) {
         if ($manifestText -notmatch [regex]::Escape($expectedTarget)) {
             Add-Result 'FAIL' "Add-in manifest ($year)" "Points to the wrong file: $Manifest (expected $expectedTarget)" 'Reinstall the add-in.' 'addin'
         } elseif ($current) {
-            $hashOk = ((Get-FileHash $PayloadDll -Algorithm SHA256).Hash -eq ([string]$current.sha256).ToUpperInvariant())
-            if (-not $hashOk) { Add-Result 'FAIL' "Revit $year add-in" "ACE $($current.version) in $PayloadDir does not match the sha256 in current.json: the loader will refuse it" 'Reinstall the add-in.' 'addin' }
+            # The loader checks every file of the build against current.json's files list (and refuses unlisted ones).
+            $badFiles = @()
+            if ($current.files) {
+                foreach ($prop in $current.files.PSObject.Properties) {
+                    $f = Join-Path $PayloadDir $prop.Name
+                    if (-not (Test-Path $f) -or (Get-FileHash $f -Algorithm SHA256).Hash -ne ([string]$prop.Value).ToUpperInvariant()) { $badFiles += $prop.Name }
+                }
+            } else { $badFiles += 'current.json has no files list' }
+            $hashOk = ((Get-FileHash $PayloadDll -Algorithm SHA256).Hash -eq ([string]$current.sha256).ToUpperInvariant()) -and -not $badFiles.Count
+            if (-not $hashOk) { Add-Result 'FAIL' "Revit $year add-in" "ACE $($current.version) in $PayloadDir does not match current.json ($(($badFiles | Select-Object -First 3) -join ', ')): the loader will refuse it" 'Reinstall the add-in.' 'addin' }
             else { Add-Result 'OK' "Revit $year add-in" "ACE loader $loaderVer, ACE $($current.version) in $PayloadDir$(if ($current.previous) { " (fallback: $($current.previous.version))" })$(if (-not $needsCompiler) { ' (C# scripts not available on 2024 yet)' })" }
         } else {
             Add-Result 'OK' "Revit $year add-in" "v$ver in $AddinDir (without the ACE loader: every update needs a Revit restart)$(if (-not $needsCompiler) { ' (C# scripts not available on 2024 yet)' })"

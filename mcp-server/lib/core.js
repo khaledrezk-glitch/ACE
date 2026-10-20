@@ -86,6 +86,15 @@ async function healthAt(base, timeoutMs) {
   }
 }
 
+/** The port the Revit session with that pid listens on now, from its instance file (null when unknown). */
+export function portOfPid(pid) {
+  if (pid == null) return null;
+  try {
+    const info = JSON.parse(fs.readFileSync(path.join(INSTANCES_DIR, `${Number(pid)}.json`), "utf8").replace(/^\uFEFF/, ""));
+    return Number(info?.pid) === Number(pid) && info?.port ? info.port : null;
+  } catch { return null; }
+}
+
 /** /health of the Revit session on that port (the configured one when port is empty). */
 export const healthAtPort = (port, timeoutMs = 2000) => healthAt(bridgeUrl(readConfig(), port), timeoutMs);
 
@@ -267,6 +276,9 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
     throw new RevitError(`${payload.error} The token in ${CONFIG_PATH} does not match the running add-in: restart Revit, or run doctor.ps1 -Fix.`);
   }
   if (!payload.ok) throw new RevitError(payload.error || `Revit bridge error (HTTP ${response.status})`);
+  // The ACE build that answered (the add-in's build id): a preview is bound to it (safety.js gated).
+  const store = currentCall.getStore();
+  if (store && payload.build) store.build = payload.build;
   return payload.result;
 }
 

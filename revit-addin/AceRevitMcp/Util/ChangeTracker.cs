@@ -58,6 +58,34 @@ namespace AceRevitMcp.Util
 
         public static void MarkUndone() => LastChangeWasClaude = false;
 
+        private const string StoreKey = "changeTracker.lastClaudeChange";
+        private static bool _live;
+
+        /// <summary>
+        /// Payload Stop (reload_addin): the last-run state is plain data (a flag, the run's name, the model's title), so it
+        /// is left in the loader's store and the next build can still undo the run made before the reload. Nothing can
+        /// change a model during the swap (it runs while Revit is idle), so the flag stays true to the undo stack.
+        /// </summary>
+        public static void Save(IDictionary<string, object> store)
+        {
+            if (!_live || store == null) return;
+            _live = false;
+            store[StoreKey] = new Dictionary<string, object>
+            {
+                ["wasClaude"] = LastChangeWasClaude, ["name"] = LastClaudeChangeName, ["document"] = LastClaudeChangeDocument,
+            };
+        }
+
+        public static void Restore(IDictionary<string, object> store)
+        {
+            _live = true;
+            if (store == null || !store.TryGetValue(StoreKey, out var v) || !(v is Dictionary<string, object> d)) return;
+            LastChangeWasClaude = d.TryGetValue("wasClaude", out var w) && w is bool b && b;
+            LastClaudeChangeName = d.TryGetValue("name", out var n) ? n as string : null;
+            LastClaudeChangeDocument = d.TryGetValue("document", out var t) ? t as string : null;
+            store.Remove(StoreKey);
+        }
+
         public static Recording Begin(string name)
         {
             _current = new Recording(name);

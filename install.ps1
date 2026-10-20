@@ -125,10 +125,17 @@ Step "Checking Revit $RevitLabel"
 # (payload\<version>-<hash>), so an install never replaces a file Revit has in use. Only a new loader needs a restart.
 $RevitProcs = @(Get-Process -Name 'Revit' -ErrorAction SilentlyContinue)
 $RunningYears = @()
+$InstanceDir = Join-Path $env:APPDATA 'ACE-RevitMCP\instances'
 foreach ($p in $RevitProcs) {
     $exe = $null
     try { $exe = $p.Path } catch { $exe = $null }
-    if ($exe -and ($exe -match 'Revit (\d{4})')) { $RunningYears += $Matches[1] } else { $RunningYears += $RevitYears }
+    if ($exe -and ($exe -match 'Revit (\d{4})')) { $RunningYears += $Matches[1]; continue }
+    # The path can't be read (another user's process, or no rights): ACE's instance file for that pid names the year.
+    $instFile = Join-Path $InstanceDir "$($p.Id).json"
+    $instYear = $null
+    if (Test-Path $instFile) { try { $instYear = ([string](Get-Content $instFile -Raw | ConvertFrom-Json).revitVersion).Substring(0, 4) } catch { $instYear = $null } }
+    if ($instYear) { $RunningYears += $instYear }
+    else { Warn "Revit (pid $($p.Id)) runs, but its version can't be read: treated as Revit $($RevitYears -join ' and ') (nothing in use is removed)."; $RunningYears += $RevitYears }
 }
 $RunningYears = @($RunningYears | Select-Object -Unique)
 if ($RevitProcs.Count) { Write-Host "    Revit $($RunningYears -join ' and ') is running: that's fine, ACE is installed next to the copy in use." }
@@ -202,6 +209,33 @@ function Get-BuildHash($dir) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { return (([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($all)))) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
 }
+# Every file of a build folder -> SHA-256 (lower case), keys with backslashes: the loader checks each one before it loads
+# anything, and loads only listed files.
+function Get-FileManifest($dir) {
+    $base = (Resolve-Path $dir).Path.TrimEnd('\')
+    $map = [ordered]@{}
+    Get-ChildItem $dir -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
+        $map[$_.FullName.Substring($base.Length + 1)] = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    return $map
+}
+# Deletes a folder tree without following junctions or symbolic links (Remove-Item -Recurse in Windows PowerShell 5.1
+# can delete inside a junction's target): a link is removed as a link.
+function Remove-Tree($path) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    $item = Get-Item -LiteralPath $path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($item.PSIsContainer) { [IO.Directory]::Delete($item.FullName) } else { [IO.File]::Delete($item.FullName) }
+        return
+    }
+    if ($item.PSIsContainer) {
+        foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force)) { Remove-Tree $child.FullName }
+        [IO.Directory]::Delete($item.FullName)
+    } else {
+        [IO.File]::SetAttributes($item.FullName, [IO.FileAttributes]::Normal)
+        [IO.File]::Delete($item.FullName)
+    }
+}
 function Test-SigningOn {
     $f = Join-Path $env:APPDATA 'ACE-RevitMCP\signing.json'
     if (-not (Test-Path $f)) { return $false }
@@ -219,6 +253,7 @@ foreach ($year in $RevitYears) {
     $LoaderDll    = Join-Path $InstallDir 'AceRevitMcp.Loader.dll'
     $running = $RunningYears -contains $year
     $tag = [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $createdDest = $false
     $stage = Join-Path $PayloadRoot ".staging-$tag"
     $loaderStage = Join-Path $InstallDir ".loader-$tag"
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
@@ -253,8 +288,9 @@ foreach ($year in $RevitYears) {
             # The identical build is there already (it may be the one Revit runs): keep it.
             $sha = (Get-FileHash (Join-Path $dest 'AceRevitMcp.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
         } else {
-            if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }   # an incomplete earlier copy
+            if (Test-Path $dest) { Remove-Tree $dest }   # an incomplete earlier copy
             Move-Item $stage $dest
+            $createdDest = $true
         }
 
         $old = $null
@@ -262,17 +298,18 @@ foreach ($year in $RevitYears) {
         $switch = $true
         if (Test-SigningOn) {
             $bad = @(Get-ChildItem $dest -Recurse -File -Filter 'AceRevitMcp*.dll' | Where-Object { (Get-AuthenticodeSignature -FilePath $_.FullName).Status -ne 'Valid' })
-            if ($bad.Count -and $old -and $old.path) {
-                Warn "Signing is on but $($bad[0].Name) is not validly signed: Revit $year keeps ACE $($old.version) (the loader would refuse this build)."
-                $switch = $false
+            if ($bad.Count) {
+                # The loader would refuse this build: current.json is not switched, and the install stops here.
+                if ($createdDest) { Remove-Tree $dest }
+                throw "Signing is on, but $($bad[0].Name) of ACE $ver is not validly signed, so the loader would refuse it. current.json was not changed (Revit $year keeps $(if ($old) { "ACE $($old.version)" } else { 'no ACE' })). Run trust-ace.ps1 again, or trust-ace.ps1 -Remove to turn signing off, then install again."
             }
         }
         if ($switch) {
-            $entry = [ordered]@{ version = $ver; path = "payload\$folder"; sha256 = $sha }
-            if ($old -and $old.path -and $old.path -ne $entry.path) { $entry.previous = [ordered]@{ version = $old.version; path = $old.path; sha256 = $old.sha256 } }
+            $entry = [ordered]@{ version = $ver; path = "payload\$folder"; sha256 = $sha; files = (Get-FileManifest $dest) }
+            if ($old -and $old.path -and $old.path -ne $entry.path) { $entry.previous = [ordered]@{ version = $old.version; path = $old.path; sha256 = $old.sha256; files = $old.files } }
             elseif ($old -and $old.previous) { $entry.previous = $old.previous }
             $tmp = "$CurrentFile.tmp"
-            Write-Utf8NoBom $tmp ([PSCustomObject]$entry | ConvertTo-Json -Depth 4)
+            Write-Utf8NoBom $tmp ([PSCustomObject]$entry | ConvertTo-Json -Depth 6)
             Move-Item $tmp $CurrentFile -Force
             Ok "ACE $ver for Revit $year installed to $dest"
         }
@@ -289,14 +326,17 @@ foreach ($year in $RevitYears) {
             try {
                 foreach ($f in @(Get-ChildItem $loaderStage -File)) {
                     $target = Join-Path $InstallDir $f.Name
-                    # A DLL Revit has loaded can't be overwritten, but it can be renamed: the running Revit keeps the old
-                    # loader, its next start loads the new one. The renamed copy goes with the next install while Revit is closed.
-                    try { Copy-Item $f.FullName -Destination $target -Force -ErrorAction Stop }
-                    catch {
-                        if (-not (Test-Path $target)) { throw }
-                        Move-Item $target "$target.$tag.old" -Force -ErrorAction Stop
-                        Copy-Item $f.FullName -Destination $target -Force -ErrorAction Stop
+                    # Atomic: the new file is copied under a temporary name first, then renamed into place, so Revit never
+                    # sees half a loader. A DLL Revit has loaded can't be deleted, but it can be renamed: the running Revit
+                    # keeps the old loader, its next start loads the new one. The renamed copy goes with the next install
+                    # made while Revit is closed.
+                    $tmpTarget = "$target.$tag.new"
+                    Copy-Item $f.FullName -Destination $tmpTarget -Force -ErrorAction Stop
+                    if (Test-Path $target) {
+                        try { [IO.File]::Delete($target) }
+                        catch { [IO.File]::Move($target, "$target.$tag.old") }
                     }
+                    [IO.File]::Move($tmpTarget, $target)
                 }
                 $loaderNew = $true
                 Ok "ACE loader $newLoader installed$(if ($oldLoader) { " (was $oldLoader)" })"
@@ -326,18 +366,18 @@ foreach ($year in $RevitYears) {
         # AceRevitMcp\) go, and of the builds only the current and previous stay. While Revit runs nothing is removed (it
         # may be running any of them).
         if (-not $running) {
-            Get-ChildItem $InstallDir -Force | Where-Object { ($_.Name -notin 'payload', 'current.json' -and $_.Name -notlike 'AceRevitMcp.Loader.*' -and $_.Name -notlike '.loader-*') -or $_.Name -like '*.old' } |
-                ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+            Get-ChildItem $InstallDir -Force | Where-Object { ($_.Name -notin 'payload', 'current.json' -and $_.Name -notlike 'AceRevitMcp.Loader.*' -and $_.Name -notlike '.loader-*') -or $_.Name -like '*.old' -or $_.Name -like '*.new' } |
+                ForEach-Object { try { Remove-Tree $_.FullName } catch { Warn "Could not remove $($_.FullName): $($_.Exception.Message)" } }
         }
         if (-not $running -and $switch) {
             $keep = @($folder)
             if ($entry.previous) { $keep += Split-Path ([string]$entry.previous.path) -Leaf }
             Get-ChildItem $PayloadRoot -Directory -Force | Where-Object { $keep -notcontains $_.Name -and $_.Name -notlike '.staging-*' } |
-                ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+                ForEach-Object { try { Remove-Tree $_.FullName } catch { Warn "Could not remove $($_.FullName): $($_.Exception.Message)" } }
         }
     } finally {
-        Remove-Item $stage, $loaderStage -Recurse -Force -ErrorAction SilentlyContinue
-        Get-ChildItem $PayloadRoot -Directory -Force -Filter '.staging-*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        foreach ($d in @($stage, $loaderStage)) { try { Remove-Tree $d } catch { } }
+        Get-ChildItem $PayloadRoot -Directory -Force -Filter '.staging-*' -ErrorAction SilentlyContinue | ForEach-Object { try { Remove-Tree $_.FullName } catch { } }
     }
 }
 $RestartYears = @($RestartYears | Select-Object -Unique)
@@ -397,6 +437,9 @@ if (-not $SkipAddin -and $ReloadYears.Count) {
         if (-not (Get-Process -Id $inst.pid -ErrorAction SilentlyContinue)) { continue }
         $asked++
         try {
+            # The token goes only to the ACE session named in the file: /health on that port must answer with its pid.
+            $h = Invoke-RestMethod -Uri "http://localhost:$($inst.port)/health" -Method Get -TimeoutSec 10 -UseBasicParsing
+            if (-not $h.ok -or [string]$h.pid -ne [string]$inst.pid) { Warn "Revit $instYear (pid $($inst.pid)): port $($inst.port) answers another process (pid $($h.pid)); not asked to reload."; continue }
             $body = @{ command = 'reload_addin'; args = @{ force = $false }; timeoutSeconds = 30 } | ConvertTo-Json -Depth 3
             $r = Invoke-RestMethod -Uri "http://localhost:$($inst.port)/command" -Method Post -Body $body -ContentType 'application/json' -Headers @{ 'X-Ace-Token' = [string]$cfg.token } -TimeoutSec 40 -UseBasicParsing
             if (-not $r.ok) { Warn "Revit $instYear (pid $($inst.pid)): $($r.error)" }

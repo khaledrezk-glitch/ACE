@@ -51,10 +51,13 @@ scripts, journals and reports are preserved. The doctor warns when the add-in an
   replaced only when that version changes. Revit's unsigned-add-in prompt (or the signature check, when signing is on)
   concerns this file, so it does not come back with every update;
 - `payload\<version>-<hash>\`: one folder per ACE build. An install adds a new folder next to the one Revit runs;
-- `current.json`: `{ version, path, sha256, previous }`, written by the installer: the build to load and the fallback.
+- `current.json`: `{ version, path, sha256, files, previous }`, written by the installer: the build to load (with the
+  SHA-256 of every file in it) and the fallback.
 
 While Revit runs, the installer asks it (`reload_addin` through the bridge) to switch to the new build when Revit is
-idle; the loader checks the SHA-256 (and, with signing on, that the build is signed by the loader's own certificate),
+idle; the loader checks every file's SHA-256 (and, with signing on, that the loader and every ACE DLL are signed by the
+certificate pinned in `signing.json`; a damaged `signing.json` blocks the load). The hash catches corruption and swapped
+files, not a malicious program running as the same user. The loader then
 stops the old build, starts the new one, and starts the old one again if that fails. The loader loads only from its
 own folder, never from a path sent over the bridge. With Revit closed, the installer also removes the older build
 folders (it keeps the current and the previous one).

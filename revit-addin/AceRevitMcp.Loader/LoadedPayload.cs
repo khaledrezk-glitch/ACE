@@ -12,9 +12,11 @@ namespace AceRevitMcp.Loader
     /// <summary>
     /// One loaded payload build. Its entry is found by reflection (no shared contracts assembly to version):
     /// public static AceRevitMcp.PayloadEntry.Start(UIControlledApplication, IDictionary&lt;string, object&gt;) and Stop().
-    /// Revit 2025: a collectible AssemblyLoadContext per build, so Unload() lets the old build go once nothing holds it.
-    /// Revit 2024 (.NET Framework): loaded from bytes into the one AppDomain (a new copy per load, so the same version can
-    /// be loaded again); an old copy can't be unloaded and stays in memory, inert after Stop(), until Revit closes.
+    /// Loaded from the bytes that passed the checks (never from the file again). Revit 2025: a collectible
+    /// AssemblyLoadContext per build (LoadFromStream), so Unload() lets the old build go once nothing holds it; its own
+    /// dependencies come only from files listed in current.json, verified as they are read. Revit 2024 (.NET Framework):
+    /// Assembly.Load(bytes) into the one AppDomain (a new copy per load, so the same version can be loaded again); an old
+    /// copy can't be unloaded and stays in memory, inert after Stop(), until Revit closes.
     /// </summary>
     internal sealed class LoadedPayload
     {
@@ -22,6 +24,8 @@ namespace AceRevitMcp.Loader
         public string Directory { get; private set; }
         public string Sha256 { get; private set; }
         public Assembly Assembly { get; private set; }
+        /// <summary>The build's manifest (relative path -> sha256): the only files that may be loaded from its folder.</summary>
+        public IDictionary<string, string> Files { get; private set; }
         private MethodInfo _start, _stop;
 #if !NETFRAMEWORK
         private PayloadContext _context;
@@ -29,13 +33,13 @@ namespace AceRevitMcp.Loader
 
         public static LoadedPayload Load(Candidate c)
         {
-            var p = new LoadedPayload { Directory = c.Directory, Sha256 = c.Sha256 };
+            if (c.Bytes == null) throw new InvalidOperationException("the build was not verified");
+            var p = new LoadedPayload { Directory = c.Directory, Sha256 = c.Sha256, Files = new Dictionary<string, string>(c.Files, StringComparer.OrdinalIgnoreCase) };
 #if NETFRAMEWORK
-            var pdb = Path.ChangeExtension(c.Dll, ".pdb");
-            p.Assembly = File.Exists(pdb) ? Assembly.Load(File.ReadAllBytes(c.Dll), File.ReadAllBytes(pdb)) : Assembly.Load(File.ReadAllBytes(c.Dll));
+            p.Assembly = Assembly.Load(c.Bytes);
 #else
-            p._context = new PayloadContext("ACE payload " + c.Version + " " + (c.Sha256 ?? "").Substring(0, Math.Min(8, (c.Sha256 ?? "").Length)), c.Directory);
-            p.Assembly = p._context.LoadFromAssemblyPath(c.Dll);
+            p._context = new PayloadContext("ACE payload " + c.Version + " " + (c.Sha256 ?? "").Substring(0, Math.Min(8, (c.Sha256 ?? "").Length)), p);
+            using (var ms = new MemoryStream(c.Bytes)) p.Assembly = p._context.LoadFromStream(ms);
 #endif
             p.Version = p.Assembly.GetName().Version?.ToString(3) ?? c.Version;
             var entry = p.Assembly.GetType("AceRevitMcp.PayloadEntry", throwOnError: false);
@@ -52,6 +56,9 @@ namespace AceRevitMcp.Loader
         public void Start(UIControlledApplication app, IDictionary<string, object> host) => Invoke(_start, app, host);
 
         public void Stop() => Invoke(_stop);
+
+        /// <summary>The bytes of one file of this build, verified against its manifest (the host's readVerified).</summary>
+        public byte[] ReadVerified(string fullPath) => PayloadSelection.ReadVerified(Directory, Files, fullPath);
 
         private static void Invoke(MethodInfo m, params object[] args)
         {
@@ -81,20 +88,26 @@ namespace AceRevitMcp.Loader
 
 #if !NETFRAMEWORK
         /// <summary>
-        /// Resolves the payload's own files from its folder; Revit, the loader, WPF and the framework always come from the
-        /// default context, so the payload shares their types (IExternalCommand, UIControlledApplication, FrameworkElement).
+        /// Resolves the payload's own files from its folder, only those listed in current.json and only from verified
+        /// bytes; Revit, the loader, WPF and the framework always come from the default context, so the payload shares
+        /// their types (IExternalCommand, UIControlledApplication, FrameworkElement).
         /// </summary>
         private sealed class PayloadContext : AssemblyLoadContext
         {
-            private readonly string _dir;
-            public PayloadContext(string name, string dir) : base(name, isCollectible: true) { _dir = dir; }
+            private readonly LoadedPayload _owner;
+            public PayloadContext(string name, LoadedPayload owner) : base(name, isCollectible: true) { _owner = owner; }
 
             protected override Assembly Load(AssemblyName name)
             {
                 var simple = name.Name ?? "";
                 if (Shared(simple)) return null;
-                var file = Path.Combine(_dir, simple + ".dll");
-                return File.Exists(file) ? LoadFromAssemblyPath(file) : null;
+                var file = Path.Combine(_owner.Directory, simple + ".dll");
+                if (!_owner.Files.ContainsKey(simple + ".dll")) return null;
+                try
+                {
+                    using (var ms = new MemoryStream(_owner.ReadVerified(file))) return LoadFromStream(ms);
+                }
+                catch (Exception ex) { LoaderLog.Warn($"Payload {_owner.Version}: {simple} refused: {ex.Message}"); return null; }
             }
 
             private static bool Shared(string n) =>

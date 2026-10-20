@@ -19,17 +19,26 @@ namespace AceRevitMcp.Ribbon
         {
             var bind = PayloadEntry.Get<Func<string, string>>("bindCommand");
             var loader = PayloadEntry.Get<string>("loaderPath");
-            if (bind == null || loader == null) return new PushButtonData(name, text, typeof(RibbonSlots).Assembly.Location, commandClass);
+            if (bind == null || loader == null) return new PushButtonData(name, text, PayloadEntry.AssemblyPath, commandClass);
             var proxy = bind(commandClass) ?? throw new InvalidOperationException($"The ACE loader has no free command slot for {commandClass}.");
             return new PushButtonData(name, text, loader, proxy);
         }
 
+        /// <summary>
+        /// The tab's panel of that name: the one this Revit session already has (kept in the loader's store, so it is found
+        /// even if Revit leaves hidden panels out of GetRibbonPanels), else Revit's list, else a new one.
+        /// </summary>
         public static RibbonPanel Panel(UIControlledApplication app, string tab, string name)
         {
+            var store = PayloadEntry.Store;
+            var key = "ribbon.panel." + tab + "|" + name;
+            if (store.TryGetValue(key, out var kept) && kept is RibbonPanel known) return known;
             RibbonPanel existing = null;
             try { existing = app.GetRibbonPanels(tab).FirstOrDefault(p => p.Name == name); }
             catch { /* the tab does not exist yet */ }
-            return existing ?? app.CreateRibbonPanel(tab, name);
+            var panel = existing ?? app.CreateRibbonPanel(tab, name);
+            store[key] = panel;
+            return panel;
         }
 
         public static RibbonItem Find(RibbonPanel panel, string name)

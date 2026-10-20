@@ -47,6 +47,13 @@ namespace AceRevitMcp.Util
                 .Where(a => !a.IsDynamic && string.Equals(a.GetName().Name, wanted.Name, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(a => a.GetName().Version).FirstOrDefault();
             if (loaded != null && (wanted.Version == null || loaded.GetName().Version >= wanted.Version)) return loaded;
+            // Under the ACE loader: only a file listed in current.json, from bytes checked against it.
+            var read = PayloadEntry.ReadVerified;
+            if (read != null)
+            {
+                try { return Assembly.Load(read(file)); }
+                catch (Exception ex) { Log.Warn($"Refused {file} for {e.Name}: {ex.Message}"); return loaded; }
+            }
             try { return Assembly.LoadFrom(file); }
             catch (Exception ex) { Log.Warn($"Could not load {file} for {e.Name}: {ex.Message}"); return loaded; }
         }

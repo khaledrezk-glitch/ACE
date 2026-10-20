@@ -19,14 +19,14 @@ const seen = [];
 let fakeOpened = null;   // workset_plan paths: the model open_model opened last (facts answer for it)
 const notUndoableRuns = [];   // execute_code runs of not-undoable code the fake bridge executed
 // The ACE loader's view in /health (reload_addin): a swap is reported there once the new build listens.
-const fakeLoader = { loaderVersion: "1.0.0", payloadVersion: "1.13.3", previous: null, pending: true, pendingVersion: "1.13.4", lastReload: { at: "startup", ok: true, why: "ACE 1.13.3 loaded" } };
+const fakeLoader = { build: "1.13.3-aaaaaaaaaaaa#1", loaderVersion: "1.0.0", payloadVersion: "1.13.3", previous: null, pending: true, pendingVersion: "1.13.4", lastReload: { at: "startup", ok: true, why: "ACE 1.13.3 loaded" } };
 
 const bridge = http.createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/health") { res.setHeader("Content-Type", "application/json"); return res.end(JSON.stringify({ ok: true, service: "ace-revit-mcp", revitVersion: "2025", loader: fakeLoader })); }
+  if (req.method === "GET" && req.url === "/health") { res.setHeader("Content-Type", "application/json"); return res.end(JSON.stringify({ ok: true, service: "ace-revit-mcp", revitVersion: "2025", build: fakeLoader.build, loader: fakeLoader })); }
   let body = "";
   req.on("data", (c) => (body += c));
   req.on("end", () => {
-    const reply = (o) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(o)); };
+    const reply = (o) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(o?.ok ? { ...o, build: fakeLoader.build } : o)); };
     if (req.headers["x-ace-token"] !== token) return reply({ ok: false, error: "bad token" });
     const { command, args } = JSON.parse(body);
     seen.push({ command, args });
@@ -337,7 +337,7 @@ const bridge = http.createServer((req, res) => {
         const base = { loaderVersion: fakeLoader.loaderVersion, payloadVersion: fakeLoader.payloadVersion, previous: fakeLoader.previous };
         if (!fakeLoader.pending && !args.force) return reply({ ok: true, result: { ...base, ok: true, scheduled: false, why: `ACE ${fakeLoader.payloadVersion} is already the installed build (force reloads it anyway).` } });
         // The swap happens later (Revit idle), after this answer: /health then shows it.
-        setTimeout(() => Object.assign(fakeLoader, { previous: fakeLoader.payloadVersion, payloadVersion: "1.13.4", pending: false,
+        setTimeout(() => Object.assign(fakeLoader, { build: "1.13.4-bbbbbbbbbbbb#2", previous: fakeLoader.payloadVersion, payloadVersion: "1.13.4", pending: false,
           lastReload: { at: `swap ${seen.length}`, ok: true, loaderVersion: "1.0.0", payloadVersion: "1.13.4", previous: fakeLoader.payloadVersion, direction: "upgrade", why: `ACE ${fakeLoader.payloadVersion} replaced by 1.13.4` } }), 120);
         return reply({ ok: true, result: { ...base, ok: true, scheduled: true, candidate: "1.13.4", why: "ACE 1.13.4 will be loaded in a moment" } });
       }
@@ -2045,6 +2045,16 @@ assert.ok(!quick.isError, "the brief's quick mode (formerly get_model_overview) 
 // before the swap no longer count (a preview proves what the build that ran it would do) ---
 {
   const swapEdit = { code: "foreach (var w in ctx.All<Wall>()) w.LookupParameter(\"Comments\").Set(\"swap\");" };
+  // A swap the server did not ask for (install.ps1's reload, the loader's own switch, "Load ACE again"): the bridge now
+  // answers with another build id, so the preview made on the old build is refused at apply.
+  await call("execute_revit_code", { ...swapEdit, dry_run: true, explanation: "preview on build #1" });
+  const keep = fakeLoader.build;
+  fakeLoader.build = "1.13.3-aaaaaaaaaaaa#7";
+  const across = await call("execute_revit_code", { ...swapEdit, explanation: "apply on another build" });
+  assert.match(across.content[0].text, /preview was made on ACE build 1\.13\.3-aaaaaaaaaaaa#1.*now runs 1\.13\.3-aaaaaaaaaaaa#7/, "a preview from another ACE build is refused at apply");
+  fakeLoader.build = keep;
+  const sentApplies = seen.filter((x) => x.command === "execute_code" && x.args?.code === swapEdit.code && !x.args?.dry_run).length;
+  assert.equal(sentApplies, 0, "the refused apply never reached Revit");
   await call("execute_revit_code", { ...swapEdit, dry_run: true, explanation: "preview before the reload" });
   const r = json(await call("reload_addin"));
   assert.ok(r.ok === true && r.payloadVersion === "1.13.4" && r.previous === "1.13.3" && r.loaderVersion === "1.0.0" && r.why, "reload_addin reports loaderVersion, payloadVersion, previous, ok, why");
