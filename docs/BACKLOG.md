@@ -115,7 +115,7 @@ A1, A3 and A4 have build-ready specs and are no longer blocked by open decisions
 
 | # | What | Effort | Status |
 |---|---|---|---|
-| A1 | A check reports which requirements it proves, with evidence per row; LOIN parameter fill per category and stage from `rules/loin.json`; ALD_ names matched exactly, then ignoring case and space / underscore with a spelling warning (DEC-0005) | M (3.5 days; spec analysis/14) | open, unblocked 19 Oct |
+| A1 | A check reports which requirements it proves, with evidence per row; LOIN parameter fill per category and stage from `rules/loin.json`; ALD_ names matched exactly, then ignoring case and space / underscore with a spelling warning (DEC-0005) | M (3.5 days; spec analysis/14) | open, unblocked 19 Oct Note (analysis cycle 12, 20 Oct): the test project also needs a LOIN xlsx generated from loin.json and a parameter-mapping.json (titleField 7) |
 | A2 | Units and Revit version | S | open |
 | A3 | Classification fill and code grammar (same engine as A1) | S (spec analysis/16) | open, unblocked 19 Oct |
 | A4 | Naming from `rules/naming.json` (models, links, families, materials, worksets); ground floor 00 per the CDE template (DEC-0004) | M (spec analysis/16) | open, unblocked 19 Oct |
@@ -149,6 +149,7 @@ A1, A3 and A4 have build-ready specs and are no longer blocked by open decisions
 |---|---|---|---|
 | G1 | Verify before commit: a script states what must be true afterwards; the runner checks it and rolls back with the reason. **Extended:** every fix (NativeChange and code runner) declares its expected outcome; after apply, inside the same TransactionGroup, the add-in re-runs that check on exactly those elements and rolls back on mismatch (today the Companion asks Claude to verify, `CompanionView.cs`); the run record says "applied and verified" | M | open; extension proposed 18 Oct by the KhloudTools review (`analysis/17`), build waits for the owner. Review recommends it before the Al Nahda live test |
 | G7 | **Capture case:** one button on a failing check or fix writes a JSON file (elements, categories, types, relevant parameters, geometry summary, host / link / workset state, the check or fix definition, add-in version and Revit build), with model, project, people and COBie fields removed by default, so the cloud can reproduce and fix offline; each case becomes a bench regression case | M | in progress (capture_method, owner asked 20 Oct to record his method; 1.12.5: start / stop, case record, plan comparison). Earlier: proposed 18 Oct by the KhloudTools review (`analysis/17`); review recommends it before the Al Nahda live test. Still open: the one-button capture on a failing check and the anonymised bench case |
+| G9 | Project rules: a per-rule `models` key (which models a workset rule applies to) is read by nothing yet; workset_plan / assign_worksets should honour it so one project file can hold per-model rules (1.13.5 already limits rules to models that have the target workset) | S | open (analysis cycle 12, 20 Oct) |
 | G2 | Skills tree: guides, lessons and standards as branches loaded on demand (fewer tokens) | M | open |
 | G3 | Sync with review: shared scripts, lessons and rules go through a reviewer before everyone gets them | M | open |
 | G5 | Variables between runs (`ctx.Session`) | S | open |
