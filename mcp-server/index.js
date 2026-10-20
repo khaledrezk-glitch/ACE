@@ -1260,13 +1260,16 @@ tool("register_update", {
     header_row: z.number().int().min(1).max(100).optional(),
     id_column: z.string().max(80).describe("Header name or column letter"),
     stage_columns: z.array(z.string().max(80)).min(1).max(20).describe("Every stage date column (later dates are cleared in all of them)"),
-    stage: z.string().max(80).optional().describe("The stage column that gets the submission date (default: the only one)"),
+    stage: z.union([z.string().max(80), z.array(z.string().max(80)).max(20)]).optional().describe("The stage column(s) that get the submission date, e.g. planned and actual (default: the only one)"),
     delivered: z.array(z.string().max(300)).max(20000).optional().describe("Delivered file names"),
     delivered_dir: z.string().optional().describe("Folder whose files were delivered (recursive)"),
     submission_date: z.string().max(20).describe("YYYY-MM-DD"),
     label: z.string().max(31).describe("The submission's name: the new sheet's name"),
     output: z.string().describe("The new .xlsx (never the register itself)"),
-    id_pattern: z.string().max(300).optional().describe("Naming regex; its first group (or the match) is the id"),
+    id_pattern: z.string().max(300).optional().describe("Naming regex: rows it does not find are skipped; in file names its first group (or the match) is the id. Default: vault rules/naming.json idPattern"),
+    vault: z.string().optional().describe("Project folder or its ACE Vault (for the naming rule)"),
+    accept_near: z.array(z.string().max(200)).max(2000).optional().describe("Ids of near matches the user confirmed"),
+    force_id_column: z.boolean().optional().describe("Use the id column although it looks wrong"),
     overwrite: z.boolean().optional(),
     confirm: z.boolean().optional().describe("Write the output (after the user saw the check)"),
     allow_merged: z.boolean().optional().describe("Write although the id or stage columns hold merged cells"),
@@ -1281,14 +1284,20 @@ tool("register_update", {
   try { files = RegisterUpdate.deliveredFiles(a); } catch (e) { throw new RevitError(e.message); }
   if (!files.length) throw new RevitError("Give the delivered files: delivered (file names) or delivered_dir (a folder).");
   const buf = fs.readFileSync(a.register);
-  const { overwrite, allow_merged, ...ident } = a;
+  if (!a.id_pattern && a.vault) {
+    const f = path.join(Vault.vaultDir(a.vault), "rules", "naming.json");
+    try { if (fs.existsSync(f)) { const p = JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, "")).idPattern; if (p) a = { ...a, id_pattern: p, idPatternFrom: f }; } }
+    catch (e) { throw new RevitError(`${f} is not valid JSON (${e.message}).`); }
+  }
+  if (a.id_pattern) { try { new RegExp(a.id_pattern, "i"); } catch (e) { throw new RevitError(`id_pattern is not a valid regex: ${e.message}`); } }
+  const { overwrite, allow_merged, idPatternFrom, ...ident } = a;
   const key = fingerprint("register_update", { ...ident, files: [...files].sort(), register: RegisterUpdate.sha(buf) });
   let res;
   try { res = await RegisterUpdate.updateRegister(buf, { ...a, files }); } catch (e) { throw new RevitError(e.message); }
   if (!confirm) {
     registerChecks.add(key);
     const out = text(res.report);
-    out.content.push({ type: "text", text: `${RegisterUpdate.reportText(res.report, { mode: "check" })}\nNothing written. Show the user this report; to write ${a.output}, repeat the identical call with confirm: true.` });
+    out.content.push({ type: "text", text: `${RegisterUpdate.reportText(res.report, { mode: "check" })}${idPatternFrom ? `\nId pattern from the vault: ${idPatternFrom}.` : ""}\nNothing written. Show the user this report; to write ${a.output}, repeat the identical call with confirm: true.` });
     return out;
   }
   if (!registerChecks.has(key)) throw new RevitError("Blocked for safety: this exact update has not been checked (the inputs, the register file or the delivered list differ). Run the same call without confirm, show the user the report, then confirm.");
@@ -1303,7 +1312,8 @@ tool("register_update", {
   fs.writeFileSync(csv, Report.toCsv([["result", "id or file", "column", "date / files"],
     ...r.matched.map((x) => ["matched", x.id, x.column, x.files.join("; ")]), ...r.deliveredNotInRegister.map((f) => ["delivered, not in register", f, "", ""]),
     ...r.notDelivered.map((id) => ["not delivered", id, "", ""]), ...r.cleared.map((x) => ["date cleared (later than the submission)", x.id, x.column, x.was]),
-    ...r.formulaDates.map((x) => ["formula date later than submission, left", x.id, x.column, x.was])]));
+    ...r.formulaDates.map((x) => ["formula date later than submission, left", x.id, x.column, x.was]),
+    ...r.near.map((x) => ["probably the same, confirm", x.id, x.differs, x.file]), ...r.skipped.map((x) => ["heading/skipped", x.value, `row ${x.row}`, ""])]));
   journal({ title: `Register update: ${r.sheet} -> ${r.label}`, outcome: `Written ${a.output}`, details: { matched: r.matched.length, notInRegister: r.deliveredNotInRegister.length, notDelivered: r.notDelivered.length, cleared: r.cleared.length } });
   const out = text({ ...r, output: a.output, report: csv });
   out.content.push({ type: "text", text: `${RegisterUpdate.reportText(r, { mode: "write", output: a.output })}\nReport: ${csv}\nThe register itself was not changed.` });

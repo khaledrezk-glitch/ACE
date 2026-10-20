@@ -1221,6 +1221,14 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(/Blocked: merged cells in the id or stage columns \(B2:B3\)/.test((await call("register_update", { ...rm, confirm: true })).content[0].text) && !fs.existsSync(rm.output));
   await call("register_update", rm);
   assert.ok(!(await call("register_update", { ...rm, confirm: true, allow_merged: true })).isError && fs.existsSync(rm.output), "allow_merged writes after the user checked");
+  // 1.12.7: the vault naming rule's idPattern skips rows it does not find; stage takes a list; a wrong id column is blocked.
+  const rv = path.join(rDir, "vault");
+  fs.mkdirSync(path.join(rv, "ACE Vault", "rules"), { recursive: true });
+  fs.writeFileSync(path.join(rv, "ACE Vault", "rules", "naming.json"), JSON.stringify({ idPattern: "^TST-00[1]$" }));
+  const vt = (await call("register_update", { ...ru, vault: rv, stage: ["Stage 1"] })).content.at(-1).text;
+  assert.ok(/Headings\/skipped \(not ids\): 1: row 3 "TST-002"/.test(vt) && /Id pattern from the vault: .*naming\.json/.test(vt), "the vault's id pattern");
+  const wrong = await call("register_update", { ...ru, id_column: "Stage 1", force_id_column: false });
+  assert.ok(wrong.isError && /The id column looks wrong/.test(wrong.content[0].text));
 }
 // A large check goes to report files; the reply stays small.
 const bigRows = Array.from({ length: 210 }, (_, i) => ({ name: `TST_P${i}`, categories: "Levels" }));

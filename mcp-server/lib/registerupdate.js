@@ -48,7 +48,8 @@ const day = (d) => d.toISOString().slice(0, 10);
  * the longest id wins when several are contained), or, with idPattern (the vault naming regex), when the pattern's first
  * group (or whole match) equals the id. -> { matched: Map(id -> [files]), unmatched: [files], ambiguous: [{ file, ids }] }
  */
-export function matchDelivered(ids, files, idPattern) {
+export function matchDelivered(idsIn, files, idPattern) {
+  const ids = [...new Map(idsIn.map((id) => [lc(id), id])).values()];   // an id listed twice is one id here
   const re = idPattern ? new RegExp(idPattern, "i") : null;
   const byLc = new Map(ids.map((id) => [lc(id), id]));
   const matched = new Map(), unmatched = [], ambiguous = [];
@@ -79,9 +80,67 @@ export function deliveredFiles({ delivered = [], delivered_dir } = {}) {
 const quoteSheet = (n) => /^[A-Za-z_][A-Za-z0-9_.]*$/.test(n) ? n : `'${n.replace(/'/g, "''")}'`;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const SEP = /[-_.]/;
+/** A shape: letters A, digits 9, runs collapsed ("TST-ST-001" -> "A-A-9"). */
+const shape = (id) => String(id).replace(/[A-Za-z]+/g, "A").replace(/[0-9]+/g, "9");
+
+/**
+ * Register rows -> { rows (ids), skipped (headings and other non-ids) }. With id_pattern a row is an id when the pattern
+ * finds it; without, when it has a digit and a separator and no space, or the shape most rows share.
+ */
+export function splitIds(all, idPattern) {
+  if (idPattern) { const re = new RegExp(idPattern, "i"); return { rows: all.filter((x) => re.test(x.id)), skipped: all.filter((x) => !re.test(x.id)) }; }
+  const counts = new Map();
+  for (const x of all) counts.set(shape(x.id), (counts.get(shape(x.id)) ?? 0) + 1);
+  const [common, n] = [...counts].sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
+  const dominant = n >= 3 && n >= all.length / 2 ? common : null;
+  const isId = (id) => (/\d/.test(id) && SEP.test(id) && !/\s/.test(id)) || shape(id) === dominant;
+  return { rows: all.filter((x) => isId(x.id)), skipped: all.filter((x) => !isId(x.id)) };
+}
+
+/** Why the id column looks wrong: short ids, many duplicates, files that match several ids. [] = fine. */
+export function idColumnDoubts(rows, dupIds, m) {
+  const why = [];
+  if (!rows.length) return ["no row holds an id"];
+  const lens = rows.map((x) => x.id.length).sort((a, b) => a - b);
+  const median = lens.length % 2 ? lens[(lens.length - 1) / 2] : (lens[lens.length / 2 - 1] + lens[lens.length / 2]) / 2;
+  if (median < 6) why.push(`the ids are short (median ${median} characters)`);
+  const dupSet = new Set(dupIds.map(lc));
+  const dupRows = rows.filter((x) => dupSet.has(lc(x.id))).length;
+  if (dupRows > rows.length * 0.2) why.push(`${dupRows} of ${rows.length} rows share an id with another row`);
+  if (m.ambiguous.length) why.push(`${m.ambiguous.length} delivered file(s) match more than one id (e.g. ${m.ambiguous[0].file} -> ${m.ambiguous[0].ids.slice(0, 3).join(", ")})`);
+  return why;
+}
+
+/**
+ * Probably the same document: the id's final number block (3+ digits) is a field of the file name, and aligned from that
+ * block leftwards exactly one naming field differs. -> [{ id, file, differs: "ST vs ZZ" }]
+ */
+export function nearMatches(ids, files) {
+  const fields = (s) => String(s).split(/[-_. ]+/).filter(Boolean);
+  const out = [];
+  for (const file of files) {
+    const ff = fields(path.basename(file).replace(/\.[^.]+$/, "")).map(lc);
+    for (const id of ids) {
+      const idf = fields(id).map(lc);
+      const tail = idf.at(-1);
+      if (!/^\d{3,}$/.test(tail ?? "")) continue;
+      const at = ff.lastIndexOf(tail);
+      if (at < 0) continue;
+      const n = Math.min(at + 1, idf.length);
+      if (n < 2) continue;
+      const diff = [];
+      for (let k = 1; k < n; k++) if (ff[at - k] !== idf[idf.length - 1 - k]) diff.push(`${ff[at - k].toUpperCase()} vs ${idf[idf.length - 1 - k].toUpperCase()}`);
+      if (diff.length === 1) out.push({ id, file: path.basename(file), differs: diff[0] });
+    }
+  }
+  return out;
+}
+
 /**
  * The update, on a workbook in memory (the caller decides whether to write it).
- * o: { sheet, header_row, id_column, stage_columns, stage, submission_date, label, id_pattern, files }
+ * o: { sheet, header_row, id_column, stage_columns, stage (one or a list), submission_date, label, id_pattern, files,
+ *      accept_near, force_id_column }
  * -> { wb, report }
  */
 export async function updateRegister(buf, o) {
@@ -100,17 +159,34 @@ export async function updateRegister(buf, o) {
   const stageCols = (o.stage_columns ?? []).map((k) => [k, columnOf(ws, hr, k)]);
   const missing = stageCols.filter(([, c]) => !c).map(([k]) => k);
   if (missing.length) throw new Error(`Stage column(s) not in header row ${hr} of ${oldName}: ${missing.join(", ")}.`);
-  const setKey = o.stage ?? (stageCols.length === 1 ? stageCols[0][0] : null);
-  if (!setKey) throw new Error("Give stage: which of the stage columns gets the submission date.");
-  const setCol = columnOf(ws, hr, setKey);
-  if (!setCol) throw new Error(`The stage column "${setKey}" is not in header row ${hr} of ${oldName}.`);
+  // stage: one column or a list (e.g. the stage's planned and actual columns): every one gets the submission date.
+  const setKeys = [].concat(o.stage ?? (stageCols.length === 1 ? [stageCols[0][0]] : [])).filter((k) => String(k ?? "").trim());
+  if (!setKeys.length) throw new Error("Give stage: which of the stage columns get the submission date (one or a list).");
+  const setCols = setKeys.map((k) => [k, columnOf(ws, hr, k)]);
+  const noSet = setCols.filter(([, c]) => !c).map(([k]) => k);
+  if (noSet.length) throw new Error(`Stage column(s) not in header row ${hr} of ${oldName}: ${noSet.join(", ")}.`);
   const header = (c) => cellText(ws.getRow(hr).getCell(c).value) || `column ${c}`;
 
-  // Rows with an id.
-  const rows = [];
-  for (let r = hr + 1; r <= ws.rowCount; r++) { const id = cellText(ws.getRow(r).getCell(idCol).value).trim(); if (id) rows.push({ r, id }); }
+  // Rows with an id; section headings ("MODELS") and other non-ids are skipped (id_pattern, else the id shape).
+  const all = [];
+  for (let r = hr + 1; r <= ws.rowCount; r++) { const id = cellText(ws.getRow(r).getCell(idCol).value).trim(); if (id) all.push({ r, id }); }
+  const { rows, skipped } = splitIds(all, o.id_pattern);
   const dupIds = rows.map((x) => x.id).filter((id, i, l) => l.findIndex((y) => lc(y) === lc(id)) !== i);
   const m = matchDelivered(rows.map((x) => x.id), o.files ?? [], o.id_pattern);
+  if (!o.force_id_column) {
+    const why = idColumnDoubts(rows, dupIds, m);
+    if (why.length) {
+      const sample = [...new Set(rows.map((x) => x.id))].slice(0, 6).join(", ");
+      throw new Error(`The id column looks wrong (${header(idCol)}): ${why.join("; ")}. Sample values: ${sample || "none"}. Give the right id_column, or force_id_column: true if it is right.`);
+    }
+  }
+  // Near matches: a delivered file and a register id with the same final number block, one naming field different.
+  // Never matched by themselves: "probably the same, confirm"; accept_near: [ids] sets them.
+  const near = nearMatches(rows.map((x) => x.id).filter((id) => !m.matched.has(id)), m.unmatched);
+  const accepted = new Set((o.accept_near ?? []).map(lc));
+  for (const n of near) if (accepted.has(lc(n.id))) { m.matched.set(n.id, [...(m.matched.get(n.id) ?? []), n.file]); n.accepted = true; }
+  const nearFiles = new Set(near.map((n) => n.file));
+  m.unmatched = m.unmatched.filter((f) => !nearFiles.has(f));
 
   // Formulas: the sheet's own name follows the new label; references into other tabs (dropped) become values.
   const formulas = { renamed: 0, toValues: 0, cells: [] };
@@ -142,17 +218,19 @@ export async function updateRegister(buf, o) {
       cleared.push({ id, column: header(c), was: day(d) }); cell.value = null;
     }
     if (m.matched.has(id)) {
-      const cell = ws.getRow(r).getCell(setCol);
-      const was = asDate(cell.value);
-      cell.value = sub;
-      if (!cell.numFmt) cell.numFmt = "dd/mm/yyyy";
-      set.push({ id, column: header(setCol), was: was ? day(was) : null, files: m.matched.get(id) });
+      for (const [, c] of setCols) {
+        const cell = ws.getRow(r).getCell(c);
+        const was = asDate(cell.value);
+        cell.value = sub;
+        if (!cell.numFmt) cell.numFmt = "dd/mm/yyyy";
+        set.push({ id, column: header(c), was: was ? day(was) : null, files: m.matched.get(id), near: near.some((n) => n.accepted && n.id === id) || undefined });
+      }
     }
   }
 
   // What the copy can break: merged cells in the id / stage columns (the write refuses unless allowed), defined names
   // and data validations that point into the tabs being dropped (warnings).
-  const watched = new Set([idCol, ...stageCols.map(([, c]) => c)]);
+  const watched = new Set([idCol, ...stageCols.map(([, c]) => c), ...setCols.map(([, c]) => c)]);
   const colNum = (ref) => ref.replace(/[0-9$]/g, "").split("").reduce((x, ch) => x * 26 + ch.toUpperCase().charCodeAt(0) - 64, 0);
   const merged = (ws.model.merges ?? []).filter((rg) => {
     const [a, b = a] = rg.split(":");
@@ -174,8 +252,10 @@ export async function updateRegister(buf, o) {
   for (const other of [...wb.worksheets]) if (other.id !== ws.id) wb.removeWorksheet(other.id);
   ws.name = label;
   const report = {
-    sheet: oldName, label, submissionDate: day(sub), rows: rows.length, stageColumn: header(setCol),
-    matched: set, deliveredNotInRegister: m.unmatched, notDelivered: rows.filter((x) => !m.matched.has(x.id)).map((x) => x.id),
+    sheet: oldName, label, submissionDate: day(sub), rows: rows.length, stageColumn: setCols.map(([, c]) => header(c)).join(", "),
+    matched: set, deliveredNotInRegister: m.unmatched, notDelivered: rows.filter((x) => !m.matched.has(x.id) && !near.some((n) => n.id === x.id)).map((x) => x.id),
+    near: near.filter((n) => !n.accepted).map(({ id, file, differs }) => ({ id, file, differs })), nearAccepted: near.filter((n) => n.accepted).map(({ id, file }) => ({ id, file })),
+    skipped: skipped.map((x) => ({ row: x.r, value: x.id })),
     cleared, formulaDates, ambiguous: m.ambiguous, duplicateIds: [...new Set(dupIds)], formulas, notDates,
     merged, definedNames, validations,
   };
@@ -186,8 +266,11 @@ export async function updateRegister(buf, o) {
 export function reportText(rep, { mode, output }) {
   const few = (l, f = (x) => x) => l.length ? `: ${l.slice(0, 10).map(f).join("; ")}${l.length > 10 ? `; ... ${l.length - 10} more` : ""}` : "";
   return [`REGISTER UPDATE ${rep.sheet} -> "${rep.label}" for the submission of ${rep.submissionDate} (${mode === "write" ? `written to ${output}` : "check, nothing written"}).`,
-    `${rep.rows} register row(s); stage column ${rep.stageColumn}.`,
-    `Matched (delivered, date set): ${rep.matched.length}${few(rep.matched, (x) => `${x.id} <- ${x.files.join(", ")}`)}.`,
+    `${rep.rows} register row(s); stage column(s) ${rep.stageColumn}.`,
+    `Matched (delivered, date set): ${new Set(rep.matched.map((x) => x.id)).size}${few(rep.matched.filter((x, i, l) => l.findIndex((y) => y.id === x.id) === i), (x) => `${x.id} <- ${x.files.join(", ")}`)}.`,
+    rep.near.length ? `Probably the same, confirm (one naming field differs; set only with accept_near: [ids]): ${rep.near.length}${few(rep.near, (x) => `${x.id} ~ ${x.file} (${x.differs})`)}.` : "",
+    rep.nearAccepted.length ? `Near matches accepted (date set): ${rep.nearAccepted.map((x) => `${x.id} <- ${x.file}`).join("; ")}.` : "",
+    rep.skipped.length ? `Headings/skipped (not ids): ${rep.skipped.length}${few(rep.skipped, (x) => `row ${x.row} "${x.value}"`)}.` : "",
     `Delivered but not in the register: ${rep.deliveredNotInRegister.length}${few(rep.deliveredNotInRegister)}.`,
     `In the register but not delivered: ${rep.notDelivered.length}${few(rep.notDelivered)}.`,
     `Dates later than the submission, cleared: ${rep.cleared.length}${few(rep.cleared, (x) => `${x.id} ${x.column} ${x.was}`)}.`,

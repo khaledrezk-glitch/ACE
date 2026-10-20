@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.7 (20 Oct 2026)
+- **register_update, from a test on a real register:** section heading rows are no longer ids (id_pattern from the call
+  or the vault's rules/naming.json idPattern; without one, an id needs a digit and a separator and no space, or the
+  shape most rows share), listed as "headings/skipped"; stage takes a list (one date into the planned and actual
+  columns); a delivered file and an id with the same final number block and one naming field different are reported
+  once as "probably the same, confirm" and set only with accept_near; a wrong id column (median id under 6 characters,
+  over 20% duplicated, or a file matching several ids) is blocked in the check too, with sample values
+  (force_id_column overrides).
+
 ## 1.12.6 (20 Oct 2026)
 - **view_membership_fill:** one text parameter set from what a view shows: value_in on the elements the view shows,
   value_out on the rest (e.g. an export status from the Navisworks view). The reply says per reason why elements are out

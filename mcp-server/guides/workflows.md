@@ -213,6 +213,11 @@ the register, not delivered, cleared, ambiguous); then the identical call with c
 CSV. The register itself is never written. Columns are found by header text first (a column letter only when no
 header matches). A later date computed by a formula is reported and left. Merged cells in the id or stage columns stop
 the write (allow_merged: true only after the user checked); defined names and validations into dropped tabs are warnings.
+Rows whose id cell is not an id (section headings) are skipped and listed (id_pattern, or the vault's rules/naming.json
+"idPattern"). stage can be a list (e.g. the stage's planned and actual columns). "Probably the same, confirm" pairs
+(same final number block, one naming field different) are never set by themselves: ask the user, then pass
+accept_near: [ids]. "The id column looks wrong" stops the check: show the sample values and fix id_column;
+force_id_column: true only when the user confirms the column.
 
 ## Requirements vault and audits
 

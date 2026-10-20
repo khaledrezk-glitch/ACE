@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import ExcelJS from "exceljs";
-import { asDate, matchDelivered, reportText, sha, updateRegister } from "../lib/registerupdate.js";
+import { asDate, matchDelivered, nearMatches, reportText, sha, splitIds, updateRegister } from "../lib/registerupdate.js";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ace-reg-"));
 const wb = new ExcelJS.Workbook();
@@ -98,6 +98,50 @@ await assert.rejects(updateRegister(fs.readFileSync(src), { ...o, label: "a/b" }
   assert.ok(out2.worksheets[0].getCell("C2").value instanceof Date, "the same-day date stays");
   await assert.rejects(updateRegister(fs.readFileSync(f2), { ...o2, id_column: "ZZ" }), /The id column "ZZ" is not in header row 1/, "a letter outside the used columns is refused");
   assert.equal((await updateRegister(fs.readFileSync(f2), { ...o2, id_column: "B" })).report.rows, 4, "a letter inside the used columns works");
+}
+
+// 1.12.7: headings skipped, several stage columns, near matches (confirm), a wrong id column blocked.
+{
+  const w3 = new ExcelJS.Workbook();
+  const s3 = w3.addWorksheet("TST_REG3");
+  s3.getRow(1).values = ["Doc", "Code", "Planned IFC", "Actual IFC"];
+  const ids = ["TST-P1-AR-ZZ-DR-100001", "TST-P1-AR-ZZ-DR-100002", "TST-P1-ST-ZZ-RP-900400", "TST-P1-ST-ZZ-DR-100004"];
+  [["MODELS"], ...ids.slice(0, 2).map((id) => [id, "010"]), ["DOCUMENTS, SCHEDULES AND REPORTS"], ...ids.slice(2).map((id) => [id, "010"])]
+    .forEach((v, i) => { s3.getRow(2 + i).values = v; });
+  const f3 = path.join(tmp, "TST register 3.xlsx");
+  await w3.xlsx.writeFile(f3);
+  const o3 = { id_column: "Doc", stage_columns: ["Planned IFC", "Actual IFC"], stage: ["Planned IFC", "Actual IFC"], submission_date: "2026-10-20", label: "SUB 03",
+    files: ["TST-P1-AR-ZZ-DR-100001_C01.pdf", "TST-P1-ST-XX1-RP-900400.pdf"] };
+  const { wb: out3, report: r3 } = await updateRegister(fs.readFileSync(f3), o3);
+  // 1. Headings are not ids.
+  assert.equal(r3.rows, 4);
+  assert.deepEqual(r3.skipped, [{ row: 2, value: "MODELS" }, { row: 5, value: "DOCUMENTS, SCHEDULES AND REPORTS" }]);
+  assert.ok(!r3.notDelivered.includes("MODELS"));
+  assert.deepEqual(splitIds([{ id: "TST-1" }, { id: "Section A" }, { id: "TSTX9" }], "^TST-\\d+$").rows.map((x) => x.id), ["TST-1"], "id_pattern decides");
+  const shapeKept = splitIds(["ABC1", "ABD2", "ABE3", "Heading"].map((id) => ({ id }))).rows.map((x) => x.id);
+  assert.deepEqual(shapeKept, ["ABC1", "ABD2", "ABE3"], "the shape most rows share keeps ids without a separator");
+  // 2. One date into several columns.
+  assert.deepEqual(r3.matched.map((x) => [x.id, x.column]), [["TST-P1-AR-ZZ-DR-100001", "Planned IFC"], ["TST-P1-AR-ZZ-DR-100001", "Actual IFC"]]);
+  assert.ok(out3.worksheets[0].getCell("C3").value instanceof Date && out3.worksheets[0].getCell("D3").value instanceof Date);
+  // 3. Near match: reported once as "probably the same", in neither unrelated list; set only with accept_near.
+  assert.deepEqual(r3.near, [{ id: "TST-P1-ST-ZZ-RP-900400", file: "TST-P1-ST-XX1-RP-900400.pdf", differs: "XX1 vs ZZ" }]);
+  assert.ok(!r3.notDelivered.includes("TST-P1-ST-ZZ-RP-900400") && !r3.deliveredNotInRegister.length);
+  assert.match(reportText(r3, { mode: "check" }), /Probably the same, confirm \(one naming field differs; set only with accept_near: \[ids\]\): 1: TST-P1-ST-ZZ-RP-900400 ~ TST-P1-ST-XX1-RP-900400\.pdf \(XX1 vs ZZ\)\.\nHeadings\/skipped \(not ids\): 2: row 2 "MODELS"; row 5 "DOCUMENTS, SCHEDULES AND REPORTS"\./);
+  assert.deepEqual(nearMatches(["TST-A-B-123456"], ["TST-X-Y-123456.pdf"]), [], "two fields differ: not near");
+  const { report: r3b } = await updateRegister(fs.readFileSync(f3), { ...o3, accept_near: ["TST-P1-ST-ZZ-RP-900400"] });
+  assert.ok(r3b.matched.some((x) => x.id === "TST-P1-ST-ZZ-RP-900400" && x.near) && !r3b.near.length && r3b.nearAccepted.length === 1, "accepted near matches are set");
+  // 4. A wrong id column fails fast (check too): short, duplicated values; force_id_column overrides.
+  await assert.rejects(updateRegister(fs.readFileSync(f3), { ...o3, id_column: "Code", files: ["TST-010-A.pdf"] }), /The id column looks wrong \(Code\): the ids are short \(median 3 characters\); 4 of 4 rows share an id with another row\. Sample values: 010\./);
+  const forced = await updateRegister(fs.readFileSync(f3), { ...o3, id_column: "Code", files: ["TST-010-A.pdf"], force_id_column: true });
+  assert.equal(forced.report.rows, 4, "force_id_column: the column is used as given");
+  const w4 = new ExcelJS.Workbook();
+  const s4 = w4.addWorksheet("TST_REG4");
+  s4.getRow(1).values = ["Doc", "Stage"];
+  ["TST-DOC-001", "TST-DOC-002", "TST-DOC-003"].forEach((id, i) => { s4.getRow(2 + i).values = [id]; });
+  const f4 = path.join(tmp, "TST register 4.xlsx");
+  await w4.xlsx.writeFile(f4);
+  await assert.rejects(updateRegister(fs.readFileSync(f4), { id_column: "Doc", stage_columns: ["Stage"], submission_date: "2026-10-20", label: "S", files: ["TST-DOC-001+TST-DOC-002.pdf"] }),
+    /looks wrong \(Doc\): 1 delivered file\(s\) match more than one id \(e\.g\. TST-DOC-001\+TST-DOC-002\.pdf -> TST-DOC-001, TST-DOC-002\)/);
 }
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log("registerupdate test passed");
