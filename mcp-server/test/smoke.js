@@ -954,6 +954,18 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(ev, /## Dimension values changed on shortened members \(references intact; information, not a failure\)\n\n- #202 dimension #9001: "6000" -> "5917"/);
   assert.ok(fs.readdirSync(crDir).some((f) => /^clash-run-Test-.+\.json$/.test(f)), "a run record");
   assert.match((await call("clash_resolve", fx)).content[0].text, /not been previewed/, "a preview is used once");
+  // G8: a reload between the dry run and the apply (the add-in's dropped-steps store is then empty, as is every other
+  // in-memory state of the old build): the build-id check refuses the apply before Revit is asked to change anything.
+  {
+    await call("clash_resolve", { ...fx, dry_run: true });
+    const keep = fakeLoader.build;
+    fakeLoader.build = "1.13.3-aaaaaaaaaaaa#5";
+    const nApplies = crs().filter((x) => x.args.dry_run === false && !x.args.check_only).length;
+    const across = await call("clash_resolve", fx);
+    fakeLoader.build = keep;
+    assert.ok(across.isError && /preview was made on ACE build .*now runs 1\.13\.3-aaaaaaaaaaaa#5/.test(across.content.at(-1).text), "clash_resolve: a dry run from another ACE build is refused at apply");
+    assert.equal(crs().filter((x) => x.args.dry_run === false && !x.args.check_only).length, nApplies, "clash_resolve: the refused apply never reached Revit");
+  }
 
   // The acceptance-test flag: part of the gate key; the apply's guard fails, everything is rolled back and said so.
   const ff = { ...fx, test_force_verify_mismatch: true };

@@ -25,6 +25,7 @@
   bridge can't listen counts as failed (the previous build starts again).
 - **doctor / check_setup:** loader and build versions, a pending reload. **uninstall:** removes the loader and every
   build folder. Benchmark case for `reload_addin`.
+
 ## 1.13.7 (20 Oct 2026)
 - **clash_resolve no longer loses whole chunks on commit:** a dry run whose commit Revit refuses now fails (every native
   command: a refused commit was counted as success), so errors such as "Can't cut joined element" show in the preview.
