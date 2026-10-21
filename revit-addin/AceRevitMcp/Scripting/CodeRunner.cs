@@ -26,6 +26,9 @@ namespace AceRevitMcp.Scripting
     ///   Both are wrapped in a TransactionGroup: merged into one undo step, or rolled back for dry_run.
     ///   readonly is wrapped too and always rolled back, so it can never change the model.
     ///   readonly - no transaction; any attempt to modify the model fails
+    ///   no_transaction - NO TransactionGroup and no transaction, for APIs that refuse any open transaction (SaveAs, Close of
+    ///            another model, RevitLinkType.LoadFrom, TransmissionData on other files). Needs allow_risky; a dry run only
+    ///            compiles and screens (nothing runs); the run cannot be rolled back and is not one undo step.
     ///
     /// dry_run = true runs the script and then rolls every change back: a safe preview.
     /// </summary>
@@ -106,8 +109,9 @@ public static class AceScript
             var dryRun = Commands.Args.Bool(args, "dry_run");
             var previewImage = Commands.Args.Bool(args, "preview_image");
             var name = Commands.Args.Str(args, "transaction_name") ?? "Claude: script";
-            if (mode is not ("auto" or "manual" or "readonly"))
-                throw new CommandException("mode must be 'auto', 'manual' or 'readonly'.");
+            if (mode is not ("auto" or "manual" or "readonly" or "no_transaction"))
+                throw new CommandException("mode must be 'auto', 'manual', 'readonly' or 'no_transaction'.");
+            var noTransaction = mode == "no_transaction";
 
             // Approvals made in the ACE Companion panel: a change the user already applied or cancelled
             // there must not be applied again by Claude.
@@ -131,6 +135,13 @@ public static class AceScript
             var activeView = uiapp.ActiveUIDocument?.ActiveView?.Id.Value ?? 0;
             if (tracked && !dryRun && Companion.ActivityHub.WrongPlace(hash, uiapp.ActiveUIDocument?.Document, activeView) is string wrong)
                 return new JsonObject { ["success"] = false, ["stage"] = "wrong_model", ["error"] = wrong };
+
+            if (noTransaction && !Commands.Args.Bool(args, "allow_risky") && !compileOnlyRequested)
+                return new JsonObject
+                {
+                    ["success"] = false, ["stage"] = "risky",
+                    ["error"] = NoTransactionRefusal,
+                };
 
             var source = BuildSource(code);
             var compiled = Compile(source);
@@ -156,6 +167,14 @@ public static class AceScript
                     ["error"] = $"This code cannot be previewed: not undoable. It {string.Join(", ", notUndoable)}, which a readonly run cannot roll back. Nothing was run." +
                                 (notUndoable.Any(x => x.Contains("files on disk")) ? " Write files with ctx.WriteOutput(name, text) (the ACE output folder, allowed in readonly runs and dry runs)." : ""),
                 };
+            if (noTransaction && dryRun && !compileOnlyRequested)
+                return new JsonObject
+                {
+                    ["success"] = true, ["mode"] = mode, ["dryRun"] = true, ["executed"] = false, ["previewable"] = false,
+                    ["notUndoable"] = new JsonArray(notUndoable.Select(x => (JsonNode)x).Prepend("runs with no transaction (mode no_transaction)").ToArray()),
+                    ["risks"] = new JsonArray(compiled.risks.Select(x => (JsonNode)x).ToArray()),
+                    ["warning"] = NoTransactionDryRun,
+                };
             if (notUndoable.Length > 0 && dryRun && !compileOnlyRequested)
                 return new JsonObject
                 {
@@ -180,8 +199,9 @@ public static class AceScript
 
             var ctx = new ScriptContext(uiapp, args["inputs"] as JsonObject, dryRun);
             var doc = ctx.Doc;
-            if (mode != "readonly" && doc == null)
+            if (mode != "readonly" && !noTransaction && doc == null)
                 throw new CommandException("No document is open in Revit. Use mode 'readonly' if the script opens one itself.");
+            if (noTransaction) return RunWithoutTransaction(uiapp, args, ctx, compiled.assembly, name, hash, tracked, fromPanel);
 
             var entry = compiled.assembly.GetType("AceScript")!.GetMethod("Run")!;
             var response = new JsonObject { ["mode"] = mode, ["dryRun"] = dryRun };
@@ -353,6 +373,66 @@ public static class AceScript
             var rest = response.ToList();
             response.Clear();
             foreach (var kv in rest) if (!ordered.ContainsKey(kv.Key)) ordered[kv.Key] = kv.Value;
+            return ordered;
+        }
+
+        internal const string NoTransactionRefusal = "Blocked for safety: mode no_transaction runs the code with no transaction group, so nothing it does can be rolled back " +
+            "and it is not one undo step. Explain to the user exactly what it would do (save, close, load links...); only if they agree, call again with allow_risky: true.";
+        internal const string NoTransactionDryRun = "Not previewed: mode no_transaction runs with no transaction, so nothing could be rolled back. The dry run only compiled and screened the code; " +
+            "nothing ran. A real run needs allow_risky and the user's consent; it cannot be rolled back and is not one undo step.";
+
+        /// <summary>
+        /// mode no_transaction, the real run: no TransactionGroup, no transaction, no other models wrapped, so APIs that need no open
+        /// transaction work (SaveAs, Close, RevitLinkType.LoadFrom...). Transactions the script commits itself are each their own
+        /// undo step, and nothing is rolled back on failure. The ChangeTracker still records what changed; afterwards
+        /// undo_last_claude_change refuses (the run is not one step).
+        /// </summary>
+        private static JsonObject RunWithoutTransaction(UIApplication uiapp, JsonObject args, ScriptContext ctx, Assembly assembly, string name, string hash, bool tracked, bool fromPanel)
+        {
+            var entry = assembly.GetType("AceScript")!.GetMethod("Run")!;
+            var response = new JsonObject { ["mode"] = "no_transaction", ["dryRun"] = false };
+            object result = null;
+            Exception failure = null;
+            var recording = ChangeTracker.Begin(name);
+            using (var guard = new ModelGuard(uiapp))
+            {
+                try
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    result = Invoke(entry, ctx);
+                    response["scriptMs"] = sw.ElapsedMilliseconds;
+                }
+                catch (Exception ex) { failure = ex; }
+                finally
+                {
+                    ChangeTracker.End(recording, true);
+                    // Not one undo step: undo_last_claude_change must not undo only the last of its transactions.
+                    if (recording.Committed > 0) ChangeTracker.MarkUndone();
+                }
+                try { if (ctx.Doc != null && ctx.Doc.IsValidObject) recording.CaptureNames(ctx.Doc); } catch { /* the model may have been closed */ }
+                response["changed"] = recording.Summary();
+                response["transactionsCommitted"] = recording.Committed;
+                if (guard.Warnings.Count > 0) response["revitWarnings"] = Grouped(guard.Warnings);
+                if (guard.Errors.Count > 0) response["revitErrors"] = Grouped(guard.Errors);
+                if (guard.Dialogs.Count > 0) response["dialogs"] = ToArray(guard.Dialogs);
+            }
+            if (ctx.Output.Count > 0) response["output"] = ToArray(ctx.Output);
+            if (failure != null)
+            {
+                response["success"] = false;
+                response["stage"] = "runtime";
+                response["error"] = $"{failure.GetType().Name}: {failure.Message}";
+                var line = ScriptLine(failure);
+                if (line != null) response["line"] = line;
+                response["note"] = "WARNING: mode no_transaction: nothing was rolled back. Whatever the script did before the error stays (files saved, models closed, " +
+                                   "transactions it committed). Tell the user and check with a read-only query.";
+                return response;
+            }
+            if (tracked && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
+            response["note"] = "Ran with no transaction (mode no_transaction): NOT one undo step and not undoable as a whole. Each transaction the script committed is its own " +
+                               "undo step in Revit; saving, closing and loading links cannot be undone. undo_last_claude_change does not undo this run.";
+            var ordered = new JsonObject { ["success"] = true, ["result"] = JsonConvert.ToNode(result) };
+            foreach (var kv in response.ToList()) { response.Remove(kv.Key); if (!ordered.ContainsKey(kv.Key)) ordered[kv.Key] = kv.Value; }
             return ordered;
         }
 

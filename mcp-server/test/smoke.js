@@ -39,6 +39,13 @@ const bridge = http.createServer((req, res) => {
         if (args.code.includes("PANEL_REJECTED") && !args.dry_run) return reply({ ok: true, result: { success: false, stage: "rejected", error: "The user cancelled this change in the ACE Companion panel" } });
         if (args.code.includes("PICTURE") && args.dry_run) return reply({ ok: true, result: { success: true, transaction: "RolledBack", wouldChange: { added: 2, modified: 0, deleted: 0 }, previewImages: [{ view: "Plan", mimeType: "image/png", base64: "iVBORw0KGgo=" }, { view: "3D", mimeType: "image/png", base64: "iVBORw0KGgo=" }], echoPreview: args.preview_image } });
         if (args.code.includes("SEMANTIC_RISK") && !args.allow_risky) return reply({ ok: true, result: { success: false, stage: "risky", error: "Blocked for safety: this code reads or changes files on disk." } });
+        if (args.mode === "no_transaction") {
+          // The add-in refuses without allow_risky too; the dry run only compiles (nothing runs).
+          if (!args.allow_risky) return reply({ ok: true, result: { success: false, stage: "risky", error: "Blocked for safety: mode no_transaction (add-in)" } });
+          if (args.dry_run) return reply({ ok: true, result: { success: true, mode: "no_transaction", dryRun: true, executed: false, previewable: false, notUndoable: ["runs with no transaction (mode no_transaction)"], warning: "Not previewed: mode no_transaction runs with no transaction, so nothing could be rolled back. The dry run only compiled and screened the code; nothing ran." } });
+          notUndoableRuns.push(args.code);
+          return reply({ ok: true, result: { success: true, mode: "no_transaction", result: "linked", changed: { added: 1, modified: 0, deleted: 0 }, transactionsCommitted: 1 } });
+        }
         if (args.code.includes("NOT_UNDOABLE")) {
           // A not-undoable call: the dry run only compiles and screens (records no execution); the real run executes.
           if (args.dry_run) return reply({ ok: true, result: { success: true, dryRun: true, executed: false, previewable: false, notUndoable: ["renames a workset"], warning: "Not previewed: this script renames a workset, which cannot be undone. The dry run only compiled and screened it. A real run needs allow_risky and the user's consent, and it cannot be rolled back." } });
@@ -356,6 +363,10 @@ const bridge = http.createServer((req, res) => {
           openDocuments: args.close_previous && !model.includes("KEEP") ? [model] : ["Test", model] } });
       }
       case "close_model": return reply({ ok: true, result: { model: args.model, closed: true } });
+      case "save_model":
+        if (args.save_as) return reply({ ok: true, result: { model: "TST_Copy", path: args.save_as.path, saved: true, kind: args.save_as.as_central ? "save_as central" : "save_as", overwritten: !!args.save_as.overwrite, ms: 5, echo: args,
+          warnings: args.save_as.as_central ? ["The central moved from C:/TST/old.rvt to " + args.save_as.path + ": other users' local copies still point at the old central."] : [] } });
+        return reply({ ok: true, result: { model: args.model ?? "Test", saved: true, kind: "file", ms: 3, echo: args } });
       case "reload_addin": {
         const base = { loaderVersion: fakeLoader.loaderVersion, payloadVersion: fakeLoader.payloadVersion, previous: fakeLoader.previous };
         if (!fakeLoader.pending && !args.force) return reply({ ok: true, result: { ...base, ok: true, scheduled: false, why: `ACE ${fakeLoader.payloadVersion} is already the installed build (force reloads it anyway).` } });
@@ -555,6 +566,42 @@ assert.equal(notUndoableRuns.length, 0, "the dry run executed nothing");
 const nuReal = await call("execute_revit_code", { code: nuCode, dry_run: false, explanation: "Rename a workset", allow_risky: true });
 assert.equal(nuReal.isError, undefined, "the identical real run with allow_risky goes through the preview gate");
 assert.equal(notUndoableRuns.length, 1, "the real run executed once");
+
+// --- mode no_transaction: needs allow_risky; the dry run only compiles; the identical real run needs it ---
+const ntCode = 'var t = doc.GetElement(new ElementId(5)) as RevitLinkType; t.LoadFrom(ModelPathUtils.ConvertUserVisiblePathToModelPath(@"C:\\TST\\TST_Link.rvt"), new WorksetConfiguration());';
+const ntRefused = await call("execute_revit_code", { code: ntCode, mode: "no_transaction", dry_run: true, explanation: "Reload a link from TST_Link.rvt" });
+assert.ok(ntRefused.isError && /mode no_transaction runs the code with no transaction group/.test(ntRefused.content[0].text), "no_transaction without allow_risky is refused by the server");
+assert.ok(!seen.some((s) => s.command === "execute_code" && s.args.mode === "no_transaction"), "nothing reached Revit");
+const ntApplyFirst = await call("execute_revit_code", { code: ntCode, mode: "no_transaction", explanation: "Reload a link", allow_risky: true });
+assert.ok(ntApplyFirst.isError && /not been previewed/.test(ntApplyFirst.content[0].text), "a no_transaction apply needs the compile-only dry run first");
+const ntDry = await call("execute_revit_code", { code: ntCode, mode: "no_transaction", dry_run: true, explanation: "Reload a link from TST_Link.rvt", allow_risky: true });
+assert.equal(ntDry.isError, undefined, "the no_transaction dry run is a successful compile-only preview");
+assert.ok(ntDry.content.some((c) => /nothing ran/.test(c.text)) && !ntDry.content.some((c) => /PREVIEW ONLY/.test(c.text)), "the reply says the dry run only compiled");
+assert.equal(notUndoableRuns.length, 1, "the no_transaction dry run executed nothing");
+const ntOther = await call("execute_revit_code", { code: ntCode + " // other", mode: "no_transaction", explanation: "Reload a link", allow_risky: true });
+assert.ok(ntOther.isError && /not been previewed/.test(ntOther.content[0].text), "other code is not covered by that dry run");
+const ntReal = await call("execute_revit_code", { code: ntCode, mode: "no_transaction", explanation: "Reload a link", allow_risky: true });
+assert.equal(ntReal.isError, undefined, "the identical no_transaction run goes through");
+assert.equal(notUndoableRuns.length, 2, "the real no_transaction run executed once");
+assert.match(json(ntReal).instruction, /NOT one undo step/, "the reply says it is not one undo step");
+assert.match((await call("get_activity_log", {})).content[0].text, /no transaction, not undoable/, "the journal marks the run");
+
+// --- save_model save_as: consent, the .rvt check, the options pass through ---
+const sa = { path: "C:/TST/TST_Copy.rvt" };
+const saNo = await call("save_model", { model: "Test", save_as: sa });
+assert.ok(saNo.isError && /Blocked for safety: saving writes the model file/.test(saNo.content[0].text), "save_as without allow_risky is refused");
+assert.ok(!seen.some((s) => s.command === "save_model"), "nothing reached Revit");
+const saExt = await call("save_model", { model: "Test", save_as: { path: "C:/TST/TST_Copy.txt" }, allow_risky: true });
+assert.ok(saExt.isError && /must end in \.rvt/.test(saExt.content[0].text), "save_as to a non-.rvt path is refused");
+const saOk = json(await call("save_model", { model: "Test", save_as: { ...sa, overwrite: true }, allow_risky: true }));
+assert.deepEqual(saOk.echo.save_as, { path: sa.path, overwrite: true, as_central: false }, "overwrite reaches the add-in");
+const saPlain = json(await call("save_model", { model: "Test", save_as: sa, allow_risky: true }));
+assert.equal(saPlain.echo.save_as.overwrite, false, "overwrite is false unless given (the add-in refuses an existing file then)");
+const saCentral = await call("save_model", { handle: "abc123", save_as: { ...sa, as_central: true }, allow_risky: true });
+assert.equal(json(saCentral).echo.save_as.as_central, true, "as_central passes through");
+assert.equal(json(saCentral).kind, "save_as central");
+assert.ok(saCentral.content.some((c) => /WARNING: The central moved/.test(c.text)), "the central warning is shown");
+assert.match((await call("get_activity_log", {})).content[0].text, /Save As model TST_Copy/, "save_as is journaled");
 
 // --- set_parameters has the same gate ---
 const changes = [{ id: 1, parameter: "Comments", value: "x" }];

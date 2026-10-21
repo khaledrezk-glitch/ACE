@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.14.11 (21 Oct 2026)
+- Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
+- **save_model save_as:** `save_as: { path, overwrite?, as_central? }` saves the named model (handle / path / model, as
+  before) to a new .rvt with `Document.SaveAs` (`SaveAsOptions.OverwriteExistingFile`; as_central sets
+  `WorksharingSaveAsOptions { SaveAsCentral = true }`). Checked before Revit is called: the path ends in .rvt, its folder
+  exists, an existing file only with overwrite, not the model's own file, as_central only for a workshared model. Still
+  needs allow_risky (server and add-in) and refuses cloud, linked, family and read-only documents and an open transaction;
+  a never-saved model (a detached copy) can now be saved this way. Reply: path, previousPath, kind (save_as / save_as
+  central), overwritten, ms, handle; afterwards the open model is the new file and an open_model handle follows it. A
+  central saved at a new path warns that other users' locals still point at the old central. Journaled.
+- **execute_revit_code mode "no_transaction":** for APIs that fail with "any open transaction phase started by API
+  client" (RevitLinkType.LoadFrom, Document.SaveAs, closing another model, TransmissionData on other files): the code
+  runs with no TransactionGroup and no transaction. Needs allow_risky (refused by the server and the add-in otherwise);
+  its dry run only compiles and screens (nothing runs), and the apply needs that dry run of the identical code (the
+  existing preview gate). Not one undo step and nothing is rolled back on an error: the reply, the journal and
+  undo_last_claude_change say so; the change tracker still reports what changed. Guides (transactions, workflows),
+  instructions, smoke tests, check-set tests (save_as rules), risk case (RevitLinkType.LoadFrom) and two bench cases.
+
 ## 1.14.10 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **Purge unused (G10):** new `purge_unused` (add-in command and MCP tool): a full Purge Unused in passes until nothing

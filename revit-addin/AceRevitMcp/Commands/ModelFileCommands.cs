@@ -392,10 +392,13 @@ namespace AceRevitMcp.Commands
         }
 
         /// <summary>
-        /// save_model { handle | path | model, allow_risky }: saves an open model (active or not) to its own file (never Save As, never Synchronize with Central):
-        /// a local, detached-and-saved or non-workshared file and a workshared local copy are saved in place; a central opened
-        /// directly is saved with SaveOptions. Refuses without allow_risky, in a dry run, and for read-only, cloud, linked or
-        /// never-saved documents. { model, path, saved, sizeBefore, sizeAfter, ms, kind }.
+        /// save_model { handle | path | model, allow_risky, save_as? { path, overwrite, as_central } }: saves an open model (active
+        /// or not). Without save_as it saves to its own file (never Synchronize with Central): a local, detached-and-saved or
+        /// non-workshared file and a workshared local copy are saved in place; a central opened directly is saved with
+        /// SaveOptions. With save_as: Document.SaveAs to a new .rvt (SaveAsLogic checks the target before Revit is called); the
+        /// model then IS that file, and a handle from open_model follows it. Refuses without allow_risky, in a dry run, and for
+        /// read-only, cloud, linked or family documents (a plain save also a never-saved one). Runs in the bridge's handler, no
+        /// transaction open (not a NativeChange). { model, path, saved, sizeBefore, sizeAfter, ms, kind }.
         /// </summary>
         public static JsonNode Save(UIApplication app, JsonObject args)
         {
@@ -417,12 +420,11 @@ namespace AceRevitMcp.Commands
             if (doc.IsLinked) throw new CommandException($"{doc.Title} is a linked model: save it from its own file. Nothing was saved.");
             if (doc.IsModelInCloud) throw new CommandException($"{doc.Title} is a cloud model: ACE does not save cloud models (use Synchronize in Revit). Nothing was saved.");
             if (doc.IsReadOnly || doc.IsReadOnlyFile) throw new CommandException($"{doc.Title} is read-only. Nothing was saved.");
-            if (string.IsNullOrEmpty(doc.PathName)) throw new CommandException($"{doc.Title} has never been saved (no file path; e.g. a detached copy): it needs Save As, which ACE does not do. Nothing was saved.");
+            if (args["save_as"] is JsonObject saveAs) return SaveAs(app, doc, saveAs);
+            if (string.IsNullOrEmpty(doc.PathName)) throw new CommandException($"{doc.Title} has never been saved (no file path; e.g. a detached copy): give save_as {{ path }} to save it to a new file. Nothing was saved.");
             long? Size() { try { return new FileInfo(doc.PathName).Length; } catch { return null; } }
             string kind;
-            var central = false;
-            try { central = doc.IsWorkshared && !doc.IsDetached && string.Equals(Normalize(ModelPathUtils.ConvertModelPathToUserVisiblePath(doc.GetWorksharingCentralModelPath())), Normalize(doc.PathName), StringComparison.OrdinalIgnoreCase); }
-            catch { central = false; }
+            var central = IsCentralItself(doc);
             kind = !doc.IsWorkshared ? "file" : doc.IsDetached ? "detached copy" : central ? "central (opened directly)" : "workshared local (saved locally; not synchronized with central)";
             var before = Size();
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -438,6 +440,66 @@ namespace AceRevitMcp.Commands
                 ["model"] = doc.Title, ["path"] = doc.PathName, ["saved"] = true, ["kind"] = kind,
                 ["sizeBefore"] = before, ["sizeAfter"] = Size(), ["ms"] = sw.ElapsedMilliseconds,
                 ["note"] = doc.IsWorkshared && !central && !doc.IsDetached ? "Saved locally only: Synchronize with Central is not part of save_model." : null,
+            };
+        }
+
+        /// <summary>A workshared model opened directly from its central file (not a local copy, not detached).</summary>
+        private static bool IsCentralItself(Document doc)
+        {
+            try { return doc.IsWorkshared && !doc.IsDetached && !string.IsNullOrEmpty(doc.PathName) && string.Equals(Normalize(ModelPathUtils.ConvertModelPathToUserVisiblePath(doc.GetWorksharingCentralModelPath())), Normalize(doc.PathName), StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// save_model's save_as { path, overwrite, as_central }: Document.SaveAs to a new .rvt. The target is checked before Revit is
+        /// called (SaveAsLogic.Refusal: .rvt, folder exists, an existing file only with overwrite, not the model's own file,
+        /// as_central only for a workshared model). Afterwards the model is that file: ACE's handle record follows it.
+        /// </summary>
+        private static JsonNode SaveAs(UIApplication app, Document doc, JsonObject saveAs)
+        {
+            var target = (Args.Str(saveAs, "path") ?? "").Trim().Trim('"');
+            var overwrite = Args.Bool(saveAs, "overwrite");
+            var asCentral = Args.Bool(saveAs, "as_central");
+            string full = null, folder = null;
+            if (target.Length > 0)
+                try { full = Path.GetFullPath(target); folder = Path.GetDirectoryName(full); } catch (Exception ex) { throw new CommandException($"save_as path is not a valid path ({ex.Message}). Nothing was saved."); }
+            bool workshared;
+            try { workshared = doc.IsWorkshared; } catch { workshared = false; }
+            var oldPath = string.IsNullOrEmpty(doc.PathName) ? null : doc.PathName;
+            var existed = full != null && File.Exists(full);
+            var refusal = SaveAsLogic.Refusal(target, existed, !string.IsNullOrEmpty(folder) && Directory.Exists(folder), overwrite, asCentral, workshared,
+                oldPath != null && full != null && string.Equals(Normalize(oldPath), Normalize(full), StringComparison.OrdinalIgnoreCase));
+            if (refusal != null) throw new CommandException(refusal + " Nothing was saved.");
+            // SaveAs throws inside an open transaction or group; this command runs in the bridge's handler where none is open.
+            if (doc.IsModifiable) throw new CommandException($"{doc.Title} has a transaction open: Save As needs none (finish or cancel it in Revit). Nothing was saved.");
+            string oldCentral = null;
+            if (workshared && !doc.IsDetached)
+                try { oldCentral = ModelPathUtils.ConvertModelPathToUserVisiblePath(doc.GetWorksharingCentralModelPath()); } catch { oldCentral = null; }
+            var options = new SaveAsOptions { OverwriteExistingFile = overwrite };
+            if (asCentral) options.SetWorksharingOptions(new WorksharingSaveAsOptions { SaveAsCentral = true });
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try { doc.SaveAs(full, options); }
+            catch (Exception ex)
+            {
+                var hint = workshared && !asCentral ? " A workshared model may need as_central: true (a detached copy becomes a new central)." : "";
+                throw new CommandException($"Revit did not save {doc.Title} as {full}: {ex.Message}.{hint}");
+            }
+            sw.Stop();
+            // The model is now the new file: a handle from open_model points at it (by document), and its source follows, so
+            // the old path no longer finds it.
+            var e = Entry(doc);
+            if (e != null) { e.Source = Normalize(doc.PathName ?? full); _live = true; }
+            InstanceRegistry.Update(app);
+            long? size; try { size = new FileInfo(doc.PathName ?? full).Length; } catch { size = null; }
+            var warnings = new JsonArray();
+            var w = SaveAsLogic.CentralWarning(asCentral, oldCentral, doc.PathName ?? full);
+            if (w != null) warnings.Add(w);
+            return new JsonObject
+            {
+                ["model"] = doc.Title, ["path"] = doc.PathName ?? full, ["previousPath"] = oldPath, ["saved"] = true, ["kind"] = SaveAsLogic.Kind(asCentral),
+                ["overwritten"] = existed,
+                ["sizeAfter"] = size, ["ms"] = sw.ElapsedMilliseconds, ["handle"] = e?.Handle, ["warnings"] = warnings,
+                ["note"] = "The open model is now this file: further saves go to it" + (oldPath != null ? $" (not {oldPath})." : "."),
             };
         }
 
@@ -527,5 +589,41 @@ namespace AceRevitMcp.Commands
         internal static string RefType(string apiName) => apiName == "CADLink" ? "CAD" : apiName;
 
         internal static string Clip(string s, int max) => s == null ? null : s.Length <= max ? s : s.Substring(0, max);
+    }
+    /// <summary>Pure rules for save_model's save_as: when the target is refused before Revit is called, the kind, the central warning.</summary>
+    internal static class SaveAsLogic
+    {
+        /// <summary>
+        /// Null when the target may be written, else why not (checked before Revit is called): a path is given and ends in .rvt;
+        /// its folder exists; an existing file only with overwrite; not the model's own file (that is a plain save); as_central
+        /// only for a workshared model.
+        /// </summary>
+        internal static string Refusal(string path, bool fileExists, bool folderExists, bool overwrite, bool asCentral, bool workshared, bool isOwnFile)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return "save_as needs path: the new .rvt file.";
+            if (!path.Trim().EndsWith(".rvt", StringComparison.OrdinalIgnoreCase)) return $"save_as path must end in .rvt: {path}.";
+            if (!folderExists) return $"The folder of {path} does not exist (or cannot be reached): ACE does not create folders.";
+            if (isOwnFile) return $"{path} is the model's own file: save without save_as.";
+            if (fileExists && !overwrite) return $"{path} exists already: give overwrite: true (after the user agreed to replace that file).";
+            if (asCentral && !workshared) return "as_central is only for a workshared model: this one is not workshared (save_as without as_central saves it as a plain file).";
+            return null;
+        }
+
+        internal static string Kind(bool asCentral) => asCentral ? "save_as central" : "save_as";
+
+        /// <summary>
+        /// After Save As central: a central at a new path leaves other users' local copies pointing at the old central (they need
+        /// new locals); none when the path did not change, or it was not saved as central.
+        /// </summary>
+        internal static string CentralWarning(bool asCentral, string oldCentral, string newPath)
+        {
+            if (!asCentral) return null;
+            if (!string.IsNullOrEmpty(oldCentral) && string.Equals(Trim(oldCentral), Trim(newPath), StringComparison.OrdinalIgnoreCase)) return null;
+            return string.IsNullOrEmpty(oldCentral)
+                ? $"{newPath} is a new central model: everyone works on it through new local copies (Create New Local); links to the old file are not repointed."
+                : $"The central moved from {oldCentral} to {newPath}: other users' local copies still point at the old central. They must make new locals from the new one; links to the old file are not repointed.";
+        }
+
+        private static string Trim(string p) => (p ?? "").Replace('/', '\\').TrimEnd('\\');
     }
 }

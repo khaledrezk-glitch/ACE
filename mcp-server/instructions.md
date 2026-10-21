@@ -175,7 +175,8 @@ writes, Save/SaveAs, RenameWorkset, sync and exports cannot be undone: readonly 
 compiles and screens them (not executed), so the real run needs allow_risky and the user's consent.
 Long loops: call ctx.ThrowIfCancelled() now and then, so a cancel in Claude stops the run (everything rolls back).
 Modes: "auto" (default: one transaction) and "manual" (your own transactions) are each merged into ONE
-undo step; "readonly" is always rolled back. compile_only: true checks that code compiles without
+undo step; "readonly" is always rolled back. "no_transaction" (allow_risky; dry run compiles only; not undoable) only for APIs
+that fail with "any open transaction phase" (RevitLinkType.LoadFrom, SaveAs, closing another model). compile_only: true checks that code compiles without
 running it. Compile errors give line numbers in your code; results include scriptMs (timing).
 Warnings are auto-dismissed and returned; hard Revit errors roll the whole run back. A dialog Revit shows during a run is
 closed with Cancel (never confirmed) and returned in "dialogs": if it asked a question, ask the user.

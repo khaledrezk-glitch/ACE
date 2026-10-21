@@ -553,7 +553,7 @@ tool("select_elements", {
 
 const codeSchema = {
   code: z.string().describe("C# method body using the Revit API (see server instructions for what's in scope)."),
-  mode: z.enum(["auto", "manual", "readonly"]).optional().describe("auto (default) = one transaction; manual = your own transactions; readonly = always rolled back"),
+  mode: z.enum(["auto", "manual", "readonly", "no_transaction"]).optional().describe("auto (default) = one transaction; manual = your own transactions; readonly = always rolled back; no_transaction = no transaction group at all, only for APIs that refuse an open transaction (SaveAs, Close of another model, RevitLinkType.LoadFrom, TransmissionData): needs allow_risky, its dry run only compiles (nothing runs), and the run cannot be rolled back or undone as one step"),
   dry_run: z.boolean().optional().describe("Run fully, then roll back every change. Required before applying edits."),
   inputs: z.record(z.any()).optional().describe("Values available as args / ctx.Str(...) / ctx.Num(...)"),
   transaction_name: z.string().optional().describe("Shown in Revit's Undo list, e.g. 'Claude: renumber rooms'"),
@@ -576,6 +576,9 @@ function requireExplanation(dry_run, explanation) {
 
 async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image, plan, step, expect_model }) {
   mode = mode || "auto";
+  if (mode === "no_transaction" && !allow_risky && !compile_only)
+    throw new RevitError("Blocked for safety: mode no_transaction runs the code with no transaction group, so nothing it does can be rolled back and it is not one undo step. " +
+      "Explain to the user exactly what it would do (save, close, load links...); only if they agree, call again with allow_risky: true.");
   const risky = screenCode(code, allow_risky);
   const modifies = mode !== "readonly" && !compile_only;
   if (modifies) requireExplanation(dry_run, explanation);
@@ -598,9 +601,11 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
   }
 
   if (modifies && !dry_run && result?.success) briefCache.clear(); // the model changed: the next brief reads it again
+  if (mode === "no_transaction" && !dry_run && result?.success)
+    result.instruction = "Ran with no transaction: this is NOT one undo step and undo_last_claude_change cannot undo it. Tell the user what changed and that it cannot be rolled back as a whole.";
   if (modifies) {
     journal({
-      title: `${dry_run ? "Preview" : "Change"}: ${transaction_name || "Claude: script"}`,
+      title: `${dry_run ? "Preview" : "Change"}: ${transaction_name || "Claude: script"}${mode === "no_transaction" ? " (no transaction, not undoable)" : ""}`,
       explanation,
       outcome: outcomeOf(result, dry_run) + (risky.length ? ` [user-approved: ${risky.join(", ")}]` : ""),
       details: result?.changed || result?.wouldChange,
@@ -617,7 +622,7 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
     out.isError = true;
     if (result.stage === "compile") out.content.push({ type: "text", text: "Tip: check uncertain members with revit_api_lookup before retrying." });
   } else if (modifies && dry_run && result?.previewable === false) {
-    // Not-undoable calls (save, sync, export, rename workset...): compiled and screened, not executed; nothing to preview.
+    // Not-undoable calls (save, sync, export, rename workset...) and mode no_transaction: compiled and screened, not executed; nothing to preview.
     out.content.push({ type: "text", text: `${result.warning ?? "Not previewed: this script cannot be undone."} Tell the user exactly what the real run would do and that it cannot be rolled back; only if they agree, run the identical call with dry_run: false and allow_risky: true.` });
   } else if (modifies && dry_run) {
     out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Explain this result to the user in plain words and ask for confirmation before applying (same call with dry_run: false). This preview now also appears in the ACE Companion panel in Revit, where the user can click Apply or Cancel instead of answering here." });
@@ -627,7 +632,7 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
 
 tool("execute_revit_code", {
   title: "Run Revit API code",
-  description: "The universal tool: compile and run C# against the live Revit 2025 API to do anything the other tools can't: create/modify/delete elements, place families, build views and sheets, analyse geometry, batch-process thousands of elements, cross-check rules, work across open documents. Edits must be previewed (dry_run) and confirmed first; each applied run is ONE undo step. Returns the return value, Log() output, what changed, timing, Revit warnings, and compile/runtime errors with line numbers.",
+  description: "The universal tool: compile and run C# against the live Revit 2025 API to do anything the other tools can't: create/modify/delete elements, place families, build views and sheets, analyse geometry, batch-process thousands of elements, cross-check rules, work across open documents. Edits must be previewed (dry_run) and confirmed first; each applied run is ONE undo step (except mode no_transaction: for APIs that fail with 'any open transaction phase', such as SaveAs or RevitLinkType.LoadFrom; needs allow_risky, the dry run only compiles, and the run cannot be undone as one step). Returns the return value, Log() output, what changed, timing, Revit warnings, and compile/runtime errors with line numbers.",
   inputSchema: codeSchema,
   annotations: writes,
 }, runCode);
@@ -734,12 +739,17 @@ tool("close_model", {
 
 tool("save_model", {
   title: "Save a model",
-  description: "Save an open model to its own file (Save, never Save As; a workshared local is saved locally, NOT synchronized with central); it need not be the active model. It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and never-saved models. Which model (required): handle (from open_model), else path, else model (a title only one open model has; a shared title is refused); never just the active one.",
+  description: "Save an open model to its own file (a workshared local is saved locally, NOT synchronized with central), or with save_as to a new .rvt; it need not be the active model. It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and family documents (a plain save also never-saved ones: they need save_as). Which model (required): handle (from open_model), else path, else model (a title only one open model has; a shared title is refused); never just the active one. save_as { path, overwrite, as_central }: the path must end in .rvt in an existing folder; an existing file is replaced only with overwrite: true (the user's OK); as_central (workshared models only) saves a new central: other users' locals keep pointing at the old one. Afterwards the open model IS the new file (its handle follows it).",
   inputSchema: {
     handle: z.string().max(80).optional().describe("The handle open_model returned"),
     path: z.string().max(400).optional().describe("The model's file path (or the file ACE opened it from)"),
     model: z.string().min(1).max(260).optional().describe("Its title, when only one open model has it"),
     allow_risky: z.boolean().optional().describe("Only after the user explicitly agreed to save"),
+    save_as: z.object({
+      path: z.string().min(1).max(400).describe("The new .rvt file (its folder must exist)"),
+      overwrite: z.boolean().optional().describe("Replace an existing file (only after the user agreed)"),
+      as_central: z.boolean().optional().describe("Workshared models only: save as a new central model"),
+    }).strict().optional().describe("Save As a new file instead of saving in place"),
   },
   annotations: writes,
 }, async (a) => {
@@ -747,10 +757,20 @@ tool("save_model", {
     throw new RevitError("Name the model to save (handle from open_model, path, or model title): save_model no longer saves whatever model happens to be active, because the user may have switched Revit's window.");
   if (!a.allow_risky)
     throw new RevitError("Blocked for safety: saving writes the model file and cannot be undone. Tell the user which model would be saved; only if they agree, call again with allow_risky: true.");
+  if (a.save_as && !/\.rvt$/i.test(a.save_as.path.trim()))
+    throw new RevitError(`save_as path must end in .rvt: ${a.save_as.path}. Nothing was saved.`);
+  const saveAs = a.save_as ? { path: a.save_as.path.trim(), overwrite: !!a.save_as.overwrite, as_central: !!a.save_as.as_central } : null;
   await pinSession();
-  const r = await callRevit("save_model", { ...(a.handle ? { handle: a.handle } : {}), ...(a.path ? { path: a.path } : {}), ...(a.model ? { model: a.model } : {}), allow_risky: true }, 900);
-  journal({ title: `Save model ${r?.model ?? a.model ?? a.path ?? a.handle ?? "(active)"}`, outcome: r?.saved ? `Saved (${r.kind}) in ${r.ms} ms` : "Not saved", details: r });
-  return text(r);
+  const r = await callRevit("save_model", { ...(a.handle ? { handle: a.handle } : {}), ...(a.path ? { path: a.path } : {}), ...(a.model ? { model: a.model } : {}), ...(saveAs ? { save_as: saveAs } : {}), allow_risky: true }, 900);
+  if (saveAs && r?.saved) { forgetInstances(); briefCache.clear(); }   // the model's file (and maybe its title) changed
+  journal({
+    title: `${saveAs ? "Save As" : "Save"} model ${r?.model ?? a.model ?? a.path ?? a.handle ?? "(active)"}`,
+    outcome: r?.saved ? `Saved (${r.kind}) ${saveAs ? `to ${r.path}${r.overwritten ? " (replaced the existing file)" : ""} ` : ""}in ${r.ms} ms` : "Not saved",
+    details: r,
+  });
+  const out = text(r);
+  for (const w of r?.warnings ?? []) out.content.push({ type: "text", text: `WARNING: ${w}` });
+  return out;
 });
 
 tool("undo_last_claude_change", {

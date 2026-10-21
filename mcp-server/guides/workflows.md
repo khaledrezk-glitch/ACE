@@ -101,7 +101,13 @@ package): for each path, open_model with close_previous: true (and detach preser
 read-only steps (run_clash_test, coordination_report interference: true with out_dir, clash_resolve action plan), and
 collect one line per model. The reply says which model was closed, or that the previous one was kept open and why
 (e.g. unsaved changes): report that, never close it another way. A fix (clash_resolve fix, parameter_fill) still needs
-its own dry run and the user's OK per model. A detached copy is not saved by ACE; say so if the user expects files.
+its own dry run and the user's OK per model. A detached copy is saved only with save_model save_as (see below).
+
+save_model saves a named model (handle, path or model) in place; save_as { path, overwrite, as_central } writes it to a
+new .rvt (existing folder; an existing file only with overwrite: true; as_central only for a workshared model, e.g. a
+detached copy that becomes a new central). Both need allow_risky after the user agreed, and cannot be undone. After
+save_as the open model IS the new file. A central saved at a new path leaves other users' locals on the old central and
+links to the old file are not repointed: say so. Never do Save As in execute_revit_code when save_model can.
 
 The open_model reply lists every dialog Revit raised while opening with the answer ACE gave and why; a dialog that
 "needed a person" (no answer) is a warning: tell the user and check the model before relying on it. It also lists

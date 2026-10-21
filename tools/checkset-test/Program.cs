@@ -650,6 +650,27 @@ class P {
     var puTop = (IList)puPlT.GetMethod("Top").Invoke(null, new object[] { new[] { "A", "B", "B", "C", "C", "C" }, 2 });
     Check(puTop.Count == 3 && puTop[0].ToString() == "[C, 3]" && puTop[2].ToString() == "[other, 1]", "purge: top categories, the rest as other");
 
+    // save_model save_as: the target is checked before Revit is called (pure rules).
+    var saT = a.GetType("AceRevitMcp.Commands.SaveAsLogic");
+    var saRef = saT.GetMethod("Refusal", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    string SaR(string p, bool exists, bool folder, bool overwrite, bool central, bool ws, bool own = false) => (string)saRef.Invoke(null, new object[] { p, exists, folder, overwrite, central, ws, own });
+    Check(SaR(@"C:\TST\TST_Copy.rvt", false, true, false, false, false) == null, "save_as: a new .rvt in an existing folder is fine");
+    Check(SaR("", false, true, false, false, false)?.Contains("needs path") == true, "save_as: no path is refused");
+    Check(SaR(@"C:\TST\TST_Copy.rfa", false, true, false, false, false)?.Contains("end in .rvt") == true, "save_as: not .rvt is refused");
+    Check(SaR(@"C:\TST\none\TST_Copy.rvt", false, false, false, false, false)?.Contains("does not exist") == true, "save_as: a missing folder is refused");
+    Check(SaR(@"C:\TST\TST_Copy.RVT", true, true, false, false, false)?.Contains("overwrite: true") == true, "save_as: an existing file without overwrite is refused");
+    Check(SaR(@"C:\TST\TST_Copy.rvt", true, true, true, false, false) == null, "save_as: an existing file with overwrite is fine");
+    Check(SaR(@"C:\TST\TST_Copy.rvt", false, true, false, true, false)?.Contains("only for a workshared model") == true, "save_as: as_central on a non-workshared model is refused");
+    Check(SaR(@"C:\TST\TST_Copy.rvt", false, true, false, true, true) == null, "save_as: as_central on a workshared model is fine");
+    Check(SaR(@"C:\TST\TST_Own.rvt", true, true, true, false, false, true)?.Contains("own file") == true, "save_as: the model's own file is a plain save");
+    var saCw = saT.GetMethod("CentralWarning", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    string SaW(bool central, string oldC, string newP) => (string)saCw.Invoke(null, new object[] { central, oldC, newP });
+    Check(SaW(false, @"C:\TST\old.rvt", @"C:\TST\new.rvt") == null, "save_as: no central warning without as_central");
+    Check(SaW(true, @"C:\TST\c.rvt", "C:/TST/C.rvt") == null, "save_as central: same path (any case, slashes), no warning");
+    Check(SaW(true, @"C:\TST\old.rvt", @"C:\TST\new.rvt")?.Contains("still point at the old central") == true, "save_as central: a moved central warns about other users' locals");
+    Check(SaW(true, null, @"C:\TST\new.rvt")?.Contains("new central") == true, "save_as central from a detached copy: a new central");
+    Check((string)saT.GetMethod("Kind", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public).Invoke(null, new object[] { true }) == "save_as central", "save_as: kind");
+
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("check set test passed");

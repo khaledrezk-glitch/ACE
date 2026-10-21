@@ -1093,6 +1093,58 @@
           "op": "exists"
         }
       ]
+    },
+    {
+      "name": "no_transaction without allow_risky is refused, nothing runs",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "args": {
+        "code": "return doc.IsModifiable;",
+        "mode": "no_transaction",
+        "dry_run": true
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "stage",
+          "op": "==",
+          "value": "risky"
+        }
+      ]
+    },
+    {
+      "name": "no_transaction dry run only compiles (nothing runs)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "args": {
+        "code": "return doc.IsModifiable;",
+        "mode": "no_transaction",
+        "dry_run": true,
+        "allow_risky": true
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "executed",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "previewable",
+          "op": "==",
+          "value": false
+        }
+      ]
     }
   ]
 }
