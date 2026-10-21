@@ -1032,7 +1032,7 @@ class P {
     var margin = Ext(Page(White + "<Canvas><Path Stroke=\"#FF000000\" Data=\"M 108,40 L 2275,40 2275,1640 108,1640 Z\"/><Glyphs OriginX=\"500\" OriginY=\"800\" UnicodeString=\"TST\" FontUri=\"/f.odttf\" FontRenderingEmSize=\"12\"/></Canvas>"));
     var relative = Ext(Page("<Path Stroke=\"#FF000000\" Data=\"m 108,0 h 2167 v 1683.8 c 0,0 -10,0 -20,0 z\"/>"));
     var whiteOnly = Ext(Page(White));
-    object EC(string[] n, object[] ex, bool def = false) { var lt = typeof(List<>).MakeGenericType(edge.GetType()); var l = (IList)Activator.CreateInstance(lt)!; foreach (var e in ex) l.Add(e); return VM("ExtentCheck").Invoke(null, new object[] { n.ToList(), l, def, 0.98 })!; }
+    object EC(string[] n, object[] ex, bool def = false, bool over = false) { var lt = typeof(List<>).MakeGenericType(edge.GetType()); var l = (IList)Activator.CreateInstance(lt)!; foreach (var e in ex) l.Add(e); return VM("ExtentCheck").Invoke(null, new object[] { n.ToList(), l, def, 0.98, over })!; }
     List<string> ECP(object r) => (List<string>)r.GetType().GetField("Item2")!.GetValue(r)!; List<string> ECW(object r) => (List<string>)r.GetType().GetField("Item3")!.GetValue(r)!;
     List<bool> ECOk(object r) => ((IList)r.GetType().GetField("Item1")!.GetValue(r)!).Cast<object>().Select(x => (bool)x.GetType().GetField("Item4")!.GetValue(x)!).ToList();
     var ecPass = EC(new[] { "TST-101" }, new[] { edge }); var ecFail = EC(new[] { "TST-101", "TST-102" }, new[] { edge, margin });
@@ -1081,6 +1081,47 @@ class P {
       && PP("ANSI_B", "Letter", "Tabloid") == 1 && PP("ANSI_B", "11x17") == 0 && PP("ISO_B4", "B4 (JIS)") == -1 && PP("ISO_B4", "B4 (JIS)", "B4 (ISO)") == 1
       && PP("ARCH_D", "ANSI D", "ARCH D (24.00 x 36.00 Inches)") == 1 && PP("Default", "A1") == -1 && Math.Abs(pnsW - 841) < 1 && PNS("A1") == null,
       "DWFx printer paper: matched by name (A1 / ISO A1 / full bleed), else by the size in the name; contradicting, JIS and missing sizes give none");
+
+    // Sheet extents (#37): content beyond the title block frame blocks a merged DWFx (every page scales to the largest extents).
+    var spT = vml.GetNestedType("SheetPart", BindingFlags.Public)!;
+    object SP(string label, double x0, double y0, double x1, double y1, bool tb = false, double fw = 0, double fh = 0, double ox = 0, double oy = 0, string fam = null)
+    {
+      var o = Activator.CreateInstance(spT)!;
+      void Set(string f, object v) => spT.GetField(f)!.SetValue(o, v);
+      Set("Label", label); Set("Family", fam); Set("TitleBlock", tb); Set("MinX", x0); Set("MinY", y0); Set("MaxX", x1); Set("MaxY", y1);
+      Set("FrameW", fw); Set("FrameH", fh); Set("OriginX", ox); Set("OriginY", oy);
+      return o;
+    }
+    (bool Ok, string Text, List<string> Over) SEC(double? ow, double? oh, double tol, params object[] parts)
+    {
+      var l = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(spT))!; foreach (var p in parts) l.Add(p);
+      var r = VM("SheetExtentCheck").Invoke(null, new object?[] { "TST-101", 841.0, 594.0, ow, oh, l, tol, 5 })!; var t = r.GetType();
+      return ((bool)t.GetField("Item1")!.GetValue(r)!, (string)t.GetField("Item2")!.GetValue(r)!, (List<string>)t.GetField("Item3")!.GetValue(r)!);
+    }
+    var tbOk = SP("Title Blocks TST Header: A1 (id 11)", 0, 0, 841, 594, true, 841, 594, 0, 0, "TST Header");
+    var vpIn = SP("Viewports Viewport: Title w Line (id 12)", 20, 20, 800, 580);
+    var onFrame = SEC(841, 594, 1, tbOk, vpIn);
+    var vpUp = SEC(841, 610, 1, tbOk, vpIn, SP("Lines Lines (id 13)", 100, 100, 300, 610));
+    var inTol = SEC(841.6, 594.8, 1, tbOk, SP("Text Notes TST (id 14)", -0.5, 0, 200, 594.8));
+    var tbBig = SEC(841, 610, 1, SP("Title Blocks TST Header: A1 (id 21)", 0, 0, 841, 610, true, 841, 594, 0, 0, "TST Header"), vpIn);
+    // A title block whose origin is its bottom-right corner (frame at -841..0): the frame follows the insertion point.
+    var tbRight = SEC(841, 610, 1, SP("Title Blocks TST Header: A1 (id 31)", -841, 0, 0, 610, true, 841, 594, 0, 0, "TST Header"), SP("Viewports Viewport (id 32)", -820, 20, -20, 580));
+    var outlineOnly = SEC(841, 610, 1, tbOk, vpIn);
+    var tooMany = SEC(null, null, 1, new object[] { tbOk }.Concat(Enumerable.Range(0, 8).Select(i => SP($"Lines L{i} (id {40 + i})", 0, 0, 845, 10))).ToArray());
+    Check(onFrame.Ok && onFrame.Text == null && onFrame.Over.Count == 0 && inTol.Ok,
+      "sheet extents: a sheet exactly on its frame passes; 0.5 / 0.8 mm beyond is within the 1 mm tolerance");
+    Check(!vpUp.Ok && vpUp.Over.Single() == "Lines Lines (id 13): 16 mm above the top edge" && vpUp.Text.StartsWith("sheet TST-101: outline 841 x 610 mm on 841 x 594 mm paper; beyond the frame: Lines Lines (id 13)")
+      && !SEC(841, 594, 1, tbOk, SP("Lines Lines (id 13)", 100, 100, 300, 595.5)).Ok && SEC(841, 594, 2, tbOk, SP("Lines Lines (id 13)", 100, 100, 300, 595.5)).Ok,
+      $"sheet extents: an element 16 mm above the frame fails and is named with its edge; 1.5 mm fails at 1 mm tolerance, passes at 2 ({vpUp.Text})");
+    Check(!tbBig.Ok && tbBig.Text.Contains("the title block family TST Header has geometry outside its frame (possibly invisible lines): edit the family") && tbBig.Over.Single().Contains("16 mm above the top edge")
+      && !tbRight.Ok && tbRight.Over.Count == 1 && tbRight.Over[0].StartsWith("Title Blocks") && tbRight.Over[0].EndsWith("16 mm above the top edge"),
+      $"sheet extents: a title block box larger than its Sheet Width / Height names the family to edit (origin bottom-left or bottom-right) ({tbBig.Text})");
+    Check(!outlineOnly.Ok && outlineOnly.Over.Count == 0 && outlineOnly.Text.Contains("nothing measured on the sheet sticks out: most often invisible lines in the title block family TST Header")
+      && !tooMany.Ok && tooMany.Over.Count == 8 && tooMany.Text.Contains("(+3 more)") && tooMany.Text.Contains("4 mm right of the right edge"),
+      "sheet extents: an outline larger than the paper with nothing measured beyond still fails (title block named); the parts listed are capped at 5");
+    var ecOver = EC(new[] { "TST-101" }, new[] { margin }, false, true);
+    Check(ECP(ecOver).Count == 0 && ECOk(ecOver).All(x => x) && ECW(ecOver).Single().Contains("allow_oversize"),
+      "DWFx allow_oversize: a page scaled down by content beyond the frame only warns in the drawn-extent check");
 
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");

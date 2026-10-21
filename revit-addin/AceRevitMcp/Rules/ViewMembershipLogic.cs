@@ -675,10 +675,11 @@ namespace AceRevitMcp.Rules
         /// The no-margin check: each sheet page's drawn extent against its page; below min (0.98) in either direction fails
         /// (the drawing was scaled down with a white margin). A page with nothing measurable, or (when it fails) geometry
         /// that could not be read, gives a warning ("extent not measured"), never a failure. Default paper
-        /// (allow_paper_fallback, scaled anyway) only warns. Rows: (number, ratio X, ratio Y, ok).
+        /// (allow_paper_fallback, scaled anyway) only warns, as does oversize (dwfx.allow_oversize: content beyond a title block
+        /// frame in this file, so Revit scales its pages; #37). Rows: (number, ratio X, ratio Y, ok).
         /// </summary>
         public static (List<(string Number, double? RatioX, double? RatioY, bool Ok)> Sheets, List<string> Problems, List<string> Warnings) ExtentCheck(
-            IList<string> numbers, IList<Extent> extents, bool defaultPaper, double min = 0.98)
+            IList<string> numbers, IList<Extent> extents, bool defaultPaper, double min = 0.98, bool oversize = false)
         {
             var rows = new List<(string, double?, double?, bool)>(); var problems = new List<string>(); var warnings = new List<string>();
             var nums = numbers ?? new List<string>();
@@ -697,9 +698,9 @@ namespace AceRevitMcp.Rules
                 if (e == null || e.RatioX == null || e.RatioY == null) { notMeasured.Add(nums[i]); rows.Add((nums[i], null, null, true)); continue; }
                 var small = e.RatioX.Value < min || e.RatioY.Value < min;
                 var text = $"sheet {nums[i]}: drawn over {Pct(e.RatioX.Value)} x {Pct(e.RatioY.Value)} of the page (below {Pct(min)}: scaled down with a margin)";
-                if (small && (defaultPaper || e.Unresolved > 0))
+                if (small && (defaultPaper || oversize || e.Unresolved > 0))
                 {
-                    warnings.Add(text + (defaultPaper ? " (Revit's default paper, allow_paper_fallback)" : $" ({e.Unresolved} drawing part(s) could not be read: extent not measured reliably)"));
+                    warnings.Add(text + (defaultPaper ? " (Revit's default paper, allow_paper_fallback)" : oversize ? " (content beyond a title block frame, allow_oversize: scaled as expected)" : $" ({e.Unresolved} drawing part(s) could not be read: extent not measured reliably)"));
                     rows.Add((nums[i], e.RatioX, e.RatioY, true));
                 }
                 else
@@ -710,6 +711,82 @@ namespace AceRevitMcp.Rules
             }
             if (notMeasured.Count > 0) warnings.Add($"drawn extent not measured for {notMeasured.Count} sheet page(s) (nothing readable drawn): {string.Join(", ", notMeasured.Take(20))}");
             return (rows, problems, warnings);
+        }
+
+        /// <summary>
+        /// One element on a sheet for the sheet-extent pre-flight: its box in sheet coordinates (mm). A title block also carries
+        /// its frame (Sheet Width / Height, mm) and its insertion point (mm).
+        /// </summary>
+        public sealed class SheetPart
+        {
+            public string Label;          // "Title Blocks Submittal Header: A1 (id 123)"
+            public string Family;         // a title block's family name
+            public bool TitleBlock;
+            public double MinX, MinY, MaxX, MaxY;
+            public double FrameW, FrameH, OriginX, OriginY;
+        }
+
+        /// <summary>
+        /// The title block frame (W x H mm) in sheet coordinates: the box itself when it is the frame's size, else the frame with
+        /// one of its corners on the insertion point (bottom-left, bottom-right, top-left, top-right, in that order of preference)
+        /// that fits the box best. No box: bottom-left on the insertion point.
+        /// </summary>
+        public static (double MinX, double MinY, double MaxX, double MaxY) TitleBlockFrame(SheetPart tb, double tolMm = 1)
+        {
+            double w = tb.FrameW, h = tb.FrameH, ox = tb.OriginX, oy = tb.OriginY;
+            var hasBox = tb.MaxX > tb.MinX && tb.MaxY > tb.MinY;
+            if (hasBox && Math.Abs(tb.MaxX - tb.MinX - w) <= tolMm && Math.Abs(tb.MaxY - tb.MinY - h) <= tolMm) return (tb.MinX, tb.MinY, tb.MaxX, tb.MaxY);
+            var candidates = new[] { (ox, oy, ox + w, oy + h), (ox - w, oy, ox, oy + h), (ox, oy - h, ox + w, oy), (ox - w, oy - h, ox, oy) };
+            if (!hasBox) return candidates[0];
+            double Misfit((double, double, double, double) f) =>
+                Math.Abs(f.Item1 - tb.MinX) + Math.Abs(f.Item2 - tb.MinY) + Math.Abs(f.Item3 - tb.MaxX) + Math.Abs(f.Item4 - tb.MaxY);
+            var best = candidates[0];
+            foreach (var c in candidates.Skip(1)) if (Misfit(c) < Misfit(best) - 1e-6) best = c;
+            return best;
+        }
+
+        /// <summary>
+        /// The DWFx sheet-extent pre-flight (#37): a merged DWFx scales every page by the largest sheet's extents, so anything on a
+        /// sheet beyond its title block frame shrinks all pages. Compares the sheet outline's size with the paper and each part's
+        /// box with the frame (the first title block's), tolerance tolMm. Ok when nothing sticks out; Text names the sheet,
+        /// outline vs paper and up to maxParts parts (how many mm beyond which edge); a title block whose own box exceeds its
+        /// frame is named as a family to edit. Over: the parts beyond, as texts.
+        /// </summary>
+        public static (bool Ok, string Text, List<string> Over) SheetExtentCheck(string number, double paperW, double paperH, double? outlineW, double? outlineH,
+            IList<SheetPart> parts, double tolMm = 1, int maxParts = 5)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            string N(double v) => Math.Round(v, 1).ToString(inv);
+            var over = new List<string>();
+            var familyNotes = new List<string>();
+            parts = parts ?? new List<SheetPart>();
+            var tb = parts.FirstOrDefault(p => p.TitleBlock && p.FrameW > 0 && p.FrameH > 0);
+            if (tb != null)
+            {
+                var (fx0, fy0, fx1, fy1) = TitleBlockFrame(tb, tolMm);
+                foreach (var p in parts)
+                {
+                    if (!(p.MaxX >= p.MinX && p.MaxY >= p.MinY)) continue;
+                    var edges = new List<string>();
+                    void Edge(double d, string where) { if (d > tolMm) edges.Add($"{N(d)} mm {where}"); }
+                    Edge(p.MaxY - fy1, "above the top edge"); Edge(fy0 - p.MinY, "below the bottom edge");
+                    Edge(fx0 - p.MinX, "left of the left edge"); Edge(p.MaxX - fx1, "right of the right edge");
+                    if (edges.Count > 0) over.Add($"{p.Label}: {string.Join(", ", edges)}");
+                    if (p.TitleBlock && p.FrameW > 0 && p.FrameH > 0 && (p.MaxX - p.MinX > p.FrameW + tolMm || p.MaxY - p.MinY > p.FrameH + tolMm))
+                    {
+                        var note = $"the title block family {p.Family ?? p.Label} has geometry outside its frame (possibly invisible lines): edit the family";
+                        if (!familyNotes.Contains(note)) familyNotes.Add(note);
+                    }
+                }
+            }
+            var outlineOver = outlineW != null && outlineH != null && paperW > 0 && paperH > 0 && (outlineW.Value > paperW + tolMm || outlineH.Value > paperH + tolMm);
+            if (over.Count == 0 && !outlineOver) return (true, null, over);
+            var text = $"sheet {number}: " + (outlineW != null && outlineH != null ? $"outline {N(outlineW.Value)} x {N(outlineH.Value)} mm on {N(paperW)} x {N(paperH)} mm paper" : $"paper {N(paperW)} x {N(paperH)} mm");
+            if (over.Count > 0) text += $"; beyond the frame: {string.Join("; ", over.Take(maxParts))}{(over.Count > maxParts ? $" (+{over.Count - maxParts} more)" : "")}";
+            else if (tb != null) text += $"; nothing measured on the sheet sticks out: most often invisible lines in the title block family {tb.Family ?? tb.Label}: edit the family";
+            else text += "; the sheet has no title block to measure against";
+            if (familyNotes.Count > 0) text += " (" + string.Join("; ", familyNotes) + ")";
+            return (false, text, over);
         }
 
         /// <summary>

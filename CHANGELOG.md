@@ -6,6 +6,12 @@
   delete_empty, workset_plan propose / status and the model check; skipped rules are named in the reply. Rules saved by
   workset_plan list every model they were proposed for. NOTE: rules saved by 1.13.x list only the first model; add the
   other model names before upgrading, or those models skip the rule (the reply says so).
+- **DWFx sheet extents (#37):** a merged DWFx scales every page by the largest sheet's extents, so one title block with
+  invisible lines above its frame shrank all pages to ~88 %. The pre-flight now compares each sheet's outline with its
+  paper and every element on the sheet (BoundingBox in sheet coordinates) with the title block frame (1 mm tolerance) and
+  blocks with `sheet-extents`, naming the sheet, outline vs paper and the elements that stick out (mm beyond which edge);
+  a title block larger than its Sheet Width / Height is named as a family to edit. `dwfx.allow_oversize: true` exports
+  anyway (a warning; the drawn-extent check then only warns for that file). `preflight.sheetExtents` lists the sheets.
 
 ## 1.14.9 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).

@@ -14,7 +14,7 @@ namespace AceRevitMcp.Commands
 {
     /// <summary>
     /// Bridge "export_deliverables": { out_dir, overwrite, check_only, nwc?: { view, file }, ifc?: { view?, setup?, config?,
-    /// file }, dwfx?: { sheets?, sheet_set?, views?, file, allow_paper_fallback, printer? } }. DWFx: each sheet on the paper format of its title block
+    /// file }, dwfx?: { sheets?, sheet_set?, views?, file, allow_paper_fallback, allow_oversize, printer? } }. DWFx: each sheet on the paper format of its title block
     /// (ISO / ANSI / ARCH within 2 mm, its orientation), one combined file per size, with no margin: the in-session print
     /// setting takes the printer's paper of that size (dwfx.printer, else Revit's current printer; none: blocked
     /// "no-paper-size"), zoom 100 %, no margin, inside the rolled-back export transaction. Each file is checked page by page
@@ -41,6 +41,7 @@ namespace AceRevitMcp.Commands
             public List<(double W, double H)> SheetSizes;   // dwfx: each sheet's title block size, as Sheets
             public List<View> Views = new List<View>();     // dwfx: the 3D views (dwfx.views) exported into this file with its sheets
             public string Printer, PrinterPaper;            // dwfx: the printer and its paper size set (in session, rolled back) for the export
+            public bool Oversize;                           // dwfx: a sheet has content beyond its title block frame (allow_oversize): pages scale
         }
 
         /// <summary>The printers installed for this Windows user (the registry's printer lists), PDF printers first; empty when unreadable.</summary>
@@ -113,6 +114,78 @@ namespace AceRevitMcp.Commands
             try { var o = sh.Outline; var w = Lengths.Mm(o.Max.U - o.Min.U); var h = Lengths.Mm(o.Max.V - o.Min.V); if (w > 0 && h > 0) return (w, h, "sheet outline"); }
             catch { }
             return (0, 0, null);
+        }
+
+        /// <summary>
+        /// The sheet-extent pre-flight's measurements (#37): the sheet outline's size (mm) and each element on the sheet (title
+        /// blocks, viewports, schedules, legends, annotation, imports, lines) with its BoundingBox(sheet) in mm, a title block with
+        /// its Sheet Width / Height and insertion point. When the outline is larger than the paper but a title block's box fits
+        /// its frame, its geometry is measured again with invisible elements (Options.IncludeNonVisibleObjects), as Revit's
+        /// extents may count lines the box leaves out.
+        /// </summary>
+        private static (double? OutlineW, double? OutlineH, List<L.SheetPart> Parts) SheetParts(Document doc, ViewSheet sh, double paperW, double paperH)
+        {
+            double? ow = null, oh = null;
+            try { var o = sh.Outline; ow = Lengths.Mm(o.Max.U - o.Min.U); oh = Lengths.Mm(o.Max.V - o.Min.V); } catch { }
+            var parts = new List<L.SheetPart>();
+            List<Element> elements;
+            try { elements = new FilteredElementCollector(doc, sh.Id).WhereElementIsNotElementType().ToElements().Where(e => e.Id != sh.Id).ToList(); }
+            catch { return (ow, oh, parts); }
+            var outlineOver = ow != null && oh != null && (ow > paperW + 1 || oh > paperH + 1);
+            foreach (var e in elements)
+            {
+                try
+                {
+                    var bb = e.get_BoundingBox(sh);
+                    if (bb == null || !bb.Enabled) continue;
+                    var isTb = e.Category != null && e.Category.Id.Value == (long)BuiltInCategory.OST_TitleBlocks;
+                    var fi = e as FamilyInstance;
+                    var family = fi?.Symbol?.FamilyName;
+                    var name = fi != null ? $"{family}: {fi.Symbol?.Name}" : e.Name;
+                    var p = new L.SheetPart
+                    {
+                        Label = $"{e.Category?.Name ?? e.GetType().Name} {name} (id {e.Id.Value})".Replace("  ", " "), Family = family, TitleBlock = isTb,
+                        MinX = Lengths.Mm(bb.Min.X), MinY = Lengths.Mm(bb.Min.Y), MaxX = Lengths.Mm(bb.Max.X), MaxY = Lengths.Mm(bb.Max.Y),
+                    };
+                    if (isTb)
+                    {
+                        p.FrameW = Lengths.Mm(e.get_Parameter(BuiltInParameter.SHEET_WIDTH)?.AsDouble() ?? 0);
+                        p.FrameH = Lengths.Mm(e.get_Parameter(BuiltInParameter.SHEET_HEIGHT)?.AsDouble() ?? 0);
+                        var origin = fi?.GetTransform()?.Origin ?? (e.Location as LocationPoint)?.Point;
+                        if (origin != null) { p.OriginX = Lengths.Mm(origin.X); p.OriginY = Lengths.Mm(origin.Y); }
+                        if (outlineOver && p.MaxX - p.MinX <= p.FrameW + 1 && p.MaxY - p.MinY <= p.FrameH + 1) GrowByGeometry(e, sh, p);
+                    }
+                    parts.Add(p);
+                }
+                catch { /* an element without a readable box is left out */ }
+            }
+            return (ow, oh, parts);
+        }
+
+        /// <summary>Widens a part's box (mm) by its element's geometry in the sheet, invisible elements included.</summary>
+        private static void GrowByGeometry(Element e, View sheet, L.SheetPart p)
+        {
+            GeometryElement geo;
+            try { geo = e.get_Geometry(new Options { View = sheet, IncludeNonVisibleObjects = true }); } catch { return; }
+            void Add(XYZ q) { var x = Lengths.Mm(q.X); var y = Lengths.Mm(q.Y); if (x < p.MinX) p.MinX = x; if (x > p.MaxX) p.MaxX = x; if (y < p.MinY) p.MinY = y; if (y > p.MaxY) p.MaxY = y; }
+            void Walk(GeometryElement g, int depth)
+            {
+                if (g == null || depth > 4) return;
+                foreach (var o in g)
+                    try
+                    {
+                        switch (o)
+                        {
+                            case GeometryInstance gi: Walk(gi.GetInstanceGeometry(), depth + 1); break;
+                            case Curve c: foreach (var q in c.Tessellate()) Add(q); break;
+                            case PolyLine pl: foreach (var q in pl.GetCoordinates()) Add(q); break;
+                            case Point pt: Add(pt.Coord); break;
+                            case Solid so: foreach (Edge ed in so.Edges) foreach (var q in ed.Tessellate()) Add(q); break;
+                        }
+                    }
+                    catch { }
+            }
+            Walk(geo, 0);
         }
 
         /// <summary>
@@ -214,6 +287,7 @@ namespace AceRevitMcp.Commands
             var askedSheets = new List<string>();   // dwfx.sheets as sheet numbers (a name given is read as its sheet's number)
             var askedViews = new List<string>();    // dwfx.views as given (exact 3D view names)
             var dwfxViews = new List<View>();
+            JsonArray sheetExtents = null;   // dwfx: the sheets with content beyond their title block frame (#37)
 
             View FindView(string name) =>
                 new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>().FirstOrDefault(v => !v.IsTemplate && string.Equals(v.Name, name, StringComparison.Ordinal))
@@ -354,6 +428,35 @@ namespace AceRevitMcp.Commands
                     Block("dwfx paper", "paper-size", $"{noFit.Count} sheet(s) have a size no DWF paper format fits (ISO A/B, ANSI, ARCH, within 2 mm): {string.Join(", ", noFit.Take(20))}",
                         "Fix the title block size, or pass allow_paper_fallback: true to export them on Revit's default paper (scaled, not true size).");
                 else if (noFit.Count > 0) notes.Add($"DWFx: {noFit.Count} sheet(s) fit no paper format and use Revit's default paper (scaled, not true size; allow_paper_fallback): {string.Join(", ", noFit.Take(20))}.");
+                // Sheet extents (#37): a merged DWFx scales every page by the largest sheet's extents, so content beyond a title
+                // block frame (e.g. invisible lines in the title block family) shrinks all pages. Blocks unless allow_oversize.
+                var oversize = Args.Bool(dwfx, "allow_oversize");
+                var extentRows = new JsonArray(); var extentTexts = new List<string>();
+                foreach (var g in groups)
+                    for (var i = 0; i < g.Sheets.Count; i++)
+                    {
+                        var (pw, ph) = g.SheetSizes[i];
+                        var (ow, oh, parts) = SheetParts(doc, g.Sheets[i], pw, ph);
+                        var r = L.SheetExtentCheck(g.Sheets[i].SheetNumber, pw, ph, ow, oh, parts);
+                        if (r.Ok) continue;
+                        g.Oversize = oversize;
+                        extentTexts.Add(r.Text);
+                        if (extentRows.Count < 20) extentRows.Add(new JsonObject
+                        {
+                            ["number"] = g.Sheets[i].SheetNumber, ["paperMm"] = $"{Math.Round(pw, 1)} x {Math.Round(ph, 1)}",
+                            ["outlineMm"] = ow == null ? null : $"{Math.Round(ow.Value, 1)} x {Math.Round(oh.Value, 1)}",
+                            ["beyond"] = new JsonArray(r.Over.Take(5).Select(x => (JsonNode)x).ToArray()),
+                        });
+                    }
+                if (extentRows.Count > 0) sheetExtents = extentRows;
+                if (extentTexts.Count > 0)
+                {
+                    var list = string.Join(" | ", extentTexts.Take(20)) + (extentTexts.Count > 20 ? $" | (+{extentTexts.Count - 20} more sheets)" : "");
+                    if (!oversize)
+                        Block("dwfx sheet extents", "sheet-extents", $"{extentTexts.Count} sheet(s) have content beyond their title block frame; a merged DWFx scales every page by the largest sheet's extents, so all pages would shrink: {list}",
+                            "Move or delete what sticks out (for a title block, edit the family: look for invisible lines outside the frame), or pass dwfx.allow_oversize: true to export with the pages scaled down.");
+                    else notes.Add($"Warning: DWFx allow_oversize: {extentTexts.Count} sheet(s) have content beyond their title block frame, so Revit scales the pages of their file(s) down (not true size; the drawn-extent check only warns there): {list}");
+                }
                 // No margin: the DWFx export follows the in-session print settings, so each group is exported with the printer's
                 // paper size of its format, zoom 100 %, no margin (set inside the rolled-back export transaction). A printer
                 // without that paper blocks. dwfx.printer: the printer to use (selected inside the transaction, then restored).
@@ -413,6 +516,7 @@ namespace AceRevitMcp.Commands
                 {
                     ["navisworksExporter"] = navisworks, ["views"] = views, ["dwfxViews"] = args["dwfx"] is JsonObject ? new JsonArray(dwfxViews.Select(v => (JsonNode)v.Name).ToArray()) : null, ["ifcSetup"] = ifcSetup, ["ifcSetupsInModel"] = SetupList(), ["sheets"] = sheetCount,
                     ["sheetList"] = jobs.Any(j => j.Format == "dwfx") ? SheetList(doc, jobs.Where(j => j.Format == "dwfx").SelectMany(j => j.Sheets).ToList()) : null, ["existing"] = existing, ["outDir"] = dir,
+                    ["sheetExtents"] = sheetExtents,
                 },
                 ["blocked"] = blocks, ["files"] = new JsonArray(), ["notes"] = notes,
             };
@@ -581,7 +685,7 @@ namespace AceRevitMcp.Commands
                     new List<string> { "the file could not be read as a DWFx package: " + ex.Message }, new List<string>(), null);
             }
             // No margin: each sheet's drawing spans at least 98 % of its page both ways (warn only where it cannot be measured).
-            var extent = L.ExtentCheck(sheets.Select(x => x.SheetNumber).ToList(), sheetExtents, job.Paper == "Default");
+            var extent = L.ExtentCheck(sheets.Select(x => x.SheetNumber).ToList(), sheetExtents, job.Paper == "Default", 0.98, job.Oversize);
             check.Problems.AddRange(extent.Problems);
             foreach (var w in check.Warnings.Concat(extent.Warnings)) warnings.Add(w);
             JsonNode Ratio(double? r) => r == null ? null : (JsonNode)Math.Round(r.Value, 3);
