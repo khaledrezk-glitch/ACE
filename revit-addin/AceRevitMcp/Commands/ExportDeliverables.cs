@@ -585,7 +585,23 @@ namespace AceRevitMcp.Commands
                                 var printNote = (string)null;
                                 if (!RolledBack(doc, "ACE: DWFx export", () =>
                                 {
-                                    if (job.PrinterPaper != null) printNote = ApplyPrintSettings(doc, job);
+                                    if (job.PrinterPaper != null)
+                                    {
+                                        // Live finding (21 Oct): Revit takes the in-session print settings only after a first DWFx export
+                                        // in the session, so a one-sheet warm-up export (Default paper, into a scratch folder that is
+                                        // deleted with temp) runs first, then the settings are applied again for the real export.
+                                        printNote = ApplyPrintSettings(doc, job);
+                                        if (job.Sheets.Count > 0)
+                                            try
+                                            {
+                                                var warm = System.IO.Path.Combine(temp, "warm-up");
+                                                Directory.CreateDirectory(warm);
+                                                var one = new ViewSet(); one.Insert(job.Sheets[0]);
+                                                doc.Export(warm, "warm-up", one, new DWFXExportOptions { MergedViews = true, PaperFormat = ExportPaperFormat.Default });
+                                            }
+                                            catch (Exception ex) { warnings.Add("DWFx warm-up export failed (the real export still runs; check the page extent): " + ex.Message); }
+                                        printNote = ApplyPrintSettings(doc, job) ?? printNote;
+                                    }
                                     return doc.Export(temp, baseName, set, dwfxOptions);
                                 })) warnings.Add("Revit reported the DWFx export as not successful.");
                                 if (printNote != null) warnings.Add(printNote);

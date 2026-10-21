@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased (held until the current submission is closed)
+- **DWFx warm-up export:** Revit takes the in-session print settings only after a first DWFx export in the session
+  (live finding); a one-sheet warm-up export into a scratch folder now runs before the real one, inside the same
+  rolled-back transaction.
 - **Per-model workset rules (G9):** a rule's `models` key (exact or `*`, `!` excludes, case-insensitive; matched on the
   title, central / file path and cloud ids) limits it to those models in assign_worksets, workset audit / rename /
   delete_empty, workset_plan propose / status and the model check; skipped rules are named in the reply. Rules saved by
