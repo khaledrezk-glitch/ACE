@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.14.9 (21 Oct 2026)
+- Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
+- **Deliverables folder stays clean:** a DWFx that fails its self-check is kept in `%APPDATA%\ACE-RevitMCP\failed-exports`,
+  never in `out_dir`. The export notes any Revit `<model>_backup` folder found in `out_dir` (not a deliverable).
+
 ## 1.14.8 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **DWFx with no margin:** per paper group the in-session print setting is set inside the rolled-back export transaction

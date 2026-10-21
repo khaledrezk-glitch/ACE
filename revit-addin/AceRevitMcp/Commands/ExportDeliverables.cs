@@ -19,7 +19,7 @@ namespace AceRevitMcp.Commands
     /// setting takes the printer's paper of that size (dwfx.printer, else Revit's current printer; none: blocked
     /// "no-paper-size"), zoom 100 %, no margin, inside the rolled-back export transaction. Each file is checked page by page
     /// after the export, size, orientation and drawn extent (at least 98 % of the page both ways) (a failed one is kept as
-    /// <name>-FAILED.dwfx; sheetCheck: asked vs exported, sheets and views). views: 3D views by
+    /// <name>-FAILED.dwfx in %APPDATA%\ACE-RevitMCP\failed-exports; sheetCheck: asked vs exported, sheets and views). views: 3D views by
     /// exact name, put into the same merged export as the sheets (inserted first, like the old "3D View: ..." page); with
     /// several paper groups they go into the largest group's file (a note says so). A 3D view has no title block: it takes
     /// its group's PaperFormat / PortraitLayout (DWFExportOptions has no setting per view; the format comes from the sheets,
@@ -194,6 +194,13 @@ namespace AceRevitMcp.Commands
                 {
                     dir = System.IO.Path.GetFullPath(outDir.Trim().Trim('"'));
                     if (!Directory.Exists(dir)) notes.Add($"{dir} does not exist yet: the export creates it.");
+                    else
+                    {
+                        // Revit's <model>_backup folders (a workshared file opened attached) do not belong in a deliverables folder.
+                        string[] backups;
+                        try { backups = Directory.GetDirectories(dir, "*_backup"); } catch { backups = new string[0]; }
+                        if (backups.Length > 0) notes.Add($"{dir} holds {backups.Length} Revit backup folder(s) ({string.Join(", ", backups.Select(b => System.IO.Path.GetFileName(b)).Take(10))}): not a deliverable; remove before submitting (open with detach: \"preserve_worksets\" to avoid them).");
+                    }
                 }
                 catch (Exception ex) { Block("out_dir", "out-dir", $"'{outDir}' cannot be used: {ex.Message}", "Give a folder that exists or can be created."); dir = null; }
 
@@ -486,13 +493,15 @@ namespace AceRevitMcp.Commands
                     if (!File.Exists(tempFile)) warnings.Add($"Revit wrote no {job.File} (the existing file, if any, is kept).");
                     else if (job.Format == "dwfx" && DwfxCheck(job, tempFile, entry, warnings) is List<string> wrong && wrong.Count > 0)
                     {
-                        // Not true size: the file is kept beside the target as <name>-FAILED.dwfx (never replacing an older one:
-                        // "-FAILED 2", ...); the existing target, if any, is kept.
+                        // Not true size: the file is kept as <name>-FAILED.dwfx in ACE's own failed-exports folder, never in out_dir
+                        // (a deliverables folder must hold one file per deliverable), never replacing an older one ("-FAILED 2", ...);
+                        // the existing target, if any, is kept.
+                        var failedDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ACE-RevitMCP", "failed-exports");
                         var stemFailed = System.IO.Path.GetFileNameWithoutExtension(job.File) + "-FAILED";
-                        var failed = System.IO.Path.Combine(dir, stemFailed + ".dwfx");
-                        for (var n = 2; File.Exists(failed) && n < 1000; n++) failed = System.IO.Path.Combine(dir, $"{stemFailed} {n}.dwfx");
+                        var failed = System.IO.Path.Combine(failedDir, stemFailed + ".dwfx");
+                        for (var n = 2; File.Exists(failed) && n < 1000; n++) failed = System.IO.Path.Combine(failedDir, $"{stemFailed} {n}.dwfx");
                         var kept = false;
-                        try { if (!File.Exists(failed)) { File.Move(tempFile, failed); kept = true; entry["failedFile"] = failed; } } catch { kept = false; }
+                        try { Directory.CreateDirectory(failedDir); if (!File.Exists(failed)) { File.Move(tempFile, failed); kept = true; entry["failedFile"] = failed; } } catch { kept = false; }
                         warnings.Add($"Self-check failed: {string.Join("; ", wrong.Take(10))}. "
                             + (kept ? $"The file is kept as {failed} for inspection" : "The failed file could not be kept") + $"; {job.File} was not written (the existing file, if any, is kept).");
                     }
