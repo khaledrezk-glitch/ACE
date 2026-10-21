@@ -35,8 +35,9 @@ namespace AceRevitMcp.Util
 
         public static void OnDocumentChanged(object sender, DocumentChangedEventArgs e)
         {
-            // A change while the bridge runs no request is the user's: a model ACE opened is no longer safe to discard.
-            if (Bridge.RequestDispatcher.Busy == null) Commands.ModelFileCommands.UserTouched(e.GetDocument());
+            // A change while the bridge runs no request is the user's: a model ACE opened is no longer safe to discard. An ACE
+            // change to elements also ends "only empty ACE runs" (close_model then needs discard again).
+            Commands.ModelFileCommands.NoteChange(e, Bridge.RequestDispatcher.Busy != null, _temporary > 0 && _current == null);
             var op = e.Operation;
             if (_temporary > 0 && _current == null) return;
             if (_current != null)
@@ -123,6 +124,8 @@ namespace AceRevitMcp.Util
 
             public string Name { get; }
             public int Committed { get; private set; }
+            /// <summary>Elements added, modified or deleted (resolved warning records included): 0 means the run changed no element.</summary>
+            public int ElementChanges => _added.Count + _modified.Count + _deleted.Count;
             internal bool PreviousWasClaude { get; }
             internal string PreviousName { get; }
             internal string PreviousDocument { get; }

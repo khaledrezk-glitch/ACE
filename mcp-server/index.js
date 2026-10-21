@@ -553,7 +553,7 @@ tool("select_elements", {
 
 const codeSchema = {
   code: z.string().describe("C# method body using the Revit API (see server instructions for what's in scope)."),
-  mode: z.enum(["auto", "manual", "readonly", "no_transaction"]).optional().describe("auto (default) = one transaction; manual = your own transactions; readonly = always rolled back; no_transaction = no transaction group at all, only for APIs that refuse an open transaction (SaveAs, Close of another model, RevitLinkType.LoadFrom, TransmissionData): needs allow_risky, its dry run only compiles (nothing runs), and the run cannot be rolled back or undone as one step"),
+  mode: z.enum(["auto", "manual", "readonly", "no_transaction"]).optional().describe("auto (default) = one transaction; manual = your own transactions; readonly = always rolled back (use it for read-only checks: health checks, audits); no_transaction = no transaction group at all, only for APIs that refuse an open transaction (SaveAs, Close of another model, RevitLinkType.LoadFrom, TransmissionData): needs allow_risky, its dry run only compiles (nothing runs), and the run cannot be rolled back or undone as one step"),
   dry_run: z.boolean().optional().describe("Run fully, then roll back every change. Required before applying edits."),
   inputs: z.record(z.any()).optional().describe("Values available as args / ctx.Str(...) / ctx.Num(...)"),
   transaction_name: z.string().optional().describe("Shown in Revit's Undo list, e.g. 'Claude: renumber rooms'"),
@@ -719,7 +719,7 @@ function openNotes(r, req) {
 
 tool("close_model", {
   title: "Close a model",
-  description: "Close an open model that is not the active one, without saving. A model with unsaved changes is kept open, unless discard: true (with confirm: true, the user's OK) and ACE opened it in this session and nobody changed it since (a workshared one only if ACE opened it detached): then its changes are thrown away. model: its title (two open models with one title: give path).",
+  description: "Close an open model that is not the active one, without saving. A model with unsaved changes is kept open, unless discard: true (with confirm: true, the user's OK) and ACE opened it in this session and nobody changed it since (a workshared one only if ACE opened it detached): then its changes are thrown away. A model ACE opened whose only changes were ACE runs that changed no element (e.g. a check run in mode auto) closes without discard or confirm (the reply says so). model: its title (two open models with one title: give path).",
   inputSchema: {
     model: z.string().min(1).max(260).optional(), path: z.string().max(1000).optional().describe("The file the model was opened from"),
     discard: z.boolean().optional().describe("Close even with unsaved changes (only models ACE opened and nobody changed): the changes are lost"),

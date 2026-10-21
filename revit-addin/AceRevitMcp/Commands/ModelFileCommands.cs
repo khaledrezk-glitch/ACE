@@ -23,7 +23,9 @@ namespace AceRevitMcp.Commands
             public string Handle, Source;
             public Document Doc;
             public bool Detached;
-            public bool Untouched = true;   // cleared by any change made outside an ACE request (ModelFileCommands.UserTouched)
+            public bool Untouched = true;   // cleared by any change made outside an ACE request (ModelFileCommands.NoteChange)
+            /// <summary>Every change since the open came from ACE runs that changed no element (QuietCloseLogic.AfterChange).</summary>
+            public bool OnlyEmptyAceRuns = true;
         }
         private static readonly System.Collections.Generic.List<Opened> OpenedByAce = new System.Collections.Generic.List<Opened>();
 
@@ -59,7 +61,7 @@ namespace AceRevitMcp.Commands
                     list.Add(new Dictionary<string, object>
                     {
                         ["handle"] = x.Handle, ["source"] = x.Source, ["path"] = x.Doc.PathName ?? "", ["title"] = x.Doc.Title ?? "",
-                        ["detached"] = x.Detached, ["untouched"] = x.Untouched,
+                        ["detached"] = x.Detached, ["untouched"] = x.Untouched, ["onlyEmptyAceRuns"] = x.OnlyEmptyAceRuns,
                     });
                 }
                 catch { /* a closed model: dropped */ }
@@ -99,15 +101,43 @@ namespace AceRevitMcp.Commands
                     ? docs.Where(d => !string.IsNullOrEmpty(d.PathName) && string.Equals(Normalize(d.PathName), Normalize(path), StringComparison.OrdinalIgnoreCase)).ToList()
                     : docs.Where(d => string.IsNullOrEmpty(d.PathName) && string.Equals(d.Title, title, StringComparison.Ordinal)).ToList();
                 if (matches.Count != 1 || OpenedByAce.Any(x => x.Doc.Equals(matches[0]))) continue;
-                OpenedByAce.Add(new Opened { Handle = S("handle"), Source = S("source"), Doc = matches[0], Detached = B("detached"), Untouched = B("untouched") });
+                OpenedByAce.Add(new Opened { Handle = S("handle"), Source = S("source"), Doc = matches[0], Detached = B("detached"), Untouched = B("untouched"), OnlyEmptyAceRuns = B("onlyEmptyAceRuns") });
             }
             _pending.Clear();
         }
 
-        /// <summary>A change made outside an ACE request (DocumentChanged while the bridge is idle): the user worked in that model.</summary>
-        internal static void UserTouched(Document d)
+        /// <summary>
+        /// Every DocumentChanged on a model ACE opened: a change outside an ACE request (the bridge is idle) means the user worked
+        /// in it (Untouched cleared); QuietCloseLogic.AfterChange keeps OnlyEmptyAceRuns only for ACE commits that changed no
+        /// element and for rollbacks. Anything unreadable clears both flags (the safe side).
+        /// </summary>
+        internal static void NoteChange(Autodesk.Revit.DB.Events.DocumentChangedEventArgs args, bool aceRequest, bool temporary)
         {
-            try { var e = Entry(d); if (e != null) e.Untouched = false; } catch { }
+            Opened e = null;
+            try
+            {
+                e = Entry(args.GetDocument());
+                if (e == null) return;
+                if (!aceRequest) e.Untouched = false;
+                int added = -1, modified = -1, deleted = -1;
+                try { added = args.GetAddedElementIds().Count; modified = args.GetModifiedElementIds().Count; deleted = args.GetDeletedElementIds().Count; }
+                catch { /* not readable: counts stay unknown */ }
+                e.OnlyEmptyAceRuns = QuietCloseLogic.AfterChange(e.OnlyEmptyAceRuns, aceRequest, temporary, args.Operation.ToString(), added, modified, deleted);
+            }
+            catch { if (e != null) { e.Untouched = false; e.OnlyEmptyAceRuns = false; } }
+        }
+
+        /// <summary>
+        /// A modified model that may be closed without saving and without discard: ACE opened it, nobody else changed it, and
+        /// its only changes were ACE runs that changed no element (same workshared boundary as CanDiscard).
+        /// </summary>
+        private static bool CanCloseQuietly(Document d)
+        {
+            var e = Entry(d);
+            if (e == null) return false;
+            bool workshared;
+            try { workshared = d.IsWorkshared; } catch { workshared = true; }
+            return QuietCloseLogic.MayClose(e.Untouched, e.OnlyEmptyAceRuns, workshared, e.Detached);
         }
 
         /// <summary>
@@ -356,7 +386,8 @@ namespace AceRevitMcp.Commands
             if (doc.IsLinked) return Kept("a linked model: unload the link in the host instead");
             if (app.ActiveUIDocument?.Document?.Equals(doc) == true) return Kept("the active model: ACE never closes the active model; switch to another model first (open_model)");
             var discarded = false;
-            if (doc.IsModified)
+            var quiet = doc.IsModified && CanCloseQuietly(doc);
+            if (doc.IsModified && !quiet)
             {
                 if (!Args.Bool(args, "discard")) return Kept("it has unsaved changes: ACE does not close it (nothing is saved); save or discard them in Revit first, or discard: true for a model ACE opened");
                 if (!CanDiscard(doc)) return Kept("discard is only for a model ACE opened in this session and nobody changed since (a workshared one only when ACE opened it detached): this one may hold someone's work; save or discard it in Revit");
@@ -367,7 +398,11 @@ namespace AceRevitMcp.Commands
             try { done = doc.Close(false); }
             catch (Exception ex) { return Kept("Revit did not close it: " + ex.Message); }
             InstanceRegistry.Update(app);
-            return new JsonObject { ["model"] = title, ["closed"] = done, ["why"] = done ? null : "Revit did not close it", ["discarded"] = done && discarded, ["openDocuments"] = OpenDocuments(app) };
+            return new JsonObject
+            {
+                ["model"] = title, ["closed"] = done, ["why"] = done ? null : "Revit did not close it", ["discarded"] = done && discarded,
+                ["note"] = done && quiet ? QuietCloseLogic.ClosedNote : null, ["openDocuments"] = OpenDocuments(app),
+            };
         }
 
         /// <summary>
@@ -378,10 +413,11 @@ namespace AceRevitMcp.Commands
         {
             var title = d.Title;
             if (d.IsLinked || d.IsFamilyDocument) return new JsonObject { ["model"] = title, ["closed"] = false, ["why"] = "not a project model opened on its own" };
-            var discarded = d.IsModified && discard && CanDiscard(d);
-            if (d.IsModified && !discarded)
+            var quiet = d.IsModified && CanCloseQuietly(d);
+            var discarded = d.IsModified && !quiet && discard && CanDiscard(d);
+            if (d.IsModified && !quiet && !discarded)
                 return new JsonObject { ["model"] = title, ["closed"] = false, ["why"] = discard ? "it has unsaved changes that ACE may not discard (not opened by ACE, changed by the user, or a workshared local): kept open" : "it has unsaved changes: kept open (ACE never saves or discards them)" };
-            try { var ok = d.Close(false); return new JsonObject { ["model"] = title, ["closed"] = ok, ["why"] = null, ["discarded"] = ok && discarded }; }
+            try { var ok = d.Close(false); return new JsonObject { ["model"] = title, ["closed"] = ok, ["why"] = null, ["discarded"] = ok && discarded, ["note"] = ok && quiet ? QuietCloseLogic.ClosedNote : null }; }
             catch (Exception ex) { return new JsonObject { ["model"] = title, ["closed"] = false, ["why"] = "Revit did not close it: " + ex.Message }; }
         }
 
@@ -526,6 +562,38 @@ namespace AceRevitMcp.Commands
 
         private static JsonArray OpenDocuments(UIApplication app) =>
             new JsonArray(app.Application.Documents.Cast<Document>().Where(d => !d.IsLinked && !d.IsFamilyDocument).Select(d => (JsonNode)d.Title).ToArray());
+    }
+
+    /// <summary>
+    /// Pure rules for closing a model ACE opened whose only changes were ACE runs that changed no element (e.g. a check run in
+    /// mode auto that committed an empty transaction): it is closed without saving and without discard/confirm.
+    /// </summary>
+    internal static class QuietCloseLogic
+    {
+        internal const string ClosedNote = "closed: its only changes were ACE runs that changed no element";
+
+        /// <summary>
+        /// The OnlyEmptyAceRuns flag after one DocumentChanged event (operation: the UndoOperation name; counts -1 when not
+        /// readable). Once cleared it stays cleared. A change outside an ACE request clears it; inside one, a committed
+        /// transaction keeps it only with 0 added, 0 modified and 0 deleted elements; a rolled-back transaction or group keeps
+        /// it (nothing stays); ACE's temporary work (rolled back afterwards, ChangeTracker.Temporary) is not counted; undo,
+        /// redo, unknown operations and unknown counts clear it.
+        /// </summary>
+        internal static bool AfterChange(bool onlyEmptyAceRuns, bool aceRequest, bool temporary, string operation, int added, int modified, int deleted)
+        {
+            if (!onlyEmptyAceRuns || !aceRequest) return false;
+            switch (operation)
+            {
+                case "TransactionCommitted": return temporary || (added == 0 && modified == 0 && deleted == 0);
+                case "TransactionRolledBack":
+                case "TransactionGroupRolledBack": return true;
+                default: return false;
+            }
+        }
+
+        /// <summary>Whether a modified model may close quietly: nobody else touched it, only empty ACE runs, and (workshared) a detached copy.</summary>
+        internal static bool MayClose(bool untouched, bool onlyEmptyAceRuns, bool workshared, bool detached) =>
+            untouched && onlyEmptyAceRuns && (!workshared || detached);
     }
 
     /// <summary>Pure rules for open_model: which dialog gets which answer, and when a transmitted model opens detached.</summary>

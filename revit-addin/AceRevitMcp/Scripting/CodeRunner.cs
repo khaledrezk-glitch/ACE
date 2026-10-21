@@ -367,7 +367,12 @@ public static class AceScript
             else if (dryRun)
                 response["note"] = "Dry run: the script ran completely, then every change was rolled back. The model is unchanged.";
             else
+            {
                 response["note"] = $"Applied as ONE undo step named '{name}' (Ctrl+Z in Revit, or undo_last_claude_change).";
+                // A committed run that changed nothing still marks the model modified (e.g. a health check in mode auto).
+                if (mode == "auto" && keptChanges && recording.ElementChanges == 0)
+                    response["hint"] = NoElementChangedHint;
+            }
             // The result comes first, so a long list of warnings or output can never push it out of a shortened reply.
             var ordered = new JsonObject { ["success"] = true, ["result"] = JsonConvert.ToNode(result) };
             var rest = response.ToList();
@@ -375,6 +380,9 @@ public static class AceScript
             foreach (var kv in rest) if (!ordered.ContainsKey(kv.Key)) ordered[kv.Key] = kv.Value;
             return ordered;
         }
+
+        internal const string NoElementChangedHint = "no element changed: run checks like this in mode readonly (the committed transaction still marks the model modified; " +
+            "close_model closes a model ACE opened whose only changes were such runs).";
 
         internal const string NoTransactionRefusal = "Blocked for safety: mode no_transaction runs the code with no transaction group, so nothing it does can be rolled back " +
             "and it is not one undo step. Explain to the user exactly what it would do (save, close, load links...); only if they agree, call again with allow_risky: true.";

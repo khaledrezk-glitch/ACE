@@ -159,6 +159,7 @@ A1, A3 and A4 have build-ready specs and are no longer blocked by open decisions
 | G3 | Sync with review: shared scripts, lessons and rules go through a reviewer before everyone gets them | M | open |
 | G5 | Variables between runs (`ctx.Session`) | S | open |
 | G6 | Who changed what, including Claude, in the change tracker | M | open |
+| G14 | Loader-side update: the ACE loader picks up a new add-in and server version dropped into a staging folder and installs it after the user confirms a prompt in Revit, so an agent never runs install.ps1 (agents may be blocked from running installers) | M | proposed (live finding 21 Oct) |
 
 ## 5. Smaller technical items (stress review)
 

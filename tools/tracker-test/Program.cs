@@ -46,6 +46,25 @@ class P {
     Expect("yesterday", new DateTime(2026, 9, 29));
     Expect("2026-09-01", new DateTime(2026, 9, 1));
     Expect("whenever", null);
+    // close_model's quiet close: kept only while every change is an ACE run that changed no element.
+    var qc = a.GetType("AceRevitMcp.Commands.QuietCloseLogic");
+    bool After(bool flag, bool ace, bool temp, string op, int ad, int mo, int de) => (bool)qc.GetMethod("AfterChange", BindingFlags.Static|BindingFlags.NonPublic).Invoke(null, new object[]{flag, ace, temp, op, ad, mo, de});
+    bool May(bool untouched, bool only, bool ws, bool det) => (bool)qc.GetMethod("MayClose", BindingFlags.Static|BindingFlags.NonPublic).Invoke(null, new object[]{untouched, only, ws, det});
+    void Q(bool ok, string what) { Console.WriteLine((ok ? "ok   " : "FAIL ") + "quiet close: " + what); if (!ok) { Console.WriteLine("tracker test FAILED (quiet close)"); Environment.Exit(1); } }
+    Q(After(true, true, false, "TransactionCommitted", 0, 0, 0), "an ACE run that committed no element change keeps the flag");
+    Q(After(true, true, false, "TransactionGroupRolledBack", 3, 2, 0) && After(true, true, false, "TransactionRolledBack", 1, 0, 0), "a rolled-back ACE preview keeps it");
+    Q(!After(true, false, false, "TransactionCommitted", 0, 0, 0), "a user transaction clears it (even an empty one)");
+    Q(!After(true, true, false, "TransactionCommitted", 0, 1, 0) && !After(true, true, false, "TransactionCommitted", 1, 0, 0) && !After(true, true, false, "TransactionCommitted", 0, 0, 1), "an ACE element change clears it");
+    Q(!After(true, true, false, "TransactionCommitted", -1, -1, -1), "unknown counts clear it");
+    Q(!After(true, true, false, "TransactionUndone", 0, 0, 0) && !After(true, true, false, "TransactionRedone", 0, 0, 0) && !After(true, true, false, "Something", 0, 0, 0), "undo, redo and unknown operations clear it");
+    Q(After(true, true, true, "TransactionCommitted", 5, 0, 0), "ACE temporary work (rolled back afterwards) is not counted");
+    Q(!After(false, true, false, "TransactionCommitted", 0, 0, 0), "once cleared it stays cleared");
+    var flag = true; foreach (var _ in Enumerable.Range(0, 7)) flag = After(flag, true, false, "TransactionCommitted", 0, 0, 0);
+    Q(flag && May(true, flag, true, true), "seven empty check runs on a detached copy: closes quietly");
+    Q(!May(false, true, false, false), "not when the user touched it");
+    Q(!May(true, false, false, false), "not when an ACE run changed elements");
+    Q(!May(true, true, true, false), "not a workshared model opened attached (a local holds the user's work)");
+    Q(May(true, true, false, false), "a non-workshared model ACE opened");
     LoaderTests.Run();
     Console.WriteLine("tracker test passed");
   }

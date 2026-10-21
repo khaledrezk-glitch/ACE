@@ -362,7 +362,7 @@ const bridge = http.createServer((req, res) => {
           closed: args.close_previous ? (model.includes("KEEP") ? { model: "Test", closed: false, why: "it has unsaved changes" } : { model: "Test", closed: true }) : null,
           openDocuments: args.close_previous && !model.includes("KEEP") ? [model] : ["Test", model] } });
       }
-      case "close_model": return reply({ ok: true, result: { model: args.model, closed: true } });
+      case "close_model": return reply({ ok: true, result: { model: args.model, closed: true, ...(args.model === "TST_Quiet" ? { discarded: false, note: "closed: its only changes were ACE runs that changed no element" } : {}) } });
       case "save_model":
         if (args.save_as) return reply({ ok: true, result: { model: "TST_Copy", path: args.save_as.path, saved: true, kind: args.save_as.as_central ? "save_as central" : "save_as", overwritten: !!args.save_as.overwrite, ms: 5, echo: args,
           warnings: args.save_as.as_central ? ["The central moved from C:/TST/old.rvt to " + args.save_as.path + ": other users' local copies still point at the old central."] : [] } });
@@ -1340,6 +1340,14 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const nBefore = seen.length;
   const cmDisc = await call("close_model", { model: "Test", discard: true });
   assert.ok(cmDisc.isError && /confirm: true/.test(cmDisc.content[0].text) && seen.length === nBefore, "discard without the user's OK is refused before Revit is asked");
+  // A copy whose only changes were ACE runs that changed no element: the add-in closes it without discard; the note reaches Claude.
+  const quiet = await call("close_model", { model: "TST_Quiet" });
+  assert.ok(!quiet.isError && seen.at(-1).args.discard === false && /its only changes were ACE runs that changed no element/.test(quiet.content.at(-1).text));
+  const cmTool = (await client.listTools()).tools.find((t) => t.name === "close_model");
+  assert.match(cmTool.description, /only changes were ACE runs that changed no element/);
+  const ercTool = (await client.listTools()).tools.find((t) => t.name === "execute_revit_code");
+  assert.match(JSON.stringify(ercTool.inputSchema), /readonly = always rolled back \(use it for read-only checks: health checks, audits\)/);
+  assert.match(fs.readFileSync(new URL("../instructions.md", import.meta.url), "utf8"), /read-only checks \(health checks, audits, counts\) go in mode "readonly"/);
 }
 // --- worksets: audit (read-only table and files), rename and delete_empty through the gate ---
 {

@@ -117,7 +117,8 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   register_update without confirm, show the report, then confirm.
 - Opening and closing models: open_model (path; detach preserve_worksets for a central or cloud model you must not
   touch; discard_worksets only after the user agreed, with confirm: true; audit; worksets; close_previous) and
-  close_model (a non-active model, closed without saving). For a batch of models in one Revit session: open_model each
+  close_model (a non-active model, closed without saving; one ACE opened whose only changes were ACE runs that changed no
+  element closes without discard). For a batch of models in one Revit session: open_model each
   path with close_previous: true, run the job, and report per model; say when a previous model was kept open and why.
   Report every dialog answered while opening, unanswered ones as warnings, unresolved links and the transmitted flag;
   clear_transmitted writes into the file: working copies only, confirm: true after the user's OK.
@@ -175,7 +176,8 @@ writes, Save/SaveAs, RenameWorkset, sync and exports cannot be undone: readonly 
 compiles and screens them (not executed), so the real run needs allow_risky and the user's consent.
 Long loops: call ctx.ThrowIfCancelled() now and then, so a cancel in Claude stops the run (everything rolls back).
 Modes: "auto" (default: one transaction) and "manual" (your own transactions) are each merged into ONE
-undo step; "readonly" is always rolled back. "no_transaction" (allow_risky; dry run compiles only; not undoable) only for APIs
+undo step; "readonly" is always rolled back: read-only checks (health checks, audits, counts) go in mode "readonly", since an
+auto run that changes nothing still commits and leaves the model modified. "no_transaction" (allow_risky; dry run compiles only; not undoable) only for APIs
 that fail with "any open transaction phase" (RevitLinkType.LoadFrom, SaveAs, closing another model). compile_only: true checks that code compiles without
 running it. Compile errors give line numbers in your code; results include scriptMs (timing).
 Warnings are auto-dismissed and returned; hard Revit errors roll the whole run back. A dialog Revit shows during a run is

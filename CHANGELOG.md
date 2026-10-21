@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.14.12 (21 Oct 2026)
+- Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
+- **close_model after read-only checks:** each model ACE opened now records whether every change since the open came from
+  ACE runs that changed no element (0 added, 0 modified, 0 deleted per committed transaction; rolled-back previews do not
+  count; a user change, an element change by ACE, undo / redo or an unreadable event clears it; kept across reload_addin,
+  missing = cleared). Such a modified model (detached, or not workshared) is closed without saving and without discard /
+  confirm, with the note "closed: its only changes were ACE runs that changed no element"; also for close_previous and
+  workset batches. Live gap: a health check in mode auto committed an empty transaction, so seven detached copies stayed
+  open (close_model wanted discard + confirm).
+- **execute_revit_code:** an applied auto-mode run that changed no element adds the hint "no element changed: run checks
+  like this in mode readonly". instructions.md and the mode description: read-only checks (health checks, audits) go in
+  mode readonly.
+
 ## 1.14.11 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **save_model save_as:** `save_as: { path, overwrite?, as_central? }` saves the named model (handle / path / model, as
