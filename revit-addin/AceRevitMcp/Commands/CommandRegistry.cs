@@ -62,6 +62,7 @@ namespace AceRevitMcp.Commands
                 ["view_membership_fill"] = Rules.ViewMembership.Run,
                 ["export_deliverables"] = ExportDeliverables.Run,
                 ["reload_addin"] = LoaderLink.ReloadCommand,
+                ["purge_unused"] = PurgeUnused.Run,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

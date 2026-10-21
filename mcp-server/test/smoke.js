@@ -258,6 +258,29 @@ const bridge = http.createServer((req, res) => {
           verify: fail ? { ok: false, checked: 7, mismatches: [{ what: "Walls", before: 7, after: 6 }] } : { ok: true, checked: 7, mismatches: [] },
           done: args.dry_run || fail ? { renamed: 0, deleted: 0, moved: 0 } : done, ...(args.dry_run || fail ? { wouldDo: done } : {}) } });
       }
+      case "purge_unused": {
+        // G10: full Purge Unused in passes; check = pass 1, dry run / apply = every pass (planHash over all of them).
+        if (args.expect_model && args.expect_model !== "Test") return reply({ ok: true, result: { success: false, stage: "wrong_model", error: "wrong model" } });
+        const step = (n, count, byCategory, names) => ({ id: `pass-${n}`, kind: "purge", count, byCategory, names });
+        const p1 = step(1, 12, [{ category: "Families", found: 7 }, { category: "Materials", found: 5 }], ["TST Chair: TST 600", "TST Concrete"]);
+        const base = { model: "Test", aceVersion: SERVER_VERSION, source: "Document.GetUnusedElements", maxPasses: args.max_passes, found: 12, kept: 1, keptIds: [77], blocked: [], echo: args };
+        if (args.check_only) return reply({ ok: true, result: { ...base, success: true, checkOnly: true, planHash: `ph1-${args.max_passes}`, plan: [p1], unusedLeft: 13 } });
+        const all = `ph-all-${args.max_passes}`;
+        if (!args.dry_run && args.max_passes === 4)
+          return reply({ ok: true, result: { ...base, success: false, stage: "plan-changed", code: "plan-changed", rolledBack: true, planHash: `ph1-${args.max_passes}`, plan: [p1],
+            planChangedDetail: "pass 2 finds 5 unused elements, the dry run's pass 2 found 4 (1 not in the dry run, 0 of the dry run's no longer unused)",
+            error: "Nothing was changed", blocked: [{ what: "the whole plan", why: "differs", code: "plan-changed" }] } });
+        if (args.expect_plan && args.expect_plan !== all) return reply({ ok: true, result: { ...base, success: false, stage: "plan-changed", code: "plan-changed", error: "plan differs", blocked: [{ what: "the plan", why: "differs", code: "plan-changed" }] } });
+        const passes = [
+          { pass: 1, found: 12, deleted: 11, alsoDeleted: 2, failed: 1, attempts: 5, byCategory: [{ category: "Families", found: 7, deleted: 6 }, { category: "Materials", found: 5, deleted: 5 }], names: ["TST Chair: TST 600"], skipped: [{ id: 901, name: "TST Stuck", category: "Families", error: "TST refused" }] },
+          { pass: 2, found: 4, deleted: 4, alsoDeleted: 0, failed: 0, attempts: 1, byCategory: [{ category: "Materials", found: 4, deleted: 4 }], names: ["TST Paint"], skipped: [] },
+          { pass: 3, found: 1, deleted: 1, alsoDeleted: 0, failed: 0, attempts: 1, byCategory: [{ category: "Fill Patterns", found: 1, deleted: 1 }], names: ["TST Hatch"], skipped: [] }];
+        const counts = { deleted: 16, passes: 3 };
+        return reply({ ok: true, result: { ...base, success: true, planHash: all, plan: [p1, step(2, 4, [{ category: "Materials", found: 4 }], ["TST Paint"]), step(3, 1, [{ category: "Fill Patterns", found: 1 }], ["TST Hatch"])],
+          passes, stoppedBecause: "max-passes", totalDeleted: 16, totalAlsoDeleted: 2, unusedLeft: 2, unusedLeftDetail: { linkTypes: 1, skipped: 1, other: 0 },
+          rolledBack: false, dryRun: !!args.dry_run, transaction: args.dry_run ? "RolledBack" : "Committed", verify: { ok: true, checked: 18, mismatches: [] },
+          done: args.dry_run ? { deleted: 0, passes: 0 } : counts, ...(args.dry_run ? { wouldDo: counts } : {}) } });
+      }
       case "view_membership_fill": {
         // The 1.12.6 contract: the view's elements -> value_in, the rest -> value_out; a missing parameter needs a definition.
         if (args.expect_model && args.expect_model !== "Test") return reply({ ok: true, result: { success: false, stage: "wrong_model", error: "wrong model" } });
@@ -391,9 +414,13 @@ await client.connect(transport);
 
 const call = async (name, args = {}) => client.callTool({ name, arguments: args });
 const json = (r) => JSON.parse(r.content[0].text);
+{ // 1.14.10: save_model never saves "whatever is active"; the model must be named.
+  const sv = await call("save_model", { allow_risky: true });
+  assert.ok(sv.isError && /Name the model to save/.test(sv.content[0].text), "save_model without handle / path / model is refused");
+}
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "job_status", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "register_update", "reload_addin", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_model", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "job_status", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "purge_unused", "register_update", "reload_addin", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_model", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -634,27 +661,39 @@ assert.match(wsApplied, /Committed/, "after the identical preview, applying work
   await call("assign_worksets", { check_only: true, rules: [{ workset: "TST_A", category: "Walls" }] });
   assert.equal(prCalls(), n0, "G9: rules without a models key need no extra question to Revit");
   const g9 = await call("assign_worksets", { check_only: true, rules: [
-    { id: "g9-inc", workset: "TST_A", models: "Test" }, { id: "g9-other", workset: "TST_B", models: ["TST_ARC", "TST_MEP"] }, { workset: "TST_C" },
-    { id: "g9-wild", workset: "TST_D", models: "T*" }, { id: "g9-ex", workset: "TST_E", models: ["*", "!test.rvt"] }] });
+    { id: "g9-inc", workset: "TST_A", models: "Test", modelsScope: "only" }, { id: "g9-other", workset: "TST_B", models: ["TST_ARC", "TST_MEP"], modelsScope: "only" }, { workset: "TST_C" },
+    { id: "g9-wild", workset: "TST_D", models: "T*", modelsScope: "only" }, { id: "g9-ex", workset: "TST_E", models: ["*", "!test.rvt"], modelsScope: "only" }] });
   assert.deepEqual(seen.filter((x) => x.command === "assign_worksets").at(-1).args.rules.map((r) => r.workset), ["TST_A", "TST_C", "TST_D"],
     "G9: include (exact, case-insensitive), no key and wildcard rules are sent; another model's rule and an excluded one are not");
   assert.equal(g9.content.at(-1).text, "Rules skipped for Test (their models key does not name it): 2 of 5: g9-other (models TST_ARC, TST_MEP), g9-ex (excluded by !test.rvt).");
   const nA = seen.filter((x) => x.command === "assign_worksets").length;
-  const g9none = await call("assign_worksets", { check_only: true, rules: [{ workset: "TST_B", models: "TST_ARC" }] });
+  const g9none = await call("assign_worksets", { check_only: true, rules: [{ workset: "TST_B", models: "TST_ARC", modelsScope: "only" }] });
   assert.ok(g9none.isError && /No workset rule applies to the open model\. Rules skipped for Test .*: 1 of 1: TST_B \(models TST_ARC\)\. Nothing was checked or changed\./.test(g9none.content[0].text)
     && seen.filter((x) => x.command === "assign_worksets").length === nA, "G9: no rule left for the model: said, Revit not asked to assign");
+  // Backward-safe (1.14.10): a rule saved before the marker (models = where it was proposed, no modelsScope) still applies.
+  const g9old = await call("assign_worksets", { check_only: true, rules: [
+    { id: "plan-tst-walls", workset: "TST_W", category: ["Walls"], models: ["TST_ARC"], source: "workset_plan" }, { id: "plan-tst-doors", workset: "TST_DR", category: ["Doors"], models: ["TST_ARC"], modelsScope: "only" },
+    { id: "plan-tst-here", workset: "TST_H", category: ["Floors"], models: ["Test"] }] });
+  const g9oldSent = seen.filter((x) => x.command === "assign_worksets").at(-1).args.rules;
+  assert.ok(!g9old.isError && g9oldSent.map((r) => r.workset).join() === "TST_W,TST_H" && g9oldSent.every((r) => r.models === undefined),
+    "G9: a legacy rule (no modelsScope) is sent and applies; its provenance list is not sent; a marked one for another model is not sent");
+  assert.equal(g9old.content.at(-1).text, "Rules skipped for Test (their models key does not name it): 1 of 3: plan-tst-doors (models TST_ARC).\n1 rule(s) list other models in `models` (saved before 1.14.10, read as where they were proposed, not a limit): set modelsScope: \"only\" to limit them.", "G9: the legacy rules get one compact line");
+  const g9legacyOnly = await call("assign_worksets", { check_only: true, rules: [{ workset: "TST_B", models: "TST_ARC" }] });
+  assert.ok(!g9legacyOnly.isError && /^1 rule\(s\) list other models in `models`/.test(g9legacyOnly.content.at(-1).text), "G9: a legacy rule alone is not skipped: no 'no rule applies' error");
   const Wg = await import("../lib/worksets.js"), WPg = await import("../lib/worksetplan.js");
   assert.deepEqual(Wg.modelNamesOf({ model: "TST_STR_detached.rvt" }), ["tst_str_detached", "tst_str"], "G9: a detached copy is known by its own name too");
   assert.deepEqual(Wg.modelNamesOf({ model: "TST_STR_jdoe", modelNames: ["TST_STR_jdoe", "tst_str"] }), ["tst_str_jdoe", "tst_str"], "G9: the add-in's names (title, central) are used when sent");
   assert.ok(Wg.ruleAppliesTo({ models: [] }, ["x"]).applies && Wg.ruleAppliesTo({ models: "!TST_ARC" }, ["tst_str"]).applies && !Wg.ruleAppliesTo({ models: "!TST_*" }, ["tst_str"]).applies, "G9: an empty list applies everywhere; an exclusion alone keeps the others");
   // Per-model rules in one project file: disjoint models lists never conflict or overlap; the same rule for another model grows its list.
-  const mj = { worksets: { rules: [{ id: "plan-tst-arc-walls", workset: "TST-ARC-WALLS", category: ["Walls"], models: ["TST_ARC"] }] } };
-  const mg = WPg.mergeRules(mj, [{ id: "plan-tst-st-walls", workset: "TST-ST-WALLS", category: ["Walls"], models: ["TST_STR"] }, { id: "plan-tst-arc-walls", workset: "TST-ARC-WALLS", category: ["Walls"], models: ["TST_ARC2"] }]);
+  const only = "only";
+  const mj = { worksets: { rules: [{ id: "plan-tst-arc-walls", workset: "TST-ARC-WALLS", category: ["Walls"], models: ["TST_ARC"], modelsScope: only }] } };
+  const mg = WPg.mergeRules(mj, [{ id: "plan-tst-st-walls", workset: "TST-ST-WALLS", category: ["Walls"], models: ["TST_STR"], modelsScope: only }, { id: "plan-tst-arc-walls", workset: "TST-ARC-WALLS", category: ["Walls"], models: ["TST_ARC2"], modelsScope: only }]);
   assert.ok(mg.added.length === 1 && !mg.conflicts.length && !mg.overlaps.length && mg.same.length === 1 && mg.json.worksets.rules.find((r) => r.workset === "TST-ARC-WALLS").models.join() === "TST_ARC,TST_ARC2", "G9: per-model rules merge without conflicts");
-  assert.equal(WPg.mergeRules({ worksets: { rules: [{ id: "a", workset: "TST-ARC-WALLS", category: ["Walls"] }] } }, [{ id: "b", workset: "TST-ST-WALLS", category: ["Walls"], models: ["TST_STR"] }]).conflicts.length, 1, "G9: a rule for every model still conflicts");
+  assert.equal(WPg.mergeRules({ worksets: { rules: [{ id: "a", workset: "TST-ARC-WALLS", category: ["Walls"] }] } }, [{ id: "b", workset: "TST-ST-WALLS", category: ["Walls"], models: ["TST_STR"], modelsScope: only }]).conflicts.length, 1, "G9: a rule for every model still conflicts");
+  assert.equal(WPg.mergeRules({ worksets: { rules: [{ id: "a", workset: "TST-ARC-WALLS", category: ["Walls"], models: ["TST_ARC"] }] } }, [{ id: "b", workset: "TST-ST-WALLS", category: ["Walls"], models: ["TST_STR"], modelsScope: only }]).conflicts.length, 1, "G9: a legacy rule (no modelsScope) applies everywhere, so it still conflicts");
   const vr = (o) => WPg.vaultRules([{ workset: "TST-A", categories: ["Walls"], levels: [], words: [], models: ["Test"], ...o }], [], o.opts)[0];
-  assert.ok(vr({}).models.join() === "Test" && !vr({ create: true }).models && !WPg.vaultRules([{ workset: "TST-A", categories: ["Walls"], levels: [], words: [], models: ["Test"] }], [], { createMissing: true })[0].models,
-    "G9: a saved rule names its models, unless it may create its workset (create, create_missing)");
+  assert.ok(vr({}).models.join() === "Test" && vr({}).modelsScope === "only" && !vr({ create: true }).models && !vr({ create: true }).modelsScope && !WPg.vaultRules([{ workset: "TST-A", categories: ["Walls"], levels: [], words: [], models: ["Test"] }], [], { createMissing: true })[0].models,
+    "G9: a saved rule names its models with modelsScope only, unless it may create its workset (create, create_missing)");
 }
 // --- parameter_fill: a check is free, a fill needs its own identical dry run in the same model ---
 const plist = path.join(tmp, "params.csv");
@@ -1415,6 +1454,36 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const nv = await call("view_membership_fill", { ...base, view: "TST Missing", dry_run: true, explanation: "x" });
   assert.match(nv.content[0].text, /view TST Missing: no such view\. How to clear: check the view name/);
 }
+// --- purge_unused (G10): full Purge Unused in passes, not an element delete; dry run of every pass, then the identical apply ---
+{
+  const pu = () => seen.filter((x) => x.command === "purge_unused");
+  const base = { report_dir: path.join(tmp, "purge-out") };
+  const ck = await call("purge_unused", { ...base, check_only: true });
+  assert.ok(!ck.isError && pu().at(-1).args.check_only === true && pu().at(-1).args.max_passes === 3 && !("categories" in pu().at(-1).args) && !("keep" in pu().at(-1).args), "check: pass 1 read-only, 3 passes by default, full purge only");
+  assert.match(ck.content.at(-1).text, /^PURGE UNUSED in Test \(check, read-only, nothing changed\): Revit's Purge Unused \(Document\.GetUnusedElements\) in passes until nothing is left/);
+  assert.match(ck.content.at(-1).text, /Scope: full purge, all categories; max 3 passes; 1 Revit link type\(s\) never purged\.[\s\S]*Pass 1 would purge 12: Families 7, Materials 5 \(e\.g\. TST Chair: TST 600; TST Concrete\)/);
+  const ex = { ...base, explanation: "Full purge until nothing is unused" };
+  const n0 = pu().length;
+  const no = await call("purge_unused", ex);
+  assert.ok(no.isError && /not been previewed/.test(no.content[0].text) && pu().length === n0, "no apply without its dry run, refused before Revit is asked");
+  const dr = await call("purge_unused", { ...ex, dry_run: true });
+  assert.ok(!dr.isError && pu().at(-1).args.dry_run === true && pu().at(-1).args.expect_model === "Test" && pu().at(-1).args.expect_version === SERVER_VERSION, "dry run names its model and version");
+  const dt = dr.content.at(-1).text;
+  assert.match(dt, /Pass 1: found 12, would delete 11 \(\+2 dependent\), skipped 1 \(5 deletes: the set was split\)\. Families 6\/7, Materials 5/);
+  assert.match(dt, /Pass 3: found 1, would delete 1\. Fill Patterns 1; e\.g\. TST Hatch\./);
+  assert.match(dt, /Total: would delete 16 in 3 pass\(es\) \(stopped: max_passes reached\)\.\nUnused left after the last pass: 2 \(link types 1, could not be purged 1, other 0\)\./);
+  assert.match(dt, /- 901 TST Stuck \(Families\): TST refused/);
+  assert.match(dt, /Plan: pass-1 12, pass-2 4, pass-3 1 \(the apply must find exactly these, pass by pass\)\.\nplanHash: ph-all-3[\s\S]*PREVIEW ONLY/, "the dry run's plan and planHash cover every pass");
+  const ap = await call("purge_unused", ex);
+  assert.ok(!ap.isError && pu().at(-1).args.dry_run === false && pu().at(-1).args.expect_plan === "ph-all-3", "the apply passes the gate and carries the dry run's all-pass planHash");
+  assert.match(ap.content.at(-1).text, /\(applied as ONE undo step\)[\s\S]*Total: deleted 16 in 3 pass\(es\)[\s\S]*Run record: .*purge-unused-run-Test-/);
+  assert.match((await call("purge_unused", ex)).content[0].text, /not been previewed/, "a preview is used once");
+  assert.ok((await call("purge_unused", { ...ex, max_passes: 2 })).isError, "an apply that differs from the dry run (max_passes) is refused");
+  // A later pass finds something the dry run did not: the add-in rolls everything back and names the pass.
+  await call("purge_unused", { ...ex, max_passes: 4, dry_run: true });
+  const pc = await call("purge_unused", { ...ex, max_passes: 4 });
+  assert.ok(pc.isError && /the model changed since the preview: run the dry run again \(pass 2 finds 5 unused elements, the dry run's pass 2 found 4 \(1 not in the dry run/.test(pc.content.map((c) => c.text).join("\n")), "plan-changed names the pass that differs");
+}
 // --- export_deliverables: names from the vault's naming rule, IFC settings from the vault, blocks reported, a table ---
 {
   const eDir = path.join(tmp, "exp");
@@ -1728,10 +1797,10 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(avx.isError && wadm().filter((x) => x.args.action === "apply_plan" && !x.args.dry_run && !x.args.check_only).length === nApply, "another allow_visibility_change needs its own dry run");
   const wst = (await call("workset_plan", { action: "status", vault: wv })).content.map((c) => c.text).join("\n");
   assert.match(wst, /At apply, a moved element that a view on a sheet would show differently is held \(stays\) until the user agrees \(allow_visibility_change\)\./);
-  assert.ok(after.filter((r) => r.source === "workset_plan").every((r) => r.models?.join() === "Test") && !/Rules skipped/.test(wst), "G9: rules saved by workset_plan name their models; in that model none is skipped");
+  assert.ok(after.filter((r) => r.source === "workset_plan").every((r) => r.models?.join() === "Test" && r.modelsScope === "only") && !/Rules skipped|list other models/.test(wst), "G9: rules saved by workset_plan name their models; in that model none is skipped");
   // G9: the standard's rules for this model only (status and propose); the reply names the skipped ones.
   const g9v = path.join(tmp, "TST_G9", "ACE Vault"); fs.mkdirSync(g9v, { recursive: true });
-  fs.writeFileSync(path.join(g9v, "project-requirements.json"), JSON.stringify({ worksets: { rules: [{ id: "g9-beams", workset: "TST-ST-BEAMS", category: ["Structural Framing"], models: "Test" }, { id: "g9-arc", workset: "TST-ARC-DOORS", category: ["Doors"], models: ["TST_ARC*"] }] } }));
+  fs.writeFileSync(path.join(g9v, "project-requirements.json"), JSON.stringify({ worksets: { rules: [{ id: "g9-beams", workset: "TST-ST-BEAMS", category: ["Structural Framing"], models: "Test", modelsScope: "only" }, { id: "g9-arc", workset: "TST-ARC-DOORS", category: ["Doors"], models: ["TST_ARC*"], modelsScope: "only" }] } }));
   const g9s = (await call("workset_plan", { action: "status", vault: g9v, out_dir: path.join(tmp, "g9stat") })).content.at(-1).text;
   assert.ok(/Rules skipped for Test \(their models key does not name it\): 1 of 2: g9-arc \(models TST_ARC\*\)\./.test(g9s) && !/TST-ARC-DOORS/.test(g9s), g9s);
   const g9p = (await call("workset_plan", { action: "propose", vault: g9v, out_dir: path.join(tmp, "g9prop") })).content.at(-1).text;

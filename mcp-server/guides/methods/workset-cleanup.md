@@ -7,7 +7,9 @@ Audit first, then change. The workset list, the naming rule and the assignment r
 worksets.json applies below it (project rules first, office rules after them; "inheritOffice": false in the project
 section uses the project's alone). project_rules section "worksets" shows what is in force and where it came from.
 A rule's "models" key (a name or a list; * wildcards, "!name" excludes; matched on the model's title and central / file
-name) limits it to those models, so one project file holds per-model rules; without it a rule applies to every model.
+name) with `"modelsScope": "only"` limits it to those models, so one project file holds per-model rules; without models a
+rule applies to every model. A models list without modelsScope (saved before 1.14.10) only says where the rule was
+proposed: the rule still applies everywhere and the reply counts such rules; set modelsScope "only" to limit them.
 Replies name the rules skipped for the open model and why.
 
 ## With ACE's tools

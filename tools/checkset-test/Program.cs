@@ -582,12 +582,73 @@ class P {
     Check(Ap(@"""TST_S*""", names, out _) && !Ap(@"""TST_A*""", names, out _), "wildcard: * matches any run of characters");
     Check(!Ap(@"[""TST_*"", ""!TST_STR""]", names, out var w2) && w2 == "excluded by !TST_STR" && Ap(@"""!TST_ARC""", names, out _), "exclude: !pattern wins; an exclusion alone keeps every other model");
     var wrT = a.GetType("AceRevitMcp.Rules.WorksetRules");
-    var wsParsed = wrT.GetMethod("Parse").Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"[{ ""id"": ""r-all"", ""workset"": ""TST_A"" }, { ""id"": ""r-arc"", ""workset"": ""TST_B"", ""models"": ""TST_ARC*"" }, { ""workset"": ""TST_C"", ""models"": [""!TST_STR""] }, { ""workset"": ""TST_D"", ""models"": ""TST_STR"" }]").AsArray(), null, names });
+    var wsParsed = wrT.GetMethod("Parse").Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"[{ ""id"": ""r-all"", ""workset"": ""TST_A"" }, { ""id"": ""r-arc"", ""workset"": ""TST_B"", ""models"": ""TST_ARC*"", ""modelsScope"": ""only"" }, { ""workset"": ""TST_C"", ""models"": [""!TST_STR""], ""modelsScope"": ""Only"" }, { ""workset"": ""TST_D"", ""models"": ""TST_STR"", ""modelsScope"": ""only"" }]").AsArray(), null, names });
     var items = (IList)wrT.GetField("Items").GetValue(wsParsed); var skipped = (IList)wrT.GetField("Skipped").GetValue(wsParsed);
     var ruleT = a.GetType("AceRevitMcp.Rules.WorksetRules+Rule");
-    Check(items.Count == 2 && skipped.Count == 2 && (int)ruleT.GetField("Index").GetValue(items[1]) == 4, "Parse skips rules for other models; rule numbers stay the file's");
+    Check(items.Count == 2 && skipped.Count == 2 && (int)ruleT.GetField("Index").GetValue(items[1]) == 4, "Parse skips rules for other models (modelsScope only); rule numbers stay the file's");
     var line = (string)rmT.GetMethod("SkippedText").Invoke(null, new object[] { skipped, "TST_STR", 4 });
     Check(line == "Rules skipped for TST_STR (their models key does not name it): 2 of 4: r-arc (models TST_ARC*), TST_C (excluded by !TST_STR).", line ?? "no line");
+    // Backward-safe: a rule saved before 1.14.10 (models = where it was proposed, no modelsScope) is kept and noted, never skipped.
+    var wsLegacy = wrT.GetMethod("Parse").Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"[{ ""id"": ""plan-tst-walls"", ""workset"": ""TST_W"", ""models"": [""TST_ARC""], ""source"": ""workset_plan"" }, { ""id"": ""plan-tst-doors"", ""workset"": ""TST_DR"", ""models"": [""TST_ARC""], ""modelsScope"": ""only"" }, { ""id"": ""plan-tst-str"", ""workset"": ""TST_S"", ""models"": [""TST_STR""] }]").AsArray(), null, names });
+    var lItems = (IList)wrT.GetField("Items").GetValue(wsLegacy); var lSkipped = (IList)wrT.GetField("Skipped").GetValue(wsLegacy);
+    var legacy = (System.Collections.Generic.List<string>)wrT.GetField("Legacy").GetValue(wsLegacy);
+    Check(lItems.Count == 2 && lSkipped.Count == 1 && legacy.Count == 1 && legacy[0] == "plan-tst-walls", "legacy models list (no modelsScope): the rule applies, counted once; a marked one is skipped; a list naming the model is not legacy");
+    var mLine = (string)wrT.GetMethod("ModelsText").Invoke(wsLegacy, new object[] { "TST_STR" });
+    Check(mLine == "Rules skipped for TST_STR (their models key does not name it): 1 of 3: plan-tst-doors (models TST_ARC).\n1 rule(s) list other models in `models` (saved before 1.14.10, read as where they were proposed, not a limit): set modelsScope: \"only\" to limit them.", mLine ?? "no line");
+    Check((string)wrT.GetMethod("ModelsText").Invoke(wrT.GetMethod("Parse").Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"[{ ""workset"": ""TST_A"" }]").AsArray(), null, names }), new object[] { "TST_STR" }) == null, "no models key: no line");
+    var limits = rmT.GetMethod("Limits");
+    Check((bool)limits.Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@""" ONLY """) }) && !(bool)limits.Invoke(null, new object[] { null }) && !(bool)limits.Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"""where""") }), "modelsScope: only \"only\" (any case) limits");
+
+    // purge_unused (G10): full purge in passes until a pass finds nothing; a refused set is split in halves, never per id up
+    // front; the apply must find what each dry-run pass found, else it stops before that pass deletes anything.
+    var puPlT = a.GetType("AceRevitMcp.Commands.PurgeLogic"); var puSrT = a.GetType("AceRevitMcp.Commands.PurgeLogic+SetResult");
+    var puDelSet = puPlT.GetMethod("DeleteSet");
+    IList PuF(object o, string f) => (IList)o.GetType().GetField(f).GetValue(o);
+    int PuAttempts(object r) => (int)puSrT.GetField("Attempts").GetValue(r);
+    // A TST model: family 10 with types 11 and 12 (no instances), material 20 used only by type 11, type 30 Revit refuses, link type 40 excluded.
+    System.Collections.Generic.HashSet<long> puModel = null;
+    System.Collections.Generic.IEnumerable<long> PuUnused() => puModel.Where(i => i == 10 ? !puModel.Contains(11) && !puModel.Contains(12) : i == 20 ? !puModel.Contains(11) : true).ToList();
+    var puCalls = new System.Collections.Generic.List<int>();
+    Func<System.Collections.Generic.List<long>, string> puTryDel = chunk => { puCalls.Add(chunk.Count); if (chunk.Contains(30)) return "TST refused"; foreach (var i in chunk) puModel.Remove(i); return null; };
+    Func<int, System.Collections.Generic.List<long>, object> puPurge = (n, set) => puDelSet.Invoke(null, new object[] { set, puTryDel, 12 });
+    var puN = System.Linq.Expressions.Expression.Parameter(typeof(int)); var puS = System.Linq.Expressions.Expression.Parameter(typeof(System.Collections.Generic.List<long>));
+    var puFuncT = typeof(Func<,,>).MakeGenericType(typeof(int), typeof(System.Collections.Generic.List<long>), puSrT);
+    var puPurgeTyped = System.Linq.Expressions.Expression.Lambda(puFuncT, System.Linq.Expressions.Expression.Convert(System.Linq.Expressions.Expression.Invoke(System.Linq.Expressions.Expression.Constant(puPurge), puN, puS), puSrT), puN, puS).Compile();
+    object[] PuRun(Func<int, System.Collections.Generic.List<long>, string> before) {
+      puModel = new System.Collections.Generic.HashSet<long> { 10, 11, 12, 20, 30, 40 }; puCalls.Clear();
+      var args = new object[] { (Func<System.Collections.Generic.IEnumerable<long>>)PuUnused, puPurgeTyped, 3, new System.Collections.Generic.List<long> { 40 }, before, null, null };
+      var passes = (IList)puPlT.GetMethod("RunPasses").Invoke(null, args);
+      return new object[] { passes, args[5], args[6] }; }
+    var puRes = PuRun(null); var puPasses = (IList)puRes[0];
+    var puP1 = puPasses[0]; var puR1 = puP1.GetType().GetField("Result").GetValue(puP1);
+    Check(puPasses.Count == 2 && (string)puRes[1] == "nothing-left", $"purge: 2 passes with deletes, then a pass that finds nothing ({puPasses.Count}, {puRes[1]})");
+    Check(PuF(puP1, "Found").Count == 3 && PuF(puR1, "Deleted").Count == 2 && PuF(puR1, "Failed").Count == 1 && PuAttempts(puR1) == 5 && puCalls[0] == 3,
+      "purge pass 1: ONE delete of the whole set first, then halves; the refused id alone is listed");
+    var puP2 = puPasses[1]; var puR2 = puP2.GetType().GetField("Result").GetValue(puP2);
+    Check(PuF(puP2, "Found").Count == 2 && PuF(puR2, "Deleted").Count == 2 && PuAttempts(puR2) == 1, "purge pass 2: what became unused (family, material) goes in one delete; the refused id and the link type are not tried again");
+    Check(puModel.SetEquals(new[] { 30L, 40L }), "purge: only the refused element and the link type are left");
+    // The apply compares each pass with the dry run's same pass: pass 2 differs (an extra id) -> stops before pass 2 deletes anything.
+    var puCompare = puPlT.GetMethod("Compare");
+    var puPreview = new[] { new System.Collections.Generic.List<long> { 11, 12, 30 }, new System.Collections.Generic.List<long> { 10 } };
+    Func<int, System.Collections.Generic.List<long>, string> puSame = (n, set) => (string)puCompare.Invoke(null, new object[] { n, n <= puPreview.Length ? puPreview[n - 1] : new System.Collections.Generic.List<long>(), set });
+    var puDrift = PuRun(puSame);
+    Check((string)puDrift[1] == "plan-changed" && ((IList)puDrift[0]).Count == 1 && puModel.Contains(10) && puModel.Contains(20)
+      && (string)puDrift[2] == "pass 2 finds 2 unused elements, the dry run's pass 2 found 1 (1 not in the dry run, 0 of the dry run's no longer unused)", $"purge apply: pass 2 differs from the dry run, stopped before it deleted anything ({puDrift[2]})");
+    puPreview[1].Add(20);
+    var puSameRun = PuRun(puSame);
+    Check((string)puSameRun[1] == "nothing-left" && ((IList)puSameRun[0]).Count == 2, "purge apply: the same passes as the dry run (and an empty pass 3 as in the dry run) run through");
+    Check(puCompare.Invoke(null, new object[] { 3, new System.Collections.Generic.List<long>(), new System.Collections.Generic.List<long> { 5 } }) != null, "purge apply: a pass the dry run did not have (it stopped at zero) differs");
+    var puBig = Enumerable.Range(0, 16).Select(i => (long)i).ToList();
+    var puR3 = puDelSet.Invoke(null, new object[] { puBig, (Func<System.Collections.Generic.List<long>, string>)(c => c.Contains(7) ? "TST refused" : null), 3 });
+    Check(PuAttempts(puR3) == 3 && PuF(puR3, "Deleted").Count == 8 && PuF(puR3, "NotTried").Count == 8 && PuF(puR3, "Failed").Count == 0, "purge: at most max attempts; the untried rest is listed, not deleted one by one");
+    var puR4 = puDelSet.Invoke(null, new object[] { puBig, (Func<System.Collections.Generic.List<long>, string>)(c => null), 12 });
+    Check(PuAttempts(puR4) == 1 && PuF(puR4, "Deleted").Count == 16, "purge: a set Revit accepts is ONE delete");
+    var puPh = puPlT.GetMethod("PlanHash");
+    string PuH(params long[][] passes) => (string)puPh.Invoke(null, new object[] { passes.Select(p => (System.Collections.Generic.IEnumerable<long>)p).ToList(), 3 });
+    Check(PuH(new long[] { 1, 2 }, new long[] { 5 }) == PuH(new long[] { 2, 1 }, new long[] { 5 }) && PuH(new long[] { 1, 2 }, new long[] { 5 }) != PuH(new long[] { 1, 2 }, new long[] { 6 })
+      && PuH(new long[] { 1 }, new long[] { 2 }) != PuH(new long[] { 1, 2 }), "purge plan hash: order-free within a pass, covers every pass and which pass an id is in");
+    var puTop = (IList)puPlT.GetMethod("Top").Invoke(null, new object[] { new[] { "A", "B", "B", "C", "C", "C" }, 2 });
+    Check(puTop.Count == 3 && puTop[0].ToString() == "[C, 3]" && puTop[2].ToString() == "[other, 1]", "purge: top categories, the rest as other");
 
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }

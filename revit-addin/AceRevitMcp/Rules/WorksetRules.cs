@@ -33,7 +33,16 @@ namespace AceRevitMcp.Rules
         public string Source;
         /// <summary>Rules left out because their models key (G9) does not name this model: (id or workset, why).</summary>
         public List<(string Rule, string Why)> Skipped = new List<(string Rule, string Why)>();
+        /// <summary>Rules kept although their models key does not name this model: no modelsScope "only" (saved before 1.14.10).</summary>
+        public List<string> Legacy = new List<string>();
         public int Total;
+
+        /// <summary>The skipped-rules and legacy-models lines for this model (G9), one per line; null when neither applies.</summary>
+        public string ModelsText(string model)
+        {
+            var lines = new[] { RuleModels.SkippedText(Skipped, model, Total), RuleModels.LegacyText(Legacy.Count) }.Where(l => l != null).ToList();
+            return lines.Count == 0 ? null : string.Join("\n", lines);
+        }
 
         /// <summary>The names the open model is known by, for a rule's models key (title, central / file name, cloud ids).</summary>
         public static List<string> ModelNames(Document doc) => RuleModels.Names(doc.Title, ProjectRules.Keys(doc));
@@ -41,7 +50,10 @@ namespace AceRevitMcp.Rules
         public bool NeedsZone => Items.Any(r => r.Zone != null || r.Workset.Contains("{zone}"));
         public bool NeedsDepartment => Items.Any(r => r.Department != null);
 
-        /// <summary>The rules; with <paramref name="modelNames"/>, a rule whose models key does not name the model is skipped.</summary>
+        /// <summary>
+        /// The rules; with <paramref name="modelNames"/>, a rule with modelsScope "only" whose models key does not name the
+        /// model is skipped; one without the marker is kept (as before) and counted in <see cref="Legacy"/>.
+        /// </summary>
         public static WorksetRules Parse(JsonArray rules, string defaultWorkset = null, IList<string> modelNames = null)
         {
             List<string> ListOf(JsonNode n) =>
@@ -55,7 +67,11 @@ namespace AceRevitMcp.Rules
                 var ws = o["workset"]?.ToString();
                 if (string.IsNullOrWhiteSpace(ws)) continue;
                 r.Total++;
-                if (modelNames != null && !RuleModels.Applies(o["models"], modelNames, out var why)) { r.Skipped.Add((o["id"]?.ToString() ?? ws, why)); continue; }
+                if (modelNames != null && !RuleModels.Applies(o["models"], modelNames, out var why))
+                {
+                    if (RuleModels.Limits(o["modelsScope"])) { r.Skipped.Add((o["id"]?.ToString() ?? ws, why)); continue; }
+                    r.Legacy.Add(o["id"]?.ToString() ?? ws);
+                }
                 r.Items.Add(new Rule
                 {
                     Index = i, Workset = ws, Categories = ListOf(o["category"]),
@@ -243,7 +259,7 @@ namespace AceRevitMcp.Rules
             return new JsonObject
             {
                 ["rules"] = $"{Name ?? "rules"} ({Source ?? "given in the request"}), {Items.Count} rules",
-                ["rulesSkipped"] = RuleModels.SkippedText(Skipped, doc.Title, Total),
+                ["rulesSkipped"] = ModelsText(doc.Title),
                 ["mode"] = opt.PlanOnly ? "check only (nothing moved)" : opt.OnlyWorkset1 ? "assign (only elements on Workset1)" : "assign",
                 ["elementsChecked"] = elements.Count - skippedNotWs1,
                 ["alreadyOnTheRightWorkset"] = correct,

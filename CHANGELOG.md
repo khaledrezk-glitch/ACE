@@ -1,14 +1,30 @@
 # Changelog
 
-## Unreleased (held until the current submission is closed)
+## 1.14.10 (21 Oct 2026)
+- Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
+- **Purge unused (G10):** new `purge_unused` (add-in command and MCP tool): a full Purge Unused in passes until nothing
+  is left (the owner's "purge three times" method; max_passes default 3, at most 5), not an element delete. Each pass
+  deletes the list Revit's Purge Unused shows (`Document.GetUnusedElements`, all categories) with ONE `Document.Delete`
+  in its own transaction; a refused set is split in halves (a fresh transaction per attempt, at most 12, no
+  SubTransactions, no per-id deletes) and the ids that still fail are listed; Revit link types are never purged. All
+  passes are one TransactionGroup: check_only (pass 1), dry run (every pass, rolled back), identical apply = ONE undo
+  step. The planHash covers every pass's set: an apply whose pass finds something else than the dry run's same pass
+  stops before that pass deletes anything and rolls everything back (plan-changed, naming the pass). Reply: per pass
+  found / deleted / by category / names, total, "unused left after the last pass". Specific types: Revit's Purge dialog
+  by hand. NativeChange gains `ownTransactions` (an inner transaction left open is rolled back before the group).
+- **Right model only:** save_model requires handle, path or model (it no longer saves whatever model is active: a
+  switched Revit window saved the wrong model live); execute_revit_code takes `expect_model` and refuses, running
+  nothing, when the active model is another one.
 - **DWFx warm-up export:** Revit takes the in-session print settings only after a first DWFx export in the session
   (live finding); a one-sheet warm-up export into a scratch folder now runs before the real one, inside the same
   rolled-back transaction.
 - **Per-model workset rules (G9):** a rule's `models` key (exact or `*`, `!` excludes, case-insensitive; matched on the
   title, central / file path and cloud ids) limits it to those models in assign_worksets, workset audit / rename /
-  delete_empty, workset_plan propose / status and the model check; skipped rules are named in the reply. Rules saved by
-  workset_plan list every model they were proposed for. NOTE: rules saved by 1.13.x list only the first model; add the
-  other model names before upgrading, or those models skip the rule (the reply says so).
+  delete_empty, workset_plan propose / status and the model check, when the rule also has `"modelsScope": "only"`;
+  skipped rules are named in the reply. Rules saved by workset_plan now list every model they were proposed for and carry
+  `modelsScope: "only"`. Backward-safe: a `models` list without the marker (saved by 1.13.x / 1.14.x, often only the
+  first model) does not limit the rule: it applies as before, and the reply adds one line ("N rule(s) list other models
+  in `models` ... set modelsScope: "only" to limit them"). Server and add-in agree; nothing to change before upgrading.
 - **DWFx sheet extents (#37):** a merged DWFx scales every page by the largest sheet's extents, so one title block with
   invisible lines above its frame shrank all pages to ~88 %. The pre-flight now compares each sheet's outline with its
   paper and every element on the sheet (BoundingBox in sheet coordinates) with the title block frame (1 mm tolerance) and

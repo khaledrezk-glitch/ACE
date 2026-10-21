@@ -25,6 +25,7 @@ import * as WorksetPlan from "./lib/worksetplan.js";
 import * as Capture from "./lib/capture.js";
 import * as RegisterUpdate from "./lib/registerupdate.js";
 import * as ViewFill from "./lib/viewfill.js";
+import * as Purge from "./lib/purge.js";
 import * as Deliverables from "./lib/deliverables.js";
 import * as Jobs from "./lib/jobs.js";
 import * as Methods from "./lib/methods.js";
@@ -562,6 +563,7 @@ const codeSchema = {
   step: z.number().int().min(1).optional().describe("Which step of plan this run is (1-based)"),
   allow_risky: z.boolean().optional().describe("Only after the user explicitly agreed: allow code touching files, programs, network, or saving/closing/syncing models"),
   compile_only: z.boolean().optional().describe("Only check that the code compiles; run nothing"),
+  expect_model: z.string().max(400).optional().describe("The model this code is meant for (title or path): refused, nothing run, when Revit's active model is another one (the user may have switched windows)"),
   preview_image: z.boolean().optional().describe("With dry_run: also return pictures (plan + 3D) of the area that would change, with the changed elements highlighted. Show them to the user before asking for confirmation. Use it for anything visual: placing, moving or creating elements."),
 };
 
@@ -572,13 +574,13 @@ function requireExplanation(dry_run, explanation) {
       "It is shown on the Apply card in the ACE panel. For a multi-step job also give 'plan' (all steps) and 'step' (this one).");
 }
 
-async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image, plan, step }) {
+async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image, plan, step, expect_model }) {
   mode = mode || "auto";
   const risky = screenCode(code, allow_risky);
   const modifies = mode !== "readonly" && !compile_only;
   if (modifies) requireExplanation(dry_run, explanation);
   // explanation, plan and step are for people (the Apply card); they are not part of the change's identity.
-  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, allow_risky: !!allow_risky, preview_image: !!(preview_image && dry_run), explanation, plan, step }, timeout_seconds ?? 300);
+  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, allow_risky: !!allow_risky, preview_image: !!(preview_image && dry_run), explanation, plan, step, ...(expect_model ? { expect_model } : {}) }, timeout_seconds ?? 300);
   const result = !modifies ? await send() : await gated(fingerprint("code", { code, mode, inputs: inputs || {} }),
     { apply: !dry_run, explanation, why: "Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal." },
     send, (r) => !!r?.success);
@@ -732,7 +734,7 @@ tool("close_model", {
 
 tool("save_model", {
   title: "Save a model",
-  description: "Save an open model to its own file (Save, never Save As; a workshared local is saved locally, NOT synchronized with central); it need not be the active model. It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and never-saved models. Which model: handle (from open_model), else path, else model (a title only one open model has; a shared title is refused); none: the active model.",
+  description: "Save an open model to its own file (Save, never Save As; a workshared local is saved locally, NOT synchronized with central); it need not be the active model. It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and never-saved models. Which model (required): handle (from open_model), else path, else model (a title only one open model has; a shared title is refused); never just the active one.",
   inputSchema: {
     handle: z.string().max(80).optional().describe("The handle open_model returned"),
     path: z.string().max(400).optional().describe("The model's file path (or the file ACE opened it from)"),
@@ -741,6 +743,8 @@ tool("save_model", {
   },
   annotations: writes,
 }, async (a) => {
+  if (!a.handle && !a.path && !a.model)
+    throw new RevitError("Name the model to save (handle from open_model, path, or model title): save_model no longer saves whatever model happens to be active, because the user may have switched Revit's window.");
   if (!a.allow_risky)
     throw new RevitError("Blocked for safety: saving writes the model file and cannot be undone. Tell the user which model would be saved; only if they agree, call again with allow_risky: true.");
   await pinSession();
@@ -788,14 +792,17 @@ async function worksetRules(rulesFile) {
 }
 /**
  * G9: the rules for the open model. A rule whose "models" key does not name it (title, central or file name; patterns
- * with *, "!" excludes) is left out before the request, so the preview and the apply use the same list. Revit is asked
- * for the model's names only when a rule has a models key. -> { rules, skipped, line }
+ * with *, "!" excludes) and that has modelsScope "only" is left out before the request, so the preview and the apply use
+ * the same list; a rule without the marker (models saved before 1.14.10: where it was proposed) is sent without its models
+ * key, so the add-in applies it as before and the reply says so once. Revit is asked for the model's names only when a
+ * rule has a models key. -> { rules, skipped, legacy, line }
  */
 async function rulesForOpenModel(rules, at) {
-  if (!Array.isArray(rules) || !rules.some((r) => r?.models != null)) return { rules, skipped: [], line: "" };
+  if (!Array.isArray(rules) || !rules.some((r) => r?.models != null)) return { rules, skipped: [], legacy: [], line: "" };
   if (!at) { try { at = await callRevit("project_rules", { section: "worksets" }, 30); } catch { at = null; } }
   const fm = Worksets.rulesForModel(rules, Worksets.modelNamesOf(at));
-  return { ...fm, line: Worksets.skippedRulesText(fm.skipped, at?.model, rules.length) };
+  const sent = fm.rules.map((r) => (r?.models != null && !Worksets.modelsLimit(r) ? (({ models, ...rest }) => rest)(r) : r));
+  return { ...fm, rules: sent, line: Worksets.rulesForModelText(fm, at?.model, rules.length) };
 }
 /** A reply with the skipped-rules line (G9) added, when there is one. */
 const withLine = (out, line) => { if (line) out.content.push({ type: "text", text: line }); return out; };
@@ -1263,7 +1270,7 @@ async function worksetStatus(a, timeout, list) {
     // The standard's rules for this model only (G9: a rule's models key).
     const fm = Worksets.rulesForModel(std?.rules ?? [], Worksets.modelNamesOf(x.facts));
     const s = WorksetPlan.statusOf(x.facts, { std: std ? { ...std, rules: fm.rules } : null, ctx, records: vf.records(), pending: vf.pending() });
-    const skipLine = Worksets.skippedRulesText(fm.skipped, s.model, std?.rules?.length);
+    const skipLine = Worksets.rulesForModelText(fm, s.model, std?.rules?.length);
     const when = localDate(new Date(), { time: true });
     const dir = a.out_dir ?? vf.dir;
     const stem = ParamExec.fileStem("worksets-status", s.model, when);
@@ -1316,7 +1323,7 @@ tool("workset_plan", {
       x.records = (await worksetFiles(a, x.facts)).records(); x.keep = vw?.keep ?? [];
       const fm = Worksets.rulesForModel(vw?.rules ?? [], Worksets.modelNamesOf(x.facts));
       x.savedRules = fm.rules;
-      const line = Worksets.skippedRulesText(fm.skipped, x.facts?.model, vw?.rules?.length);
+      const line = Worksets.rulesForModelText(fm, x.facts?.model, vw?.rules?.length);
       if (line) skipLines.push(line);
     }
     const { std, note: stdNote } = await worksetStandard(a);
@@ -1547,7 +1554,7 @@ async function planExecute(o) {
   if (!dry_run) state.delete(reqKey);
   if (result?.alreadyApplied) return text(result);
   if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
-  if (ClashResolve.planChanged(result)) return stop([ClashResolve.PLAN_CHANGED], `Blocked in ${model}: the model changed since the preview: run the dry run again. Nothing changed:`);
+  if (ClashResolve.planChanged(result)) return stop([result?.planChangedDetail ? { ...ClashResolve.PLAN_CHANGED, why: `${ClashResolve.PLAN_CHANGED.why} (${result.planChangedDetail})` } : ClashResolve.PLAN_CHANGED], `Blocked in ${model}: the model changed since the preview: run the dry run again. Nothing changed:`);
   if (result?.stage === "blocked" || (o.blocksOf(result).length && result?.success !== true))
     return stop(o.blocksOf(result).length ? o.blocksOf(result) : [{ what: "the plan", why: result?.error ?? "refused by the add-in" }], `Blocked in ${model}: ${result?.error ?? "nothing changed"}`);
   const rolledBack = !dry_run && o.rolledBackOf(result);
@@ -1632,6 +1639,31 @@ tool("view_membership_fill", {
     planOf: ViewFill.planOf, identity: ViewFill.planIdentity, blocksOf: (r) => ViewFill.blocksFor(r, { definition, categories: a.categories }), rolledBackOf: ViewFill.rolledBackOf,
     render: (r, mode, model, rolledBack) => ViewFill.planText(r, { model, mode, rolledBack, a: { ...a, parameter: d.use }, extra: extra(r), blocks: ViewFill.blocksFor(r, { definition, categories: a.categories }) }),
     nothing: (model) => `Every element in ${model} already has the right value.`,
+  });
+});
+
+// purge_unused (G10): a full Purge Unused in passes until zero, the owner's method (three passes), not an element delete:
+// each pass deletes Revit's own unused list (Document.GetUnusedElements) with ONE delete; the whole run is ONE undo step.
+const purgeState = new Map();
+tool("purge_unused", {
+  title: "Full purge unused (3 passes until zero)",
+  description: "Full Purge Unused (Revit's own unused list), 3 passes until zero, one undo step; for specific types use Revit's Purge dialog by hand. Not an element delete: each pass deletes the list Revit's Purge Unused shows (Document.GetUnusedElements, all categories: families, types, materials, styles... nothing placed) with ONE delete, and passes repeat until a pass finds nothing (max_passes, default 3, at most 5). Revit link types are never purged; a set Revit refuses is split in halves (never per-id deletes) and what still fails is listed. check_only (pass 1, read-only), then dry_run (every pass, rolled back), then the identical call: the apply must find exactly what each dry-run pass found, else nothing changes. Reply: per pass found / deleted / by category, the total, \"unused left after the last pass\" and the planHash. Never delete unused elements by id with execute_revit_code.",
+  inputSchema: {
+    max_passes: z.number().int().min(1).max(5).optional().describe("default 3 (the manual method); the run stops earlier when a pass finds nothing"),
+    check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().optional(),
+    plan: z.string().optional(), step: z.string().optional(), report_dir: z.string().optional(), vault: z.string().optional(),
+    max_ids: z.number().int().min(0).max(500).optional(), timeout_seconds: z.number().int().min(30).max(3600).optional(),
+  },
+  annotations: writes,
+}, async ({ check_only, dry_run, explanation, plan, step, timeout_seconds, ...a }) => {
+  const ident = { max_passes: a.max_passes ?? 3 };
+  return planExecute({
+    name: "purge unused", command: "purge_unused", ident,
+    req: { ...ident, max_ids: a.max_ids ?? 20, expect_version: VERSION },
+    check_only, dry_run, explanation, plan, step, state: purgeState, timeout: timeout_seconds ?? 900, a, folder: { sub: "purge", reports: "purge-unused" },
+    planOf: Purge.planOf, identity: Purge.planIdentity, blocksOf: Purge.blocksOf, rolledBackOf: Purge.rolledBackOf,
+    render: (r, mode, model, rolledBack) => Purge.planText(r, { model, mode, rolledBack, a }),
+    nothing: (model) => `Nothing is unused in ${model}: nothing to purge.`,
   });
 });
 

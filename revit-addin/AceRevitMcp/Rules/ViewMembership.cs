@@ -202,22 +202,8 @@ namespace AceRevitMcp.Rules
             }
 
             // Elements the writes need must be editable now.
-            if (doc.IsWorkshared)
-            {
-                var held = new List<(long Id, string Code, string Holder)>();
-                foreach (var id in setIn.Concat(setOut))
-                    try
-                    {
-                        var eid = new ElementId(id);
-                        var status = WorksharingUtils.GetCheckoutStatus(doc, eid, out var owner);
-                        if (status == CheckoutStatus.OwnedByOtherUser) { held.Add((id, "borrowed", string.IsNullOrWhiteSpace(owner) ? null : owner.Trim())); continue; }
-                        var upd = WorksharingUtils.GetModelUpdatesStatus(doc, eid);
-                        if (upd == ModelUpdatesStatus.UpdatedInCentral || upd == ModelUpdatesStatus.DeletedInCentral) held.Add((id, "central", null));
-                    }
-                    catch { }
-                foreach (var g in held.GroupBy(h => (h.Code, h.Holder)).OrderByDescending(g => g.Count()))
-                    blocks.Add(Block($"{g.Count()} element{(g.Count() == 1 ? "" : "s")} to write", g.Key.Code, g.Key.Holder, null, g.Count(), g.Select(h => h.Id)));
-            }
+            foreach (var g in Held(doc, setIn.Concat(setOut)).GroupBy(h => (h.Code, h.Holder)).OrderByDescending(g => g.Count()))
+                blocks.Add(Block($"{g.Count()} element{(g.Count() == 1 ? "" : "s")} to write", g.Key.Code, g.Key.Holder, null, g.Count(), g.Select(h => h.Id)));
 
             var bindText = bound.Def == null && def != null ? $"{def.Guid}|{string.Join(",", bindCats.Select(c => c.Id.Value).OrderBy(i => i))}" : null;
             var planHash = L.PlanHash(bindText, valueIn, valueOut, setIn, setOut);
@@ -346,6 +332,28 @@ namespace AceRevitMcp.Rules
                     result["note"] = "The self-check found a difference (see verify.mismatches): the whole change was rolled back. Nothing was changed.";
             }
             return result;
+        }
+
+        /// <summary>
+        /// Workshared: the elements this user cannot change now, "borrowed" (owned by another user, with the holder) or
+        /// "central" (changed or deleted in central since the last reload). Empty for a model that is not workshared.
+        /// Also used by purge_unused.
+        /// </summary>
+        internal static List<(long Id, string Code, string Holder)> Held(Document doc, IEnumerable<long> ids)
+        {
+            var held = new List<(long Id, string Code, string Holder)>();
+            if (!doc.IsWorkshared) return held;
+            foreach (var id in ids)
+                try
+                {
+                    var eid = new ElementId(id);
+                    var status = WorksharingUtils.GetCheckoutStatus(doc, eid, out var owner);
+                    if (status == CheckoutStatus.OwnedByOtherUser) { held.Add((id, "borrowed", string.IsNullOrWhiteSpace(owner) ? null : owner.Trim())); continue; }
+                    var upd = WorksharingUtils.GetModelUpdatesStatus(doc, eid);
+                    if (upd == ModelUpdatesStatus.UpdatedInCentral || upd == ModelUpdatesStatus.DeletedInCentral) held.Add((id, "central", null));
+                }
+                catch { }
+            return held;
         }
 
         // ---- the view -------------------------------------------------------------------------------------------------

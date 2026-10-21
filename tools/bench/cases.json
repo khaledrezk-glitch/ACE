@@ -1041,6 +1041,32 @@
       ]
     },
     {
+      "name": "Purge unused (G10): full purge dry run, 3 passes on the sample, rolled back, says what is left",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "purge_unused",
+      "args": {
+        "dry_run": true,
+        "max_passes": 3,
+        "max_ids": 5
+      },
+      "maxMs": 600000,
+      "expect": [
+        {
+          "path": "source",
+          "op": "==",
+          "value": "Document.GetUnusedElements"
+        },
+        {
+          "path": "planHash",
+          "op": "exists"
+        },
+        {
+          "path": "unusedLeft",
+          "op": "exists"
+        }
+      ]
+    },
+    {
       "name": "reload_addin answers from the ACE loader (G8; no force: nothing swaps when the installed build runs)",
       "model": "Snowdon Towers Sample Architectural",
       "command": "reload_addin",

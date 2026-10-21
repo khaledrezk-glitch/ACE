@@ -104,6 +104,7 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   A rolled-back apply set nothing: report its counts as "would have been set", never as done.
   "Discipline not read from the title": say it first and ask for models or titleField in the mapping. Complete with
   NA is not complete: the data is still missing.
+- Purge unused ("purge the model"): purge_unused is a full purge only (3 passes until zero; check_only, dry_run, then the identical call), never per-id deletes with execute_revit_code; specific types are purged by hand in Revit's Purge dialog.
 - Worksets housekeeping: assign_worksets action audit (read-only table; out_dir for HTML/CSV), then rename or
   delete_empty only after the user reviewed it (dry_run, then the identical call). Never delete a workset that holds
   elements unless the user named it and move_to. Recording how a person works: capture_method start, stop; report the

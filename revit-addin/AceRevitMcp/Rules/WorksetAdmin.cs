@@ -248,7 +248,7 @@ namespace AceRevitMcp.Rules
             {
                 var names = WorksetRules.ModelNames(doc);   // a rule's models key (G9)
                 rules = args["rules"] is JsonArray given ? WorksetRules.Parse(given, Args.Str(args, "default_workset"), names) : WorksetRules.Load(ProjectRules.For(doc), names);
-                if (rules != null && rules.Skipped.Count > 0) r["rulesSkipped"] = RuleModels.SkippedText(rules.Skipped, doc.Title, rules.Total);
+                if (rules?.ModelsText(doc.Title) is string modelsLine) r["rulesSkipped"] = modelsLine;
                 if (rules != null && rules.Items.Count == 0 && rules.DefaultWorkset == null) rules = null;
             }
             catch (Exception ex) { r["rulesError"] = ex.Message; rules = null; }

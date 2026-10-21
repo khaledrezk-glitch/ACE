@@ -119,6 +119,15 @@ public static class AceScript
                 return earlier.Rejected
                     ? new JsonObject { ["success"] = false, ["stage"] = "rejected", ["error"] = earlier.Note }
                     : new JsonObject { ["success"] = true, ["alreadyApplied"] = true, ["note"] = earlier.Note, ["outcome"] = earlier.Outcome };
+            // expect_model: the script runs on the ACTIVE document; refuse when the user switched Revit's window to another model
+            // (title, title without .rvt, or file path; case-insensitive).
+            if (Commands.Args.Str(args, "expect_model") is string expectModel && !string.IsNullOrWhiteSpace(expectModel))
+            {
+                var activeDoc = uiapp.ActiveUIDocument?.Document;
+                if (!Util.ModelNames.Same(activeDoc, expectModel))
+                    return new JsonObject { ["success"] = false, ["stage"] = "wrong_model",
+                        ["error"] = $"The active model is \"{activeDoc?.Title ?? "(none)"}\", not \"{expectModel}\": nothing ran. Activate {expectModel} (open_model activate) and call again." };
+            }
             var activeView = uiapp.ActiveUIDocument?.ActiveView?.Id.Value ?? 0;
             if (tracked && !dryRun && Companion.ActivityHub.WrongPlace(hash, uiapp.ActiveUIDocument?.Document, activeView) is string wrong)
                 return new JsonObject { ["success"] = false, ["stage"] = "wrong_model", ["error"] = wrong };

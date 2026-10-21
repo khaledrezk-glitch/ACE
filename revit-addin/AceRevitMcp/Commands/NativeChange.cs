@@ -36,9 +36,15 @@ namespace AceRevitMcp.Commands
         /// A trial run inside a command (e.g. clash_resolve finding the step behind a warning): always rolled back like a dry
         /// run, never an Apply card, never marked as applied, whatever dry_run says.
         /// </param>
+        /// <param name="ownTransactions">
+        /// The body opens and commits its own transactions inside the group (purge_unused: one per pass, a fresh one per retry
+        /// of a refused delete); no transaction is open around it. Still ONE undo step on apply, all rolled back on a dry run.
+        /// The body creates them with OwnTransaction, so one it leaves open is rolled back here first: the call then fails and
+        /// the whole group is rolled back (nothing changed).
+        /// </param>
         public static JsonObject Run(UIApplication app, JsonObject args, string kind, string title, Func<Document, bool, JsonObject> body, string rules = null,
             Func<Document, JsonObject, bool> verify = null, Func<Document, JsonObject, IReadOnlyList<(string Text, long[] Ids)>, bool> verifyWithWarnings = null,
-            bool trial = false)
+            bool trial = false, bool ownTransactions = false)
         {
             if (verifyWithWarnings != null) verify = null;
             var doc = Args.RequireDoc(app);
@@ -83,9 +89,9 @@ namespace AceRevitMcp.Commands
                 {
                     recording.NoteWarningRecords(doc);   // so resolved warnings are not reported as deleted elements
                     group.Start();
-                    t.Start();
+                    if (ownTransactions) _own = new List<Transaction>(); else t.Start();
                     result = body(doc, false);
-                    var committed = t.Commit();
+                    var committed = !ownTransactions ? t.Commit() : CloseOwn(doc) ? TransactionStatus.Error : TransactionStatus.Committed;
                     recording.CaptureNames(doc);
                     if (committed != TransactionStatus.Committed) { group.RollBack(); status = committed.ToString(); commitFailed = true; }
                     else if ((verify != null && !Verified(verify, doc, result))
@@ -101,8 +107,11 @@ namespace AceRevitMcp.Commands
                 }
                 finally
                 {
+                    if (ownTransactions) { CloseOwn(doc); _own = null; }
                     if (t.HasStarted() && !t.HasEnded()) t.RollBack();
-                    if (group.HasStarted() && !group.HasEnded()) group.RollBack();
+                    // Never a second exception from here: it would hide the first (the body's or Revit's).
+                    try { if (group.HasStarted() && !group.HasEnded()) group.RollBack(); }
+                    catch (Exception ex) { Log.Warn("NativeChange: the transaction group could not be rolled back: " + ex.Message); }
                     ChangeTracker.End(recording, kept);
                 }
                 var ok = !commitFailed && (status == nameof(TransactionStatus.Committed) || (dryRun && status == nameof(TransactionStatus.RolledBack)));
@@ -132,6 +141,34 @@ namespace AceRevitMcp.Commands
                 else if (ok && !dryRun && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
             }
             return result;
+        }
+
+        [ThreadStatic] private static List<Transaction> _own;
+
+        /// <summary>
+        /// A transaction for a body run with ownTransactions (not started): the caller starts, commits and disposes it; one
+        /// left open is rolled back by Run before the group.
+        /// </summary>
+        public static Transaction OwnTransaction(Document doc, string name)
+        {
+            var t = new Transaction(doc, name);
+            _own?.Add(t);
+            return t;
+        }
+
+        /// <summary>Rolls back the body's transactions still open; true when one was (or the document is still in a transaction).</summary>
+        private static bool CloseOwn(Document doc)
+        {
+            var open = false;
+            foreach (var t in _own ?? new List<Transaction>())
+                try
+                {
+                    if (t.IsValidObject && t.HasStarted() && !t.HasEnded()) { open = true; t.RollBack(); }
+                }
+                catch { open = true; }
+            _own?.Clear();
+            try { open |= doc.IsModifiable; } catch { open = true; }
+            return open;
         }
 
         /// <summary>The self-check; an exception counts as a failed check (reported in the result's "verify").</summary>

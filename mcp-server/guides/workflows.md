@@ -133,6 +133,15 @@ are never written into the vault rules by ACE on its own.
 
 for "how healthy is this model", "audit", "dashboard" or "status report", call model_dashboard (read-only; show: true opens it in Revit). It returns the 0-100 score, each finding with its score impact and sample ids, and the path of an ACE-branded HTML report the user can share. Explain the top findings in plain words and offer fixes (each fix follows the preview protocol). The user can also open it themselves: ACE tab > Insights > Dashboard. The checks follow the sections of Autodesk's Model Checker (file and project, worksets, levels and grids, warnings, model content, views, annotation, naming) plus ACE's rooms, parameters and submission checks; each has a pass rule from the office check set (checkset.json, see checkset.example.json), merged with the project's project-requirements.json when the model has one (project wins; project_rules shows what is in force), and results are pass / review / action needed. The dashboard also shows the latest clash results (coordination). Code compliance is not built yet (planned); say so.
 
+Purge unused ("purge the model", "remove everything unused"): purge_unused, never execute_revit_code deletes by id (a
+mass delete is blocked, and per-id SubTransaction deletes crashed Revit 2025). It is a FULL Purge Unused only, the
+owner's method: purge three times in a row to reach zero. Each pass deletes the list Revit's Purge Unused shows
+(Document.GetUnusedElements, all categories) with one delete (a refused set is split in halves; what still fails is
+listed); passes repeat until a pass finds nothing (max_passes, default 3, at most 5). Revit link types are never purged.
+check_only shows pass 1; dry_run runs every pass and rolls back; the identical call is ONE undo step and must find
+exactly what each dry-run pass found (else nothing changes: run the dry run again). To purge specific types, the user
+uses Revit's own Purge dialog by hand. Report per pass found / deleted, the total and "unused left after the last pass".
+
 ## Worksets per the BEP
 
 for "put things on the right worksets", "workset check", "set up worksets" use assign_worksets. It applies the BEP rules file (category, function, family / type, level, zone = scope box, room department, parameter; first match wins). Start with check_only: true and report what is on the wrong workset per category; then preview (dry_run) and apply only after confirmation. only_workset1: true leaves deliberate choices alone; create_missing creates worksets the rules name. If the project's BEP differs from the rules, ask for the BEP table and pass rules.
@@ -145,11 +154,15 @@ default_workset and naming win key by key), the office worksets.json after it; "
 section uses the project's rules alone. project_rules section "worksets" shows the result and its files; the audit's
 naming rule is the same merged section. Office method: revit_guide methods/workset-cleanup.
 Per-model rules: a rule's "models" key ("TST_STR", ["TST_ARC*", "!TST_ARC_OLD"]; matched on the model's title and
-central / file name, case-insensitive, without .rvt; * wildcard, ! excludes) limits it to those models, so one project
-file holds the rules of every model; a rule without it applies everywhere. assign_worksets, workset_plan (propose,
+central / file name, case-insensitive, without .rvt; * wildcard, ! excludes) with `"modelsScope": "only"` limits it to
+those models (`{ "workset": "S-BEAMS", "category": "Structural Framing", "models": ["TST_STR"], "modelsScope": "only" }`),
+so one project file holds the rules of every model; a rule without models applies everywhere. A models list WITHOUT
+modelsScope (saved by workset_plan before 1.14.10: where the rule was proposed, often only the first model) does not
+limit the rule: it applies as before and the reply says "N rule(s) list other models in `models`"; add
+`"modelsScope": "only"` (after checking the list names every model it should) only when the user wants the limit. assign_worksets, workset_plan (propose,
 status) and the model check leave the other models' rules out and the reply says which were skipped and why: say so to
 the user when a rule they expected did not apply. Rules saved by workset_plan carry the models their workset is in
-(none when the rule may create its workset).
+and modelsScope "only" (no models when the rule may create its workset).
 
 Workset housekeeping ("clean up the worksets", "which worksets are empty", "rename the worksets to the BEP names"):
 assign_worksets action audit first (read-only): every user workset with its element count by category, owner and

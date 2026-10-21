@@ -177,14 +177,25 @@ export function ruleAppliesTo(rule, names) {
   const inc = pats.filter((p) => !p.startsWith("!"));
   return inc.length && !inc.some(hit) ? { applies: false, why: `models ${inc.join(", ")}` } : { applies: true, why: "" };
 }
-/** The rules for one model: rules whose models key does not name it are skipped. -> { rules, skipped: [{ rule, why }] } */
+/**
+ * Does a rule's models key limit it (modelsScope "only")? workset_plan writes the marker from 1.14.10 on; rules saved
+ * before carry models lists of where they were proposed (only the first model, not the "same as" ones), so a rule
+ * without the marker is never skipped for its models key (backward-safe: those rules keep applying everywhere).
+ */
+export const modelsLimit = (rule) => String(rule?.modelsScope ?? "").trim().toLowerCase() === "only";
+/**
+ * The rules for one model: a rule with modelsScope "only" whose models key does not name it is skipped; one without the
+ * marker is kept and counted in legacy. -> { rules, skipped: [{ rule, why }], legacy: [id or workset] }
+ */
 export function rulesForModel(rules, names) {
-  const kept = [], skipped = [];
+  const kept = [], skipped = [], legacy = [];
   for (const r of rules ?? []) {
     const a = ruleAppliesTo(r, names);
-    if (a.applies) kept.push(r); else skipped.push({ rule: r?.id ?? r?.workset ?? "?", why: a.why });
+    if (a.applies) kept.push(r);
+    else if (modelsLimit(r)) skipped.push({ rule: r?.id ?? r?.workset ?? "?", why: a.why });
+    else { kept.push(r); legacy.push(r?.id ?? r?.workset ?? "?"); }
   }
-  return { rules: kept, skipped };
+  return { rules: kept, skipped, legacy };
 }
 /** One compact line: which rules were skipped for this model and why (counts, up to 10 names). "" when none. */
 export function skippedRulesText(skipped, model, total) {
@@ -192,6 +203,10 @@ export function skippedRulesText(skipped, model, total) {
   const more = skipped.length > 10 ? `, +${skipped.length - 10} more` : "";
   return `Rules skipped for ${model ?? "this model"} (their models key does not name it): ${skipped.length}${total != null ? ` of ${total}` : ""}: ${skipped.slice(0, 10).map((s) => `${s.rule} (${s.why})`).join(", ")}${more}.`;
 }
+/** The line for rules without the marker that list other models (applied as before). "" when none. Same text as the add-in. */
+export const legacyModelsText = (n) => n ? `${n} rule(s) list other models in \`models\` (saved before 1.14.10, read as where they were proposed, not a limit): set modelsScope: "only" to limit them.` : "";
+/** Both lines for one model's rules (rulesForModel's result), "" when neither applies. */
+export const rulesForModelText = (fm, model, total) => [skippedRulesText(fm?.skipped, model, total), legacyModelsText(fm?.legacy?.length ?? 0)].filter(Boolean).join("\n");
 /** Why a workset is flagged, in words, for the empty-but-expected and default-workset flags. */
 export const expectedText = (r) => `empty, but ${r.expected.elements} element(s) look like they belong here (${Object.entries(r.expected.on).map(([k, n]) => `${n} on ${q(k)}`).join(", ")})`;
 export const defaultText = (r) => `default workset holds ${r.defaultHolds.elements} element(s) (${r.defaultHolds.structural} structural); assign them by rules. Top: ${r.defaultHolds.top.map(([k, v]) => `${k} ${v}`).join(", ")}`;

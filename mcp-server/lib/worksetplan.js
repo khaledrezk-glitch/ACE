@@ -695,7 +695,8 @@ export function vaultRules(R, zones = [], { createMissing = false } = {}) {
   for (const r of R) {
     if (r.manual || r.isDefault || r.protected) continue;
     // models (G9): where the workset is; a rule that may create its workset (create, create_missing) applies everywhere.
-    const base = { id: `plan-${slug(r.workset)}`, workset: r.workset, source: "workset_plan", ...(r.models?.length && !r.create && !createMissing ? { models: r.models } : {}) };
+    // modelsScope "only" marks the list as a limit (1.14.10); lists saved before it are read as where a rule was proposed.
+    const base = { id: `plan-${slug(r.workset)}`, workset: r.workset, source: "workset_plan", ...(r.models?.length && !r.create && !createMissing ? { models: r.models, modelsScope: "only" } : {}) };
     if (r.links) { out.push({ ...base, category: ["RVT Links"], ...(r.codes.length ? { type: wordRegex(r.codes) } : {}), spec: r.codes.length ? 9 : 1, cat: 1 }); continue; }
     if (r.cad) { out.push({ ...base, category: ["CAD Imports"], spec: 1, cat: 1 }); continue; }
     if (!r.categories.length && !r.levels.length && !r.words.length && !r.material) continue;
@@ -733,8 +734,11 @@ export function deriveRules(plans) {
   return { rules, ambiguous };
 }
 
-/** Exact model names of a rule's models key (G9), or null when it has none or uses wildcards / exclusions (any model may match). */
-const exactModels = (r) => { const p = [].concat(r?.models ?? []).map((x) => String(x ?? "").trim()).filter(Boolean); return p.length && !p.some((x) => x.startsWith("!") || x.includes("*")) ? p : null; };
+/**
+ * Exact model names of a rule's models key (G9), or null when it has none, uses wildcards / exclusions (any model may
+ * match) or has no modelsScope "only" marker (a list saved before 1.14.10 does not limit the rule).
+ */
+const exactModels = (r) => { const p = [].concat(r?.models ?? []).map((x) => String(x ?? "").trim()).filter(Boolean); return W.modelsLimit(r) && p.length && !p.some((x) => x.startsWith("!") || x.includes("*")) ? p : null; };
 /** Can two rules apply in the same model? Only rules with exact, disjoint models lists cannot. */
 export const modelsMeet = (a, b) => { const x = exactModels(a), y = exactModels(b); return !x || !y || x.some((m) => y.some((n) => modelKey(m) === modelKey(n))); };
 const selector = (r) => JSON.stringify([[].concat(r.category ?? []).map(norm).sort(), r.level ?? "", r.material ?? "", r.zone ?? "", r.type ?? "", r.family ?? "", r.function ?? ""]);
@@ -755,7 +759,7 @@ export function mergeRules(json, rules, { overlapsOk = false } = {}) {
     if (twin) {
       const hm = exactModels(twin), rm = exactModels(r);
       if (hm && rm) twin.models = [...hm, ...rm.filter((m) => !hm.some((n) => modelKey(n) === modelKey(m)))];
-      else if (hm && !r.models) delete twin.models;
+      else if (hm && !r.models) { delete twin.models; delete twin.modelsScope; }
       same.push(r); continue;
     }
     // Rules for other models (disjoint models lists, G9) never collide: one project file holds per-model rules.

@@ -9,8 +9,9 @@ namespace AceRevitMcp.Rules
     /// <summary>
     /// Which models a project rule applies to (G9): a rule's "models" key, a string or a list of patterns matched against
     /// the names the model is known by (title, central and file name without folder or .rvt, cloud ids), case-insensitive,
-    /// exact or with * wildcards; "!pattern" excludes. No key (or no pattern): every model. Pure, no Revit types; the MCP
-    /// server has the same logic (lib/worksets.js ruleAppliesTo) for the rules it sends.
+    /// exact or with * wildcards; "!pattern" excludes. No key (or no pattern): every model. The key limits the rule only with
+    /// "modelsScope": "only" (<see cref="Limits"/>). Pure, no Revit types; the MCP
+    /// server has the same logic (lib/worksets.js ruleAppliesTo, modelsLimit) for the rules it sends.
     /// </summary>
     internal static class RuleModels
     {
@@ -60,6 +61,16 @@ namespace AceRevitMcp.Rules
             if (inc.Count > 0 && !inc.Any(p => Hit(p, names))) { why = "models " + string.Join(", ", inc); return false; }
             return true;
         }
+
+        /// <summary>
+        /// Does the rule's models key limit it? Only with modelsScope "only" (written by workset_plan from 1.14.10, or by
+        /// hand): rules saved before list where they were proposed (the first model only), so they keep applying everywhere.
+        /// </summary>
+        public static bool Limits(JsonNode scope) => string.Equals((scope?.ToString() ?? "").Trim(), "only", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>The line for rules without the marker that list other models (applied as before); null when none. Same text as the server.</summary>
+        public static string LegacyText(int count) => count == 0 ? null
+            : $"{count} rule(s) list other models in `models` (saved before 1.14.10, read as where they were proposed, not a limit): set modelsScope: \"only\" to limit them.";
 
         /// <summary>One compact line: the rules skipped for this model and why (counts, up to 10 names); null when none.</summary>
         public static string SkippedText(IList<(string Rule, string Why)> skipped, string model, int total)
