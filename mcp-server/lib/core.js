@@ -99,7 +99,9 @@ export function portOfPid(pid) {
 export const healthAtPort = (port, timeoutMs = 2000) => healthAt(bridgeUrl(readConfig(), port), timeoutMs);
 
 export async function health(timeoutMs = 4000) {
-  const s = process.env.ACE_REVIT_URL ? null : (await chooseInstance().catch(() => null))?.chosen;
+  const pick = process.env.ACE_REVIT_URL ? null : await chooseInstance().catch(() => null);
+  if (pick?.notFound) return { ok: false, error: pick.note };
+  const s = pick?.chosen;
   return healthAt(bridgeUrl(readConfig(), s?.port), timeoutMs);
 }
 
@@ -146,7 +148,10 @@ let preferred = null;   // a model title, pid or port the user chose (revit_stat
 export const preferInstance = (hint) => { preferred = hint ? String(hint) : null; };
 export const preferredInstance = () => preferred;
 
-const title = (d) => String(d ?? "").trim().toLowerCase().replace(/\.rvt$/, "");
+/** A model title or path as compared: the file name without .rvt, any case (expect_model may be a path). */
+const title = (d) => String(d ?? "").trim().toLowerCase().replace(/^.*[\\/]/, "").replace(/\.rvt$/, "");
+/** Whether two model titles or paths name the same model (file name, without .rvt, any case). */
+export const sameTitle = (a, b) => title(a) === title(b);
 /**
  * Sessions matching a hint: pid or port, else an exact model title (active document first, then any open one). Only
  * with substring: true a part of a title matches (a fallback, reported with a note; never for expect_model).
@@ -177,14 +182,22 @@ export function pickInstance(list, hint, { exact = false } = {}) {
     if (m.length) note = `No Revit session has a model titled exactly "${hint}"; using ${describeInstance(m[0])}, whose model title contains it.`;
   }
   if (m.length) return { chosen: m[0], list, note };
-  if (list.length === 1) return { chosen: list[0], list, note: hint ? `No Revit session has "${hint}" open; using the only one (${describeInstance(list[0])}).` : null };
-  const none = hint ? ` (none has "${hint}" open)` : "";
+  // A named session (pid, port, model title or path; from the call or revit_status instance) that is not running is
+  // never replaced by another one: a different Revit may hold another project's model (live: "using the only one").
+  if (hint) return { chosen: null, list, notFound: true, note: notFoundNote(list, hint) };
+  if (list.length === 1) return { chosen: list[0], list, note: null };
   const how = "To use another: revit_status with instance (its model title or pid).";
   const withModel = list.filter(hasModel);
-  if (withModel.length > 1) return { chosen: null, list, ambiguous: true, note: `${withModel.length} Revit sessions have a model open${none}: ${withModel.map(describeInstance).join("; ")}. Which one? Say it with revit_status instance (a model title or pid); ACE does not guess.` };
+  if (withModel.length > 1) return { chosen: null, list, ambiguous: true, note: `${withModel.length} Revit sessions have a model open: ${withModel.map(describeInstance).join("; ")}. Which one? Say it with revit_status instance (a model title or pid); ACE does not guess.` };
   const [chosen, ...others] = withModel.length ? [withModel[0], ...list.filter((s) => s !== withModel[0])] : list;
-  return { chosen, list, note: `${list.length} Revit sessions are running; using ${describeInstance(chosen)}${withModel.length ? ", the only one with a model open" : ""}${none}. Others: ${others.map(describeInstance).join("; ")}. ${how}` };
+  return { chosen, list, note: `${list.length} Revit sessions are running; using ${describeInstance(chosen)}${withModel.length ? ", the only one with a model open" : ""}. Others: ${others.map(describeInstance).join("; ")}. ${how}` };
 }
+const notFoundNote = (list, hint) => {
+  const what = /^\d+$/.test(String(hint).trim()) ? `pid, port or model "${hint}"` : `model "${hint}"`;
+  const sessions = list.map((s) => `${describeInstance(s)}${s.openDocuments?.length ? ` (open: ${s.openDocuments.join(", ")})` : ""}`).join("; ");
+  return `No Revit session matches the ${what} that was asked for; ACE does not fall back to another session. Running: ${sessions}. ` +
+    "Choose one with revit_status instance (a pid or a model title shown here), open that model there (open_model), or clear the choice with revit_status instance: \"\".";
+};
 const hasModel = (s) => !!(s.activeDocument || s.openDocuments?.length);
 export const describeInstance = (s) => s ? `Revit ${s.revitVersion ?? "?"} pid ${s.pid ?? "?"} port ${s.port}${s.activeDocument ? `, active "${s.activeDocument}"` : ""}${s.user ? `, ${s.user}` : ""}` : "the configured Revit";
 
@@ -215,7 +228,7 @@ export async function resolveSession(hint = undefined, { exact = false } = {}) {
   const store = currentCall.getStore();
   if (store && Object.hasOwn(store, "pinned")) return store.pinned;
   const pick = await chooseInstance(hint, { exact });
-  if (pick.ambiguous) throw new RevitError(pick.note);
+  if (pick.ambiguous || pick.notFound) throw new RevitError(pick.note);
   if (pick.note) store?.notes?.add(pick.note);
   return pick.chosen;
 }

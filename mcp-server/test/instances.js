@@ -29,7 +29,16 @@ assert.ok(core.pickInstance([a]).note === null && core.pickInstance([], "x").cho
 const sub = core.pickInstance([b, a], "TST-S");
 assert.ok(sub.chosen === a && /titled exactly "TST-S".*contains it/.test(sub.note), "a part of a title is only a fallback, with a note");
 const ex = core.pickInstance([b, a], "TST-S", { exact: true });
-assert.ok(ex.chosen === null && ex.ambiguous && /none has "TST-S" open/.test(ex.note), "never a part of a title for expect_model: ask");
+assert.ok(ex.chosen === null && ex.notFound && /No Revit session matches the model "TST-S"/.test(ex.note), "never a part of a title for expect_model: refused");
+// A named session that is not running never falls back to another one (live: "No Revit session has 4008 open; using the only one").
+const gone = core.pickInstance([b], "4008");
+assert.ok(gone.chosen === null && gone.notFound, "a pid / model hint that matches nothing: no session, even when only one runs");
+assert.match(gone.note, /pid, port or model "4008".*does not fall back.*Revit 2024 pid 22 port 2, active "TST-ME" \(open: TST-ME\).*revit_status instance/, "the error names what was asked, the sessions (version, pid, model) and how to choose");
+assert.ok(core.pickInstance([b], "TST-AR", { exact: true }).notFound, "expect_model naming a model the only session does not have: refused");
+assert.ok(core.pickInstance([empty, a], "TST-XX").notFound, "no fallback to the session with a model either");
+assert.equal(core.pickInstance([b], undefined).chosen, b, "no hint: the only session is used");
+assert.equal(core.pickInstance([b, a], "C:\\TST\\TST-ST.rvt", { exact: true }).chosen, a, "expect_model as a path matches by its file name");
+assert.ok(core.sameTitle("TST-AR.rvt", "C:/TST/tst-ar") && !core.sameTitle("TST-AR", "TST-ST"));
 
 // Live files: a session whose /health answers its pid is kept; a dead pid's file is deleted.
 const server = http.createServer((req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ ok: true, service: "ace-revit-mcp", pid: process.pid, port: server.address().port })); });
@@ -48,6 +57,7 @@ assert.ok(fs.existsSync(path.join(dir, "888888.json")) && fs.existsSync(path.joi
 assert.deepEqual(notes, []);
 const pick = await core.chooseInstance("TST-LIVE");
 assert.equal(pick.chosen.port, port);
+await assert.rejects(core.currentCall.run({ notes: new Set() }, async () => { core.preferInstance("4008"); try { return await core.resolveSession(); } finally { core.preferInstance(null); } }), /No Revit session matches/, "a remembered choice that is gone fails the call");
 assert.equal(core.bridgeUrl({ port: 48884 }, pick.chosen.port), `http://localhost:${port}`, "the chosen session's port");
 // A second live session with another model: no default, the call asks (a write never goes to a guessed Revit).
 const server2 = http.createServer((req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ ok: true, service: "ace-revit-mcp", pid: process.ppid })); });

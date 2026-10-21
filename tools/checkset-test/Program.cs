@@ -670,6 +670,40 @@ class P {
     Check(SaW(true, @"C:\TST\old.rvt", @"C:\TST\new.rvt")?.Contains("still point at the old central") == true, "save_as central: a moved central warns about other users' locals");
     Check(SaW(true, null, @"C:\TST\new.rvt")?.Contains("new central") == true, "save_as central from a detached copy: a new central");
     Check((string)saT.GetMethod("Kind", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public).Invoke(null, new object[] { true }) == "save_as central", "save_as: kind");
+    var saRo = saT.GetMethod("ReadOnlyRefusal", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    string SaRo(bool ro, bool roFile, bool saveAs) => (string)saRo.Invoke(null, new object[] { "TST_Copy", ro, roFile, saveAs });
+    Check(SaRo(false, true, true) == null, "save_as: a never-saved detached copy (IsReadOnlyFile true, IsReadOnly false) may be saved as a new file");
+    Check(SaRo(false, true, false)?.Contains("save_as") == true, "plain save: IsReadOnlyFile still blocks saving into its own file (and says save_as)");
+    Check(SaRo(true, false, true) != null && SaRo(true, false, false) != null, "IsReadOnly blocks save and save_as");
+    Check(SaRo(false, false, false) == null, "a writable model saves");
+    var saTp = saT.GetMethod("TransmittedPlan", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    object Tp(bool? tr, bool clear) => saTp.Invoke(null, new object[] { tr, clear, @"C:\TST\TST_Central.rvt" });
+    T TpF<T>(object t, int i) => (T)t.GetType().GetField("Item" + i).GetValue(t);
+    var tp1 = Tp(true, true);
+    Check(TpF<string>(tp1, 1) == "on close" && TpF<bool>(tp1, 2) && TpF<string>(tp1, 3) == null && TpF<string>(tp1, 4).Contains("closed file"), "save_as of a transmitted file with clear: cleared when ACE closes it (Revit writes only closed files)");
+    var tp2 = Tp(true, false);
+    Check(TpF<string>(tp2, 1) == "kept" && !TpF<bool>(tp2, 2) && TpF<string>(tp2, 3).Contains("clear_transmitted"), "save_as of a transmitted file without clear: a warning that says how to clear");
+    Check(TpF<string>(Tp(false, true), 1) == null && !TpF<bool>(Tp(false, true), 2) && TpF<string>(Tp(false, true), 3) == null, "not transmitted: nothing to do");
+    Check(TpF<string>(Tp(null, true), 1) == "unknown" && !TpF<bool>(Tp(null, true), 2), "unreadable flag: unknown, nothing written");
+
+    // open_model memory check and ACE's idle copies (pure rules).
+    var qcT = a.GetType("AceRevitMcp.Commands.QuietCloseLogic");
+    var qcIdle = qcT.GetMethod("IdleCopy", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    bool Idle(bool untouched, bool onlyEmpty, bool ws, bool det, bool mod) => (bool)qcIdle.Invoke(null, new object[] { untouched, onlyEmpty, ws, det, mod });
+    Check(Idle(true, true, false, false, false) && Idle(true, false, true, false, false), "idle copy: untouched and unmodified (even an attached workshared one: nothing to lose)");
+    Check(Idle(true, true, false, false, true) && Idle(true, true, true, true, true), "idle copy: modified only by empty ACE runs (not workshared, or detached)");
+    Check(!Idle(false, true, false, false, false) && !Idle(true, false, false, false, true) && !Idle(true, true, true, false, true), "not idle: changed by the user, changed elements, or an attached workshared local with changes");
+    var qcGb = qcT.GetMethod("WarnGb", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    double WGb(string v) => (double)qcGb.Invoke(null, new object[] { v });
+    Check(WGb(null) == 10 && WGb("abc") == 10 && WGb("-2") == 10 && WGb("12.5") == 12.5, "openModelWarnGb: a positive number, else 10 GB");
+    var qcMw = qcT.GetMethod("MemoryWarning", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    const long GB = 1024L * 1024 * 1024;
+    string Mw(long bytes, int models, string[] idle, bool closed = false) => (string)qcMw.Invoke(null, new object[] { bytes, models, 10.0, new System.Collections.Generic.List<string>(idle), closed });
+    Check(Mw(4 * GB, 3, new string[0]) == null && Mw(-1, 6, new string[0]) == null, "below 10 GB and at most 6 models: no warning");
+    var mw1 = Mw(15 * GB, 9, new[] { "TST_A", "TST_B" });
+    Check(mw1?.Contains("15.0 GB") == true && mw1.Contains("9 model(s)") && mw1.Contains("TST_A, TST_B") && mw1.Contains("close_idle_copies"), "above the threshold: the warning lists ACE's idle copies and how to close them");
+    Check(Mw(2 * GB, 7, new string[0])?.Contains("ACE closes nothing else") == true, "more than 6 models, no idle copies: ask the user, close nothing");
+    Check(Mw(11 * GB, 2, new[] { "TST_A" }, true)?.Contains("closed ACE's own idle copies first: TST_A") == true, "close_idle_copies: the warning says what was closed");
 
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }

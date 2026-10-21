@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
-import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, forgetInstances, healthAtPort, portOfPid, preferredInstance, localDate, pinSession, preferInstance, readConfig, sessionKey, sessionLabel, text } from "./lib/core.js";
+import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, forgetInstances, healthAtPort, portOfPid, preferredInstance, localDate, pinSession, preferInstance, readConfig, sameTitle, sessionKey, sessionLabel, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
 import * as Report from "./lib/report.js";
 import * as ParamList from "./lib/paramlist.js";
@@ -107,11 +107,14 @@ tool("revit_status", {
   inputSchema: { instance: z.string().max(260).optional().describe("Model title or pid of the Revit session to use") },
   annotations: readOnly,
 }, async ({ instance }) => {
+  const before = preferredInstance();
   if (instance !== undefined) preferInstance(instance || null);
   const pick = await chooseInstance();
   const sessions = pick.list.map((s) => ({ pid: s.pid, port: s.port, revitVersion: s.revitVersion, aceVersion: s.aceVersion, activeDocument: s.activeDocument, openDocuments: s.openDocuments, user: s.user, chosen: s === pick.chosen }));
-  // Several sessions with a model and none chosen: list them and ask, never ping a guessed one.
-  if (pick.ambiguous) return text({ ok: false, chooseSession: pick.note, sessions });
+  // A named session that is not running: the earlier choice stays (never another Revit by default); list them and ask.
+  if (pick.notFound && instance) { preferInstance(before); return text({ ok: false, chooseSession: pick.note, sessions, keptChoice: before ?? null }); }
+  // Several sessions with a model and none chosen (or the remembered choice is gone): list them and ask, never ping a guessed one.
+  if (pick.ambiguous || pick.notFound) return text({ ok: false, chooseSession: pick.note, sessions });
   const status = await callRevit("ping", {}, 20);
   if (!pick.list.length) return text(status);
   return text({ ...status, session: pick.chosen ? describeInstance(pick.chosen) : undefined, sessions });
@@ -659,7 +662,7 @@ function modelSwitched(model) {
 
 tool("open_model", {
   title: "Open a model",
-  description: "Open an .rvt in this Revit session and make it active. detach (a central or cloud copy): preserve_worksets or discard_worksets (needs confirm: true, the user's OK: the opened copy loses its workset information). audit: true audits while opening. worksets: all (default), last_viewed, none. close_previous: true closes the model that was active before, without saving (if it cannot be closed, the reply says why and it stays open). Opening can take minutes. clear_transmitted (confirm: true; working copies only) writes into the file on disk: it clears the transmitted flag. save_as_central_ok: allow a model that would need Save As Central. The reply lists every dialog answered, unresolved links and the transmitted flag. A workshared file opened attached gets a <name>_backup folder next to it (a WARNING says so, stronger in a submission / issued / export folder): for read-only or export work use detach: preserve_worksets.",
+  description: "Open an .rvt in this Revit session and make it active. detach (a central or cloud copy): preserve_worksets or discard_worksets (needs confirm: true, the user's OK: the opened copy loses its workset information). audit: true audits while opening. worksets: all (default), last_viewed, none. close_previous: true closes the model that was active before, without saving (if it cannot be closed, the reply says why and it stays open). Opening can take minutes. clear_transmitted (confirm: true; working copies only) writes into the file on disk: it clears the transmitted flag. save_as_central_ok: allow a model that would need Save As Central. The reply lists every dialog answered, unresolved links and the transmitted flag. A workshared file opened attached gets a <name>_backup folder next to it (a WARNING says so, stronger in a submission / issued / export folder): for read-only or export work use detach: preserve_worksets. Before opening, Revit's memory is checked: above config.json openModelWarnGb (default 10 GB) or more than 6 open models a WARNING lists ACE's own copies nobody changed; close_idle_copies: true closes those first (nothing else is ever closed).",
   inputSchema: {
     path: z.string().min(1).max(1000).describe("Full path of the .rvt"),
     clear_transmitted: z.boolean().optional().describe("Working copies only: clears the transmitted flag in the file on disk (needs confirm: true)"),
@@ -669,6 +672,7 @@ tool("open_model", {
     worksets: z.enum(["all", "last_viewed", "none"]).optional(),
     close_previous: z.boolean().optional(),
     activate: z.boolean().optional().describe("If the model is already open, make it the active model (otherwise it is opened and activated)"),
+    close_idle_copies: z.boolean().optional().describe("Before opening, close ACE's own copies nobody changed (the ones close_model closes without discard); nothing else is closed"),
     confirm: z.boolean().optional().describe("Only after the user agreed: needed for detach discard_worksets and clear_transmitted"),
   },
   annotations: benign,
@@ -680,7 +684,7 @@ tool("open_model", {
     throw new RevitError("Blocked for safety: clear_transmitted writes into the file on disk (it clears the transmitted flag of that .rvt). Use it only on a working copy, never on " +
       "the client's issued file or a central. Tell the user exactly that; only if they agree, call again with confirm: true.");
   const req = { path: a.path, detach: a.detach ?? "none", audit: !!a.audit, worksets: a.worksets ?? "all", close_previous: !!a.close_previous,
-    clear_transmitted: !!a.clear_transmitted, save_as_central_ok: !!a.save_as_central_ok, activate: !!a.activate };
+    clear_transmitted: !!a.clear_transmitted, save_as_central_ok: !!a.save_as_central_ok, activate: !!a.activate, close_idle_copies: !!a.close_idle_copies };
   await pinSession();
   const r = await callRevit("open_model", req, 600);
   modelSwitched(r?.model);
@@ -710,6 +714,9 @@ function openNotes(r, req) {
   const answered = dialogs.filter((d) => d.answer != null);
   if (answered.length) lines.push(`Dialogs answered:\n${answered.map((d) => `- ${d.id ?? "?"}: ${d.message ?? ""} -> ${d.answer}${d.why ? ` (${d.why})` : ""}`).join("\n")}`);
   const links = r?.unresolvedLinks ?? [];
+  const idleClosed = (r?.memory?.closedIdleCopies ?? []).filter((c) => c?.closed);
+  if (idleClosed.length) lines.push(`Closed ACE's idle copies first: ${idleClosed.map((c) => c.model).join(", ")}.`);
+  for (const t of r?.transmittedClearedOnClose ?? []) lines.push(`Transmitted flag of ${t.path}: ${t.cleared ? "cleared (the model is closed now)" : `not cleared (${t.why ?? "?"})`}.`);
   if (links.length) lines.push(`${links.length} unresolved link(s): ${links.slice(0, 5).map((l) => `${l.type ?? "link"} ${l.path ?? "?"}${l.exists === false ? " (file not found)" : ""}`).join("; ")}${links.length > 5 ? `; ... ${links.length - 5} more` : ""}.`);
   if (r?.transmitted != null || r?.transmittedCleared != null)
     lines.push(r?.transmitted ? `Flagged transmitted: yes; ${r.transmittedCleared ? "the flag was cleared in the file on disk" : req.clear_transmitted ? "the flag was NOT cleared" : "the flag was kept (clear_transmitted not asked)"}.`
@@ -734,12 +741,14 @@ tool("close_model", {
   const r = await callRevit("close_model", { ...(a.model ? { model: a.model } : {}), ...(a.path ? { path: a.path } : {}), discard: !!a.discard }, 300);
   forgetInstances();
   journal({ title: `Close model ${a.model ?? a.path}`, outcome: r?.closed === false ? `Not closed: ${r?.why ?? "refused"}` : "Closed without saving", details: r });
-  return text(r);
+  const out = text(r);
+  for (const t of r?.transmittedClearedOnClose ?? []) out.content.push({ type: "text", text: `Transmitted flag of ${t.path}: ${t.cleared ? "cleared (the model is closed now)" : `not cleared (${t.why ?? "?"})`}.` });
+  return out;
 });
 
 tool("save_model", {
   title: "Save a model",
-  description: "Save an open model to its own file (a workshared local is saved locally, NOT synchronized with central), or with save_as to a new .rvt; it need not be the active model. It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and family documents (a plain save also never-saved ones: they need save_as). Which model (required): handle (from open_model), else path, else model (a title only one open model has; a shared title is refused); never just the active one. save_as { path, overwrite, as_central }: the path must end in .rvt in an existing folder; an existing file is replaced only with overwrite: true (the user's OK); as_central (workshared models only) saves a new central: other users' locals keep pointing at the old one. Afterwards the open model IS the new file (its handle follows it).",
+  description: "Save an open model to its own file (a workshared local is saved locally, NOT synchronized with central), or with save_as to a new .rvt; it need not be the active model. It cannot be undone: tell the user, and only after they agree call with allow_risky: true. Refuses read-only, cloud, linked and family documents (a plain save also never-saved ones: they need save_as). Which model (required): handle (from open_model), else path, else model (a title only one open model has; a shared title is refused); never just the active one. save_as { path, overwrite, as_central }: the path must end in .rvt in an existing folder; an existing file is replaced only with overwrite: true (the user's OK); as_central (workshared models only) saves a new central: other users' locals keep pointing at the old one. Afterwards the open model IS the new file (its handle follows it). Save As keeps a transmitted flag: the reply says transmitted; clear_transmitted (default with as_central) clears it when ACE closes the model (Revit writes it only into a closed file).",
   inputSchema: {
     handle: z.string().max(80).optional().describe("The handle open_model returned"),
     path: z.string().max(400).optional().describe("The model's file path (or the file ACE opened it from)"),
@@ -749,6 +758,7 @@ tool("save_model", {
       path: z.string().min(1).max(400).describe("The new .rvt file (its folder must exist)"),
       overwrite: z.boolean().optional().describe("Replace an existing file (only after the user agreed)"),
       as_central: z.boolean().optional().describe("Workshared models only: save as a new central model"),
+      clear_transmitted: z.boolean().optional().describe("If the new file is still marked transmitted (Save As keeps the flag), clear it; Revit writes it only into a closed file, so ACE clears it when it closes the model. Default: true with as_central"),
     }).strict().optional().describe("Save As a new file instead of saving in place"),
   },
   annotations: writes,
@@ -759,10 +769,14 @@ tool("save_model", {
     throw new RevitError("Blocked for safety: saving writes the model file and cannot be undone. Tell the user which model would be saved; only if they agree, call again with allow_risky: true.");
   if (a.save_as && !/\.rvt$/i.test(a.save_as.path.trim()))
     throw new RevitError(`save_as path must end in .rvt: ${a.save_as.path}. Nothing was saved.`);
-  const saveAs = a.save_as ? { path: a.save_as.path.trim(), overwrite: !!a.save_as.overwrite, as_central: !!a.save_as.as_central } : null;
+  const saveAs = a.save_as ? { path: a.save_as.path.trim(), overwrite: !!a.save_as.overwrite, as_central: !!a.save_as.as_central, clear_transmitted: a.save_as.clear_transmitted ?? !!a.save_as.as_central } : null;
   await pinSession();
   const r = await callRevit("save_model", { ...(a.handle ? { handle: a.handle } : {}), ...(a.path ? { path: a.path } : {}), ...(a.model ? { model: a.model } : {}), ...(saveAs ? { save_as: saveAs } : {}), allow_risky: true }, 900);
-  if (saveAs && r?.saved) { forgetInstances(); briefCache.clear(); }   // the model's file (and maybe its title) changed
+  if (saveAs && r?.saved) {   // the model's file (and maybe its title) changed: a title preference follows it
+    forgetInstances(); briefCache.clear();
+    const p = preferredInstance();
+    if (p && r.previousModel && r.model && !/^\d+$/.test(p) && sameTitle(p, r.previousModel)) preferInstance(r.model);
+  }
   journal({
     title: `${saveAs ? "Save As" : "Save"} model ${r?.model ?? a.model ?? a.path ?? a.handle ?? "(active)"}`,
     outcome: r?.saved ? `Saved (${r.kind}) ${saveAs ? `to ${r.path}${r.overwritten ? " (replaced the existing file)" : ""} ` : ""}in ${r.ms} ms` : "Not saved",
@@ -770,6 +784,8 @@ tool("save_model", {
   });
   const out = text(r);
   for (const w of r?.warnings ?? []) out.content.push({ type: "text", text: `WARNING: ${w}` });
+  for (const n of r?.notes ?? []) out.content.push({ type: "text", text: n });
+  for (const t of r?.transmittedClearedOnClose ?? []) out.content.push({ type: "text", text: `Transmitted flag of ${t.path}: ${t.cleared ? "cleared" : `not cleared (${t.why ?? "?"})`}.` });
   return out;
 });
 

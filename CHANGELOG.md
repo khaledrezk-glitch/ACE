@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.14.13 (21 Oct 2026)
+- Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
+- **save_model save_as of a never-saved copy:** a detached copy never saved reports `Document.IsReadOnlyFile` true while
+  `IsReadOnly` is false; save_as now checks only IsReadOnly (Save As to a new file is what Revit says to do for a read-only
+  file), while IsReadOnlyFile still refuses a plain save into the model's own file (with a hint to use save_as). Live: a
+  detached copy was refused as "read-only".
+- **save_model save_as of a transmitted file:** Save As keeps the transmitted flag, so the reply now reads the new file's flag
+  (`transmitted`, `transmittedClear`). Revit writes transmission data only into a closed file (WriteTransmissionData "cannot
+  be called on an opened document"), so `save_as.clear_transmitted` (default true with as_central) clears it when ACE closes
+  the model (close_model, close_previous, close_idle_copies; reported as `transmittedClearedOnClose`); without it a warning
+  says how (close, then open_model clear_transmitted). The save itself never fails over the flag.
+- **open_model memory check:** before opening, Revit's working set and the open models are read; above config.json
+  `openModelWarnGb` (default 10 GB) or more than 6 open models a warning lists ACE's own copies that close quietly (opened by
+  ACE, nobody changed them, unmodified or only empty ACE runs). `close_idle_copies: true` closes those first; nothing else is
+  ever closed. Reply: `memory { workingSetGb, openModels, warnAtGb, warnAtModels, idleCopies, closedIdleCopies }`. Live: Revit
+  crashed with 9 models open (~15 GB).
+- **Revit session choice:** a named session (pid, port or model, from expect_model or revit_status instance) that no running
+  Revit matches now fails the call with the sessions that exist (version, pid, active and open models) and how to choose;
+  the fallback to the only (or the only busy) session is kept only when nothing was named. revit_status with an unknown
+  instance keeps the earlier choice. expect_model given as a path matches by its file name; a title preference follows a
+  save_as. Live: "No Revit session has 4008 open; using the only one" talked to another Revit version with another project.
+
 ## 1.14.12 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **close_model after read-only checks:** each model ACE opened now records whether every change since the open came from

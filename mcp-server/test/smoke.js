@@ -358,12 +358,19 @@ const bridge = http.createServer((req, res) => {
           unresolvedLinks: Array.from({ length: 7 }, (_, i) => ({ type: i ? "RVT" : "CAD", path: `C:/links/L${i}.rvt`, exists: i !== 1 })),
           dialogs: [{ id: "TaskDialog_Unresolved_References", message: "Unresolved references", answer: "Ignore and continue opening", why: "links are reported, not fixed while opening" },
             { id: "TaskDialog_Unknown", message: "Something unusual", answer: null, why: "no rule for this dialog" }] } : { transmitted: false, transmittedCleared: false, unresolvedLinks: [], dialogs: [] };
+        if (model.includes("BIG")) Object.assign(extra, args.close_idle_copies
+          ? { warnings: ["Revit uses 14.8 GB memory with 9 model(s) open (warning above 10 GB, config.json openModelWarnGb, or above 6 models): another model may make Revit run out of memory and crash (live: 9 models, ~15 GB). close_idle_copies closed ACE's own idle copies first: TST_A, TST_B."],
+            memory: { workingSetGb: 14.8, openModels: 9, idleCopies: ["TST_A", "TST_B"], closedIdleCopies: [{ model: "TST_A", closed: true }, { model: "TST_B", closed: true }] } }
+          : { warnings: ["Revit uses 14.8 GB memory with 9 model(s) open (warning above 10 GB, config.json openModelWarnGb, or above 6 models): another model may make Revit run out of memory and crash (live: 9 models, ~15 GB). ACE's own copies that close quietly (nobody changed them): TST_A, TST_B. Close them first (close_model each, or open_model again with close_idle_copies: true)."],
+            memory: { workingSetGb: 14.8, openModels: 9, idleCopies: ["TST_A", "TST_B"], closedIdleCopies: null } });
         return reply({ ok: true, result: { model, path: args.path, workshared: true, detached: args.detach !== "none", audited: args.audit, worksetsOpened: args.worksets, echo: args, ...extra,
           closed: args.close_previous ? (model.includes("KEEP") ? { model: "Test", closed: false, why: "it has unsaved changes" } : { model: "Test", closed: true }) : null,
           openDocuments: args.close_previous && !model.includes("KEEP") ? [model] : ["Test", model] } });
       }
       case "close_model": return reply({ ok: true, result: { model: args.model, closed: true, ...(args.model === "TST_Quiet" ? { discarded: false, note: "closed: its only changes were ACE runs that changed no element" } : {}) } });
       case "save_model":
+        if (args.save_as?.path?.includes("TRANS")) return reply({ ok: true, result: { model: "TST_Copy", path: args.save_as.path, saved: true, kind: "save_as", echo: args, transmitted: true, transmittedClear: "kept",
+          warnings: [`${args.save_as.path} is still marked transmitted (Save As keeps the flag): opening it asks how to treat a transmitted model. To clear it: close the model with close_model, then open_model with clear_transmitted: true (confirm), which clears it in the file before it opens.`] } });
         if (args.save_as) return reply({ ok: true, result: { model: "TST_Copy", path: args.save_as.path, saved: true, kind: args.save_as.as_central ? "save_as central" : "save_as", overwritten: !!args.save_as.overwrite, ms: 5, echo: args,
           warnings: args.save_as.as_central ? ["The central moved from C:/TST/old.rvt to " + args.save_as.path + ": other users' local copies still point at the old central."] : [] } });
         return reply({ ok: true, result: { model: args.model ?? "Test", saved: true, kind: "file", ms: 3, echo: args } });
@@ -594,13 +601,17 @@ assert.ok(!seen.some((s) => s.command === "save_model"), "nothing reached Revit"
 const saExt = await call("save_model", { model: "Test", save_as: { path: "C:/TST/TST_Copy.txt" }, allow_risky: true });
 assert.ok(saExt.isError && /must end in \.rvt/.test(saExt.content[0].text), "save_as to a non-.rvt path is refused");
 const saOk = json(await call("save_model", { model: "Test", save_as: { ...sa, overwrite: true }, allow_risky: true }));
-assert.deepEqual(saOk.echo.save_as, { path: sa.path, overwrite: true, as_central: false }, "overwrite reaches the add-in");
+assert.deepEqual(saOk.echo.save_as, { path: sa.path, overwrite: true, as_central: false, clear_transmitted: false }, "overwrite reaches the add-in");
 const saPlain = json(await call("save_model", { model: "Test", save_as: sa, allow_risky: true }));
 assert.equal(saPlain.echo.save_as.overwrite, false, "overwrite is false unless given (the add-in refuses an existing file then)");
 const saCentral = await call("save_model", { handle: "abc123", save_as: { ...sa, as_central: true }, allow_risky: true });
 assert.equal(json(saCentral).echo.save_as.as_central, true, "as_central passes through");
 assert.equal(json(saCentral).kind, "save_as central");
 assert.ok(saCentral.content.some((c) => /WARNING: The central moved/.test(c.text)), "the central warning is shown");
+assert.equal(json(saCentral).echo.save_as.clear_transmitted, true, "clear_transmitted defaults to true with as_central");
+assert.equal(json(await call("save_model", { handle: "abc123", save_as: { ...sa, as_central: true, clear_transmitted: false }, allow_risky: true })).echo.save_as.clear_transmitted, false, "an explicit clear_transmitted: false is kept");
+const saTr = await call("save_model", { model: "Test", save_as: { path: "C:/TST/TST_TRANS_Copy.rvt" }, allow_risky: true });
+assert.ok(json(saTr).transmitted === true && saTr.content.some((c) => /WARNING: .*still marked transmitted.*close_model, then open_model with clear_transmitted/.test(c.text)), "a transmitted copy kept: the warning says how to clear it");
 assert.match((await call("get_activity_log", {})).content[0].text, /Save As model TST_Copy/, "save_as is journaled");
 
 // --- set_parameters has the same gate ---
@@ -1316,7 +1327,11 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const om = await call("open_model", { path: "C:/Projects/P1/P1-ST-0001.rvt", audit: true, close_previous: true });
   const oa = seen.at(-1);
   assert.ok(oa.command === "open_model" && oa.args.detach === "none" && oa.args.audit === true && oa.args.worksets === "all" && oa.args.close_previous === true, "defaults: no detach, all worksets");
-  assert.ok(oa.args.clear_transmitted === false && oa.args.save_as_central_ok === false, "both new flags default false");
+  assert.ok(oa.args.clear_transmitted === false && oa.args.save_as_central_ok === false && oa.args.close_idle_copies === false, "the flags default false");
+  const big = (await call("open_model", { path: "C:/Projects/P1/P1-BIG.rvt" })).content.at(-1).text;
+  assert.match(big, /WARNING: Revit uses 14\.8 GB memory with 9 model\(s\) open.*TST_A, TST_B\. Close them first/, "the memory warning reaches Claude with ACE's idle copies");
+  const bigClose = (await call("open_model", { path: "C:/Projects/P1/P1-BIG.rvt", close_idle_copies: true })).content.at(-1).text;
+  assert.ok(seen.at(-1).args.close_idle_copies === true && /Closed ACE's idle copies first: TST_A, TST_B\./.test(bigClose), "close_idle_copies passes through; what was closed is said");
   assert.match(om.content.at(-1).text, /^Opened P1-ST-0001 \(audited \/ worksets: all\); closed Test\. Open now: P1-ST-0001\.\nFlagged transmitted: no\.$/);
   const n0 = seen.length;
   const ct = await call("open_model", { path: "C:/Projects/P1/P1-TRANS.rvt", clear_transmitted: true });

@@ -196,7 +196,8 @@ namespace AceRevitMcp.Commands
 
         /// <summary>
         /// open_model { path, detach: none | preserve_worksets | discard_worksets, audit, worksets: all | last_viewed | none,
-        /// close_previous, clear_transmitted, save_as_central_ok }: opens and activates the file. Refuses a missing file, a file
+        /// close_previous, clear_transmitted, save_as_central_ok, close_idle_copies }: opens and activates the file. Before the open
+        /// it checks Revit's memory and open models (MemoryBeforeOpen: a warning, memory; close_idle_copies closes ACE's idle copies). Refuses a missing file, a file
         /// already open (it is activated instead) and a file saved in a newer Revit. close_previous closes the previously active
         /// model only if it has no unsaved changes, never saving. Before the open it reads the transmitted flag (transmitted) and
         /// the external references (unresolvedLinks: files that do not exist); clear_transmitted: true writes the flag off in the
@@ -319,6 +320,11 @@ namespace AceRevitMcp.Commands
             var backupWarning = OpenDialogLogic.BackupFolderWarning(workshared, detached, full);
             if (backupWarning != null) warnings.Add(backupWarning);
 
+            // Memory before the open (live: Revit crashed with 9 models open, ~15 GB): above openModelWarnGb (config.json,
+            // default 10) or more than 6 open models, a warning that lists ACE's own copies close_model would close without
+            // discard; close_idle_copies: true closes those first. Nothing else is ever closed.
+            var memory = MemoryBeforeOpen(app, previous, Args.Bool(args, "close_idle_copies"), warnings);
+
             // Dialogs during the open: a handler only for this call. Known ones are answered, every one is recorded.
             var dialogs = new JsonArray();
             void OnDialog(object sender, DialogBoxShowingEventArgs e)
@@ -353,6 +359,7 @@ namespace AceRevitMcp.Commands
             JsonNode closed = null;
             if (Args.Bool(args, "close_previous") && previous != null && !previous.Equals(doc))
                 closed = CloseQuietly(previous, Args.Bool(args, "discard_previous"));
+            var transmittedClearedOnClose = ClearPendingTransmitted(app);
 
             JsonNode worksetsOpened = null;
             if (doc.IsWorkshared)
@@ -370,7 +377,49 @@ namespace AceRevitMcp.Commands
                 ["worksetsOpened"] = worksetsOpened, ["closed"] = closed, ["openDocuments"] = OpenDocuments(app),
                 ["active"] = app.ActiveUIDocument?.Document?.Title, ["previous"] = PreviousJson(previous), ["openedByAce"] = true, ["handle"] = handle,
                 ["transmitted"] = transmitted, ["transmittedCleared"] = transmittedCleared, ["externalReferences"] = externalReferences,
-                ["unresolvedLinks"] = unresolvedLinks, ["dialogs"] = dialogs, ["notes"] = notes, ["warnings"] = warnings,
+                ["unresolvedLinks"] = unresolvedLinks, ["dialogs"] = dialogs, ["notes"] = notes, ["warnings"] = warnings, ["memory"] = memory,
+                ["transmittedClearedOnClose"] = transmittedClearedOnClose,
+            };
+        }
+
+        /// <summary>
+        /// open_model's memory check, before the open: { workingSetGb, openModels, warnAtGb, warnAtModels, idleCopies,
+        /// closedIdleCopies }. Idle copies are models ACE opened that close_model would close without discard (not active,
+        /// nobody changed them, and unmodified or only empty ACE runs: QuietCloseLogic.IdleCopy); with closeIdle they are
+        /// closed first (CloseQuietly without discard). Adds the warning when Revit is above the threshold.
+        /// </summary>
+        private static JsonObject MemoryBeforeOpen(UIApplication app, Document active, bool closeIdle, JsonArray warnings)
+        {
+            long bytes = -1;
+            try { using (var p = System.Diagnostics.Process.GetCurrentProcess()) bytes = p.WorkingSet64; } catch { /* not readable */ }
+            var models = app.Application.Documents.Cast<Document>().Where(d => !d.IsLinked && !d.IsFamilyDocument).ToList();
+            var warnGb = QuietCloseLogic.WarnGb(AceRevitMcp.Rules.ProjectRules.Config()?["openModelWarnGb"]?.ToString());
+            Entry(null);
+            var idle = new List<Document>();
+            foreach (var d in models)
+            {
+                var e = Entry(d);
+                if (e == null || (active != null && active.Equals(d))) continue;
+                bool workshared, modified;
+                try { workshared = d.IsWorkshared; modified = d.IsModified; } catch { continue; }
+                if (QuietCloseLogic.IdleCopy(e.Untouched, e.OnlyEmptyAceRuns, workshared, e.Detached, modified)) idle.Add(d);
+            }
+            var idleTitles = idle.Select(d => d.Title).ToList();
+            var closedIdle = new JsonArray();
+            if (closeIdle)
+                foreach (var d in idle)
+                {
+                    var r = CloseQuietly(d, false);
+                    closedIdle.Add(r);
+                }
+            if (closeIdle) InstanceRegistry.Update(app);
+            var warning = QuietCloseLogic.MemoryWarning(bytes, models.Count, warnGb, idleTitles, closeIdle);
+            if (warning != null) warnings.Add(warning);
+            return new JsonObject
+            {
+                ["workingSetGb"] = bytes < 0 ? (JsonNode)null : Math.Round(bytes / QuietCloseLogic.Gb, 1), ["openModels"] = models.Count,
+                ["warnAtGb"] = warnGb, ["warnAtModels"] = QuietCloseLogic.WarnModels,
+                ["idleCopies"] = new JsonArray(idleTitles.Select(t => (JsonNode)t).ToArray()), ["closedIdleCopies"] = closeIdle ? closedIdle : null,
             };
         }
 
@@ -402,6 +451,7 @@ namespace AceRevitMcp.Commands
             {
                 ["model"] = title, ["closed"] = done, ["why"] = done ? null : "Revit did not close it", ["discarded"] = done && discarded,
                 ["note"] = done && quiet ? QuietCloseLogic.ClosedNote : null, ["openDocuments"] = OpenDocuments(app),
+                ["transmittedClearedOnClose"] = done ? ClearPendingTransmitted(app) : null,
             };
         }
 
@@ -428,7 +478,7 @@ namespace AceRevitMcp.Commands
         }
 
         /// <summary>
-        /// save_model { handle | path | model, allow_risky, save_as? { path, overwrite, as_central } }: saves an open model (active
+        /// save_model { handle | path | model, allow_risky, save_as? { path, overwrite, as_central, clear_transmitted (default: as_central) } }: saves an open model (active
         /// or not). Without save_as it saves to its own file (never Synchronize with Central): a local, detached-and-saved or
         /// non-workshared file and a workshared local copy are saved in place; a central opened directly is saved with
         /// SaveOptions. With save_as: Document.SaveAs to a new .rvt (SaveAsLogic checks the target before Revit is called); the
@@ -455,8 +505,10 @@ namespace AceRevitMcp.Commands
             if (doc.IsFamilyDocument) throw new CommandException($"{doc.Title} is a family: save_model saves project models. Nothing was saved.");
             if (doc.IsLinked) throw new CommandException($"{doc.Title} is a linked model: save it from its own file. Nothing was saved.");
             if (doc.IsModelInCloud) throw new CommandException($"{doc.Title} is a cloud model: ACE does not save cloud models (use Synchronize in Revit). Nothing was saved.");
-            if (doc.IsReadOnly || doc.IsReadOnlyFile) throw new CommandException($"{doc.Title} is read-only. Nothing was saved.");
-            if (args["save_as"] is JsonObject saveAs) return SaveAs(app, doc, saveAs);
+            var saveAs = args["save_as"] as JsonObject;
+            var readOnly = SaveAsLogic.ReadOnlyRefusal(doc.Title, doc.IsReadOnly, doc.IsReadOnlyFile, saveAs != null);
+            if (readOnly != null) throw new CommandException(readOnly + " Nothing was saved.");
+            if (saveAs != null) return SaveAs(app, doc, saveAs);
             if (string.IsNullOrEmpty(doc.PathName)) throw new CommandException($"{doc.Title} has never been saved (no file path; e.g. a detached copy): give save_as {{ path }} to save it to a new file. Nothing was saved.");
             long? Size() { try { return new FileInfo(doc.PathName).Length; } catch { return null; } }
             string kind;
@@ -487,6 +539,38 @@ namespace AceRevitMcp.Commands
         }
 
         /// <summary>
+        /// Files saved by save_as that are still marked transmitted and should be cleared (clear_transmitted): Revit writes
+        /// transmission data only into a closed file, so the flag is written off when the model is no longer open, checked after
+        /// every close ACE makes (close_model, close_previous, close_idle_copies) and after a save_as. Kept in memory only (a
+        /// reload_addin or a model closed in Revit leaves the flag: open_model clear_transmitted clears it before the next open).
+        /// </summary>
+        private static readonly List<string> PendingTransmittedClear = new List<string>();
+
+        /// <summary>Clears the transmitted flag of every pending file no longer open in this session: [{ path, cleared, why }], null when none.</summary>
+        private static JsonArray ClearPendingTransmitted(UIApplication app)
+        {
+            if (PendingTransmittedClear.Count == 0) return null;
+            var open = app.Application.Documents.Cast<Document>().Where(d => !string.IsNullOrEmpty(d.PathName)).Select(d => Normalize(d.PathName)).ToList();
+            var done = new JsonArray();
+            foreach (var p in PendingTransmittedClear.ToList())
+            {
+                if (open.Any(o => string.Equals(o, Normalize(p), StringComparison.OrdinalIgnoreCase))) continue;
+                PendingTransmittedClear.Remove(p);
+                try
+                {
+                    var mp = ModelPathUtils.ConvertUserVisiblePathToModelPath(p);
+                    var td = TransmissionData.ReadTransmissionData(mp);
+                    if (td == null || !td.IsTransmitted) { done.Add(new JsonObject { ["path"] = p, ["cleared"] = false, ["why"] = "not marked transmitted any more" }); continue; }
+                    td.IsTransmitted = false;
+                    TransmissionData.WriteTransmissionData(mp, td);
+                    done.Add(new JsonObject { ["path"] = p, ["cleared"] = true });
+                }
+                catch (Exception ex) { done.Add(new JsonObject { ["path"] = p, ["cleared"] = false, ["why"] = ex.Message + " (open_model clear_transmitted: true clears it before the next open)" }); }
+            }
+            return done.Count == 0 ? null : done;
+        }
+
+        /// <summary>
         /// save_model's save_as { path, overwrite, as_central }: Document.SaveAs to a new .rvt. The target is checked before Revit is
         /// called (SaveAsLogic.Refusal: .rvt, folder exists, an existing file only with overwrite, not the model's own file,
         /// as_central only for a workshared model). Afterwards the model is that file: ACE's handle record follows it.
@@ -496,12 +580,14 @@ namespace AceRevitMcp.Commands
             var target = (Args.Str(saveAs, "path") ?? "").Trim().Trim('"');
             var overwrite = Args.Bool(saveAs, "overwrite");
             var asCentral = Args.Bool(saveAs, "as_central");
+            var clearTransmitted = Args.Bool(saveAs, "clear_transmitted", asCentral);
             string full = null, folder = null;
             if (target.Length > 0)
                 try { full = Path.GetFullPath(target); folder = Path.GetDirectoryName(full); } catch (Exception ex) { throw new CommandException($"save_as path is not a valid path ({ex.Message}). Nothing was saved."); }
             bool workshared;
             try { workshared = doc.IsWorkshared; } catch { workshared = false; }
             var oldPath = string.IsNullOrEmpty(doc.PathName) ? null : doc.PathName;
+            var oldTitle = doc.Title;
             var existed = full != null && File.Exists(full);
             var refusal = SaveAsLogic.Refusal(target, existed, !string.IsNullOrEmpty(folder) && Directory.Exists(folder), overwrite, asCentral, workshared,
                 oldPath != null && full != null && string.Equals(Normalize(oldPath), Normalize(full), StringComparison.OrdinalIgnoreCase));
@@ -528,13 +614,27 @@ namespace AceRevitMcp.Commands
             InstanceRegistry.Update(app);
             long? size; try { size = new FileInfo(doc.PathName ?? full).Length; } catch { size = null; }
             var warnings = new JsonArray();
+            var notes = new JsonArray();
             var w = SaveAsLogic.CentralWarning(asCentral, oldCentral, doc.PathName ?? full);
             if (w != null) warnings.Add(w);
+            // SaveAs keeps the transmitted flag of a transmitted source. It is read from the new file; Revit writes transmission
+            // data only into a closed file (TransmissionData.WriteTransmissionData: "cannot be called on an opened document"), so a
+            // clear is done when ACE closes this model (PendingTransmittedClear), never by closing it now.
+            var newPath = doc.PathName ?? full;
+            bool? transmitted = null;
+            try { transmitted = TransmissionData.ReadTransmissionData(ModelPathUtils.ConvertUserVisiblePathToModelPath(newPath))?.IsTransmitted == true; }
+            catch (Exception ex) { notes.Add("The transmitted flag of the new file could not be read (" + ex.Message + ")."); }
+            var plan = SaveAsLogic.TransmittedPlan(transmitted, clearTransmitted, newPath);
+            if (plan.Clear) PendingTransmittedClear.Add(newPath);
+            if (plan.Warning != null) warnings.Add(plan.Warning);
+            if (plan.Note != null) notes.Add(plan.Note);
+            var clearedOld = ClearPendingTransmitted(app);   // e.g. the file this model was before (no longer open)
             return new JsonObject
             {
-                ["model"] = doc.Title, ["path"] = doc.PathName ?? full, ["previousPath"] = oldPath, ["saved"] = true, ["kind"] = SaveAsLogic.Kind(asCentral),
-                ["overwritten"] = existed,
-                ["sizeAfter"] = size, ["ms"] = sw.ElapsedMilliseconds, ["handle"] = e?.Handle, ["warnings"] = warnings,
+                ["model"] = doc.Title, ["previousModel"] = oldTitle, ["path"] = newPath, ["previousPath"] = oldPath, ["saved"] = true, ["kind"] = SaveAsLogic.Kind(asCentral),
+                ["overwritten"] = existed, ["transmitted"] = transmitted, ["transmittedClear"] = plan.State,
+                ["sizeAfter"] = size, ["ms"] = sw.ElapsedMilliseconds, ["handle"] = e?.Handle, ["warnings"] = warnings, ["notes"] = notes,
+                ["transmittedClearedOnClose"] = clearedOld,
                 ["note"] = "The open model is now this file: further saves go to it" + (oldPath != null ? $" (not {oldPath})." : "."),
             };
         }
@@ -594,6 +694,43 @@ namespace AceRevitMcp.Commands
         /// <summary>Whether a modified model may close quietly: nobody else touched it, only empty ACE runs, and (workshared) a detached copy.</summary>
         internal static bool MayClose(bool untouched, bool onlyEmptyAceRuns, bool workshared, bool detached) =>
             untouched && onlyEmptyAceRuns && (!workshared || detached);
+
+        /// <summary>
+        /// A copy ACE opened that close_model would close without discard and that nobody worked in: untouched, and either
+        /// unmodified or modified only by empty ACE runs (MayClose). The caller leaves out the active model.
+        /// </summary>
+        internal static bool IdleCopy(bool untouched, bool onlyEmptyAceRuns, bool workshared, bool detached, bool modified) =>
+            untouched && (!modified || MayClose(untouched, onlyEmptyAceRuns, workshared, detached));
+
+        internal const double Gb = 1024d * 1024 * 1024;
+        internal const double DefaultWarnGb = 10;
+        /// <summary>More open models than this before an open: the warning (live crash: 9 models).</summary>
+        internal const int WarnModels = 6;
+
+        /// <summary>config.json openModelWarnGb: a positive number, else the default (10 GB).</summary>
+        internal static double WarnGb(string configured) =>
+            double.TryParse(configured, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) && v > 0 && AceRevitMcp.Util.Compat.IsFinite(v) ? v : DefaultWarnGb;
+
+        /// <summary>
+        /// The warning before open_model opens another model: Revit's working set above warnGb or more than WarnModels project
+        /// models open; null below both (or memory unknown and few models). Lists the idle ACE copies (closed already with
+        /// closedIdle) and how to close them.
+        /// </summary>
+        internal static string MemoryWarning(long workingSetBytes, int openModels, double warnGb, IList<string> idleCopies, bool closedIdle)
+        {
+            var gb = workingSetBytes < 0 ? -1 : workingSetBytes / Gb;
+            var overMemory = gb >= 0 && gb > warnGb;
+            var overModels = openModels > WarnModels;
+            if (!overMemory && !overModels) return null;
+            var state = $"Revit uses {(gb < 0 ? "an unknown amount of" : gb.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " GB")} memory with {openModels} model(s) open"
+                + $" (warning above {warnGb.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)} GB, config.json openModelWarnGb, or above {WarnModels} models): another model may make Revit run out of memory and crash (live: 9 models, ~15 GB).";
+            var idle = idleCopies ?? new List<string>();
+            if (idle.Count == 0) return state + " ACE has no copies of its own that close quietly: ask the user which models can be closed first (ACE closes nothing else).";
+            var names = string.Join(", ", idle);
+            return closedIdle
+                ? state + $" close_idle_copies closed ACE's own idle copies first: {names}."
+                : state + $" ACE's own copies that close quietly (nobody changed them): {names}. Close them first (close_model each, or open_model again with close_idle_copies: true).";
+        }
     }
 
     /// <summary>Pure rules for open_model: which dialog gets which answer, and when a transmitted model opens detached.</summary>
@@ -678,6 +815,32 @@ namespace AceRevitMcp.Commands
         }
 
         internal static string Kind(bool asCentral) => asCentral ? "save_as central" : "save_as";
+
+        /// <summary>
+        /// Null when the document may be saved, else why not. IsReadOnly (Revit is processing failures, a read-only command)
+        /// blocks every save. IsReadOnlyFile (opened from a read-only file, or a never-saved detached copy, where Revit reports
+        /// true) blocks only a save into its own file: Save As to a new file is what Revit's documentation says to do then.
+        /// </summary>
+        internal static string ReadOnlyRefusal(string title, bool isReadOnly, bool isReadOnlyFile, bool saveAs)
+        {
+            if (isReadOnly) return $"{title} is read-only right now (Revit is processing failures or a read-only command runs): try again when Revit is idle.";
+            if (isReadOnlyFile && !saveAs) return $"{title} was opened from a read-only file: it cannot be saved into that file; give save_as {{ path }} to save it to a new file.";
+            return null;
+        }
+
+        /// <summary>
+        /// After Save As: what happens to a transmitted flag the new file kept (transmitted null = not readable). State: null (not
+        /// transmitted), "unknown", "on close" (clear: written off when ACE closes the model; Revit writes it only into a closed
+        /// file), "kept" (no clear: a warning).
+        /// </summary>
+        internal static (string State, bool Clear, string Warning, string Note) TransmittedPlan(bool? transmitted, bool clear, string path)
+        {
+            if (transmitted == null) return ("unknown", false, null, null);
+            if (transmitted == false) return (null, false, null, null);
+            if (clear)
+                return ("on close", true, null, $"{path} is still marked transmitted (Save As keeps the flag). Revit writes the flag only into a closed file, so ACE clears it when ACE closes this model (close_model, or open_model close_previous / close_idle_copies). Closed in Revit instead, the flag stays: then open_model with clear_transmitted: true clears it before the next open.");
+            return ("kept", false, $"{path} is still marked transmitted (Save As keeps the flag): opening it asks how to treat a transmitted model. To clear it: close the model with close_model, then open_model with clear_transmitted: true (confirm), which clears it in the file before it opens.", null);
+        }
 
         /// <summary>
         /// After Save As central: a central at a new path leaves other users' local copies pointing at the old central (they need
