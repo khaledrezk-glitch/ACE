@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.14.7 (21 Oct 2026)
+- Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
+- **DWFx with 3D views:** `dwfx.views` adds named 3D views to the combined DWFx with the sheets (exact names; missing,
+  ambiguous or unprintable views block in pre-flight). The page self-check skips the view pages; the reply says
+  "N of M sheets and K of L views in the files".
+- **same_as_folder reads subfolders** (printed sets in PDF\ and CAD\), up to 4 levels, one stem per sheet; Revit's
+  `_backup` folders are skipped.
+- **open_model warns** that opening a workshared file attached creates `<name>_backup` beside it (stronger when the folder
+  looks like a deliverables folder) and recommends `detach: "preserve_worksets"` for read-only and export work.
+
 ## 1.14.6 (20 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **DWFx on true paper size:** each sheet's paper format (ISO A/B, ANSI, ARCH) and orientation come from its title block

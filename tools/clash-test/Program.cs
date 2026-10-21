@@ -437,6 +437,16 @@ class P {
       "transmitted: save_as_central_ok keeps it attached; an explicit detach, a non-transmitted or non-workshared file is unchanged");
     Check((string)OD("RefType").Invoke(null, new object[] { "CADLink" }) == "CAD" && (string)OD("RefType").Invoke(null, new object[] { "RevitLink" }) == "RevitLink"
       && ((string)OD("Clip").Invoke(null, new object[] { new string('x', 300), 200 })).Length == 200, "unresolvedLinks type names; dialog messages clipped to 200 characters");
+    // 1.14.8 #35: a workshared file opened attached gets a <name>_backup folder next to it: a warning (stronger in a deliverables folder).
+    string? BW(bool w, bool d, string p) => (string?)OD("BackupFolderWarning").Invoke(null, new object[] { w, d, p });
+    var bwPlain = BW(true, false, @"C:\TST_Projects\TST_Work\TST_Model.rvt");
+    var bwSub = BW(true, false, @"C:\TST_Projects\TST 03 SUBMISSIONS\TST_Model.rvt");
+    var bwExp = BW(true, false, "D:/TST/Exports/TST_Model.rvt");
+    Check(bwPlain != null && bwPlain.Contains("TST_Model_backup") && bwPlain.Contains("detach: \"preserve_worksets\"") && !bwPlain.Contains("deliverables folder")
+      && bwSub != null && bwSub.StartsWith("This looks like a deliverables folder (\"TST 03 SUBMISSIONS\")") && bwExp != null && bwExp.Contains("deliverables folder")
+      && BW(true, true, @"C:\TST\Issued\TST_Model.rvt") == null && BW(false, false, @"C:\TST\Issued\TST_Model.rvt") == null
+      && BW(true, false, @"C:\TST\Issued\TST_Model.rvt")!.Contains("(\"Issued\")") && BW(true, false, @"C:\TST_Issued_Model\x\TST_Model.rvt")!.Contains("deliverables folder"),
+      "open_model: attached workshared file warns about <name>_backup and recommends detach preserve_worksets; deliverables folders (any case, any segment) warn harder; detached or not workshared: none");
 
     // 16. 1.12.5: workset_admin plans (rename, delete_empty, self-check) and capture_method diffs. Synthetic TST_ names only.
     var wal = a.GetType("AceRevitMcp.Rules.WorksetAdminLogic");
@@ -964,6 +974,50 @@ class P {
     List<string> ScF(object o, string f) => (List<string>)o.GetType().GetField(f)!.GetValue(o)!;
     Check(ScF(sc, "Item1").SequenceEqual(new[] { "A-101", "a-102" }) && ScF(sc, "Item2").SequenceEqual(new[] { "A-103" }) && ScF(sc, "Item3").SequenceEqual(new[] { "A-900" }),
       "DWFx sheet check: asked vs exported gives matched, missing and extra");
+
+    // 1.14.8 #33: dwfx.views: 3D views in the combined DWFx with the sheets. View pages have no title block: they are left out
+    // of the size check and identified by order and count (first, else last); the page count expected is sheets + views.
+    (List<bool> Ok, List<string?> ViewPages, List<string> Problems, List<string> Warnings, string? At) PV((string, double, double)[] sheetsIn, string[] viewsIn, (IList Pages, IList Papers) r, bool def = false)
+    {
+      var res = VM("PageCheckWithViews").Invoke(null, new object[] { sheetsIn.ToList(), viewsIn.ToList(), r.Pages, r.Papers, def, 2.0 })!; var t = res.GetType();
+      var rows = (IList)t.GetField("Item1")!.GetValue(res)!; var vrows = (IList)t.GetField("Item2")!.GetValue(res)!;
+      return (rows.Cast<object>().Select(x => (bool)x.GetType().GetField("Item3")!.GetValue(x)!).ToList(), vrows.Cast<object>().Select(x => (string?)x.GetType().GetField("Item2")!.GetValue(x)).ToList(),
+        (List<string>)t.GetField("Item3")!.GetValue(res)!, (List<string>)t.GetField("Item4")!.GetValue(res)!, (string?)t.GetField("Item5")!.GetValue(res));
+    }
+    var tA = ("TST-101", 841.0, 594.0); var tB = ("TST-102", 841.0, 594.0);
+    var v3d = new[] { "TST_NAVISWORKS" };
+    // The 3D view page on another paper (Letter) first, then two A1 sheets: the sheets pass, the view page is not compared.
+    var vFirst = PV(new[] { tA, tB }, v3d, Read(Dwfx(new[] { (279.4, 215.9), (841.0, 594.0), (841.0, 594.0) }, paper: false)));
+    var vLast = PV(new[] { tA, tB }, v3d, Read(Dwfx(new[] { (841.0, 594.0), (841.0, 594.0), (279.4, 215.9) }, paper: false)));
+    var vSame = PV(new[] { tA, tB }, v3d, Read(Dwfx(new[] { (841.0, 594.0), (841.0, 594.0), (841.0, 594.0) }, paper: false)));
+    Check(vFirst.Ok.All(x => x) && vFirst.Problems.Count == 0 && vFirst.At == "first" && vFirst.ViewPages.Single() == "279.4 x 215.9"
+      && vLast.Ok.All(x => x) && vLast.Problems.Count == 0 && vLast.At == "last" && vLast.Warnings.Any(w => w.Contains("after the sheets"))
+      && vSame.Ok.All(x => x) && vSame.At == "first" && vSame.ViewPages.Single() == "841 x 594",
+      "DWFx with views: view pages (first, else last) are left out of the size check; sheets + views pages expected");
+    // A wrong sheet is still caught with a view in the file; a missing page fails the count; no page for the view: sheets checked, warning.
+    var vBad = PV(new[] { tA, tB }, v3d, Read(Dwfx(new[] { (841.0, 594.0), (594.0, 841.0), (841.0, 594.0) }, paper: false)));
+    var vCount = PV(new[] { tA, tB }, new[] { "TST_NAVISWORKS", "TST_3D 2" }, Read(Dwfx(new[] { (841.0, 594.0), (841.0, 594.0), (841.0, 594.0) }, paper: false)));
+    var vNoPage = PV(new[] { tA, tB }, v3d, Read(Dwfx(new[] { (841.0, 594.0), (841.0, 594.0) }, paper: false)));
+    var vNone = PV(new[] { tA, tB }, new string[0], Read(Dwfx(new[] { (841.0, 594.0), (841.0, 594.0) }, paper: false)));
+    Check(vBad.Problems.Count == 1 && vBad.Problems[0].StartsWith("sheet TST-101") && vBad.At == "first" && vBad.Ok.SequenceEqual(new[] { false, true })
+      && vCount.Ok.All(x => !x) && vCount.Problems.SequenceEqual(new[] { "page count 3 for 2 sheets and 2 views" })
+      && vNoPage.Ok.All(x => x) && vNoPage.Problems.Count == 0 && vNoPage.At == "no-page" && vNoPage.Warnings.Any(w => w.Contains("TST_NAVISWORKS") && w.Contains("3D section"))
+      && vNone.Ok.All(x => x) && vNone.At == null && vNone.ViewPages.Count == 0,
+      "DWFx with views: a wrong sheet page still fails; page count N for M sheets and K views fails all; no view page warns; no views = PageCheck");
+    // ePlot papers: one per page are split like the pages; otherwise a paper that fits no sheet is taken as the view's.
+    var vPaper = PV(new[] { tA, tB }, v3d, Read(Dwfx(new[] { (279.4, 215.9), (841.0, 594.0), (841.0, 594.0) })));
+    Check(vPaper.Problems.Count == 0 && vPaper.Ok.All(x => x), "DWFx with views: a view's ePlot paper (fits no sheet) is not reported against the sheets");
+    // View names: exact, among 3D views; missing, near-miss (case), ambiguous, not 3D, not printable all give a problem.
+    object Pick(string n, params (string, bool, bool)[] vs) => VM("DwfxViewPick").Invoke(null, new object[] { n, vs.ToList() })!;
+    int PIdx(object o) => (int)o.GetType().GetField("Item1")!.GetValue(o)!; string? PWhy(object o) => (string?)o.GetType().GetField("Item2")!.GetValue(o);
+    var vs3 = new[] { ("TST_PLAN", false, true), ("TST_NAVISWORKS", true, true), ("TST_Coord", true, true), ("TST_COORD2", true, false), ("TST_DUP", true, true), ("TST_DUP", true, true), ("TST_PLAN2", false, true) };
+    Check(PIdx(Pick("TST_NAVISWORKS", vs3)) == 1 && PWhy(Pick("TST_NAVISWORKS", vs3)) == null
+      && PWhy(Pick("tst_navisworks", vs3))!.Contains("exactly") && PWhy(Pick("tst_navisworks", vs3))!.Contains("TST_NAVISWORKS") && PIdx(Pick("tst_navisworks", vs3)) == -1
+      && PWhy(Pick("TST_NONE", vs3)) == "no 3D view is called TST_NONE" && PWhy(Pick("TST_DUP", vs3))!.Contains("ambiguous")
+      && PWhy(Pick("TST_PLAN", vs3)) == "TST_PLAN is not a 3D view" && PWhy(Pick("TST_COORD2", vs3))!.Contains("cannot be exported") && PWhy(Pick(" ", vs3)) != null,
+      "DWFx views: exact 3D view name; missing, case near-miss (named, not taken), ambiguous, not 3D and not exportable are refused");
+    int VG(params int[] c) => (int)VM("DwfxViewsGroup").Invoke(null, new object[] { c.ToList() })!;
+    Check(VG(24) == 0 && VG(3, 20, 20) == 1 && VG(5, 5) == 0 && VG() == -1, "DWFx views: the only group, else the largest (first of equals) takes the views");
 
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");

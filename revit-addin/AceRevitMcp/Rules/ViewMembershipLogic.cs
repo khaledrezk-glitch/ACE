@@ -318,6 +318,102 @@ namespace AceRevitMcp.Rules
         }
 
         /// <summary>
+        /// The self-check of a DWFx file that holds 3D views besides its sheets (dwfx.views). The views have no title block,
+        /// so their pages are left out of the size / orientation comparison; the page count expected is sheets + views.
+        /// Revit decides the page order of a merged export (a ViewSet is a set; ACE inserts the views first, as the old
+        /// files had them), so the view pages are identified by order and count: the first views.Count pages (viewsAt
+        /// "first"); when that split fails the sheets and the last views.Count pages pass instead, those (viewsAt "last",
+        /// with a warning). Exactly as many pages as sheets: the views have no 2D page (a 3D view can be stored as a 3D
+        /// section, which this check does not read): the sheets are checked, a warning says the views were not seen
+        /// (viewsAt "no-page"). Any other count: "page count N for M sheets and K views" fails them all. ePlot papers:
+        /// split the same way when there is one per page, else up to views.Count papers that fit no sheet are the views'.
+        /// No views: exactly PageCheck (viewsAt null).
+        /// </summary>
+        public static (List<(string Number, string PageMm, bool Ok)> Sheets, List<(string Name, string PageMm)> Views, List<string> Problems, List<string> Warnings, string ViewsAt) PageCheckWithViews(
+            IList<(string Number, double WidthMm, double HeightMm)> sheets, IList<string> views, IList<(string Part, double WidthMm, double HeightMm)> pages,
+            IList<(double WidthMm, double HeightMm)> papers, bool defaultPaper, double tolMm = 2)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            string Mm(double w, double h) => $"{Math.Round(w, 1).ToString(inv)} x {Math.Round(h, 1).ToString(inv)}";
+            var sh = sheets ?? new List<(string, double, double)>();
+            var vw = views ?? new List<string>();
+            var pg = pages ?? new List<(string, double, double)>();
+            var pp = papers ?? new List<(double, double)>();
+            var k = vw.Count;
+            if (k == 0 || pg.Count == 0)
+            {
+                var plain = PageCheck(sh, pg, pp, defaultPaper, tolMm);
+                return (plain.Sheets, vw.Select(v => (v, (string)null)).ToList(), plain.Problems, plain.Warnings, null);
+            }
+            List<(double, double)> PapersFor(bool first)
+            {
+                if (pp.Count == pg.Count) return (first ? pp.Skip(k) : pp.Take(sh.Count)).ToList();
+                var rest = pp.ToList();
+                for (var dropped = 0; dropped < k; dropped++)
+                {
+                    var i = rest.FindIndex(x => !sh.Any(s => SameSize(x.Item1, x.Item2, s.WidthMm, s.HeightMm, tolMm)));
+                    if (i < 0) break;
+                    rest.RemoveAt(i);
+                }
+                return rest;
+            }
+            if (pg.Count == sh.Count + k)
+            {
+                var first = PageCheck(sh, pg.Skip(k).ToList(), PapersFor(true), defaultPaper, tolMm);
+                if (first.Problems.Count > 0)
+                {
+                    var last = PageCheck(sh, pg.Take(sh.Count).ToList(), PapersFor(false), defaultPaper, tolMm);
+                    if (last.Problems.Count == 0)
+                    {
+                        last.Warnings.Add($"the {k} view page(s) came after the sheets, not first (Revit chose the page order)");
+                        return (last.Sheets, vw.Select((v, i) => (v, Mm(pg[sh.Count + i].WidthMm, pg[sh.Count + i].HeightMm))).ToList(), last.Problems, last.Warnings, "last");
+                    }
+                }
+                return (first.Sheets, vw.Select((v, i) => (v, Mm(pg[i].WidthMm, pg[i].HeightMm))).ToList(), first.Problems, first.Warnings, "first");
+            }
+            if (pg.Count == sh.Count)
+            {
+                var only = PageCheck(sh, pg, PapersFor(true), defaultPaper, tolMm);
+                only.Warnings.Add($"the file has a page per sheet and none for the {k} view(s) ({string.Join(", ", vw)}): a 3D view may be stored as a 3D section, which this check does not read; open the file to confirm the view is in it");
+                return (only.Sheets, vw.Select(v => (v, (string)null)).ToList(), only.Problems, only.Warnings, "no-page");
+            }
+            var sizes = string.Join(" | ", pg.Select(p => Mm(p.WidthMm, p.HeightMm)).Distinct());
+            return (sh.Select(s => (s.Number, sizes, false)).ToList(), vw.Select(v => (v, (string)null)).ToList(),
+                new List<string> { $"page count {pg.Count} for {sh.Count} sheets and {k} views" }, new List<string>(), null);
+        }
+
+        /// <summary>
+        /// A 3D view for dwfx.views, by its exact name (case and spaces as in Revit) among the model's views (templates left
+        /// out): (index into views, problem). Problems: no view of that name (a case-insensitive near match is named, never
+        /// taken), more than one 3D view of that name (ambiguous), a view of that name that is not a 3D view, a 3D view that
+        /// cannot be exported (it cannot be printed).
+        /// </summary>
+        public static (int Index, string Problem) DwfxViewPick(string name, IList<(string Name, bool Is3D, bool Printable)> views)
+        {
+            var n = name ?? "";
+            var list = views ?? new List<(string, bool, bool)>();
+            if (n.Trim().Length == 0) return (-1, "a view name is empty");
+            var exact = Enumerable.Range(0, list.Count).Where(i => string.Equals(list[i].Name, n, StringComparison.Ordinal)).ToList();
+            var exact3D = exact.Where(i => list[i].Is3D).ToList();
+            if (exact3D.Count > 1) return (-1, $"{exact3D.Count} 3D views are called {n} (ambiguous)");
+            if (exact3D.Count == 1)
+                return list[exact3D[0]].Printable ? (exact3D[0], null) : (-1, $"the 3D view {n} cannot be exported (Revit cannot print it)");
+            if (exact.Count > 0) return (-1, $"{n} is not a 3D view");
+            var near = list.Where(v => v.Is3D && string.Equals((v.Name ?? "").Trim(), n.Trim(), StringComparison.OrdinalIgnoreCase)).Select(v => v.Name).Distinct().ToList();
+            return (-1, near.Count == 0 ? $"no 3D view is called {n}"
+                : $"no 3D view is called exactly {n} (the name must match exactly; {(near.Count == 1 ? "did you mean" : "candidates:")} {string.Join(" | ", near)})");
+        }
+
+        /// <summary>The paper group (by its sheet count, in group order) that takes the dwfx.views: the largest, the first of equals; -1: none.</summary>
+        public static int DwfxViewsGroup(IList<int> sheetCounts)
+        {
+            if (sheetCounts == null || sheetCounts.Count == 0) return -1;
+            var best = 0;
+            for (var i = 1; i < sheetCounts.Count; i++) if (sheetCounts[i] > sheetCounts[best]) best = i;
+            return best;
+        }
+
+        /// <summary>
         /// The file name of each DWFx paper group, unique within the run: "&lt;stem&gt; - ISO A1[ portrait].dwfx"; a Default
         /// (allow_paper_fallback) group carries its size ("&lt;stem&gt; - Default 900x600.dwfx"); a name that would repeat gets " 2",
         /// " 3", ... One group: the requested name itself.

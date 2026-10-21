@@ -14,9 +14,13 @@ namespace AceRevitMcp.Commands
 {
     /// <summary>
     /// Bridge "export_deliverables": { out_dir, overwrite, check_only, nwc?: { view, file }, ifc?: { view?, setup?, config?,
-    /// file }, dwfx?: { sheets?, sheet_set?, file, allow_paper_fallback } }. DWFx: each sheet on the paper format of its title block
+    /// file }, dwfx?: { sheets?, sheet_set?, views?, file, allow_paper_fallback } }. DWFx: each sheet on the paper format of its title block
     /// (ISO / ANSI / ARCH within 2 mm, its orientation), one combined file per size, each file checked page by page after the
-    /// export (a failed one is kept as <name>-FAILED.dwfx; sheetCheck: asked vs exported). Writes files, never changes the model (the IFC and DWFx exports run inside a
+    /// export (a failed one is kept as <name>-FAILED.dwfx; sheetCheck: asked vs exported, sheets and views). views: 3D views by
+    /// exact name, put into the same merged export as the sheets (inserted first, like the old "3D View: ..." page); with
+    /// several paper groups they go into the largest group's file (a note says so). A 3D view has no title block: it takes
+    /// its group's PaperFormat / PortraitLayout (DWFExportOptions has no setting per view; the format comes from the sheets,
+    /// so the sheets stay on true paper) and its page is left out of the size check. Writes files, never changes the model (the IFC and DWFx exports run inside a
     /// transaction that is rolled back, as Revit requires a modifiable document: no undo step). check_only answers the pre-flight only; an export refuses
     /// when anything is blocked (no Navisworks exporter, a view or sheet missing, a file that exists without overwrite).
     /// </summary>
@@ -32,6 +36,7 @@ namespace AceRevitMcp.Commands
             public bool Portrait;
             public double WidthMm, HeightMm;   // dwfx: the group's title block size
             public List<(double W, double H)> SheetSizes;   // dwfx: each sheet's title block size, as Sheets
+            public List<View> Views = new List<View>();     // dwfx: the 3D views (dwfx.views) exported into this file with its sheets
         }
 
         /// <summary>A sheet's paper: its title block's Sheet Width / Height, else the sheet's outline (mm); 0 when neither can be read.</summary>
@@ -139,6 +144,8 @@ namespace AceRevitMcp.Commands
             JsonNode ifcSetup = null;
             var sheetCount = 0;
             var askedSheets = new List<string>();   // dwfx.sheets as sheet numbers (a name given is read as its sheet's number)
+            var askedViews = new List<string>();    // dwfx.views as given (exact 3D view names)
+            var dwfxViews = new List<View>();
 
             View FindView(string name) =>
                 new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>().FirstOrDefault(v => !v.IsTemplate && string.Equals(v.Name, name, StringComparison.Ordinal))
@@ -240,6 +247,21 @@ namespace AceRevitMcp.Commands
                 if (sheets.Count == 0 && missing.Count == 0 && string.IsNullOrWhiteSpace(setName)) Block("dwfx sheets", "no-sheets", "no sheets were given", "Give sheet_set or sheets.");
                 else if (sheets.Count == 0 && blocks.All(b => b?["what"]?.ToString()?.StartsWith("dwfx sheet") != true)) Block("dwfx sheets", "no-sheets", "the sheet set holds no sheets", "Choose a set with sheets.");
                 sheetCount = sheets.Count;
+                // dwfx.views: 3D views by exact name (missing, ambiguous or not exportable names block).
+                var viewNames = Args.Strings(dwfx, "views").Where(x => x != null).Distinct(StringComparer.Ordinal).ToList();
+                if (viewNames.Count > 0)
+                {
+                    var allViews = new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>().Where(v => !v.IsTemplate && !(v is ViewSheet)).ToList();
+                    bool Printable(View v) { try { return v.CanBePrinted; } catch { return false; } }
+                    var candidates = allViews.Select(v => (v.Name, v is View3D, Printable(v))).ToList();
+                    foreach (var vn in viewNames)
+                    {
+                        askedViews.Add(vn);
+                        var (idx, problem) = L.DwfxViewPick(vn, candidates);
+                        if (problem != null) Block("dwfx view " + vn, "view-not-found", problem, "Give the exact name of a 3D view (list_views lists them), or leave it out of dwfx.views.");
+                        else if (!dwfxViews.Contains(allViews[idx])) dwfxViews.Add(allViews[idx]);
+                    }
+                }
                 // True size: every sheet on the paper format of its title block (PaperFormat Default came out on US Letter, scaled).
                 // One export takes one format and orientation: one combined file per size (one file when all sheets share it).
                 var fallback = Args.Bool(dwfx, "allow_paper_fallback");
@@ -264,6 +286,13 @@ namespace AceRevitMcp.Commands
                     Block("dwfx paper", "paper-size", $"{noFit.Count} sheet(s) have a size no DWF paper format fits (ISO A/B, ANSI, ARCH, within 2 mm): {string.Join(", ", noFit.Take(20))}",
                         "Fix the title block size, or pass allow_paper_fallback: true to export them on Revit's default paper (scaled, not true size).");
                 else if (noFit.Count > 0) notes.Add($"DWFx: {noFit.Count} sheet(s) fit no paper format and use Revit's default paper (scaled, not true size; allow_paper_fallback): {string.Join(", ", noFit.Take(20))}.");
+                // The views go into one file: the only group's, else the largest group's (the first of equals).
+                var viewsGroup = dwfxViews.Count > 0 ? L.DwfxViewsGroup(groups.Select(g => g.Sheets.Count).ToList()) : -1;
+                if (viewsGroup >= 0)
+                {
+                    groups[viewsGroup].Views.AddRange(dwfxViews);
+                    if (groups.Count > 1) notes.Add($"DWFx: the {dwfxViews.Count} view(s) ({string.Join(", ", dwfxViews.Select(v => v.Name))}) go into the file of the largest paper group ({groups[viewsGroup].Paper.Replace('_', ' ')}{(groups[viewsGroup].Portrait ? " portrait" : "")}, {groups[viewsGroup].Sheets.Count} sheet(s)); the other files hold sheets only.");
+                }
                 if (groups.Count == 1)
                 {
                     var file = FileFor("dwfx", dwfx, ".dwfx", L.FileStem(doc.Title));   // one combined DWFx named as the model by default
@@ -291,7 +320,7 @@ namespace AceRevitMcp.Commands
                 ["model"] = doc.Title, ["aceVersion"] = aceVersion,
                 ["preflight"] = new JsonObject
                 {
-                    ["navisworksExporter"] = navisworks, ["views"] = views, ["ifcSetup"] = ifcSetup, ["ifcSetupsInModel"] = SetupList(), ["sheets"] = sheetCount,
+                    ["navisworksExporter"] = navisworks, ["views"] = views, ["dwfxViews"] = args["dwfx"] is JsonObject ? new JsonArray(dwfxViews.Select(v => (JsonNode)v.Name).ToArray()) : null, ["ifcSetup"] = ifcSetup, ["ifcSetupsInModel"] = SetupList(), ["sheets"] = sheetCount,
                     ["sheetList"] = jobs.Any(j => j.Format == "dwfx") ? SheetList(doc, jobs.Where(j => j.Format == "dwfx").SelectMany(j => j.Sheets).ToList()) : null, ["existing"] = existing, ["outDir"] = dir,
                 },
                 ["blocked"] = blocks, ["files"] = new JsonArray(), ["notes"] = notes,
@@ -316,6 +345,7 @@ namespace AceRevitMcp.Commands
             var files = (JsonArray)answer["files"];
             var ok = true;
             var exportedSheets = new List<string>();
+            var exportedViews = new List<string>();
             foreach (var job in jobs)
             {
                 job.Path = System.IO.Path.Combine(dir, job.File);
@@ -341,8 +371,10 @@ namespace AceRevitMcp.Commands
                                 break;
                             case "dwfx":
                                 var set = new ViewSet();
+                                foreach (var v in job.Views) set.Insert(v);   // the 3D views first, like the old files (Revit decides the final page order)
                                 foreach (var s in job.Sheets) set.Insert(s);
                                 // One combined file of sheets of one size, on that paper format and orientation (true size), no crop box or areas.
+                                // The 3D views take the same PaperFormat / PortraitLayout (no per-view setting exists; the format is the sheets').
                                 var dwfxOptions = new DWFXExportOptions
                                 {
                                     MergedViews = true, PaperFormat = (ExportPaperFormat)Enum.Parse(typeof(ExportPaperFormat), job.Paper), PortraitLayout = job.Portrait,
@@ -380,11 +412,14 @@ namespace AceRevitMcp.Commands
                 if (job.Format == "dwfx")
                 {
                     entry["sheets"] = job.Sheets.Count; entry["sheetList"] = SheetList(doc, job.Sheets);
+                    entry["views"] = new JsonArray(job.Views.Select(v => (JsonNode)v.Name).ToArray());
                     entry["paper"] = job.Paper.Replace('_', ' ') + (job.Portrait ? " portrait" : " landscape");
-                    entry["layout"] = job.Paper == "Default"
+                    var layout = job.Paper == "Default"
                         ? $"one combined DWFx of the {job.Sheets.Count} sheet(s) no paper format fits, on Revit's default paper (scaled, not true size; allow_paper_fallback)"
                         : $"one combined DWFx of the {job.Sheets.Count} sheet(s) of this size, on {job.Paper.Replace('_', ' ')} {(job.Portrait ? "portrait" : "landscape")} at 1:1, no crop box (each page checked against its title block, size and orientation, after the export)";
-                    if (written) exportedSheets.AddRange(job.Sheets.Select(x => x.SheetNumber));
+                    if (job.Views.Count > 0) layout += $"; with the 3D view(s) {string.Join(", ", job.Views.Select(v => v.Name))} on the same paper (inserted first; no title block, so not size-checked)";
+                    entry["layout"] = layout;
+                    if (written) { exportedSheets.AddRange(job.Sheets.Select(x => x.SheetNumber)); exportedViews.AddRange(job.Views.Select(v => v.Name)); }
                 }
                 else entry["elements"] = ElementCount(doc, job.View);
                 entry["warnings"] = warnings;
@@ -397,8 +432,14 @@ namespace AceRevitMcp.Commands
                 if (asked.Count == 0) asked = jobs.Where(j => j.Format == "dwfx").SelectMany(j => j.Sheets).Select(x => x.SheetNumber).ToList();
                 var (matched, missingSheets, extra) = L.SheetCheck(asked, exportedSheets);
                 JsonArray Arr(IEnumerable<string> l) => new JsonArray(l.Select(x => (JsonNode)x).ToArray());
-                answer["sheetCheck"] = new JsonObject { ["requested"] = asked.Count, ["matched"] = Arr(matched), ["missing"] = Arr(missingSheets), ["extra"] = Arr(extra), ["ok"] = missingSheets.Count == 0 && extra.Count == 0 };
-                if (missingSheets.Count > 0) ok = false;
+                var (vMatched, vMissing, vExtra) = L.SheetCheck(askedViews, exportedViews);
+                answer["sheetCheck"] = new JsonObject
+                {
+                    ["requested"] = asked.Count, ["matched"] = Arr(matched), ["missing"] = Arr(missingSheets), ["extra"] = Arr(extra),
+                    ["views"] = new JsonObject { ["requested"] = askedViews.Count, ["matched"] = Arr(vMatched), ["missing"] = Arr(vMissing), ["extra"] = Arr(vExtra) },
+                    ["ok"] = missingSheets.Count == 0 && extra.Count == 0 && vMissing.Count == 0,
+                };
+                if (missingSheets.Count > 0 || vMissing.Count > 0) ok = false;
             }
             answer["success"] = ok;
             if (!ok) { answer["stage"] = "export"; answer["error"] = "At least one export did not produce its file, or a DWFx failed its size check (see files[].warnings, files[].pageCheck and sheetCheck)."; }
@@ -406,32 +447,40 @@ namespace AceRevitMcp.Commands
         }
 
         /// <summary>
-        /// The DWFx self-check (ViewMembershipLogic.PageCheck): per sheet, in export order, its page against its title block
-        /// (size and orientation; a Default-paper group is only reported, with a warning). Writes pageCheck { number,
-        /// titleBlockMm, pageMm, ok } and eplotPaper into entry, warnings into warnings; returns the problems (none: passed).
+        /// The DWFx self-check (ViewMembershipLogic.PageCheckWithViews): per sheet, in export order, its page against its title
+        /// block (size and orientation; a Default-paper group is only reported, with a warning); the 3D view pages (by order and
+        /// count) are left out of the comparison. Writes pageCheck { number, titleBlockMm, pageMm, ok }, viewPages { name,
+        /// pageMm }, viewsAt and eplotPaper into entry, warnings into warnings; returns the problems (none: passed).
         /// </summary>
         private static List<string> DwfxCheck(Job job, string file, JsonObject entry, JsonArray warnings)
         {
             var sheets = job.Sheets.Select((sh, i) => (sh.SheetNumber, job.SheetSizes[i].W, job.SheetSizes[i].H)).ToList();
-            (List<(string Number, string PageMm, bool Ok)> Sheets, List<string> Problems, List<string> Warnings) check;
+            var viewNames = job.Views.Select(v => v.Name).ToList();
+            (List<(string Number, string PageMm, bool Ok)> Sheets, List<(string Name, string PageMm)> Views, List<string> Problems, List<string> Warnings, string ViewsAt) check;
             try
             {
                 using (var fs = File.OpenRead(file))
                 {
                     var read = L.DwfxPages(fs);
-                    check = L.PageCheck(sheets, read.Pages, read.Papers, job.Paper == "Default");
+                    check = L.PageCheckWithViews(sheets, viewNames, read.Pages, read.Papers, job.Paper == "Default");
                     if (read.Papers.Count > 0) entry["eplotPaper"] = new JsonArray(read.Papers.Distinct().Select(p => (JsonNode)$"{Math.Round(p.WidthMm, 1)} x {Math.Round(p.HeightMm, 1)} mm").ToArray());
                 }
             }
             catch (Exception ex)
             {
-                check = (sheets.Select(x => (x.SheetNumber, (string)null, false)).ToList(), new List<string> { "the file could not be read as a DWFx package: " + ex.Message }, new List<string>());
+                check = (sheets.Select(x => (x.SheetNumber, (string)null, false)).ToList(), viewNames.Select(v => (v, (string)null)).ToList(),
+                    new List<string> { "the file could not be read as a DWFx package: " + ex.Message }, new List<string>(), null);
             }
             foreach (var w in check.Warnings) warnings.Add(w);
             entry["pageCheck"] = new JsonArray(check.Sheets.Select((r, i) => (JsonNode)new JsonObject
             {
                 ["number"] = r.Number, ["titleBlockMm"] = $"{Math.Round(sheets[i].W, 1)} x {Math.Round(sheets[i].H, 1)}", ["pageMm"] = r.PageMm, ["ok"] = r.Ok,
             }).ToArray());
+            if (viewNames.Count > 0)
+            {
+                entry["viewPages"] = new JsonArray(check.Views.Select(v => (JsonNode)new JsonObject { ["name"] = v.Name, ["pageMm"] = v.PageMm }).ToArray());
+                entry["viewsAt"] = check.ViewsAt;
+            }
             return check.Problems;
         }
 

@@ -1449,7 +1449,11 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   fs.writeFileSync(path.join(vRules, "export.json"), JSON.stringify({ nameTemplate: "TST_{model}_{format}", ifc: { setups: { "TST setup": "ifc/tst-setup.json" } }, dwfx: { stemPattern: "^X(?<number>TST-\\d+)" } }));
   const sp = await call("export_deliverables", { out_dir: path.join(eDir, "out-sf"), vault: eDir, dwfx: { same_as_folder: issued, allow_unmatched: true }, check_only: true });
   assert.ok(!sp.isError && ed().at(-1).args.dwfx.sheets.includes("TST-01"), "the vault's stemPattern is a first try, the number in the stem still matches");
-  const { matchStems } = await import("../lib/deliverables.js");
+  const { matchStems, folderStems } = await import("../lib/deliverables.js");
+  // 1.14.7 #34: printed sets in PDF\ and CAD\ subfolders count; one stem per sheet; Revit's _backup folders are skipped.
+  const fsDir = path.join(eDir, "issued-sub");
+  for (const [d, f] of [["PDF", "TST-DG-000001.pdf"], ["CAD", "TST-DG-000001.dwg"], ["CAD", "TST-DG-000002.dwg"], ["TST_backup", "TST-DG-000009.pdf"]]) { fs.mkdirSync(path.join(fsDir, d), { recursive: true }); fs.writeFileSync(path.join(fsDir, d, f), ""); }
+  assert.deepEqual(folderStems(fsDir), ["TST-DG-000001", "TST-DG-000002"], "subfolders are read, stems de-duplicated, _backup skipped");
   const mN = (stems, sh, o) => matchStems(stems, sh.map(([n, name]) => ({ sheetNumber: n, name: name ?? "" })), o);
   const got = (m) => m.matched.map((x) => `${x.stem}=${x.number}`);
   assert.deepEqual(got(mN(["A-102_Rev-1", "1"], [["1"], ["A-102"]])), ["A-102_Rev-1=A-102", "1=1"], "\"1\" never matches A-102_Rev-1; a whole stem matches");

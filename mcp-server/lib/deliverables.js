@@ -161,10 +161,19 @@ export function matchStems(stems, sheets, { stemPattern, stemPrefix } = {}) {
   const used = new Set(matched.map((m) => m.number));
   return { sheets: list.filter((x) => used.has(x.number)).map((x) => x.number), matched, unmatched, ambiguous, extra: list.filter((x) => !used.has(x.number)).map((x) => `${x.number} ${x.name}`.trim()) };
 }
-/** The file stems of a folder's .dwg and .pdf files (one per stem). */
-export function folderStems(dir) {
+/** The file stems of a folder's .dwg and .pdf files, its subfolders included (printed sets often sit in PDF\ and CAD\),
+ * one per stem. Revit's <name>_backup folders and hidden folders are skipped; depth is capped at 4. */
+export function folderStems(dir, { maxDepth = 4 } = {}) {
   if (!fs.existsSync(dir)) throw new Error(`${dir} does not exist`);
-  return [...new Set(fs.readdirSync(dir).filter((f) => /\.(dwg|pdf)$/i.test(f)).map((f) => f.replace(/\.(dwg|pdf)$/i, "")))].sort();
+  const stems = new Set();
+  const walk = (d, depth) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.isDirectory()) { if (depth < maxDepth && !/_backup$/i.test(e.name) && !e.name.startsWith(".")) walk(path.join(d, e.name), depth + 1); }
+      else if (e.isFile() && /\.(dwg|pdf)$/i.test(e.name)) stems.add(e.name.replace(/\.(dwg|pdf)$/i, ""));
+    }
+  };
+  walk(dir, 0);
+  return [...stems].sort();
 }
 /** IFC setups the vault names (rules/export.json ifc.setups and rules/ifc/*.json). */
 export function vaultIfcSetups(vaultDir, rules = {}) {

@@ -283,6 +283,11 @@ namespace AceRevitMcp.Commands
                 options.SetOpenWorksetsConfiguration(new WorksetConfiguration(
                     worksets == "none" ? WorksetConfigurationOption.CloseAllWorksets : worksets == "last_viewed" ? WorksetConfigurationOption.OpenLastViewed : WorksetConfigurationOption.OpenAllWorksets));
             if (workshared && !detached && info.IsCentral) notes.Add("This is a central model opened directly (not a local copy): do not save it from here.");
+            // A workshared file opened attached gets a <name>_backup folder next to it (Revit's worksharing backups): a warning,
+            // stronger when the folder looks like a deliverables folder. Never a block.
+            var warnings = new JsonArray();
+            var backupWarning = OpenDialogLogic.BackupFolderWarning(workshared, detached, full);
+            if (backupWarning != null) warnings.Add(backupWarning);
 
             // Dialogs during the open: a handler only for this call. Known ones are answered, every one is recorded.
             var dialogs = new JsonArray();
@@ -335,7 +340,7 @@ namespace AceRevitMcp.Commands
                 ["worksetsOpened"] = worksetsOpened, ["closed"] = closed, ["openDocuments"] = OpenDocuments(app),
                 ["active"] = app.ActiveUIDocument?.Document?.Title, ["previous"] = PreviousJson(previous), ["openedByAce"] = true, ["handle"] = handle,
                 ["transmitted"] = transmitted, ["transmittedCleared"] = transmittedCleared, ["externalReferences"] = externalReferences,
-                ["unresolvedLinks"] = unresolvedLinks, ["dialogs"] = dialogs, ["notes"] = notes,
+                ["unresolvedLinks"] = unresolvedLinks, ["dialogs"] = dialogs, ["notes"] = notes, ["warnings"] = warnings,
             };
         }
 
@@ -493,6 +498,29 @@ namespace AceRevitMcp.Commands
             if (!transmitted || !workshared || detach != "none") return (detach, null);
             if (saveAsCentralOk) return (detach, "The model is transmitted: opened attached (save_as_central_ok), so Revit may ask how to treat it; that dialog is left to a person.");
             return ("preserve_worksets", "The model is transmitted: opened detached with worksets kept, so nothing is saved as central (clear_transmitted or save_as_central_ok change this).");
+        }
+
+        /// <summary>Folder names that mark a deliverables folder (a segment of the path containing one, any case).</summary>
+        internal static readonly string[] DeliverableFolderWords = { "submission", "deliverable", "issued", "outgoing", "transmittal", "export" };
+
+        /// <summary>
+        /// The warning for opening a workshared file attached (not detached): Revit creates a "&lt;name&gt;_backup" folder next to
+        /// the file, which pollutes a submission folder. Stronger when a folder of the path contains a deliverables word
+        /// (DeliverableFolderWords, case-insensitive). Null: not workshared, or opened detached (no backup folder is made).
+        /// </summary>
+        internal static string BackupFolderWarning(bool workshared, bool detached, string fullPath)
+        {
+            if (!workshared || detached || string.IsNullOrWhiteSpace(fullPath)) return null;
+            var p = fullPath.Replace('/', '\\');
+            var cut = p.LastIndexOf('\\');
+            var folder = cut > 0 ? p.Substring(0, cut) : "";
+            var name = Path.GetFileNameWithoutExtension(cut >= 0 ? p.Substring(cut + 1) : p);
+            var segments = folder.Split(new[] { '\\' }, StringSplitOptions.RemoveEmptyEntries);
+            var hit = segments.FirstOrDefault(seg => DeliverableFolderWords.Any(w => seg.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0));
+            var basic = $"{name} is workshared and opens attached: Revit creates a {name}_backup folder next to it ({(folder.Length > 0 ? folder : "its folder")}).";
+            const string advice = " For read-only or export work open it with detach: \"preserve_worksets\" (detached, worksets kept): no backup folder is made and nothing can be synchronized by mistake.";
+            return hit == null ? basic + advice
+                : $"This looks like a deliverables folder (\"{hit}\"): " + basic + " It would sit among the issued files." + advice + " Delete the backup folder if one appears, or work on a copy outside this folder.";
         }
 
         /// <summary>The reference type as reported: RevitLink, CAD, or the API's name for the others.</summary>
