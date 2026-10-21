@@ -14,9 +14,12 @@ namespace AceRevitMcp.Commands
 {
     /// <summary>
     /// Bridge "export_deliverables": { out_dir, overwrite, check_only, nwc?: { view, file }, ifc?: { view?, setup?, config?,
-    /// file }, dwfx?: { sheets?, sheet_set?, views?, file, allow_paper_fallback } }. DWFx: each sheet on the paper format of its title block
-    /// (ISO / ANSI / ARCH within 2 mm, its orientation), one combined file per size, each file checked page by page after the
-    /// export (a failed one is kept as <name>-FAILED.dwfx; sheetCheck: asked vs exported, sheets and views). views: 3D views by
+    /// file }, dwfx?: { sheets?, sheet_set?, views?, file, allow_paper_fallback, printer? } }. DWFx: each sheet on the paper format of its title block
+    /// (ISO / ANSI / ARCH within 2 mm, its orientation), one combined file per size, with no margin: the in-session print
+    /// setting takes the printer's paper of that size (dwfx.printer, else Revit's current printer; none: blocked
+    /// "no-paper-size"), zoom 100 %, no margin, inside the rolled-back export transaction. Each file is checked page by page
+    /// after the export, size, orientation and drawn extent (at least 98 % of the page both ways) (a failed one is kept as
+    /// <name>-FAILED.dwfx; sheetCheck: asked vs exported, sheets and views). views: 3D views by
     /// exact name, put into the same merged export as the sheets (inserted first, like the old "3D View: ..." page); with
     /// several paper groups they go into the largest group's file (a note says so). A 3D view has no title block: it takes
     /// its group's PaperFormat / PortraitLayout (DWFExportOptions has no setting per view; the format comes from the sheets,
@@ -37,6 +40,64 @@ namespace AceRevitMcp.Commands
             public double WidthMm, HeightMm;   // dwfx: the group's title block size
             public List<(double W, double H)> SheetSizes;   // dwfx: each sheet's title block size, as Sheets
             public List<View> Views = new List<View>();     // dwfx: the 3D views (dwfx.views) exported into this file with its sheets
+            public string Printer, PrinterPaper;            // dwfx: the printer and its paper size set (in session, rolled back) for the export
+        }
+
+        /// <summary>The printers installed for this Windows user (the registry's printer lists), PDF printers first; empty when unreadable.</summary>
+        private static List<string> InstalledPrinters()
+        {
+            var names = new List<string>();
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Devices"))
+                    if (k != null) names.AddRange(k.GetValueNames());
+            }
+            catch { }
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Print\Printers"))
+                    if (k != null) names.AddRange(k.GetSubKeyNames());
+            }
+            catch { }
+            return names.Where(n => !string.IsNullOrWhiteSpace(n)).Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(n => n.IndexOf("PDF", StringComparison.OrdinalIgnoreCase) >= 0 ? 0 : 1).ThenBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        /// <summary>The print driver Revit uses now, its paper size names; with printer given, that printer's (selected inside a rolled-back transaction).</summary>
+        private static (string Printer, List<string> Papers, string Problem) PrinterPapers(Document doc, string printer)
+        {
+            try
+            {
+                var pm = doc.PrintManager;
+                if (string.IsNullOrWhiteSpace(printer) || string.Equals(pm.PrinterName, printer.Trim(), StringComparison.OrdinalIgnoreCase))
+                    return (pm.PrinterName, pm.PaperSizes.Cast<PaperSize>().Select(x => x.Name).ToList(), null);
+                var original = pm.PrinterName;
+                (string, List<string>, string) read = (null, null, null);
+                RolledBack(doc, "ACE: DWFx printer check", () =>
+                {
+                    var p = doc.PrintManager;
+                    p.SelectNewPrintDriver(printer.Trim());
+                    read = (p.PrinterName, p.PaperSizes.Cast<PaperSize>().Select(x => x.Name).ToList(), null);
+                    return true;
+                });
+                RestorePrinter(doc, original);
+                return read;
+            }
+            catch (Exception ex) { return (printer, null, ex.Message); }
+        }
+
+        /// <summary>Puts the print driver back when the rolled-back export left another one selected; a problem text when it could not.</summary>
+        private static string RestorePrinter(Document doc, string original)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(original) || string.Equals(doc.PrintManager.PrinterName, original, StringComparison.Ordinal)) return null;
+                RolledBack(doc, "ACE: restore printer", () => { doc.PrintManager.SelectNewPrintDriver(original); return true; });
+                if (string.Equals(doc.PrintManager.PrinterName, original, StringComparison.Ordinal)) return null;
+                doc.PrintManager.SelectNewPrintDriver(original);
+                return string.Equals(doc.PrintManager.PrinterName, original, StringComparison.Ordinal) ? null : $"the printer is now {doc.PrintManager.PrinterName}, not {original} as before: select {original} in Revit's Print dialog";
+            }
+            catch (Exception ex) { return $"the printer {original} could not be selected again ({ex.Message}): check Revit's Print dialog"; }
         }
 
         /// <summary>A sheet's paper: its title block's Sheet Width / Height, else the sheet's outline (mm); 0 when neither can be read.</summary>
@@ -286,6 +347,29 @@ namespace AceRevitMcp.Commands
                     Block("dwfx paper", "paper-size", $"{noFit.Count} sheet(s) have a size no DWF paper format fits (ISO A/B, ANSI, ARCH, within 2 mm): {string.Join(", ", noFit.Take(20))}",
                         "Fix the title block size, or pass allow_paper_fallback: true to export them on Revit's default paper (scaled, not true size).");
                 else if (noFit.Count > 0) notes.Add($"DWFx: {noFit.Count} sheet(s) fit no paper format and use Revit's default paper (scaled, not true size; allow_paper_fallback): {string.Join(", ", noFit.Take(20))}.");
+                // No margin: the DWFx export follows the in-session print settings, so each group is exported with the printer's
+                // paper size of its format, zoom 100 %, no margin (set inside the rolled-back export transaction). A printer
+                // without that paper blocks. dwfx.printer: the printer to use (selected inside the transaction, then restored).
+                var askedPrinter = Args.Str(dwfx, "printer");
+                if (groups.Any(g => g.Paper != "Default"))
+                {
+                    var (printer, papers, problem) = PrinterPapers(doc, askedPrinter);
+                    var installed = InstalledPrinters();
+                    var others = installed.Count == 0 ? "" : $" Installed printers: {string.Join(", ", installed.Take(15))}.";
+                    if (papers == null)
+                        Block("dwfx printer " + (askedPrinter ?? ""), "printer-not-found", string.IsNullOrWhiteSpace(askedPrinter) ? $"the printer's paper sizes cannot be read ({problem})" : $"the printer {askedPrinter} cannot be selected ({problem})",
+                            "Give dwfx.printer: the exact name of an installed printer that has the paper size, e.g. a PDF printer." + others);
+                    else
+                        foreach (var g in groups.Where(x => x.Paper != "Default"))
+                        {
+                            var idx = L.PrinterPaperFor(g.Paper, papers);
+                            var label = g.Paper.Replace('_', ' ');
+                            if (idx < 0)
+                                Block("dwfx paper " + label, "no-paper-size", $"the printer {printer} has no {label} paper size (it has {papers.Count}: {string.Join(", ", papers.Take(12))}{(papers.Count > 12 ? ", ..." : "")}); without it the DWFx is scaled down with a margin",
+                                    $"Pass dwfx.printer: a printer with {label} paper, e.g. a PDF printer (Adobe PDF, a DWG / PDF plotter driver), or add the paper size to {printer}." + others);
+                            else { g.Printer = printer; g.PrinterPaper = papers[idx]; }
+                        }
+                }
                 // The views go into one file: the only group's, else the largest group's (the first of equals).
                 var viewsGroup = dwfxViews.Count > 0 ? L.DwfxViewsGroup(groups.Select(g => g.Sheets.Count).ToList()) : -1;
                 if (viewsGroup >= 0)
@@ -382,8 +466,19 @@ namespace AceRevitMcp.Commands
                                     ImageQuality = DWFImageQuality.High, ImageFormat = DWFImageFormat.Lossless,
                                 };
                                 // Like the IFC exporter, the DWFx export needs a modifiable document: inside a transaction that is
-                                // always rolled back (no undo step, the model is unchanged).
-                                if (!RolledBack(doc, "ACE: DWFx export", () => doc.Export(temp, baseName, set, dwfxOptions))) warnings.Add("Revit reported the DWFx export as not successful.");
+                                // always rolled back (no undo step, the model is unchanged). PaperFormat alone left a margin (the sheet
+                                // scaled to ~91 %): the export follows the print settings, so the in-session setting gets the printer's
+                                // paper of this size, the orientation, zoom 100 % and no margin, inside the same transaction (nothing
+                                // is saved as a print setting; the rollback undoes it).
+                                var originalPrinter = SafePrinterName(doc);
+                                var printNote = (string)null;
+                                if (!RolledBack(doc, "ACE: DWFx export", () =>
+                                {
+                                    if (job.PrinterPaper != null) printNote = ApplyPrintSettings(doc, job);
+                                    return doc.Export(temp, baseName, set, dwfxOptions);
+                                })) warnings.Add("Revit reported the DWFx export as not successful.");
+                                if (printNote != null) warnings.Add(printNote);
+                                if (RestorePrinter(doc, originalPrinter) is string restore) warnings.Add(restore);
                                 break;
                         }
                         foreach (var w in guard.Warnings.Concat(guard.Errors).Concat(guard.Dialogs).Distinct().Take(20)) warnings.Add(w);
@@ -414,9 +509,11 @@ namespace AceRevitMcp.Commands
                     entry["sheets"] = job.Sheets.Count; entry["sheetList"] = SheetList(doc, job.Sheets);
                     entry["views"] = new JsonArray(job.Views.Select(v => (JsonNode)v.Name).ToArray());
                     entry["paper"] = job.Paper.Replace('_', ' ') + (job.Portrait ? " portrait" : " landscape");
+                    entry["printer"] = job.Printer; entry["printerPaper"] = job.PrinterPaper;
+                    entry["printSettings"] = job.PrinterPaper == null ? "unchanged (Revit's default paper)" : $"in session, rolled back: {job.PrinterPaper} {(job.Portrait ? "portrait" : "landscape")}, zoom 100 %, no margin";
                     var layout = job.Paper == "Default"
                         ? $"one combined DWFx of the {job.Sheets.Count} sheet(s) no paper format fits, on Revit's default paper (scaled, not true size; allow_paper_fallback)"
-                        : $"one combined DWFx of the {job.Sheets.Count} sheet(s) of this size, on {job.Paper.Replace('_', ' ')} {(job.Portrait ? "portrait" : "landscape")} at 1:1, no crop box (each page checked against its title block, size and orientation, after the export)";
+                        : $"one combined DWFx of the {job.Sheets.Count} sheet(s) of this size, on {job.Paper.Replace('_', ' ')} {(job.Portrait ? "portrait" : "landscape")} at 1:1, no crop box, {(job.PrinterPaper != null ? $"printer paper {job.PrinterPaper} on {job.Printer}, zoom 100 %, no margin" : "print settings unchanged")} (each page checked against its title block, size, orientation and drawn extent, after the export)";
                     if (job.Views.Count > 0) layout += $"; with the 3D view(s) {string.Join(", ", job.Views.Select(v => v.Name))} on the same paper (inserted first; no title block, so not size-checked)";
                     entry["layout"] = layout;
                     if (written) { exportedSheets.AddRange(job.Sheets.Select(x => x.SheetNumber)); exportedViews.AddRange(job.Views.Select(v => v.Name)); }
@@ -457,12 +554,15 @@ namespace AceRevitMcp.Commands
             var sheets = job.Sheets.Select((sh, i) => (sh.SheetNumber, job.SheetSizes[i].W, job.SheetSizes[i].H)).ToList();
             var viewNames = job.Views.Select(v => v.Name).ToList();
             (List<(string Number, string PageMm, bool Ok)> Sheets, List<(string Name, string PageMm)> Views, List<string> Problems, List<string> Warnings, string ViewsAt) check;
+            List<L.Extent> sheetExtents = null;
             try
             {
                 using (var fs = File.OpenRead(file))
                 {
                     var read = L.DwfxPages(fs);
                     check = L.PageCheckWithViews(sheets, viewNames, read.Pages, read.Papers, job.Paper == "Default");
+                    var offset = L.SheetPageOffset(sheets.Count, viewNames.Count, read.Pages.Count, check.ViewsAt);
+                    if (offset >= 0) sheetExtents = read.Extents.Skip(offset).Take(sheets.Count).ToList();
                     if (read.Papers.Count > 0) entry["eplotPaper"] = new JsonArray(read.Papers.Distinct().Select(p => (JsonNode)$"{Math.Round(p.WidthMm, 1)} x {Math.Round(p.HeightMm, 1)} mm").ToArray());
                 }
             }
@@ -471,10 +571,16 @@ namespace AceRevitMcp.Commands
                 check = (sheets.Select(x => (x.SheetNumber, (string)null, false)).ToList(), viewNames.Select(v => (v, (string)null)).ToList(),
                     new List<string> { "the file could not be read as a DWFx package: " + ex.Message }, new List<string>(), null);
             }
-            foreach (var w in check.Warnings) warnings.Add(w);
+            // No margin: each sheet's drawing spans at least 98 % of its page both ways (warn only where it cannot be measured).
+            var extent = L.ExtentCheck(sheets.Select(x => x.SheetNumber).ToList(), sheetExtents, job.Paper == "Default");
+            check.Problems.AddRange(extent.Problems);
+            foreach (var w in check.Warnings.Concat(extent.Warnings)) warnings.Add(w);
+            JsonNode Ratio(double? r) => r == null ? null : (JsonNode)Math.Round(r.Value, 3);
             entry["pageCheck"] = new JsonArray(check.Sheets.Select((r, i) => (JsonNode)new JsonObject
             {
-                ["number"] = r.Number, ["titleBlockMm"] = $"{Math.Round(sheets[i].W, 1)} x {Math.Round(sheets[i].H, 1)}", ["pageMm"] = r.PageMm, ["ok"] = r.Ok,
+                ["number"] = r.Number, ["titleBlockMm"] = $"{Math.Round(sheets[i].W, 1)} x {Math.Round(sheets[i].H, 1)}", ["pageMm"] = r.PageMm,
+                ["extentRatio"] = extent.Sheets[i].RatioX == null ? null : new JsonObject { ["x"] = Ratio(extent.Sheets[i].RatioX), ["y"] = Ratio(extent.Sheets[i].RatioY) },
+                ["extentOk"] = extent.Sheets[i].Ok, ["ok"] = r.Ok && extent.Sheets[i].Ok,
             }).ToArray());
             if (viewNames.Count > 0)
             {
@@ -482,6 +588,32 @@ namespace AceRevitMcp.Commands
                 entry["viewsAt"] = check.ViewsAt;
             }
             return check.Problems;
+        }
+
+        private static string SafePrinterName(Document doc) { try { return doc.PrintManager.PrinterName; } catch { return null; } }
+
+        /// <summary>
+        /// Inside the export transaction: the in-session print setting on the job's printer paper and orientation, zoom 100 %,
+        /// paper placement Margins with no margin (other print parameters untouched; never saved). With dwfx.printer the
+        /// printer was chosen in the pre-flight and is selected here. Throws when the paper size is gone; a text for a note.
+        /// </summary>
+        private static string ApplyPrintSettings(Document doc, Job job)
+        {
+            var pm = doc.PrintManager;
+            if (!string.IsNullOrEmpty(job.Printer) && !string.Equals(pm.PrinterName, job.Printer, StringComparison.Ordinal)) pm.SelectNewPrintDriver(job.Printer);
+            var size = pm.PaperSizes.Cast<PaperSize>().FirstOrDefault(x => string.Equals(x.Name, job.PrinterPaper, StringComparison.Ordinal));
+            if (size == null) throw new InvalidOperationException($"the printer {pm.PrinterName} no longer offers the paper size {job.PrinterPaper}");
+            var setup = pm.PrintSetup;
+            setup.CurrentPrintSetting = setup.InSession;
+            var pp = setup.CurrentPrintSetting.PrintParameters;
+            pp.PaperSize = size;
+            pp.PageOrientation = job.Portrait ? PageOrientationType.Portrait : PageOrientationType.Landscape;
+            pp.ZoomType = ZoomType.Zoom;
+            pp.Zoom = 100;
+            pp.PaperPlacement = PaperPlacementType.Margins;
+            pp.MarginType = MarginType.NoMargin;
+            try { pm.Apply(); } catch (Exception ex) { return "The print settings could not be applied to the print manager (" + ex.Message + "); the export ran with them set in session."; }
+            return null;
         }
 
         /// <summary>Each sheet's number, name, paper (its title block, else its outline), the DWF paper format and scale.</summary>

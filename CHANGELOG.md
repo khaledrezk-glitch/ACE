@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.14.8 (21 Oct 2026)
+- Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
+- **DWFx with no margin:** per paper group the in-session print setting is set inside the rolled-back export transaction
+  (the printer's matching paper size, orientation, zoom 100 %, no margin); nothing is saved in the model. `dwfx.printer`
+  picks the printer; a printer without the paper size blocks (`no-paper-size`) and lists the installed printers.
+- **DWFx drawn-extent check:** each sheet page's drawing must cover at least 98 % of the page each way, or the file is
+  kept as `-FAILED`; `pageCheck[].extentRatio` gives the measure.
+- **Background jobs:** `background: true` on export_deliverables answers at once with a job id; `job_status` reads the
+  reply from the job file (any ACE server process can).
+- **Version mismatch warning:** every Revit call says so when the ACE server and the add-in are not one version (a
+  long-lived server keeps its old code until its client restarts).
+
 ## 1.14.7 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **DWFx with 3D views:** `dwfx.views` adds named 3D views to the combined DWFx with the sheets (exact names; missing,

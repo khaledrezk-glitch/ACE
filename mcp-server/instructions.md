@@ -111,7 +111,7 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
 - A parameter from a view ("mark what the Navisworks view exports"): view_membership_fill check_only first; tell the
   user why elements are out of the view, any spelling note and the impact (rules, IFC settings that name it), then
   dry_run and the identical call. A parameter missing in the model is bound only from the vault's shared parameter file:
-  if blocked, never make up a definition. Exports: export_deliverables (check_only for the pre-flight; out_dir required;
+  if blocked, never make up a definition. Exports: export_deliverables (check_only for the pre-flight; background: true when your tool wait is short, then job_status; out_dir required;
   overwrite only after the user agreed); report the files table and every block. A register for a submission:
   register_update without confirm, show the report, then confirm.
 - Opening and closing models: open_model (path; detach preserve_worksets for a central or cloud model you must not

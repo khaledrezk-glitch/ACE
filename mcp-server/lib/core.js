@@ -227,6 +227,13 @@ export async function pinSession(hint = undefined, opts = {}) {
   return s;
 }
 
+/** A one-line warning when the add-in in Revit is not this server's version (major.minor.patch); null when they agree
+ * or the add-in did not say. A long-lived server keeps its old code until its client restarts it. */
+export function versionMismatch(addin, server = VERSION) {
+  const v3 = (x) => String(x).split(/[.+-]/).slice(0, 3).map(Number).join(".");
+  if (!addin || v3(addin) === v3(server)) return null;
+  return `WARNING: version mismatch: this ACE server is ${server}, the add-in in Revit is ${addin}. Restart the ACE server (restart Claude) or reinstall ACE so both are one version; tools may behave as the older one.`;
+}
 export async function callRevit(command, args = {}, timeoutSeconds = 120, signal = undefined) {
   const cfg = readConfig();
   if (!cfg) {
@@ -235,6 +242,8 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
     );
   }
   const chosen = await resolveSession(args?.expect_model, { exact: true });
+  const mismatch = versionMismatch(chosen?.aceVersion);
+  if (mismatch) currentCall.getStore()?.notes?.add(mismatch);
   const base = bridgeUrl(cfg, chosen?.port);
   let response;
   const clientSignal = signal ?? currentCall.getStore()?.signal;

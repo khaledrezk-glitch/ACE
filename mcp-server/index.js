@@ -26,6 +26,7 @@ import * as Capture from "./lib/capture.js";
 import * as RegisterUpdate from "./lib/registerupdate.js";
 import * as ViewFill from "./lib/viewfill.js";
 import * as Deliverables from "./lib/deliverables.js";
+import * as Jobs from "./lib/jobs.js";
 import * as Methods from "./lib/methods.js";
 import os from "node:os";
 import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
@@ -60,6 +61,16 @@ function tool(name, config, handler) {
     let result;
     let error;
     const notes = new Set();   // e.g. which Revit session answered when several run
+    // background: true (tools that declare it): answer at once with a job id; the run goes on in this server process and
+    // its reply lands in a job file that job_status reads (also from another process). For callers with a short wait.
+    if (args?.background && config.inputSchema?.background) {
+      const job = Jobs.start(name, args);
+      currentCall.run({ notes }, () => handler({ ...args, background: false }))
+        .then((r) => { if (notes.size && Array.isArray(r?.content)) r.content.push({ type: "text", text: [...notes].join("\n") }); Jobs.finish(job, r); logCall(summarize(name, args, r, Date.now() - started)); },
+          (err) => { const r = failure(err); Jobs.finish(job, r); logCall(summarize(name, args, r, Date.now() - started, err)); });
+      if (beat) clearInterval(beat);
+      return { content: [{ type: "text", text: `Started ${name} as job ${job.id}. It keeps running in this ACE server; call job_status with job_id "${job.id}" for the reply (job file: ${job.file}). Do not start it again.` }] };
+    }
     try {
       result = await currentCall.run({ signal: extra?.signal, notes }, () => handler(args ?? {}));
     } catch (err) {
@@ -1594,11 +1605,19 @@ tool("view_membership_fill", {
   });
 });
 
+// job_status: the reply of a tool call started with background: true (read from its job file, so any process can ask).
+tool("job_status", {
+  title: "Status of a background job",
+  description: "The state of a call started with background: true: running (with how long), or its full reply once done. Without job_id: the latest jobs.",
+  inputSchema: { job_id: z.string().max(80).optional() },
+  annotations: readOnly,
+}, async ({ job_id }) => ({ content: [{ type: "text", text: Jobs.statusText(job_id) }] }));
+
 // export_deliverables: NWC / IFC / DWFx in one call. Writes files only (the model is not changed); out_dir is required,
 // an existing file is replaced only with overwrite; every pre-flight block is reported, a run record is kept.
 tool("export_deliverables", {
   title: "Export NWC, IFC and DWFx",
-  description: "Exports the open model's deliverables in one call: nwc (a 3D view), ifc (the model or a view; settings from config, a JSON file, or setup, a name: the setup saved in the model first, then the vault's rules/export.json ifc.setups or rules/ifc/<setup>.json; list_ifc_setups lists both), dwfx (one combined file, named by file or name: sheets, a sheet set, or same_as_folder: the sheets whose .dwg/.pdf are in a folder, matched by number then name, nothing guessed; unmatched or ambiguous files block unless allow_unmatched; views: 3D views by exact name, e.g. [\"NAVISWORKS\"], put into the same file as the sheets, first, like a \"3D View: NAVISWORKS\" page; with several paper sizes they go into the largest group's file; a missing, ambiguous or non-exportable name blocks); each optional. File names: file, else the vault's rules/export.json nameTemplate ({model}, {date}, {format}), else the model name. out_dir required; an existing file is replaced only with overwrite: true. check_only: the pre-flight only. Blocks (no Navisworks exporter, missing view / setup / sheets, file exists) are reported and nothing is exported. Reply: a table of file, size, time, count, warnings; a run record is written. The model is not changed.",
+  description: "Exports the open model's deliverables in one call: nwc (a 3D view), ifc (the model or a view; settings from config, a JSON file, or setup, a name: the setup saved in the model first, then the vault's rules/export.json ifc.setups or rules/ifc/<setup>.json; list_ifc_setups lists both), dwfx (one combined file, named by file or name: sheets, a sheet set, or same_as_folder: the sheets whose .dwg/.pdf are in a folder, matched by number then name, nothing guessed; unmatched or ambiguous files block unless allow_unmatched; views: 3D views by exact name, e.g. [\"NAVISWORKS\"], put into the same file as the sheets, first, like a \"3D View: NAVISWORKS\" page; with several paper sizes they go into the largest group's file; a missing, ambiguous or non-exportable name blocks; every sheet on its own paper with no margin: the printer's paper of that size, zoom 100 %, set only for the export; printer: which printer, default Revit's current one; a printer without the size blocks, no-paper-size); each optional. File names: file, else the vault's rules/export.json nameTemplate ({model}, {date}, {format}), else the model name. out_dir required; an existing file is replaced only with overwrite: true. check_only: the pre-flight only. Blocks (no Navisworks exporter, missing view / setup / sheets, file exists) are reported and nothing is exported. Reply: a table of file, size, time, count, warnings; a run record is written. The model is not changed.",
   inputSchema: {
     out_dir: z.string().min(1),
     overwrite: z.boolean().optional(), check_only: z.boolean().optional(),
@@ -1608,10 +1627,12 @@ tool("export_deliverables", {
       same_as_folder: z.string().optional().describe("the sheets whose .dwg / .pdf are in this folder"), allow_unmatched: z.boolean().optional(),
       views: z.array(z.string().min(1).max(200)).max(50).optional().describe("3D views (exact names) to include in the combined DWFx with the sheets"),
       combined: z.boolean().optional(), name: z.string().max(200).optional(), paper: z.enum(["sheet"]).optional().describe("each sheet's own paper size"),
-      allow_paper_fallback: z.boolean().optional().describe("sheets whose title block fits no ISO / ANSI / ARCH paper are exported on Revit's default paper (scaled) instead of blocking") }).optional(),
+      allow_paper_fallback: z.boolean().optional().describe("sheets whose title block fits no ISO / ANSI / ARCH paper are exported on Revit's default paper (scaled) instead of blocking"),
+      printer: z.string().min(1).max(260).optional().describe("the printer whose paper sizes the DWFx uses (no margin: its paper of each sheet's size, zoom 100 %); default: Revit's current printer; selected only for the export, then restored") }).optional(),
     list_ifc_setups: z.boolean().optional().describe("read-only: the IFC setups in the model and the vault"),
     vault: z.string().optional(), report_dir: z.string().optional(),
     timeout_seconds: z.number().int().min(30).max(7200).optional(),
+    background: z.boolean().optional().describe("answer at once with a job id; the reply is read later with job_status (for a caller that cannot wait for a long export)"),
   },
   annotations: benign,
 }, async ({ check_only, overwrite, timeout_seconds, ...a }) => {
@@ -1676,7 +1697,8 @@ tool("export_deliverables", {
     ...(a.ifc ? { ifc: { ...(a.ifc.view ? { view: a.ifc.view } : {}), ...(ifc.setup ? { setup: ifc.setup } : {}), ...(ifc.config ? { config: ifc.config, ...(a.ifc.config ? {} : { config_from: "vault" }) } : {}), file: names.ifc } } : {}),
     ...(a.dwfx ? { dwfx: { ...(dwfxSheets ? { sheets: dwfxSheets } : {}), ...(a.dwfx.sheet_set && !a.dwfx.same_as_folder ? { sheet_set: a.dwfx.sheet_set } : {}), file: names.dwfx,
       ...(a.dwfx.views?.length ? { views: a.dwfx.views } : {}),
-      ...(a.dwfx.combined != null ? { combined: a.dwfx.combined } : {}), ...(a.dwfx.paper ? { paper: a.dwfx.paper } : {}), ...(a.dwfx.allow_paper_fallback ? { allow_paper_fallback: true } : {}) } } : {}) };
+      ...(a.dwfx.combined != null ? { combined: a.dwfx.combined } : {}), ...(a.dwfx.paper ? { paper: a.dwfx.paper } : {}), ...(a.dwfx.allow_paper_fallback ? { allow_paper_fallback: true } : {}),
+      ...(a.dwfx.printer?.trim() ? { printer: a.dwfx.printer.trim() } : {}) } } : {}) };
   const r = await callRevit("export_deliverables", req, timeout_seconds ?? 3600);
   const out = text(r);
   const blocked = Deliverables.blocksOf(r).length > 0;
@@ -1691,7 +1713,10 @@ tool("export_deliverables", {
     for (const f of (r?.files ?? []).filter((x) => Array.isArray(x.pageCheck))) {
       const bad = f.pageCheck.filter((p) => !p.ok);
       const vp = Array.isArray(f.viewPages) && f.viewPages.length ? `; ${f.viewPages.length} 3D view page(s) ${f.viewsAt === "no-page" ? "not found as pages (see warnings)" : `${f.viewsAt ?? "?"} in the file, not size-checked (no title block)`}` : "";
-      lines.push((bad.length ? `DWFx paper size FAILED for ${bad.length} sheet(s) (${short(bad.map((p) => p.number))})${f.failedFile ? `; kept as ${f.failedFile}` : ""}` : `DWFx paper size checked: ${f.pageCheck.length} sheet page(s) match their title blocks${f.paper ? ` (${f.paper})` : ""}`) + `${vp}.`);
+      const ext = f.pageCheck.map((p) => p.extentRatio).filter((x) => x && typeof x.x === "number");
+      const extText = ext.length ? `; drawn extent ${Math.round(Math.min(...ext.map((x) => Math.min(x.x, x.y))) * 1000) / 10}% of the page at least (${ext.length} measured)` : "; drawn extent not measured";
+      const pr = f.printerPaper ? `; printer paper ${f.printerPaper} on ${f.printer}, zoom 100 %, no margin` : "";
+      lines.push((bad.length ? `DWFx page check FAILED for ${bad.length} sheet(s) (${short(bad.map((p) => p.number))}: size, orientation or margin)${f.failedFile ? `; kept as ${f.failedFile}` : ""}` : `DWFx paper size checked: ${f.pageCheck.length} sheet page(s) match their title blocks${f.paper ? ` (${f.paper})` : ""}`) + `${pr}${extText}${vp}.`);
     }
     const { dir, note } = await auditFolder(a, r?.model ?? model, { sub: "exports", reports: "exports" });
     const stamp = localDate(new Date(), { time: true });

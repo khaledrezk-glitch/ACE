@@ -1019,6 +1019,69 @@ class P {
     int VG(params int[] c) => (int)VM("DwfxViewsGroup").Invoke(null, new object[] { c.ToList() })!;
     Check(VG(24) == 0 && VG(3, 20, 20) == 1 && VG(5, 5) == 0 && VG() == -1, "DWFx views: the only group, else the largest (first of equals) takes the views");
 
+    // 1.14.8 #36: no margin. The drawn extent of a DWFx page (FixedPage XAML: Path Data / PathGeometry, Glyphs origins,
+    // nested RenderTransforms) against the page; below 98 % either way fails. Printer paper sizes matched by name or size.
+    const string Xps = "xmlns=\"http://schemas.microsoft.com/xps/2005/06\" xmlns:x=\"http://schemas.microsoft.com/xps/2005/06/resourcedictionary-key\"";
+    string Page(string body, double w = 2383.5, double h = 1683.8) => $"<FixedPage {Xps} Width=\"{w.ToString(System.Globalization.CultureInfo.InvariantCulture)}\" Height=\"{h.ToString(System.Globalization.CultureInfo.InvariantCulture)}\">{body}</FixedPage>";
+    object Ext(string xml) => VM("PageExtent").Invoke(null, new object[] { xml })!;
+    double? RX(object e) => (double?)e.GetType().GetField("RatioX")!.GetValue(e); double? RY(object e) => (double?)e.GetType().GetField("RatioY")!.GetValue(e);
+    double EF(object e, string f) => Convert.ToDouble(e.GetType().GetField(f)!.GetValue(e)!);
+    bool Near(double? v, double want, double tol = 1e-3) => v != null && Math.Abs(v.Value - want) < tol;
+    const string White = "<Path Fill=\"#FFFFFFFF\" Data=\"M 0,0 L 2383.5,0 2383.5,1683.8 0,1683.8 Z\"/>";
+    var edge = Ext(Page(White + "<Path Stroke=\"#FF000000\" StrokeThickness=\"1\" Data=\"F1 M 0,0 L 2383.5,0 2383.5,1683.8 0,1683.8 Z\"/>"));
+    var margin = Ext(Page(White + "<Canvas><Path Stroke=\"#FF000000\" Data=\"M 108,40 L 2275,40 2275,1640 108,1640 Z\"/><Glyphs OriginX=\"500\" OriginY=\"800\" UnicodeString=\"TST\" FontUri=\"/f.odttf\" FontRenderingEmSize=\"12\"/></Canvas>"));
+    var relative = Ext(Page("<Path Stroke=\"#FF000000\" Data=\"m 108,0 h 2167 v 1683.8 c 0,0 -10,0 -20,0 z\"/>"));
+    var whiteOnly = Ext(Page(White));
+    object EC(string[] n, object[] ex, bool def = false) { var lt = typeof(List<>).MakeGenericType(edge.GetType()); var l = (IList)Activator.CreateInstance(lt)!; foreach (var e in ex) l.Add(e); return VM("ExtentCheck").Invoke(null, new object[] { n.ToList(), l, def, 0.98 })!; }
+    List<string> ECP(object r) => (List<string>)r.GetType().GetField("Item2")!.GetValue(r)!; List<string> ECW(object r) => (List<string>)r.GetType().GetField("Item3")!.GetValue(r)!;
+    List<bool> ECOk(object r) => ((IList)r.GetType().GetField("Item1")!.GetValue(r)!).Cast<object>().Select(x => (bool)x.GetType().GetField("Item4")!.GetValue(x)!).ToList();
+    var ecPass = EC(new[] { "TST-101" }, new[] { edge }); var ecFail = EC(new[] { "TST-101", "TST-102" }, new[] { edge, margin });
+    var ecWhite = EC(new[] { "TST-101" }, new[] { whiteOnly }); var ecDefault = EC(new[] { "TST-101" }, new[] { margin }, true);
+    Check(Near(RX(edge), 1) && Near(RY(edge), 1) && ECP(ecPass).Count == 0 && ECOk(ecPass).All(x => x)
+      && Near(RX(margin), (2275 - 108) / 2383.5) && Near(EF(margin, "MinX"), 108) && Near(EF(margin, "MaxX"), 2275) && Near(RY(margin), 1600 / 1683.8)
+      && ECOk(ecFail).SequenceEqual(new[] { true, false }) && ECP(ecFail).Single().StartsWith("sheet TST-102: drawn over 90.9% x 95% of the page")
+      && Near(RX(relative), (2275 - 108) / 2383.5) && Near(RY(relative), 1),
+      $"DWFx no margin: edge to edge passes; drawn 108..2275 of 2383.5 fails (ratio {RX(margin):0.000}); relative commands (m, h, v, c, z) read");
+    Check(RX(whiteOnly) == null && EF(whiteOnly, "Measured") == 0 && ECP(ecWhite).Count == 0 && ECOk(ecWhite).All(x => x) && ECW(ecWhite).Single().Contains("not measured")
+      && ECP(ecDefault).Count == 0 && ECW(ecDefault).Single().Contains("default paper"),
+      "DWFx no margin: a white full-page background alone does not count (extent not measured: warning, not failure); Default paper only warns");
+    // Transforms: a half-scale Canvas holding a full-page path; nested Canvas with a MatrixTransform element and a translate;
+    // a Glyphs' own RenderTransform; a PathGeometry (Figures / segment points) with its Transform; a StaticResource geometry.
+    var half = Ext(Page("<Canvas RenderTransform=\"0.5,0,0,0.5,0,0\"><Path Stroke=\"#FF000000\" Data=\"M 0,0 L 2383.5,1683.8\"/></Canvas>"));
+    var nested = Ext(Page("<Canvas RenderTransform=\"1,0,0,1,1000,0\"><Canvas><Canvas.RenderTransform><MatrixTransform Matrix=\"2,0,0,2,0,0\"/></Canvas.RenderTransform>"
+      + "<Path Stroke=\"#FF000000\" Data=\"M 0,0 L 100,100\"/><Glyphs OriginX=\"0\" OriginY=\"0\" RenderTransform=\"1,0,0,1,300,400\" UnicodeString=\"x\"/></Canvas></Canvas>"));
+    var geo = Ext(Page("<Canvas.Resources><ResourceDictionary><PathGeometry x:Key=\"G1\" Figures=\"M 0,0 L 2383.5,1683.8\"/></ResourceDictionary></Canvas.Resources>"
+      + "<Path Stroke=\"#FF000000\" Data=\"{StaticResource G1}\"/><Path Stroke=\"#FF000000\"><Path.Data><PathGeometry Transform=\"1,0,0,1,10,0\"><PathFigure StartPoint=\"0,0\"><PolyLineSegment Points=\"100,0 100,100\"/></PathFigure></PathGeometry></Path.Data></Path>"));
+    var unresolved = Ext(Page("<Path Stroke=\"#FF000000\" Data=\"{StaticResource Missing}\"/><Path Stroke=\"#FF000000\" Data=\"M 500,500 L 600,600\"/>"));
+    var ecUnres = EC(new[] { "TST-101" }, new[] { unresolved });
+    Check(Near(RX(half), 0.5) && Near(RY(half), 0.5) && Near(EF(nested, "MinX"), 1000) && Near(EF(nested, "MaxX"), 1600) && Near(EF(nested, "MaxY"), 800) && Near(EF(nested, "MinY"), 0)
+      && Near(RX(geo), 1) && Near(RY(geo), 1) && EF(unresolved, "Measured") == 1 && ECP(ecUnres).Count == 0 && ECW(ecUnres).Single().Contains("could not be read"),
+      "DWFx no margin: nested RenderTransforms (attribute and MatrixTransform), Glyphs transforms, PathGeometry and StaticResource honoured; unreadable geometry only warns");
+    // Through the package: DwfxPages gives each page's extent in page order; sheet pages found after the view pages.
+    byte[] DwfxWith(params string[] fpages)
+    {
+      using var ms = new MemoryStream();
+      using (var z = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, true))
+        for (var i = 0; i < fpages.Length; i++) { using var w = new StreamWriter(z.CreateEntry($"dwf/documents/1/pages/{i + 1}.fpage").Open()); w.Write(fpages[i]); }
+      return ms.ToArray();
+    }
+    var pkg = VM("DwfxPages").Invoke(null, new object[] { new MemoryStream(DwfxWith(Page(White + "<Path Stroke=\"#FF000000\" Data=\"M 0,0 L 2383.5,1683.8\"/>"), Page("<Path Stroke=\"#FF000000\" Data=\"M 108,0 L 2275,1683.8\"/>"))) })!;
+    var pkgExt = (IList)pkg.GetType().GetField("Item3")!.GetValue(pkg)!;
+    int SPO(int s, int v, int p, string? at) => (int)VM("SheetPageOffset").Invoke(null, new object?[] { s, v, p, at })!;
+    Check(pkgExt.Count == 2 && Near(RX(pkgExt[0]!), 1) && Near(RX(pkgExt[1]!), (2275 - 108) / 2383.5)
+      && SPO(2, 1, 3, "first") == 1 && SPO(2, 1, 3, "last") == 0 && SPO(2, 1, 2, "no-page") == 0 && SPO(2, 0, 2, null) == 0 && SPO(2, 0, 3, null) == -1 && SPO(2, 2, 3, null) == -1,
+      "DWFx no margin: each page's extent read from the package; sheet pages located after the view pages");
+    // Printer paper: by name (A1, ISO A1, full bleed), by the size printed in the name, never a contradicting or JIS size.
+    int PP(string fmt, params string[] names) => (int)VM("PrinterPaperFor").Invoke(null, new object[] { fmt, names.ToList(), 2.0 })!;
+    object? PNS(string n) => VM("PaperNameSize").Invoke(null, new object[] { n });
+    var pns = PNS("33.11 x 23.39 in"); var pnsW = pns == null ? 0 : (double)pns.GetType().GetField("Item1")!.GetValue(pns)!;
+    Check(PP("ISO_A1", "Letter", "A1", "A10") == 1 && PP("ISO_A1", "Letter", "ISO full bleed A1 (841.00 x 594.00 MM)", "ISO A1 (841.00 x 594.00 MM)") == 2
+      && PP("ISO_A1", "Letter", "iso_a1") == 1 && PP("ISO_A1", "Letter", "A10", "A1 (600 x 900 mm)") == -1 && PP("ISO_A1", "Custom 841x594mm") == 0
+      && PP("ISO_A1", "ISO full bleed A1 (841.00 x 594.00 MM)") == 0 && PP("ISO_A1", "A1 Rotated", "ISO A1") == 1 && PP("ISO_A1") == -1
+      && PP("ANSI_B", "Letter", "Tabloid") == 1 && PP("ANSI_B", "11x17") == 0 && PP("ISO_B4", "B4 (JIS)") == -1 && PP("ISO_B4", "B4 (JIS)", "B4 (ISO)") == 1
+      && PP("ARCH_D", "ANSI D", "ARCH D (24.00 x 36.00 Inches)") == 1 && PP("Default", "A1") == -1 && Math.Abs(pnsW - 841) < 1 && PNS("A1") == null,
+      "DWFx printer paper: matched by name (A1 / ISO A1 / full bleed), else by the size in the name; contradicting, JIS and missing sizes give none");
+
     if (failures > 0) { Console.WriteLine($"clash test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("clash test passed");
   }

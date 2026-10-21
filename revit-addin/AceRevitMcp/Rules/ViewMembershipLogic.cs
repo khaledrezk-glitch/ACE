@@ -202,11 +202,13 @@ namespace AceRevitMcp.Rules
         /// <summary>
         /// The pages of a DWFx (an XPS package, a zip): every FixedPage part's Width and Height (1/96 inch) in mm, in reading
         /// order (the FixedDocument parts' PageContent order; pages no document lists follow, by part name in natural order);
-        /// and every ePlot Paper element's size (its width / height attributes, in mm unless its units say inches).
+        /// and every ePlot Paper element's size (its width / height attributes, in mm unless its units say inches); Extents: each
+        /// page's drawn extent (PageExtentOf), in the order of Pages.
         /// </summary>
-        public static (List<(string Part, double WidthMm, double HeightMm)> Pages, List<(double WidthMm, double HeightMm)> Papers) DwfxPages(System.IO.Stream package)
+        public static (List<(string Part, double WidthMm, double HeightMm)> Pages, List<(double WidthMm, double HeightMm)> Papers, List<Extent> Extents) DwfxPages(System.IO.Stream package)
         {
             var pages = new Dictionary<string, (double, double)>(StringComparer.OrdinalIgnoreCase);
+            var extents = new Dictionary<string, Extent>(StringComparer.OrdinalIgnoreCase);
             var order = new List<string>();
             var papers = new List<(double, double)>();
             double Num(string v) => double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : double.NaN;
@@ -225,7 +227,7 @@ namespace AceRevitMcp.Rules
                     if (isPage && x.Root.Name.LocalName == "FixedPage")
                     {
                         var w = Num((string)x.Root.Attribute("Width")); var h = Num((string)x.Root.Attribute("Height"));
-                        if (!double.IsNaN(w) && !double.IsNaN(h)) pages[Norm(name)] = (w / 96 * 25.4, h / 96 * 25.4);
+                        if (!double.IsNaN(w) && !double.IsNaN(h)) { pages[Norm(name)] = (w / 96 * 25.4, h / 96 * 25.4); extents[Norm(name)] = PageExtentOf(x.Root); }
                     }
                     if (isDoc)
                     {
@@ -252,7 +254,7 @@ namespace AceRevitMcp.Rules
             var list = new List<(string, double, double)>();
             foreach (var k in order.Where(pages.ContainsKey).Distinct(StringComparer.OrdinalIgnoreCase)) list.Add((k, pages[k].Item1, pages[k].Item2));
             foreach (var k in pages.Keys.Where(k => !order.Contains(k, StringComparer.OrdinalIgnoreCase)).OrderBy(k => k, NaturalOrder)) list.Add((k, pages[k].Item1, pages[k].Item2));
-            return (list, papers);
+            return (list, papers, list.Select(p => extents[p.Item1]).ToList());
         }
 
         /// <summary>Names in natural order: "2.fpage" before "10.fpage" (digit runs compared as numbers).</summary>
@@ -432,6 +434,343 @@ namespace AceRevitMcp.Rules
                 list.Add(name + ".dwfx");
             }
             return list;
+        }
+
+        /// <summary>
+        /// A page's drawn extent: the bounding box of what is drawn on it (page units, clamped to the page), the extent ratio in
+        /// each direction ((max - min) / page size; null: nothing measurable), and Unresolved: geometry that could not be read
+        /// (a resource from another part, a malformed Data), so the ratio may be too small.
+        /// </summary>
+        public sealed class Extent
+        {
+            public double PageWidth, PageHeight, MinX, MinY, MaxX, MaxY;
+            public double? RatioX, RatioY;
+            public int Measured, Unresolved;
+        }
+
+        /// <summary>The drawn extent of one FixedPage given as XAML text (PageExtentOf); unreadable XML: nothing measured.</summary>
+        public static Extent PageExtent(string fixedPageXml)
+        {
+            try { return PageExtentOf(System.Xml.Linq.XElement.Parse(fixedPageXml ?? "")); }
+            catch { return new Extent { Unresolved = 1 }; }
+        }
+
+        /// <summary>
+        /// The drawn extent of one XPS FixedPage (a DWFx page): every Path's geometry (Data in abbreviated syntax M/L/H/V/C/Q/S/A/Z,
+        /// relative too; a PathGeometry's Figures, or its PathFigure / segment points; a {StaticResource key} found in the page),
+        /// every Glyphs' OriginX / OriginY, through the RenderTransform matrices of the nested Canvas / Path / Glyphs (and a
+        /// PathGeometry's Transform). Clip is ignored. A white-filled, unstroked Path covering the whole page (the paper
+        /// background) does not count. Bezier control points count (a slight over-estimate); an arc counts by its end point.
+        /// </summary>
+        public static Extent PageExtentOf(System.Xml.Linq.XElement page)
+        {
+            var ext = new Extent();
+            if (page == null) return ext;
+            double Num(string v) => double.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : double.NaN;
+            ext.PageWidth = Num((string)page.Attribute("Width")); ext.PageHeight = Num((string)page.Attribute("Height"));
+            if (!(ext.PageWidth > 0) || !(ext.PageHeight > 0)) { ext.Unresolved++; return ext; }
+            // Resources defined in the page, by x:Key.
+            var resources = new Dictionary<string, System.Xml.Linq.XElement>(StringComparer.Ordinal);
+            foreach (var e in page.Descendants())
+            {
+                var key = e.Attributes().FirstOrDefault(a => a.Name.LocalName == "Key")?.Value;
+                if (key != null && !resources.ContainsKey(key)) resources[key] = e;
+            }
+            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+            System.Xml.Linq.XElement Prop(System.Xml.Linq.XElement e, string name) => e.Elements().FirstOrDefault(c => c.Name.LocalName == e.Name.LocalName + "." + name);
+            double[] TransformOf(System.Xml.Linq.XElement e, string attr)
+            {
+                var text = (string)e.Attribute(attr);
+                if (text == null)
+                {
+                    var mt = Prop(e, attr)?.Elements().FirstOrDefault(c => c.Name.LocalName == "MatrixTransform");
+                    text = (string)mt?.Attribute("Matrix");
+                }
+                if (text != null && text.TrimStart().StartsWith("{"))
+                {
+                    var r = Resource(text);
+                    text = r == null ? null : (string)r.Attribute("Matrix");
+                }
+                return text == null ? null : ParseMatrix(text);
+            }
+            System.Xml.Linq.XElement Resource(string text)
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(text ?? "", @"^\s*\{\s*StaticResource\s+([^}\s]+)\s*\}\s*$");
+                return m.Success && resources.TryGetValue(m.Groups[1].Value, out var r) ? r : null;
+            }
+            // The points of a geometry in its own coordinates (null: not readable).
+            List<(double X, double Y)> GeometryOf(System.Xml.Linq.XElement owner, string dataText, out double[] geoTransform)
+            {
+                geoTransform = null;
+                System.Xml.Linq.XElement geo = null;
+                if (dataText != null)
+                {
+                    if (!dataText.TrimStart().StartsWith("{")) return GeometryPoints(dataText);
+                    geo = Resource(dataText);
+                    if (geo == null) return null;
+                }
+                else geo = Prop(owner, "Data")?.Elements().FirstOrDefault();
+                if (geo == null || geo.Name.LocalName != "PathGeometry") return null;
+                geoTransform = TransformOf(geo, "Transform");
+                var pts = new List<(double, double)>();
+                var figures = (string)geo.Attribute("Figures");
+                if (figures != null)
+                {
+                    if (figures.TrimStart().StartsWith("{")) return null;
+                    pts.AddRange(GeometryPoints(figures));
+                }
+                foreach (var a in geo.Descendants().SelectMany(d => d.Attributes()).Where(a => a.Name.LocalName == "StartPoint" || a.Name.LocalName == "Point" || a.Name.LocalName == "Points"))
+                {
+                    var nums = NumberTokens(a.Value);
+                    for (var i = 0; i + 1 < nums.Count; i += 2) pts.Add((nums[i], nums[i + 1]));
+                }
+                return pts;
+            }
+            bool IsWhite(string c)
+            {
+                var v = (c ?? "").Trim();
+                return string.Equals(v, "White", StringComparison.OrdinalIgnoreCase) || string.Equals(v, "#FFFFFF", StringComparison.OrdinalIgnoreCase) || string.Equals(v, "#FFFFFFFF", StringComparison.OrdinalIgnoreCase);
+            }
+            string Brush(System.Xml.Linq.XElement e, string name)
+            {
+                var a = (string)e.Attribute(name);
+                if (a != null) return a.TrimStart().StartsWith("{") ? (string)Resource(a)?.Attribute("Color") ?? a : a;
+                var b = Prop(e, name)?.Elements().FirstOrDefault();
+                return b == null ? null : b.Name.LocalName == "SolidColorBrush" ? (string)b.Attribute("Color") ?? "?" : "?";
+            }
+            void Walk(System.Xml.Linq.XElement e, double[] parent)
+            {
+                var local = TransformOf(e, "RenderTransform");
+                var m = local == null ? parent : Compose(local, parent);
+                switch (e.Name.LocalName)
+                {
+                    case "Path":
+                    {
+                        var pts = GeometryOf(e, (string)e.Attribute("Data"), out var gt);
+                        if (pts == null) { ext.Unresolved++; return; }
+                        var gm = gt == null ? m : Compose(gt, m);
+                        var world = pts.Select(p => Apply(gm, p)).ToList();
+                        if (world.Count == 0) return;
+                        var stroke = Brush(e, "Stroke");
+                        if (IsWhite(Brush(e, "Fill")) && (stroke == null || IsWhite(stroke))
+                            && world.Min(p => p.X) <= ext.PageWidth * 0.005 && world.Max(p => p.X) >= ext.PageWidth * 0.995
+                            && world.Min(p => p.Y) <= ext.PageHeight * 0.005 && world.Max(p => p.Y) >= ext.PageHeight * 0.995) return;   // the paper background
+                        foreach (var p in world) Add(p);
+                        ext.Measured++;
+                        return;
+                    }
+                    case "Glyphs":
+                    {
+                        var x = Num((string)e.Attribute("OriginX")); var y = Num((string)e.Attribute("OriginY"));
+                        if (double.IsNaN(x) || double.IsNaN(y)) { ext.Unresolved++; return; }
+                        Add(Apply(m, (x, y))); ext.Measured++;
+                        return;
+                    }
+                }
+                foreach (var c in e.Elements())
+                    if (c.Name.LocalName == "Canvas" || c.Name.LocalName == "Path" || c.Name.LocalName == "Glyphs") Walk(c, m);
+            }
+            void Add((double X, double Y) p)
+            {
+                var x = Math.Max(0, Math.Min(ext.PageWidth, p.X)); var y = Math.Max(0, Math.Min(ext.PageHeight, p.Y));
+                minX = Math.Min(minX, x); maxX = Math.Max(maxX, x); minY = Math.Min(minY, y); maxY = Math.Max(maxY, y);
+            }
+            Walk(page, new double[] { 1, 0, 0, 1, 0, 0 });
+            if (ext.Measured > 0 && maxX >= minX)
+            {
+                ext.MinX = minX; ext.MinY = minY; ext.MaxX = maxX; ext.MaxY = maxY;
+                ext.RatioX = (maxX - minX) / ext.PageWidth; ext.RatioY = (maxY - minY) / ext.PageHeight;
+            }
+            return ext;
+        }
+
+        /// <summary>An XPS matrix "m11,m12,m21,m22,dx,dy"; null when it is not six numbers.</summary>
+        public static double[] ParseMatrix(string text)
+        {
+            var n = NumberTokens(text);
+            return n.Count == 6 ? n.ToArray() : null;
+        }
+
+        /// <summary>The matrix that applies first, then second (XPS row-vector convention: p * first * second).</summary>
+        public static double[] Compose(double[] first, double[] second) => new[]
+        {
+            first[0] * second[0] + first[1] * second[2], first[0] * second[1] + first[1] * second[3],
+            first[2] * second[0] + first[3] * second[2], first[2] * second[1] + first[3] * second[3],
+            first[4] * second[0] + first[5] * second[2] + second[4], first[4] * second[1] + first[5] * second[3] + second[5],
+        };
+
+        private static (double X, double Y) Apply(double[] m, (double X, double Y) p) => (p.X * m[0] + p.Y * m[2] + m[4], p.X * m[1] + p.Y * m[3] + m[5]);
+
+        private static List<double> NumberTokens(string text)
+        {
+            var list = new List<double>();
+            foreach (System.Text.RegularExpressions.Match t in System.Text.RegularExpressions.Regex.Matches(text ?? "", @"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"))
+                list.Add(double.Parse(t.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture));
+            return list;
+        }
+
+        /// <summary>
+        /// The points of an abbreviated XPS geometry ("F1 M 0,0 L 10,0 10,10 Z", relative commands too): every end point and
+        /// control point in absolute coordinates (H / V use the current point; repeated coordinates repeat the command, after
+        /// M as L). An arc gives its end point. Stops at the first malformed command.
+        /// </summary>
+        public static List<(double X, double Y)> GeometryPoints(string data)
+        {
+            var pts = new List<(double, double)>();
+            var tokens = System.Text.RegularExpressions.Regex.Matches(data ?? "", @"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?|[A-Za-z]").Cast<System.Text.RegularExpressions.Match>().Select(m => m.Value).ToList();
+            bool IsCmd(int i) => i < tokens.Count && char.IsLetter(tokens[i][0]);
+            var k = 0;
+            if (tokens.Count >= 2 && (tokens[0] == "F" || tokens[0] == "f") && !IsCmd(1)) k = 2;
+            char cmd = '\0'; double cx = 0, cy = 0, sx = 0, sy = 0;
+            while (k < tokens.Count)
+            {
+                if (IsCmd(k))
+                {
+                    cmd = tokens[k][0]; k++;
+                    if (cmd == 'Z' || cmd == 'z') { cx = sx; cy = sy; }
+                    continue;
+                }
+                var up = char.ToUpperInvariant(cmd);
+                var count = up == 'M' || up == 'L' ? 2 : up == 'H' || up == 'V' ? 1 : up == 'C' ? 6 : up == 'Q' || up == 'S' ? 4 : up == 'A' ? 7 : 0;
+                if (count == 0) { k++; continue; }   // numbers after Z or before any command
+                var v = new double[count];
+                for (var j = 0; j < count; j++)
+                {
+                    if (k + j >= tokens.Count || IsCmd(k + j)) return pts;   // malformed: stop
+                    v[j] = double.Parse(tokens[k + j], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture);
+                }
+                k += count;
+                var rel = char.IsLower(cmd);
+                double ox = rel ? cx : 0, oy = rel ? cy : 0;
+                switch (up)
+                {
+                    case 'M': case 'L':
+                        cx = v[0] + ox; cy = v[1] + oy; pts.Add((cx, cy));
+                        if (up == 'M') { sx = cx; sy = cy; cmd = rel ? 'l' : 'L'; }
+                        break;
+                    case 'H': cx = v[0] + ox; pts.Add((cx, cy)); break;
+                    case 'V': cy = v[0] + oy; pts.Add((cx, cy)); break;
+                    case 'A': cx = v[5] + ox; cy = v[6] + oy; pts.Add((cx, cy)); break;
+                    default:   // C, Q, S: control point(s), then the end point, all relative to the segment's start
+                        for (var j = 0; j < count; j += 2) pts.Add((v[j] + ox, v[j + 1] + oy));
+                        cx = v[count - 2] + ox; cy = v[count - 1] + oy;
+                        break;
+                }
+            }
+            return pts;
+        }
+
+        /// <summary>
+        /// Where the sheet pages start among a file's pages, after PageCheckWithViews placed the view pages (viewsAt "first":
+        /// after the views; "last" / "no-page": at the start); -1 when the pages cannot be matched to the sheets.
+        /// </summary>
+        public static int SheetPageOffset(int sheets, int views, int pages, string viewsAt)
+        {
+            if (viewsAt == "first") return pages == sheets + views ? views : -1;
+            if (viewsAt == "last") return pages == sheets + views ? 0 : -1;
+            return pages == sheets ? 0 : -1;
+        }
+
+        /// <summary>
+        /// The no-margin check: each sheet page's drawn extent against its page; below min (0.98) in either direction fails
+        /// (the drawing was scaled down with a white margin). A page with nothing measurable, or (when it fails) geometry
+        /// that could not be read, gives a warning ("extent not measured"), never a failure. Default paper
+        /// (allow_paper_fallback, scaled anyway) only warns. Rows: (number, ratio X, ratio Y, ok).
+        /// </summary>
+        public static (List<(string Number, double? RatioX, double? RatioY, bool Ok)> Sheets, List<string> Problems, List<string> Warnings) ExtentCheck(
+            IList<string> numbers, IList<Extent> extents, bool defaultPaper, double min = 0.98)
+        {
+            var rows = new List<(string, double?, double?, bool)>(); var problems = new List<string>(); var warnings = new List<string>();
+            var nums = numbers ?? new List<string>();
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            string Pct(double r) => Math.Round(r * 100, 1).ToString(inv) + "%";
+            if (extents == null || extents.Count != nums.Count)
+            {
+                warnings.Add("drawn extent not measured: the pages could not be matched to the sheets");
+                rows.AddRange(nums.Select(n => (n, (double?)null, (double?)null, true)));
+                return (rows, problems, warnings);
+            }
+            var notMeasured = new List<string>();
+            for (var i = 0; i < nums.Count; i++)
+            {
+                var e = extents[i];
+                if (e == null || e.RatioX == null || e.RatioY == null) { notMeasured.Add(nums[i]); rows.Add((nums[i], null, null, true)); continue; }
+                var small = e.RatioX.Value < min || e.RatioY.Value < min;
+                var text = $"sheet {nums[i]}: drawn over {Pct(e.RatioX.Value)} x {Pct(e.RatioY.Value)} of the page (below {Pct(min)}: scaled down with a margin)";
+                if (small && (defaultPaper || e.Unresolved > 0))
+                {
+                    warnings.Add(text + (defaultPaper ? " (Revit's default paper, allow_paper_fallback)" : $" ({e.Unresolved} drawing part(s) could not be read: extent not measured reliably)"));
+                    rows.Add((nums[i], e.RatioX, e.RatioY, true));
+                }
+                else
+                {
+                    if (small) problems.Add(text);
+                    rows.Add((nums[i], e.RatioX, e.RatioY, !small));
+                }
+            }
+            if (notMeasured.Count > 0) warnings.Add($"drawn extent not measured for {notMeasured.Count} sheet page(s) (nothing readable drawn): {string.Join(", ", notMeasured.Take(20))}");
+            return (rows, problems, warnings);
+        }
+
+        /// <summary>
+        /// A paper size printed in a printer's paper name ("ISO A1 (841.00 x 594.00 MM)", "11x17", "33.11 x 23.39 in"), in mm:
+        /// mm when the name says mm, inches when it says in / " or both numbers are below 60; null when the name holds none.
+        /// </summary>
+        public static (double WidthMm, double HeightMm)? PaperNameSize(string name)
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(name ?? "", @"(\d+(?:[.,]\d+)?)\s*(?:mm|in|"")?\s*[xX×]\s*(\d+(?:[.,]\d+)?)\s*(mm|millimet\w*|in\b|inch\w*|"")?", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!m.Success) return null;
+            double P(string v) => double.Parse(v.Replace(',', '.'), System.Globalization.CultureInfo.InvariantCulture);
+            var a = P(m.Groups[1].Value); var b = P(m.Groups[2].Value);
+            var unit = m.Groups[3].Value.ToLowerInvariant();
+            var inches = unit.StartsWith("in") || unit == "\"" || (unit.Length == 0 && a < 60 && b < 60);
+            return inches ? (a * 25.4, b * 25.4) : (a, b);
+        }
+
+        /// <summary>
+        /// The printer paper size (index into names, the printer's PaperSizes in order) for a DWF paper format (ExportPaperFormat
+        /// name, e.g. ISO_A1): best first, the name itself ("A1", "ISO A1", "ISO_A1", case, spaces and _ ignored; ANSI / ARCH
+        /// with their usual names, e.g. Tabloid for ANSI B), then the name with "full bleed" / "expand", then any name whose
+        /// printed size (PaperNameSize) is the format's within 2 mm; a "rotated" / "transverse" paper last. A name whose printed
+        /// size contradicts the format is never taken (nor a JIS B size for ISO B). -1: the printer has no such paper.
+        /// </summary>
+        public static int PrinterPaperFor(string paperEnum, IList<string> names, double tolMm = 2)
+        {
+            if (names == null || string.IsNullOrWhiteSpace(paperEnum)) return -1;
+            var fmt = PaperFormats.FirstOrDefault(p => p.Enum == paperEnum);
+            if (fmt.Enum == null) return -1;
+            string Norm(string t) => new string((t ?? "").ToUpperInvariant().Where(char.IsLetterOrDigit).ToArray());
+            var code = paperEnum.Substring(paperEnum.IndexOf('_') + 1);   // A1, B, D, E1
+            var family = paperEnum.Substring(0, paperEnum.IndexOf('_'));   // ISO, ANSI, ARCH
+            var keys = new List<string> { Norm(paperEnum) };
+            if (family == "ISO") keys.Add(Norm(code));
+            if (family == "ANSI")
+            {
+                if (code == "A") keys.Add("LETTER");
+                if (code == "B") keys.AddRange(new[] { "TABLOID", "LEDGER", "11X17" });
+                if (code == "C" || code == "D" || code == "E") keys.Add(code + "SIZESHEET");
+            }
+            var best = -1; var bestScore = int.MaxValue;
+            for (var i = 0; i < names.Count; i++)
+            {
+                var name = names[i] ?? "";
+                var upper = name.ToUpperInvariant();
+                if (family == "ISO" && code.StartsWith("B") && upper.Contains("JIS")) continue;
+                var size = PaperNameSize(name);
+                var sizeFits = size != null && SameSize(size.Value.WidthMm, size.Value.HeightMm, fmt.Short, fmt.Long, tolMm);
+                if (size != null && !sizeFits) continue;
+                var bare = Norm(System.Text.RegularExpressions.Regex.Replace(name, @"\([^)]*\)", " "));
+                var plain = bare.Replace("FULLBLEED", "").Replace("EXPANDED", "").Replace("EXPAND", "");
+                var turned = upper.Contains("ROTATED") || upper.Contains("TRANSVERSE");
+                int score;
+                if (keys.Contains(bare)) score = 0;
+                else if (keys.Contains(plain)) score = 1;
+                else if (sizeFits) score = 2;
+                else continue;
+                if (turned) score += 10;
+                if (score < bestScore) { bestScore = score; best = i; }
+            }
+            return best;
         }
 
         /// <summary>The sheets asked for against the sheets in the files: matched, missing (asked, not exported), extra (exported, not asked).</summary>

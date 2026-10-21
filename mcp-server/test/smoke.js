@@ -384,7 +384,7 @@ fs.writeFileSync(path.join(tmp, "config.json"), JSON.stringify({ port, token }))
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [fileURLToPath(new URL("../index.js", import.meta.url))],   // a URL pathname is /D:/... on Windows
-  env: { ...process.env, ACE_REVIT_CONFIG: path.join(tmp, "config.json"), ACE_REVIT_URL: `http://127.0.0.1:${port}`, ACE_REVIT_SCRIPTS: path.join(tmp, "scripts"), ACE_REVIT_JOURNAL: path.join(tmp, "journal"), ACE_REVIT_LOGS: path.join(tmp, "logs"), ACE_REVIT_REPORTS: path.join(tmp, "reports"), ACE_TEAM_SCRIPTS: path.join(tmp, "team"), ACE_TEAM_REPORTS: path.join(tmp, "team-reports"), ACE_REVIT_LESSONS: path.join(tmp, "lessons"), ACE_TEAM_LESSONS: path.join(tmp, "team-lessons"), ACE_RELOAD_POLL_MS: "40", ACE_RELOAD_WAIT_MS: "5000" },
+  env: { ...process.env, ACE_REVIT_CONFIG: path.join(tmp, "config.json"), ACE_REVIT_URL: `http://127.0.0.1:${port}`, ACE_REVIT_SCRIPTS: path.join(tmp, "scripts"), ACE_REVIT_JOURNAL: path.join(tmp, "journal"), ACE_REVIT_LOGS: path.join(tmp, "logs"), ACE_REVIT_REPORTS: path.join(tmp, "reports"), ACE_TEAM_SCRIPTS: path.join(tmp, "team"), ACE_TEAM_REPORTS: path.join(tmp, "team-reports"), ACE_REVIT_LESSONS: path.join(tmp, "lessons"), ACE_TEAM_LESSONS: path.join(tmp, "team-lessons"), ACE_RELOAD_POLL_MS: "40", ACE_RELOAD_WAIT_MS: "5000", ACE_REVIT_JOBS: path.join(tmp, "jobs") },
 });
 const client = new Client({ name: "smoke", version: "1.0.0" });
 await client.connect(transport);
@@ -393,7 +393,7 @@ const call = async (name, args = {}) => client.callTool({ name, arguments: args 
 const json = (r) => JSON.parse(r.content[0].text);
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "register_update", "reload_addin", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_model", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "job_status", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "register_update", "reload_addin", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_model", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -598,6 +598,12 @@ assert.match(lr, /First-time right/);
 assert.match(lr, /Repeated API mistakes/, "the failed compile in this test run shows up");
 assert.match(lr, /Saved: /);
 assert.match(lr, /Development radar/, "the learning report includes the development radar");
+{ // 1.14.8: a long-lived server with older code than the add-in is named on every Revit call.
+  const { versionMismatch } = await import("../lib/core.js");
+  assert.equal(versionMismatch("1.14.7.0", "1.14.7"), null);
+  assert.equal(versionMismatch(undefined, "1.14.7"), null);
+  assert.match(versionMismatch("1.14.7", "1.14.6"), /ACE server is 1\.14\.6, the add-in in Revit is 1\.14\.7/);
+}
 const { tasks: radarTasks } = await import("../lib/radar.js");
 const tk = radarTasks([
   { t: "2026-10-06T08:00:00Z", tool: "get_model_brief", ok: true, chars: 4000 },
@@ -1449,6 +1455,15 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   fs.writeFileSync(path.join(vRules, "export.json"), JSON.stringify({ nameTemplate: "TST_{model}_{format}", ifc: { setups: { "TST setup": "ifc/tst-setup.json" } }, dwfx: { stemPattern: "^X(?<number>TST-\\d+)" } }));
   const sp = await call("export_deliverables", { out_dir: path.join(eDir, "out-sf"), vault: eDir, dwfx: { same_as_folder: issued, allow_unmatched: true }, check_only: true });
   assert.ok(!sp.isError && ed().at(-1).args.dwfx.sheets.includes("TST-01"), "the vault's stemPattern is a first try, the number in the stem still matches");
+  // 1.14.8: background: true answers with a job id at once; job_status gives the same reply once the run ends.
+  const bg = await call("export_deliverables", { out_dir: path.join(eDir, "out-bg"), vault: eDir, dwfx: { same_as_folder: issued, allow_unmatched: true }, check_only: true, background: true });
+  const jobId = bg.content[0].text.match(/as job (\S+)\./)?.[1];
+  assert.ok(jobId && !bg.isError, `a background call answers with a job id: ${bg.content[0].text}`);
+  let js = "";
+  for (let i = 0; i < 100 && !/ done at /.test(js); i++) { await new Promise((r) => setTimeout(r, 50)); js = (await call("job_status", { job_id: jobId })).content[0].text; }
+  assert.match(js, / done at [\s\S]*Ready: the same call without check_only exports\./, "job_status returns the finished reply");
+  assert.match((await call("job_status", {})).content[0].text, new RegExp(`${jobId}: done`), "job_status lists the jobs");
+  assert.match((await call("job_status", { job_id: "../x" })).content[0].text, /not a job id/);
   const { matchStems, folderStems } = await import("../lib/deliverables.js");
   // 1.14.7 #34: printed sets in PDF\ and CAD\ subfolders count; one stem per sheet; Revit's _backup folders are skipped.
   const fsDir = path.join(eDir, "issued-sub");
