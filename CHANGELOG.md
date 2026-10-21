@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+- **Record my work (G15, owner's request 21 Oct):** a ribbon toggle on ACE > Claude MCP. Start asks for a short label and
+  an optional note, Stop for an optional closing note ("what was the rule you followed?"); the button shows Recording /
+  Record my work and the Companion shows the running recording. It is capture_method started and stopped by the person
+  (one engine, one running capture): it records every model worked on (start snapshot per document, active view first,
+  all editable instance parameters, max 5000 elements; touched, added and deleted ids and Revit's transaction names from
+  DocumentChanged; views from ViewActivated; a closing model's end state; sketch edits by sketch owner; the journal) and
+  never changes the model. Stop writes the case like capture_method stop (vault cases/<date>-<label>.json and .md,
+  found from the model folder; a vault not yet allowed is asked once; else %APPDATA%\ACE-RevitMCP\cases, said in the
+  dialog), `recordedBy: "owner (ribbon)"`, with the notes and the caps reached.
+- **capture_method:** status shows the user's ribbon recording (start and stop are refused while it runs: only the user
+  stops it); new action `list` lists recent cases (vault, ACE folder, reports, out_dir) and, with `case`, completes a
+  ribbon case (actions per model, journal commands, plan comparison) in place. Guide: "Learning from a recorded case".
+
 ## 1.14.13 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **save_model save_as of a never-saved copy:** a detached copy never saved reports `Document.IsReadOnlyFile` true while

@@ -52,6 +52,7 @@ namespace AceRevitMcp
                 Dispatcher = dispatcher;
                 application.ControlledApplication.DocumentChanged += ChangeTracker.OnDocumentChanged;
                 Tracking.ChangeTracking.Attach(application);
+                Commands.WorkRecorder.Attach(application);
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
                 InstanceRegistry.Attach(application);
                 Server.Start();
@@ -97,6 +98,7 @@ namespace AceRevitMcp
             Dispatcher = null;
             if (application != null) Step("document events", () => application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged);
             Step("change tracking", Tracking.ChangeTracking.Detach);
+            Step("work record", Commands.WorkRecorder.Detach);
             Step("models opened by ACE", () => Commands.ModelFileCommands.SaveAndForget(PayloadEntry.Store));
             Step("undo state", () => ChangeTracker.Save(PayloadEntry.Store));
             if (application != null) Step("companion", () => Companion.CompanionPane.Unregister(application));
@@ -133,6 +135,21 @@ namespace AceRevitMcp
             catch (Exception ex) { Log.Warn($"Ribbon icons: {ex.Message}"); }
             Ribbon.WorkModes.RegisterButton(panel.Name, Ribbon.RibbonSlots.Add(panel, companion), (sz, dim) => Icons.Companion(sz, dim));
             Ribbon.WorkModes.RegisterButton(panel.Name, Ribbon.RibbonSlots.Add(panel, status), (sz, dim) => Icons.Status(sz, dim));
+            // The owner's work record (capture_method from the ribbon): Record my work / Recording (click to stop).
+            try
+            {
+                var recording = Commands.WorkRecorder.Active != null;
+                var record = Ribbon.RibbonSlots.Button("AceRecordWork", recording ? "Recording\n(click to stop)" : "Record\nmy work", typeof(Commands.RecordWorkCommand).FullName);
+                record.ToolTip = "Record my work: click to start recording what you do (in every model you work on), click again to stop. The case goes to the project's vault so Claude can learn your method. Nothing in the model is changed.";
+                record.LongDescription = "Start asks for a short label and an optional note; Stop asks what rule you followed. Records element, parameter, geometry, join and sketch changes, the views used and the Revit commands.";
+                Func<int, bool, System.Windows.Media.ImageSource> recIcon = (sz, dim) => Icons.Line(sz, Commands.WorkRecorder.Active != null ? Ribbon.Glyphs.StopRecord : Ribbon.Glyphs.Record, planned: false, dim: dim);
+                record.LargeImage = recIcon(32, false); record.Image = recIcon(16, false);
+                var item = Ribbon.RibbonSlots.Add(panel, record);
+                Ribbon.WorkModes.RegisterButton(panel.Name, item, recIcon);
+                Commands.WorkRecorder.Button = item;
+                Commands.WorkRecorder.Publish();
+            }
+            catch (Exception ex) { Log.Warn($"Record my work button: {ex.Message}"); }
 
             // Planned tools (roadmap): real buttons that open a card explaining what each will do.
             try { AddPlannedTools(application, tab, panel); }

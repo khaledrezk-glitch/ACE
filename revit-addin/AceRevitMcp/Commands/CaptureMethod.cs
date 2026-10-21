@@ -18,13 +18,15 @@ namespace AceRevitMcp.Commands
     /// material, workset, listed parameters) and notes the journal file and the bytes read to its end; stop snapshots again and returns the
     /// per-element diff and the journal lines written in between. Read-only: no transaction. The running capture is kept on
     /// disk (%APPDATA%\ACE-RevitMCP\captures\active.json) so a Revit restart does not lose it.
+    /// The owner's ribbon "Record my work" (WorkRecorder) is the same capture with Source "ribbon": one running capture at a
+    /// time, shown by status; only the owner stops it (from the ribbon).
     /// </summary>
     internal static class CaptureMethod
     {
-        private static readonly string[] DefaultCategories =
+        internal static readonly string[] DefaultCategories =
             { "OST_StructuralFraming", "OST_StructuralColumns", "OST_Floors", "OST_StructuralFoundation", "OST_Walls" };
 
-        private const int MaxJournalLines = 5000;
+        internal const int MaxJournalLines = 5000;
 
         internal sealed class Record
         {
@@ -33,11 +35,18 @@ namespace AceRevitMcp.Commands
             public List<string> Categories = new List<string>(), Parameters = new List<string>();
             public List<S> Elements = new List<S>();
             public CaptureLogic.Annotation Annotation;
+            // The owner's ribbon recording (Source "ribbon"): notes, per-document logs, transactions and views.
+            public string Source, Note;
+            public List<WorkRecordLogic.DocLog> Documents = new List<WorkRecordLogic.DocLog>();
+            public List<WorkRecordLogic.Step> Steps = new List<WorkRecordLogic.Step>();
+            public List<WorkRecordLogic.ViewUse> Views = new List<WorkRecordLogic.ViewUse>();
+            public bool IsRibbon => Source == WorkRecordLogic.Source;
         }
 
         private static Record _current;
+        private static bool _diskRead;
         private static readonly JsonSerializerOptions Json = new JsonSerializerOptions { IncludeFields = true, WriteIndented = false };
-        private static string Folder => Path.Combine(AceConfig.Directory, "captures");
+        internal static string Folder => Path.Combine(AceConfig.Directory, "captures");
         private static string ActiveFile => Path.Combine(Folder, "active.json");
 
         public static JsonNode Run(UIApplication app, JsonObject args)
@@ -49,13 +58,25 @@ namespace AceRevitMcp.Commands
             switch (action)
             {
                 case "status":
-                    return new JsonObject
+                {
+                    var status = new JsonObject
                     {
                         ["success"] = true, ["aceVersion"] = aceVersion, ["active"] = current != null, ["model"] = current?.Model, ["label"] = current?.Label,
                         ["startedAt"] = current?.StartedAt, ["elements"] = current?.Elements.Count, ["journal"] = current?.Journal,
                     };
+                    if (current?.IsRibbon == true)
+                    {
+                        status["source"] = current.Source; status["recordedBy"] = WorkRecordLogic.RecordedBy; status["note"] = current.Note;
+                        status["elements"] = current.Documents.Sum(d => d.Before.Count);
+                        status["documents"] = new JsonArray(current.Documents.Select(d => (JsonNode)new JsonObject
+                            { ["model"] = d.Title, ["elements"] = d.Before.Count, ["touched"] = d.Touched.Count, ["deleted"] = d.Deleted.Count, ["closed"] = d.Closed }).ToArray());
+                        status["transactions"] = current.Steps.Sum(x => x.Times); status["views"] = current.Views.Count;
+                    }
+                    return status;
+                }
                 case "start":
                 {
+                    if (current?.IsRibbon == true) return Fail($"the user is recording their work from the ribbon (\"{current.Label}\", since {current.StartedAt}): wait until they stop it (ACE tab > Record my work)");
                     if (current != null) return Fail($"a capture is running ({current.Label}, on {current.Model}, since {current.StartedAt}): stop it first");
                     var doc = Args.RequireDoc(app);
                     var label = Args.Str(args, "label");
@@ -76,6 +97,7 @@ namespace AceRevitMcp.Commands
                     Directory.CreateDirectory(Folder);
                     File.WriteAllText(ActiveFile, JsonSerializer.Serialize(rec, Json));
                     _current = rec;
+                    WorkRecorder.Publish();
                     return new JsonObject
                     {
                         ["success"] = true, ["aceVersion"] = aceVersion, ["model"] = rec.Model, ["label"] = rec.Label, ["startedAt"] = rec.StartedAt,
@@ -88,6 +110,7 @@ namespace AceRevitMcp.Commands
                 case "stop":
                 {
                     if (current == null) return Fail("no capture running");
+                    if (current.IsRibbon) return Fail($"\"{current.Label}\" is the user's own recording, started from the ribbon: only they stop it there (ACE tab > Record my work); its case is then listed by capture_method list");
                     var doc = Args.RequireDoc(app);
                     if (!string.Equals(doc.Title, current.Model, StringComparison.Ordinal))
                         return Fail($"the capture was started on {current.Model}, the active model is {doc.Title}: switch to that model, then stop");
@@ -111,6 +134,7 @@ namespace AceRevitMcp.Commands
                     }
                     catch (Exception ex) { Log.Warn($"Capture not archived: {ex.Message}"); }
                     _current = null;
+                    WorkRecorder.Publish();
                     return new JsonObject
                     {
                         ["success"] = true, ["aceVersion"] = aceVersion, ["model"] = current.Model, ["label"] = current.Label,
@@ -126,13 +150,38 @@ namespace AceRevitMcp.Commands
             }
         }
 
-        /// <summary>The running capture: in memory, else from disk (after a Revit restart).</summary>
-        private static Record Current()
+        /// <summary>The running capture: in memory, else from disk (after a Revit restart; read once per session).</summary>
+        internal static Record Current()
         {
-            if (_current != null) return _current;
+            if (_current != null || _diskRead) return _current;
+            _diskRead = true;
             try { if (File.Exists(ActiveFile)) _current = JsonSerializer.Deserialize<Record>(File.ReadAllText(ActiveFile), Json); }
             catch (Exception ex) { Log.Warn($"The running capture could not be read: {ex.Message}"); }
             return _current;
+        }
+
+        /// <summary>Keeps the running capture on disk (and in memory); null clears it.</summary>
+        internal static void Save(Record rec)
+        {
+            Directory.CreateDirectory(Folder);
+            if (rec == null) { try { File.Delete(ActiveFile); } catch (Exception ex) { Log.Warn($"Capture: {ex.Message}"); } }
+            else File.WriteAllText(ActiveFile, JsonSerializer.Serialize(rec, Json));
+            _current = rec;
+            _diskRead = true;
+        }
+
+        /// <summary>Writes a JSON copy of the finished capture beside the others (its raw state); the path, or null.</summary>
+        internal static string Archive(Record rec, object extra)
+        {
+            try
+            {
+                var safe = string.Concat(rec.Label.Select(ch => char.IsLetterOrDigit(ch) ? ch : '_'));
+                var path = Path.Combine(Folder, $"{rec.Id}-{safe}.json");
+                Directory.CreateDirectory(Folder);
+                File.WriteAllText(path, JsonSerializer.Serialize(new { record = rec, extra }, Json));
+                return path;
+            }
+            catch (Exception ex) { Log.Warn($"Capture not archived: {ex.Message}"); return null; }
         }
 
         private static List<Category> Categories(Document doc, JsonObject args)
@@ -199,16 +248,37 @@ namespace AceRevitMcp.Commands
 
         private static List<S> Snapshot(Document doc, List<ElementId> categories, List<string> parameters, out CaptureLogic.Annotation annotation)
         {
+            if (categories.Count == 0) return Snapshot(doc, Enumerable.Empty<Element>(), parameters, false, out annotation);
+            return Snapshot(doc, new FilteredElementCollector(doc).WherePasses(new ElementMulticategoryFilter(categories)).WhereElementIsNotElementType(), parameters, false, out annotation);
+        }
+
+        /// <summary>Lengths (offsets, extensions, levels) the snapshot keeps already: not repeated as parameters.</summary>
+        private static readonly HashSet<BuiltInParameter> KeptAsState = new HashSet<BuiltInParameter>(
+            OffsetParams.Select(p => p.Bip).Concat(ExtensionParams.Select(p => p.Bip)).Concat(new[]
+            {
+                BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM, BuiltInParameter.FAMILY_BASE_LEVEL_PARAM, BuiltInParameter.WALL_BASE_CONSTRAINT,
+                BuiltInParameter.SCHEDULE_LEVEL_PARAM, BuiltInParameter.ELEM_TYPE_PARAM, BuiltInParameter.ELEM_FAMILY_AND_TYPE_PARAM,
+                BuiltInParameter.ELEM_FAMILY_PARAM, BuiltInParameter.STRUCTURAL_MATERIAL_PARAM, BuiltInParameter.ELEM_PARTITION_PARAM,
+            }));
+
+        private const int MaxParamsPerElement = 80;
+
+        /// <summary>
+        /// The state of these elements (nested family instances left out). allParameters: every editable instance parameter
+        /// too (the owner's recording: parameter deltas without a list), besides the listed ones.
+        /// </summary>
+        internal static List<S> Snapshot(Document doc, IEnumerable<Element> elements, List<string> parameters, bool allParameters, out CaptureLogic.Annotation annotation)
+        {
             var list = new List<S>();
             var dims = new Dictionary<long, int>(); var tagged = new Dictionary<long, int>();
             annotation = null;
             try { annotation = Annotations(doc, dims, tagged); }
             catch (Exception ex) { Log.Warn($"Capture annotation counts: {ex.Message}"); dims.Clear(); tagged.Clear(); }   // unavailable: no annotation diffs
-            if (categories.Count == 0) return list;
+            parameters = parameters ?? new List<string>();
             var table = doc.IsWorkshared ? doc.GetWorksetTable() : null;
-            foreach (var e in new FilteredElementCollector(doc).WherePasses(new ElementMulticategoryFilter(categories)).WhereElementIsNotElementType())
+            foreach (var e in elements)
             {
-                if (e is FamilyInstance nested && nested.SuperComponent != null) continue;
+                if (e == null || (e is FamilyInstance nested && nested.SuperComponent != null)) continue;
                 var s = new S { Id = e.Id.Value, UniqueId = e.UniqueId, Category = e.Category?.Name };
                 try
                 {
@@ -269,11 +339,30 @@ namespace AceRevitMcp.Commands
                 {
                     var prm = e.LookupParameter(p) ?? doc.GetElement(e.GetTypeId())?.LookupParameter(p);
                     if (prm == null) continue;
-                    s.Params[p] = prm.StorageType == StorageType.String ? prm.AsString() : prm.AsValueString() ?? (prm.StorageType == StorageType.ElementId ? prm.AsElementId()?.Value.ToString() : null);
+                    s.Params[p] = ValueOf(prm);
                 }
+                if (allParameters)
+                    try
+                    {
+                        foreach (Parameter prm in e.Parameters)
+                        {
+                            if (s.Params.Count >= MaxParamsPerElement) break;
+                            var name = prm?.Definition?.Name;
+                            if (string.IsNullOrEmpty(name) || prm.IsReadOnly || s.Params.ContainsKey(name)) continue;
+                            if (prm.Definition is InternalDefinition def && KeptAsState.Contains(def.BuiltInParameter)) continue;
+                            s.Params[name] = ValueOf(prm);
+                        }
+                    }
+                    catch { /* parameters not readable */ }
                 list.Add(s);
             }
             return list;
+        }
+
+        private static string ValueOf(Parameter prm)
+        {
+            try { return prm.StorageType == StorageType.String ? prm.AsString() : prm.AsValueString() ?? (prm.StorageType == StorageType.ElementId ? prm.AsElementId()?.Value.ToString() : null); }
+            catch { return null; }
         }
 
         private static void Length(Element e, BuiltInParameter bip, string name, Dictionary<string, double> into)
@@ -290,7 +379,7 @@ namespace AceRevitMcp.Commands
         // ---- journal ---------------------------------------------------------------------------------------------
 
         /// <summary>The journal text written since start: the start file from its offset, plus a new journal (Revit restarted) from its beginning.</summary>
-        private static IEnumerable<string> JournalSince(string startFile, long offset, string nowFile)
+        internal static IEnumerable<string> JournalSince(string startFile, long offset, string nowFile)
         {
             var lines = new List<string>();
             lines.AddRange(ReadFrom(startFile, offset));

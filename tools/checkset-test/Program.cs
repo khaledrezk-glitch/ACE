@@ -705,6 +705,74 @@ class P {
     Check(Mw(2 * GB, 7, new string[0])?.Contains("ACE closes nothing else") == true, "more than 6 models, no idle copies: ask the user, close nothing");
     Check(Mw(11 * GB, 2, new[] { "TST_A" }, true)?.Contains("closed ACE's own idle copies first: TST_A") == true, "close_idle_copies: the warning says what was closed");
 
+    // Work record (ribbon "Record my work", capture_method from the owner): ids, steps, views, per-document diffs, caps, case.
+    {
+      var wr = a.GetType("AceRevitMcp.Commands.WorkRecordLogic");
+      MethodInfo WR(string n) => wr.GetMethod(n, BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+      var esT = a.GetType("AceRevitMcp.Commands.CaptureLogic+ElemState");
+      var logT = a.GetType("AceRevitMcp.Commands.WorkRecordLogic+DocLog");
+      var stepT = a.GetType("AceRevitMcp.Commands.WorkRecordLogic+Step"); var viewT = a.GetType("AceRevitMcp.Commands.WorkRecordLogic+ViewUse");
+      var wrResT = a.GetType("AceRevitMcp.Commands.WorkRecordLogic+DocResult"); var inT = a.GetType("AceRevitMcp.Commands.WorkRecordLogic+CaseInput");
+      var ids = new System.Collections.Generic.HashSet<long> { 1 };
+      Check((bool)WR("AddIds").Invoke(null, new object[] { ids, new long[] { 1, 2 }, 3 }) && !(bool)WR("AddIds").Invoke(null, new object[] { ids, new long[] { 3, 4, 5 }, 3 }) && ids.Count == 3,
+        "work record: touched ids are kept up to the cap, and the cap is reported");
+      var steps = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(stepT));
+      foreach (var (m, n) in new[] { ("TST_A", "Join Geometry"), ("TST_A", "Join Geometry"), ("TST_B", "Join Geometry"), ("TST_A", "Move") })
+        WR("AddStep").Invoke(null, new object[] { steps, m, n, "TransactionCommitted", "t", 3 });
+      WR("AddStep").Invoke(null, new object[] { steps, "TST_A", "Extra", "TransactionCommitted", "t", 3 });
+      Check(steps.Count == 3 && (int)stepT.GetField("Times").GetValue(steps[0]) == 2 && (string)stepT.GetField("Model").GetValue(steps[1]) == "TST_B", "work record: the same transaction repeated counts up, per document; the step cap holds");
+      var views = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(viewT));
+      WR("AddView").Invoke(null, new object[] { views, "TST_A", "L1", "FloorPlan", "t", 500 }); WR("AddView").Invoke(null, new object[] { views, "TST_A", "L1", "FloorPlan", "t", 500 });
+      WR("AddView").Invoke(null, new object[] { views, "TST_B", "3D", "ThreeD", "t", 500 });
+      Check(views.Count == 2 && (int)viewT.GetField("Times").GetValue(views[0]) == 2, "work record: views used, the same view again counts up");
+
+      object E(long id, string cat, double x, string mark = null) {
+        var e = Activator.CreateInstance(esT, true);
+        esT.GetField("Id").SetValue(e, id); esT.GetField("Category").SetValue(e, cat); esT.GetField("Type").SetValue(e, "TST type");
+        esT.GetField("Point").SetValue(e, new[] { x, 0.0, 0.0 });
+        if (mark != null) ((System.Collections.Generic.Dictionary<string, string>)esT.GetField("Params").GetValue(e))["Mark"] = mark;
+        return e; }
+      IList L(params object[] xs) { var l = (IList)Activator.CreateInstance(typeof(System.Collections.Generic.List<>).MakeGenericType(esT)); foreach (var x in xs) l.Add(x); return l; }
+      object Log(string title, IList before, long[] added, long[] deleted) {
+        var d = Activator.CreateInstance(logT, true);
+        logT.GetField("Title").SetValue(d, title); logT.GetField("Key").SetValue(d, title); logT.GetField("Before").SetValue(d, before);
+        foreach (var i in added) ((System.Collections.Generic.HashSet<long>)logT.GetField("Added").GetValue(d)).Add(i);
+        foreach (var i in deleted) ((System.Collections.Generic.HashSet<long>)logT.GetField("Deleted").GetValue(d)).Add(i);
+        return d; }
+      var logA = Log("TST_A", L(E(1, "Walls", 0, "W1"), E(2, "Floors", 0), E(3, "Walls", 0)), new long[] { 10 }, new long[] { 3, 99 });
+      object[] dargs(object log, IList after, long[] sketches, int budget) => new object[] { log, after, null, sketches, budget, false };
+      var aArgs = dargs(logA, L(E(1, "Walls", 0, "W2"), E(2, "Floors", 0), E(10, "Walls", 5), E(11, "Doors", 5)), new long[] { 2 }, 100);
+      var dA = (System.Text.Json.Nodes.JsonArray)WR("DocumentDiffs").Invoke(null, aArgs);
+      string W(System.Text.Json.Nodes.JsonArray arr, long id) => string.Join(",", arr.Where(x => (long)x!["id"]! == id).SelectMany(x => x!["changes"]!.AsArray()).Select(c => c!["what"]!.ToString()));
+      Check(W(dA, 1) == "parameter" && W(dA, 2) == "sketch-edited" && W(dA, 3) == "deleted" && W(dA, 10) == "created" && W(dA, 11) == "modified" && W(dA, 99) == "deleted" && !(bool)aArgs[5],
+        $"work record: parameter delta, sketch edit flagged, created only when added during the recording, outside the snapshot = modified with no state before, deleted ids listed ({string.Join(" ", dA.Select(x => x!["id"] + ":" + W(dA, (long)x!["id"]!)))})");
+      Check(dA.All(x => x!["model"]!.ToString() == "TST_A") && dA.First(x => (long)x!["id"]! == 11)!["changes"]![0]!["note"]!.ToString().Contains("state before is unknown"), "work record: every diff names its document; the unknown state is said");
+      var cutArgs = dargs(logA, L(E(1, "Walls", 0, "W2"), E(2, "Floors", 0), E(10, "Walls", 5), E(11, "Doors", 5)), new long[0], 2);
+      var dCut = (System.Text.Json.Nodes.JsonArray)WR("DocumentDiffs").Invoke(null, cutArgs);
+      Check(dCut.Count == 2 && (bool)cutArgs[5], "work record: the diff cap cuts by id and reports it");
+
+      var logB = Log("TST_B", L(E(1, "Walls", 0)), new long[0], new long[0]);
+      logT.GetField("SnapshotCapped").SetValue(logB, true);
+      var dB = (System.Text.Json.Nodes.JsonArray)WR("DocumentDiffs").Invoke(null, dargs(logB, L(E(1, "Walls", 900)), new long[0], 100));
+      object WrRes(object log, System.Text.Json.Nodes.JsonArray diffs) { var r = Activator.CreateInstance(wrResT, true); wrResT.GetField("Log").SetValue(r, log); wrResT.GetField("Diffs").SetValue(r, diffs); return r; }
+      var input = Activator.CreateInstance(inT, true);
+      inT.GetField("Label").SetValue(input, "TST slab edges"); inT.GetField("StartNote").SetValue(input, "TST task"); inT.GetField("ClosingNote").SetValue(input, "TST rule: floors cut walls");
+      inT.GetField("StartedAt").SetValue(input, "2026-10-21T10:00:00"); inT.GetField("StoppedAt").SetValue(input, "2026-10-21T10:30:00"); inT.GetField("Steps").SetValue(input, steps);
+      var docsL = (IList)inT.GetField("Documents").GetValue(input); docsL.Add(WrRes(logA, dA)); docsL.Add(WrRes(logB, dB));
+      var cas = (System.Text.Json.Nodes.JsonObject)WR("BuildCase").Invoke(null, new[] { input });
+      Check(cas["recordedBy"]!.ToString() == "owner (ribbon)" && cas["model"]!.ToString() == "TST_A" && cas["diffs"]!.AsArray().Count == dA.Count + 1 && cas["documents"]!.AsArray().Count == 2
+        && cas["notes"]!["closing"]!.ToString() == "TST rule: floors cut walls" && (int)cas["elements"]! == 4 && cas["analysed"]!.GetValue<bool>() == false,
+        "work record case: capture_method fields, owner notes, both documents' diffs, recordedBy owner (ribbon), not analysed yet");
+      Check(cas["caps"]!.AsArray().Count == 1 && cas["caps"]![0]!.ToString().Contains("5000 elements per document (TST_B)") && cas["documents"]![1]!["changedElements"]!.GetValue<int>() == 1,
+        "work record case: a capped snapshot is noted with its document");
+      var md = (string)WR("CaseMarkdown").Invoke(null, new object[] { cas });
+      Check(md.StartsWith("# Method case: TST slab edges") && md.Contains("- Rule followed (closing note): TST rule: floors cut walls") && md.Contains("- TST_A / Walls: ") && md.Contains("- TST_B / Walls: 1 element(s): moved 1") && md.Contains("## Limits"),
+        "work record markdown: notes, changes by document and category, limits");
+      var stem = (string)WR("CaseStem").Invoke(null, new object[] { new DateTime(2026, 10, 21), "TST Slab: edges?" });
+      var cdir = Path.Combine(tmp, "cases"); Directory.CreateDirectory(cdir); File.WriteAllText(Path.Combine(cdir, stem + ".json"), "{}");
+      Check(stem == "2026-10-21-tst-slab_-edges_" && (string)WR("FreeStem").Invoke(null, new object[] { cdir, stem }) == stem + "-2", $"work record: case stem as the server's caseStem, never overwrites ({stem})");
+    }
+
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("check set test passed");

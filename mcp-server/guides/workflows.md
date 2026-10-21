@@ -135,6 +135,21 @@ annotation changes are grouped too ("Floors: area changed on 3 (sketch edits lik
 differences for the user. The case ends with proposed rules (e.g. a join order): they need the owner's confirmation and
 are never written into the vault rules by ACE on its own.
 
+## Learning from a recorded case (the user's "Record my work")
+
+The user can record a task themselves: ACE tab > Record my work (a label and an optional note at start, "what was the
+rule you followed?" at stop). It is capture_method with the user in control: it records every model they work on
+(element, parameter, geometry, join and sketch changes, the views used, Revit's transaction names, the journal) and
+writes the case into the project's vault cases/ (else the ACE folder's cases/), marked recordedBy "owner (ribbon)". While
+it runs, capture_method status shows it and capture_method start / stop are refused: only the user stops it. Afterwards:
+capture_method list shows recent cases ("not analysed yet" for a new ribbon case); capture_method list with case: <file>
+completes it (actions per model, journal commands, the clash_resolve plan comparison) and writes the analysis back. Then
+follow the capture-best-practice flow: turn the case into proposed rules (what was done, when, the exceptions, with the
+user's closing note as the stated rule and the counts as evidence), show them to the owner and ask for confirmation of
+each; only confirmed rules go into the vault rules or an office method (revit_guide methods). Never treat a case as a
+rule by itself, and say where the record is incomplete (its caps: e.g. elements outside the start snapshot show as
+"modified" with no state before).
+
 ## Model health and status
 
 for "how healthy is this model", "audit", "dashboard" or "status report", call model_dashboard (read-only; show: true opens it in Revit). It returns the 0-100 score, each finding with its score impact and sample ids, and the path of an ACE-branded HTML report the user can share. Explain the top findings in plain words and offer fixes (each fix follows the preview protocol). The user can also open it themselves: ACE tab > Insights > Dashboard. The checks follow the sections of Autodesk's Model Checker (file and project, worksets, levels and grids, warnings, model content, views, annotation, naming) plus ACE's rooms, parameters and submission checks; each has a pass rule from the office check set (checkset.json, see checkset.example.json), merged with the project's project-requirements.json when the model has one (project wins; project_rules shows what is in force), and results are pass / review / action needed. The dashboard also shows the latest clash results (coordination). Code compliance is not built yet (planned); say so.

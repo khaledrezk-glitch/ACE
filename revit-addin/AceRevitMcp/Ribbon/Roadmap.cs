@@ -197,6 +197,8 @@ namespace AceRevitMcp.Ribbon
         public const string Shield = "M12,2 L20,5 V11 C20,16 16.5,20 12,22 C7.5,20 4,16 4,11 V5 Z M9,12 L11,14 L15,10";
         public const string Dashboard = "M3,3 H10 V12 H3 Z M14,3 H21 V8 H14 Z M14,12 H21 V21 H14 Z M3,16 H10 V21 H3 Z";
         public const string History = "M3,12 A9,9 0 1 0 6,5.3 M3,4 V9 H8 M12,7 V12 L15.5,14";
+        public const string Record = "M3,12 A9,9 0 1 0 21,12 A9,9 0 1 0 3,12 M9,12 A3,3 0 1 0 15,12 A3,3 0 1 0 9,12";
+        public const string StopRecord = "M3,12 A9,9 0 1 0 21,12 A9,9 0 1 0 3,12 M9,9 H15 V15 H9 Z";
         public const string Map = "M3,6 L9,3 L15,6 L21,3 V18 L15,21 L9,18 L3,21 Z M9,3 V18 M15,6 V21";
     }
 }

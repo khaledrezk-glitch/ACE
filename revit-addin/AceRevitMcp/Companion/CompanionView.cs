@@ -166,6 +166,7 @@ namespace AceRevitMcp.Companion
             var last = ActivityHub.Activity.FirstOrDefault();
             _light.Fill = running ? new SolidColorBrush(Coordination.ClashColours.Green) : _c.Rule;
             _status.Text = running ? (last != null ? $"Connected · last activity {Ago(last.Time)}" : "Connected · waiting for Claude") : "Not connected (ACE tab > MCP Status)";
+            if (ActivityHub.Recording != null) _status.Text = $"● {ActivityHub.Recording}\n{_status.Text}";
             _model.Text = ActivityHub.Context.Document ?? "No model open";
             _modeUpdating = true;
             _mode.SelectedIndex = Array.FindIndex(Ribbon.WorkModes.All, m => m.Key == Ribbon.WorkModes.Current.Key);

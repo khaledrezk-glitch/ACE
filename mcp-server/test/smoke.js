@@ -16,6 +16,7 @@ const regDir = path.join(tmp, "exec");
 const regFiles = () => { try { return fs.readdirSync(regDir).filter((f) => f.startsWith("missing-register-")); } catch { return []; } };
 const token = "test-token";
 const seen = [];
+let fakeRibbon = false;   // capture_method status: the user's own ribbon recording is running
 let fakeOpened = null;   // workset_plan paths: the model open_model opened last (facts answer for it)
 const notUndoableRuns = [];   // execute_code runs of not-undoable code the fake bridge executed
 // The ACE loader's view in /health (reload_addin): a swap is reported there once the new build listens.
@@ -339,6 +340,9 @@ const bridge = http.createServer((req, res) => {
       case "capture_method": {
         if (args.action === "start" && args.label === "TST busy") return reply({ ok: true, result: { success: false, error: "A capture is already running: TST joins." } });
         if (args.action === "start") return reply({ ok: true, result: { model: "Test", label: args.label, startedAt: "2026-10-20 10:00", journal: "C:/journals/journal.0001.txt", elements: 50, echo: args } });
+        if (args.action === "status" && fakeRibbon) return reply({ ok: true, result: { success: true, active: true, source: "ribbon", recordedBy: "owner (ribbon)", model: "TST_A", label: "TST slab edges", startedAt: "2026-10-21T10:00:00", note: "TST edges at cores", elements: 120,
+          documents: [{ model: "TST_A", elements: 100, touched: 7 }, { model: "TST_B", elements: 20, touched: 2 }], transactions: 9, views: 3 } });
+        if (args.action === "stop" && fakeRibbon) return reply({ ok: true, result: { success: false, error: "\"TST slab edges\" is the user's own recording, started from the ribbon: only they stop it there" } });
         if (args.action === "status") return reply({ ok: true, result: { active: true, model: "Test", label: "TST joins", startedAt: "2026-10-20 10:00", elements: 50 } });
         const j = (id, cat, other, oc, cutter, what = "join-added") => ({ id, category: cat, type: "TST type", changes: [{ what, other, otherCategory: oc, cutter }] });
         return reply({ ok: true, result: { model: "Test", label: "TST joins", startedAt: "2026-10-20 10:00", stoppedAt: "2026-10-20 10:30", elements: 50, journal: "C:/journals/journal.0001.txt",
@@ -1465,6 +1469,45 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(md, /- Annotation: dimensions 120 -> 119\./, "the case says the annotation lost");
   assert.match(md, /## Proposed rules \(need owner confirmation\)\n\nNothing below is applied\.[\s\S]*- Floors before Structural Columns in the join order \(Floors x Structural Columns: Floors cut Structural Columns in 2 of 3 pair\(s\); 1 exception\(s\)\)\n- Walls before Floors in the join order \(Floors x Walls: Walls cut Floors in 1 of 1 pair\(s\)\)\n\nWould update office method structural-interference-solving \(v1\) once confirmed \(revit_guide methods\/structural-interference-solving\)\.\n$/, "ends with proposed rules, never applied");
   assert.equal(JSON.parse(fs.readFileSync(files[0], "utf8")).comparison.counts.agree, 1);
+
+  // The user's own work record (ribbon): status shows it, stop refuses it, list finds its case, list with case analyses it.
+  fakeRibbon = true;
+  assert.match((await call("capture_method", { action: "status" })).content.at(-1).text, /The user is recording their work from the ribbon: "TST slab edges" since 2026-10-21T10:00:00 \(task: TST edges at cores\), in TST_A \(7 touched\), TST_B \(2 touched\); 9 transaction\(s\), 3 view\(s\)\. Only the user stops it/);
+  const rs = await call("capture_method", { action: "stop", out_dir: cDir });
+  assert.ok(rs.isError && /only they stop it there/.test(rs.content[0].text), "Claude cannot stop the user's recording");
+  fakeRibbon = false;
+  const ownDir = path.join(tmp, "cases");   // beside config.json: where the add-in writes a case without a vault
+  const j = (id, model, cat, other, oc, cutter) => ({ id, model, category: cat, type: "TST type", changes: [{ what: "join-added", other, otherCategory: oc, cutter }] });
+  const owner = { label: "TST slab edges", model: "TST_A", startedAt: "2026-10-21T10:00:00", stoppedAt: "2026-10-21T10:40:00", elements: 120, categories: ["Floors"],
+    notes: { start: "TST edges at cores", closing: "TST rule: the slab always cuts the core wall" },
+    diffs: [j(5, "TST_A", "Floors", 6, "Walls", 5), j(6, "TST_A", "Walls", 5, "Floors", 5), j(5, "TST_B", "Floors", 7, "Walls", 7), { id: 8, model: "TST_B", category: "Floors", type: "TST type", changes: [{ what: "sketch-edited" }] }],
+    documents: [{ model: "TST_A", elements: 100, changedElements: 2 }, { model: "TST_B", elements: 20, changedElements: 2, sketchEdited: [8] }],
+    transactions: [{ model: "TST_A", name: "Join Geometry", op: "TransactionCommitted", times: 2 }, { model: "TST_B", name: "Edit Sketch", op: "TransactionCommitted", times: 1 }],
+    views: [{ model: "TST_A", view: "TST L1", viewType: "FloorPlan", at: "2026-10-21T10:01:00" }], journalLines: ['Jrn.Command "Ribbon" , "Join Geometry , ID_JOIN_ELEMENTS_EDITOR"'],
+    caps: [], recordedBy: "owner (ribbon)", source: "ribbon", analysed: false };
+  fs.mkdirSync(ownDir, { recursive: true });
+  const ownFile = path.join(ownDir, "2026-10-21-tst-slab-edges.json");
+  fs.writeFileSync(ownFile, JSON.stringify(owner));
+  const ls = (await call("capture_method", { action: "list" })).content.at(-1).text;
+  assert.match(ls, /- 2026-10-21T10:40:00 "TST slab edges" \(TST_A, TST_B; 4 changed element\(s\); owner \(ribbon\); not analysed yet\): rule given: TST rule: the slab always cuts the core wall\n  .*2026-10-21-tst-slab-edges\.json/);
+  assert.match(ls, /"TST joins" \(Test; 7 changed element\(s\); ACE capture_method\)/, "Claude's own cases are listed too");
+  assert.match(ls, /capture_method list with case: <file> analyses it/);
+  assert.ok((await call("capture_method", { action: "list", case: "no-such-case" })).isError);
+  const an = (await call("capture_method", { action: "list", case: "2026-10-21-tst-slab-edges.json" })).content.at(-1).text;
+  assert.match(an, /Case "TST slab edges" \(.*\), recorded by the user from the ribbon: 4 changed element\(s\)\./);
+  assert.match(an, /Rule the user says they followed: TST rule: the slab always cuts the core wall/);
+  assert.match(an, /- TST_A: Floors x Walls: join added: 1; Floors cut Walls in 1 of 1/, "actions per document: ids of two models never mixed");
+  assert.match(an, /- TST_B: Floors x Walls: join added: 1; Walls cut Floors in 1 of 1/);
+  assert.match(an, /Revit transactions: Join Geometry x2 > Edit Sketch\./);
+  assert.match(an, /Revit commands \(journal\): Join Geometry 1\./);
+  assert.match(an, /Next: turn this case into proposed rules .* ask the owner to confirm each one/);
+  const done = JSON.parse(fs.readFileSync(ownFile, "utf8"));
+  assert.ok(done.analysed === true && done.actions.length === 3 && done.notes.closing.startsWith("TST rule") && done.recordedBy === "owner (ribbon)", "the case is completed in place, notes kept");
+  const omd = fs.readFileSync(ownFile.replace(/\.json$/, ".md"), "utf8");
+  assert.match(omd, /Recorded by the owner from the ACE ribbon \(Record my work\)[\s\S]*## Owner's notes\n\n- Task: TST edges at cores\n- Rule followed \(closing note\): TST rule: the slab always cuts the core wall/);
+  assert.match(omd, /## Revit transactions \(in order\)\n\n- Join Geometry x2 > Edit Sketch/);
+  assert.match(omd, /- Floors before Walls in the join order \(TST_A, Floors x Walls: Floors cut Walls in 1 of 1 pair\(s\)\)\n- Walls before Floors in the join order \(TST_B, /, "proposed rules name the model");
+  assert.doesNotMatch((await call("capture_method", { action: "list" })).content.at(-1).text, /not analysed yet/);
 }
 // --- view_membership_fill: check, dry run, identical apply; the definition only from the vault's shared parameter files ---
 {

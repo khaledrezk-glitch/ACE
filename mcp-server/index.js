@@ -1856,11 +1856,74 @@ async function latestClashPlan(a, model) {
   return null;
 }
 
+// capture_method list: the cases Claude can pick up (the user's own ribbon recordings land in the vault's cases/, else in
+// the ACE folder's cases/ beside config.json, which is where the add-in keeps its files).
+const OWNER_CASES = path.join(path.dirname(CONFIG_PATH), "cases");
+async function caseDirs(a) {
+  const dirs = [];
+  if (a.out_dir) dirs.push(a.out_dir);
+  try { const v = await projectVaultDir(a); if (v) dirs.push(path.join(v, "cases")); } catch { /* no vault */ }
+  dirs.push(OWNER_CASES, path.join(REPORTS_DIR, "cases"));
+  return [...new Set(dirs.map((d) => path.resolve(d)))];
+}
+async function listCases(a) {
+  const dirs = await caseDirs(a);
+  const found = [];
+  for (const d of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(d).filter((f) => f.endsWith(".json")); } catch { continue; }
+    for (const n of names) {
+      const f = path.join(d, n);
+      try { const c = JSON.parse(fs.readFileSync(f, "utf8").replace(/^\uFEFF/, "")); if (Array.isArray(c?.diffs) && c.label) found.push({ f, c, m: fs.statSync(f).mtimeMs }); } catch { /* not a case */ }
+    }
+  }
+  found.sort((x, y) => y.m - x.m);
+  if (!a.case) {
+    const rows = found.slice(0, a.limit ?? 10).map((x) => Capture.caseRow(x.f, x.c, x.m));
+    const out = text({ folders: dirs, cases: rows, more: Math.max(0, found.length - rows.length) });
+    out.content.push({ type: "text", text: rows.length ? [`Recent cases (newest first; looked in ${dirs.join(", ")}):`, ...rows.map(Capture.rowLine),
+      rows.some((r) => !r.analysed) ? "A case \"not analysed yet\" was recorded by the user from the ribbon: capture_method list with case: <file> analyses it." : ""].filter(Boolean).join("\n")
+      : `No cases found (looked in ${dirs.join(", ")}).` });
+    return out;
+  }
+  const want = String(a.case);
+  const hit = found.find((x) => path.resolve(x.f) === path.resolve(want)) ?? found.find((x) => path.basename(x.f) === want || path.basename(x.f, ".json") === want);
+  if (!hit) throw new RevitError(`No case "${want}" in ${dirs.join(", ")}: call capture_method list and use a listed file.`);
+  let c = hit.c, wrote = null, note = null;
+  if (Capture.isOwnerCase(c) && !c.analysed) {
+    c = Capture.analyseOwnerCase(c, Methods.forTool("clash_resolve", METHOD_LIST).map((m) => ({ name: m.name, version: m.version ?? 1 })));
+    const stored = c.model ? await latestClashPlan(a, c.model).catch(() => null) : null;
+    c.comparison = stored ? { file: stored.file, ...Capture.compareWithPlan(stored.plan, c.diffs.filter((d) => (d.model ?? c.model) === c.model)) } : null;
+    c.analysedAt = localDate(new Date(), { time: true });
+    try {
+      fs.writeFileSync(hit.f, JSON.stringify(c, null, 1));
+      const md = hit.f.replace(/\.json$/, ".md");
+      fs.writeFileSync(md, Capture.caseMarkdown(c));
+      wrote = [hit.f, md];
+    } catch (e) { note = `The analysis could not be written back (${e.message}); it is in this reply only.`; }
+    journal({ title: `Analysed recorded case: ${c.label}`, outcome: `${c.diffs.length} changed element(s), ${c.actions.length} action group(s)`, details: { model: c.model, files: wrote } });
+  }
+  const out = text({ file: hit.f, label: c.label, models: Capture.caseRow(hit.f, c, hit.m).models, recordedBy: c.recordedBy, notes: c.notes, changedElements: (c.diffs ?? []).length,
+    actions: (c.actions ?? []).map((g) => ({ label: g.label, count: g.count, rule: g.rule?.text, exceptions: g.exceptions })), commands: c.journal?.totals,
+    transactions: (c.transactions ?? []).slice(0, 60).map((t) => `${t.model}: ${t.name}${t.times > 1 ? ` x${t.times}` : ""}`), views: (c.views ?? []).length, caps: c.caps, written: wrote });
+  out.content.push({ type: "text", text: [`Case "${c.label}" (${hit.f})${Capture.isOwnerCase(c) ? ", recorded by the user from the ribbon" : ""}: ${(c.diffs ?? []).length} changed element(s).`,
+    c.notes?.start ? `Task (user's note): ${c.notes.start}` : "", c.notes?.closing ? `Rule the user says they followed: ${c.notes.closing}` : "",
+    (c.actions ?? []).length ? `Actions:\n${c.actions.slice(0, 12).map((g) => `- ${Capture.actionLine(g)}`).join("\n")}${c.actions.length > 12 ? `\n- ... ${c.actions.length - 12} more (case file)` : ""}` : "No element changed.",
+    (c.transactions ?? []).length ? `Revit transactions: ${c.transactions.slice(0, 30).map((t) => `${t.name}${t.times > 1 ? ` x${t.times}` : ""}`).join(" > ")}${c.transactions.length > 30 ? " > ..." : ""}.` : "",
+    c.journal?.sequence?.length ? `Revit commands (journal): ${Object.entries(c.journal.totals).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ")}.` : "",
+    ...(c.caps ?? []).map((x) => `Limit: ${x}.`),
+    wrote ? `Analysis written into the case: ${wrote.join("\n")}` : "", note ?? "",
+    "Next: turn this case into proposed rules (what to do, when, exceptions) and ask the owner to confirm each one; only confirmed rules go into the vault rules or an office method (revit_guide workflows, \"Learning from a recorded case\")."].filter(Boolean).join("\n") });
+  return out;
+}
+
 tool("capture_method", {
   title: "Record how a person solves something",
-  description: "start (label, categories): snapshot the per-element state (location, extensions, joins and which cuts, type, material, workset) and note the journal; the person then works in Revit; stop: the diff grouped into actions by pair type with counts and exceptions, the Revit commands from the journal, a comparison with the latest clash_resolve plan, saved as a case (vault cases/<date>-<label>.json and .md, else out_dir). status: is a capture running. The model is not changed; a case never becomes rules by itself.",
+  description: "start (label, categories): snapshot the per-element state (location, extensions, joins and which cuts, type, material, workset) and note the journal; the person then works in Revit; stop: the diff grouped into actions by pair type with counts and exceptions, the Revit commands from the journal, a comparison with the latest clash_resolve plan, saved as a case (vault cases/<date>-<label>.json and .md, else out_dir). status: is a capture running (also the user's own recording from the ribbon, \"Record my work\", which only the user stops). list: recent cases (vault cases/, the ACE folder's cases/, out_dir), newest first; list with case (a listed file): read it, and complete an unanalysed ribbon case (actions, commands, plan comparison) so it can become proposed rules for the owner. The model is not changed; a case never becomes rules by itself.",
   inputSchema: {
-    action: z.enum(["start", "stop", "status"]),
+    action: z.enum(["start", "stop", "status", "list"]),
+    case: z.string().max(400).optional().describe("list: a case file from the list (path or file name) to read and, for a ribbon case, analyse"),
+    limit: z.number().int().min(1).max(50).optional().describe("list: how many cases (default 10)"),
     label: z.string().max(80).optional().describe("start: a short name for the case"),
     categories: z.array(z.string().max(80)).max(30).optional().describe("start: categories to capture (default: structural)"),
     parameters: z.array(z.string().max(120)).max(30).optional().describe("start: extra parameters to record"),
@@ -1870,11 +1933,13 @@ tool("capture_method", {
   annotations: benign,
 }, async ({ action, ...a }) => {
   if (action === "start" && !a.label?.trim()) throw new RevitError("Give label: a short name for the case (e.g. \"slab-column joins L1\").");
+  if (action === "list") return listCases(a);
   if (action !== "stop") {
     const r = await callRevit("capture_method", { action, ...(action === "start" ? { label: a.label, categories: a.categories, parameters: a.parameters } : {}) }, 600);
     if (r?.success === false) throw new RevitError(r.error ?? `capture_method ${action} was refused.`);   // e.g. start while a capture runs
     const out = text(r);
     out.content.push({ type: "text", text: action === "start" ? `Capture "${r?.label ?? a.label}" started in ${r?.model ?? "the model"}: ${r?.elements ?? "?"} element(s) recorded. Let the user work in Revit as usual, then call capture_method stop.`
+      : r?.active && r.source === "ribbon" ? Capture.ribbonStatusLine(r)
       : r?.active ? `Capture "${r.label}" running in ${r.model} since ${r.startedAt} (${r.elements ?? "?"} element(s)).` : "No capture is running." });
     return out;
   }

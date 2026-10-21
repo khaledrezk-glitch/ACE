@@ -45,7 +45,7 @@ export function diffsOf(r) {
 // ---- actions by pair type -------------------------------------------------------------------------------------------
 
 const JOIN = { "join-added": "join added", "join-removed": "join removed", "join-order": "join order switched" };
-const SINGLE = { area: "area changed", volume: "volume changed", annotation: "annotation changed", moved: "moved", extension: "end extension changed", offset: "offset changed", type: "type changed", material: "material changed", workset: "workset changed", level: "level changed", parameter: "parameter changed", created: "created", deleted: "deleted", "cope-added": "cope added", "cope-removed": "cope removed" };
+const SINGLE = { area: "area changed", volume: "volume changed", annotation: "annotation changed", moved: "moved", extension: "end extension changed", offset: "offset changed", type: "type changed", material: "material changed", workset: "workset changed", level: "level changed", parameter: "parameter changed", created: "created", deleted: "deleted", "sketch-edited": "sketch edited", modified: "modified (state before not recorded)", "cope-added": "cope added", "cope-removed": "cope removed" };
 
 /**
  * Groups the changes into actions: joins per unordered element pair (counted once), by category pair; the rest per
@@ -212,13 +212,13 @@ export const caseStem = (date, label) => `${date}-${safeName(label).replace(/\s+
 /** The case as markdown: actions, journal commands, the plan comparison, then proposed rules for the owner to confirm. */
 export function caseMarkdown(c) {
   const out = [`# Method case: ${c.label}`, "", `Model ${c.model}; captured ${c.startedAt} to ${c.stoppedAt}${c.elements != null ? `; ${c.elements} element(s) in scope` : ""}${c.categories?.length ? ` (${c.categories.join(", ")})` : ""}.`,
-    `Changed elements: ${c.diffs.length}. Recorded by ACE capture_method; this is a record of what a person did, not a rule.`, "", "## Actions by pair type", ""];
+    `Changed elements: ${c.diffs.length}. Recorded by ${c.recordedBy === OWNER ? "the owner from the ACE ribbon (Record my work)" : "ACE capture_method"}; this is a record of what a person did, not a rule.`, "", ...ownerSections(c), "## Actions by pair type", ""];
   out.push(...(c.actions.length ? c.actions.map((g) => `- ${actionLine(g)}`) : ["- No element changed."]), ...(annotationLine(c.annotation) ? [`- ${annotationLine(c.annotation)}`] : []), "");
   out.push("## Revit commands (journal)", "");
   if (c.journal.sequence.length) out.push(`- In order: ${c.journal.sequence.map((s) => `${s.command}${s.times > 1 ? ` x${s.times}` : ""}`).join(" > ")}`, `- Totals: ${Object.entries(c.journal.totals).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${n}`).join(", ")}`);
   else out.push("- No commands found in the journal lines.");
   if (c.journalNote) out.push(`- ${c.journalNote}`);
-  out.push("");
+  out.push("", ...recordSections(c));
   if (c.comparison) {
     out.push(`## Compared with the clash_resolve plan (${c.comparison.file})`, "", `${Object.entries(c.comparison.counts).map(([k, n]) => `${k} ${n}`).join(", ") || "nothing to compare"}.`, "",
       ...(Object.keys(c.comparison.byCategoryPair ?? {}).length ? [`Join direction per category pair: ${pairAgreement(c.comparison.byCategoryPair)}.`, ""] : []),
@@ -227,9 +227,58 @@ export function caseMarkdown(c) {
   }
   out.push("## Proposed rules (need owner confirmation)", "",
     "Nothing below is applied. A person confirms each line; only then does it go into the vault (e.g. rules/clash-resolve.json order).", "");
-  const rules = c.actions.filter((g) => g.rule).map((g) => `- ${g.rule.text.replace(" cut ", " before ")} in the join order (${g.label.split(":")[0]}: ${g.rule.text} in ${g.rule.count} of ${g.rule.of} pair(s)${g.exceptions.length ? `; ${g.exceptions.length} exception(s)` : ""})`);
+  const rules = c.actions.filter((g) => g.rule).map((g) => `- ${g.rule.text.replace(" cut ", " before ")} in the join order (${g.model ? `${g.model}, ` : ""}${(g.model ? g.label.slice(g.model.length + 2) : g.label).split(":")[0]}: ${g.rule.text} in ${g.rule.count} of ${g.rule.of} pair(s)${g.exceptions.length ? `; ${g.exceptions.length} exception(s)` : ""})`);
   out.push(...(rules.length ? rules : ["- None proposed: no consistent join direction between two categories."]), "");
   // The join-order rules concern clash_resolve: say which office method(s) a confirmed rule would update.
   if (rules.length && c.methods?.length) out.push(...c.methods.map((m) => `Would update office method ${m.name} (v${m.version}) once confirmed (revit_guide methods/${m.name}).`), "");
   return out.join("\n");
 }
+
+// ---- the owner's work record (ribbon "Record my work": the add-in writes the case, Claude completes it) ------------------
+
+export const OWNER = "owner (ribbon)";
+export const isOwnerCase = (c) => c?.recordedBy === OWNER || c?.source === "ribbon";
+
+/** Notes and documents of an owner case (nothing for a capture_method case). */
+function ownerSections(c) {
+  if (!isOwnerCase(c)) return [];
+  const out = ["## Owner's notes", "", `- Task: ${c.notes?.start ?? "(none)"}`, `- Rule followed (closing note): ${c.notes?.closing ?? "(none)"}`, ""];
+  if ((c.documents ?? []).length) out.push("## Documents", "", ...c.documents.map((d) => `- ${d.model}: ${d.changedElements ?? 0} changed of ${d.elements ?? 0} in the start snapshot${d.sketchEdited?.length ? `; sketch edited: ${d.sketchEdited.join(", ")}` : ""}${d.note ? ` (${d.note})` : ""}`), "");
+  if ((c.caps ?? []).length) out.push(...c.caps.map((x) => `- Limit: ${x}`), "");
+  return out;
+}
+/** Transactions (Revit's own names, from DocumentChanged) and views used, when recorded. */
+function recordSections(c) {
+  const out = [];
+  if ((c.transactions ?? []).length) out.push("## Revit transactions (in order)", "", `- ${c.transactions.slice(0, 200).map((t) => `${t.name}${t.times > 1 ? ` x${t.times}` : ""}${t.op && t.op !== "TransactionCommitted" ? ` (${t.op})` : ""}`).join(" > ")}${c.transactions.length > 200 ? " > ..." : ""}`, "");
+  if ((c.views ?? []).length) out.push("## Views used", "", ...c.views.slice(0, 60).map((v) => `- ${v.at ?? ""} ${v.model}: ${v.view} (${v.viewType})`), ...(c.views.length > 60 ? [`- ... ${c.views.length - 60} more (JSON record)`] : []), "");
+  return out;
+}
+
+/** One line of capture_method list: { file, label, model, models, date, recordedBy, changed, analysed, notes }. */
+export function caseRow(file, c, mtimeMs) {
+  const models = [...new Set((c.documents ?? []).map((d) => d.model).filter(Boolean))];
+  return { file, label: c.label, model: c.model, models: models.length ? models : [c.model].filter(Boolean), startedAt: c.startedAt, stoppedAt: c.stoppedAt,
+    recordedBy: c.recordedBy ?? "ACE capture_method", changed: (c.diffs ?? []).length, analysed: isOwnerCase(c) ? c.analysed === true : true,
+    notes: c.notes ?? null, at: new Date(mtimeMs).toISOString() };
+}
+
+export const rowLine = (r) => `- ${r.stoppedAt ?? r.at} "${r.label}" (${r.models.join(", ") || "?"}; ${r.changed} changed element(s); ${r.recordedBy}${r.analysed ? "" : "; not analysed yet"})${r.notes?.closing ? `: rule given: ${r.notes.closing}` : ""}\n  ${r.file}`;
+
+/**
+ * An owner case completed as capture_method stop does it: actions per document (ids are per model, so never mixed),
+ * the journal commands from its journal lines; the caller adds the plan comparison. Returns the completed case.
+ */
+export function analyseOwnerCase(c, methods = []) {
+  const diffs = c.diffs ?? [];
+  const models = [...new Set(diffs.map((d) => d.model ?? c.model))];
+  const actions = models.length > 1
+    ? models.flatMap((m) => actionsOf(diffs.filter((d) => (d.model ?? c.model) === m)).map((g) => ({ ...g, model: m, label: `${m}: ${g.label}` })))
+    : actionsOf(diffs);
+  const lines = c.journalLines ?? [];
+  const journal = journalCommands(lines);
+  return { ...c, methods, actions, journal, journalNote: c.journalTruncated ? "The journal lines were cut (more than 5000); the command list is incomplete." : !lines.length ? "No journal lines came back (journal not found?)." : null, analysed: true };
+}
+
+/** capture_method status of the user's ribbon recording. */
+export const ribbonStatusLine = (r) => `The user is recording their work from the ribbon: "${r.label}" since ${r.startedAt}${r.note ? ` (task: ${r.note})` : ""}, in ${(r.documents ?? []).map((d) => `${d.model} (${d.touched ?? 0} touched)`).join(", ") || r.model}; ${r.transactions ?? 0} transaction(s), ${r.views ?? 0} view(s). Only the user stops it (ACE tab > Recording); then capture_method list shows the case.`;

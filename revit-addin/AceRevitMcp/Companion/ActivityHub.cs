@@ -76,6 +76,15 @@ namespace AceRevitMcp.Companion
         public static List<ElementRef> Results { get; private set; } = new List<ElementRef>();
         public static string ResultsTitle { get; private set; } = "";
         public static RevitContext Context { get; private set; } = new RevitContext();
+        /// <summary>The running work record or capture, as one line (null: none).</summary>
+        public static string Recording { get; private set; }
+
+        public static void SetRecording(string text)
+        {
+            if (Recording == text) return;
+            Recording = text;
+            Raise();
+        }
 
         public static IEnumerable<PendingChange> Waiting =>
             Pending.Where(p => p.State == PendingState.Waiting && DateTime.Now - p.PreviewedAt < PendingLifetime);
