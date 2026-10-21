@@ -784,8 +784,21 @@ async function worksetRules(rulesFile) {
   }
   const r = await callRevit("project_rules", { section: "worksets" }, 30);
   if (!r?.rules?.rules?.length) throw new RevitError("No workset rules found for this model. Put them in the project's project-requirements.json (section \"worksets\") or the office worksets.json (see bep/worksets.example.json), or pass rules.");
-  return { file: r.source, ...r.rules };
+  return { file: r.source, ...r.rules, at: r };
 }
+/**
+ * G9: the rules for the open model. A rule whose "models" key does not name it (title, central or file name; patterns
+ * with *, "!" excludes) is left out before the request, so the preview and the apply use the same list. Revit is asked
+ * for the model's names only when a rule has a models key. -> { rules, skipped, line }
+ */
+async function rulesForOpenModel(rules, at) {
+  if (!Array.isArray(rules) || !rules.some((r) => r?.models != null)) return { rules, skipped: [], line: "" };
+  if (!at) { try { at = await callRevit("project_rules", { section: "worksets" }, 30); } catch { at = null; } }
+  const fm = Worksets.rulesForModel(rules, Worksets.modelNamesOf(at));
+  return { ...fm, line: Worksets.skippedRulesText(fm.skipped, at?.model, rules.length) };
+}
+/** A reply with the skipped-rules line (G9) added, when there is one. */
+const withLine = (out, line) => { if (line) out.content.push({ type: "text", text: line }); return out; };
 
 tool("project_rules", {
   title: "Project rules in force",
@@ -985,13 +998,15 @@ tool("assign_worksets", {
   if (action && action !== "assign") return worksetAdmin(action, a, { check_only, dry_run, explanation, plan, step, rules_file, timeout: timeout_seconds ?? 900 });
   // The rules travel with the request (from the BEP file unless given), so the preview and the apply use the same rules.
   const src = a.rules ? { file: "given in the request", rules: a.rules } : await worksetRules(rules_file);
+  const fm = await rulesForOpenModel(src.rules, src.at);
+  if (!fm.rules.length) throw new RevitError(`No workset rule applies to the open model. ${fm.line} Nothing was checked or changed.`);
   const req = {
-    rules: src.rules, default_workset: a.default_workset ?? src.default_workset ?? "",
+    rules: fm.rules, default_workset: a.default_workset ?? src.default_workset ?? "",
     only_workset1: !!a.only_workset1, create_missing: !!a.create_missing,
     rules_name: src.name || "rules", rules_source: src.file,
   };
   const seconds = timeout_seconds ?? 900;
-  if (check_only) return text(await callRevit("assign_worksets", { ...req, check_only: true }, seconds));
+  if (check_only) return withLine(text(await callRevit("assign_worksets", { ...req, check_only: true }, seconds)), fm.line);
   requireExplanation(dry_run, explanation);
   const result = await gated(fingerprint("worksets", req),
     { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
@@ -1000,7 +1015,7 @@ tool("assign_worksets", {
   if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
   if (!dry_run && result?.success) briefCache.clear();
   journal({ title: `${dry_run ? "Preview" : "Change"}: assign worksets per the BEP`, explanation, outcome: outcomeOf(result, dry_run), details: result?.byWorkset });
-  return text(result);
+  return withLine(text(result), fm.line);
 });
 
 // Workset administration (assign_worksets audit / rename / delete_empty, bridge command workset_admin). The naming rule
@@ -1072,7 +1087,10 @@ const adminState = new Map();   // request key -> { key (gate), model, planHash 
 
 async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan, step, rules_file, timeout }) {
   const { naming, source } = await worksetNaming(a);
-  const rules = a.rules ?? (rules_file ? (await worksetRules(rules_file)).rules : undefined);
+  // Rules sent with the request are filtered here (G9); without them the add-in reads and filters its own.
+  const given = a.rules ?? (rules_file ? (await worksetRules(rules_file)).rules : undefined);
+  const fm = given ? await rulesForOpenModel(given) : { rules: undefined, line: "" };
+  const rules = fm.rules;
   const base = { max_ids: a.max_ids ?? 20, ...(rules ? { rules } : {}) };
   const auditNow = () => callRevit("workset_admin", { action: "audit", check_only: true, ...base }, timeout);
   if (action === "audit") {
@@ -1085,7 +1103,8 @@ async function worksetAdmin(action, a, { check_only, dry_run, explanation, plan,
       files = [writeOut(a.out_dir, `${stem}.html`, Worksets.auditHtml(model, au, { when: new Date().toLocaleString(), naming, brand: brand() })), writeOut(a.out_dir, `${stem}.csv`, Worksets.auditCsv(au))];
     }
     const out = text({ model, workshared: r?.workshared, naming: naming ? { pattern: naming.source, allowed: naming.allowed, rename: naming.rename, file: source } : null, counts: au.counts, worksets: au.rows, nearDuplicateGroups: au.groups, suggestions: au.suggestions, files });
-    out.content.push({ type: "text", text: r?.workshared === false ? `${model} is not workshared: it has no worksets to audit.` : `${Worksets.auditText(model, au, naming)}${r?.notes?.length ? `\nNotes:\n${r.notes.map((n) => `- ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`).join("\n")}` : ""}${files.length ? `\nFiles:\n${files.map((f) => `- ${f}`).join("\n")}` : ""}` });
+    const skipLine = fm.line || r?.rulesSkipped || "";
+    out.content.push({ type: "text", text: r?.workshared === false ? `${model} is not workshared: it has no worksets to audit.` : `${Worksets.auditText(model, au, naming)}${skipLine ? `\n${skipLine}` : ""}${r?.notes?.length ? `\nNotes:\n${r.notes.map((n) => `- ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`).join("\n")}` : ""}${files.length ? `\nFiles:\n${files.map((f) => `- ${f}`).join("\n")}` : ""}` });
     return out;
   }
 
@@ -1241,14 +1260,17 @@ async function worksetStatus(a, timeout, list) {
   for (const x of list) {
     const vf = await worksetFiles(a, x.facts);
     const ctx = WorksetPlan.nameCtx(x.facts?.levels ?? [], x.naming, (x.facts?.worksets ?? []).map((w) => w.name));
-    const s = WorksetPlan.statusOf(x.facts, { std, ctx, records: vf.records(), pending: vf.pending() });
+    // The standard's rules for this model only (G9: a rule's models key).
+    const fm = Worksets.rulesForModel(std?.rules ?? [], Worksets.modelNamesOf(x.facts));
+    const s = WorksetPlan.statusOf(x.facts, { std: std ? { ...std, rules: fm.rules } : null, ctx, records: vf.records(), pending: vf.pending() });
+    const skipLine = Worksets.skippedRulesText(fm.skipped, s.model, std?.rules?.length);
     const when = localDate(new Date(), { time: true });
     const dir = a.out_dir ?? vf.dir;
     const stem = ParamExec.fileStem("worksets-status", s.model, when);
     const files = [writeOut(dir, `${stem}.html`, WorksetPlan.statusHtml(s, { when, brand: brand() })), writeOut(dir, `${stem}.csv`, WorksetPlan.statusCsv(s))];
     try { vf.setStatus(WorksetPlan.statusTile(s, when)); } catch { /* the tile is a convenience */ }
     out.push({ ...s, files });
-    texts.push(WorksetPlan.statusText(s, { files }) + (vf.note ? `\n${vf.note}` : ""));
+    texts.push(WorksetPlan.statusText(s, { files }) + (skipLine ? `\n${skipLine}` : "") + (vf.note ? `\n${vf.note}` : ""));
   }
   if (note) texts.push(note);
   return { statuses: out, text: texts.join("\n\n") };
@@ -1288,7 +1310,15 @@ tool("workset_plan", {
     const skip = notWorkshared(list);
     if (!ok.length) return text(`Not workshared, no worksets to plan: ${skip.join(", ")}.`);
     const vw = await vaultWorksetsOf(a);
-    for (const x of ok) { x.records = (await worksetFiles(a, x.facts)).records(); x.keep = vw?.keep ?? []; x.savedRules = vw?.rules ?? []; }
+    // Saved rules count for a model only when their models key (G9) names it.
+    const skipLines = [];
+    for (const x of ok) {
+      x.records = (await worksetFiles(a, x.facts)).records(); x.keep = vw?.keep ?? [];
+      const fm = Worksets.rulesForModel(vw?.rules ?? [], Worksets.modelNamesOf(x.facts));
+      x.savedRules = fm.rules;
+      const line = Worksets.skippedRulesText(fm.skipped, x.facts?.model, vw?.rules?.length);
+      if (line) skipLines.push(line);
+    }
     const { std, note: stdNote } = await worksetStandard(a);
     const p = WorksetPlan.propose(ok);
     p.standard = WorksetPlan.standardText(std);
@@ -1300,7 +1330,7 @@ tool("workset_plan", {
     const xlsx = await WorksetPlan.proposalXlsx(p, writeOut(dir, `${stem}.xlsx`, ""));
     const notes = list.flatMap((x) => (x.facts?.notes ?? []).map((n) => `${x.facts?.model}: ${typeof n === "string" ? n : n.text ?? JSON.stringify(n)}`));
     const out = text({ models: p.models, counts: p.counts, exportViews: [...new Set(ok.flatMap((x) => x.facts?.exportViews ?? []))], files: [xlsx, csv, detail] });
-    out.content.push({ type: "text", text: `${WorksetPlan.proposalText(p, [xlsx, csv, detail])}${skip.length ? `\nNot workshared (skipped): ${skip.join(", ")}.` : ""}${notes.length ? `\nNotes:\n${notes.map((n) => `- ${n}`).join("\n")}` : ""}${stdNote ? `\n${stdNote}` : ""}\n${vaultLine(vw)}` });
+    out.content.push({ type: "text", text: `${WorksetPlan.proposalText(p, [xlsx, csv, detail])}${skip.length ? `\nNot workshared (skipped): ${skip.join(", ")}.` : ""}${notes.length ? `\nNotes:\n${notes.map((n) => `- ${n}`).join("\n")}` : ""}${stdNote ? `\n${stdNote}` : ""}${skipLines.length ? `\n${skipLines.join("\n")}` : ""}\n${vaultLine(vw)}` });
     return out;
   }
   if (action === "status") {
@@ -1326,7 +1356,7 @@ tool("workset_plan", {
       const ctx = WorksetPlan.nameCtx(list.flatMap((x) => x.facts?.levels ?? []), list[0]?.naming, ruleT.rows.map((r) => r.proposed));
       rr = WorksetPlan.rulesFromRows(ruleT.rows, ctx);
       results = list.map((x) => ({ ...WorksetPlan.planFromRules(rr.rules, x.facts, { ...ctx, createMissing: !!a.create_missing }), flagged: rr.flagged, undecided: rr.undecided, skipped: rr.skipped, confirmed: rr.confirmed }));
-      rules = { rules: WorksetPlan.vaultRules(rr.rules, [...new Set(list.flatMap((x) => x.facts?.zones ?? []))]), ambiguous: [] };
+      rules = { rules: WorksetPlan.vaultRules(rr.rules, [...new Set(list.flatMap((x) => x.facts?.zones ?? []))], { createMissing: !!a.create_missing }), ambiguous: [] };
       if (rr.flagged.length) unused.push(`${ruleT.sheet ? `${ruleT.sheet} sheet` : "The file"}: ${rr.flagged.length} decision(s) not used (flagged above).`);
     }
     if (useGroups) {

@@ -417,7 +417,8 @@ export function propose(list) {
     const proposed = r.isDefault ? defaultName ?? r.workset : r.workset;
     if (r.isDefault) note.push(defaultName ? "the vault's default name (naming.defaultName)" : "the default workset keeps its name (renaming it is opt-in: naming.defaultName in the vault)");
     const rule = { workset: r.workset, categories: r.categories, levels: r.levels, words: r.words, material: r.material, links: r.links, cad: r.cad, codes: r.codes, manual: r.manual, isDefault: r.isDefault, protected: r.protected, twins,
-      assets: r.assets, distinct: r.distinct, models: where };
+      // The rule's models (G9: a saved rule applies only there) include the models proposed once as "same as" one of them.
+      assets: r.assets, distinct: r.distinct, models: [...where, ...models.filter((m) => m.sameAs && where.includes(m.sameAs)).map((m) => m.model)] };
     return { Group: section(r, action === "delete"), "Proposed workset": proposed, Action: action, Models: where.length === all.length && all.length > 1 ? `All ${all.length}` : `${where.join(", ")}${where.length > 1 ? ` (${where.length})` : ""}`,
       "What it holds (from its name)": describe(r), "Holds now": holds, "Would receive": recv, "Open / visibility": visText(f.vis), Note: note.join("; "), [DECISION]: "", Rule: JSON.stringify(rule) };
   });
@@ -688,12 +689,13 @@ export const wordRegex = (list) => `(?i)(?<![A-Za-z0-9])(${list.map(rx).join("|"
  * on the name words: zone when a model zone carries the word), links by their code. Category rules come first, the most
  * specific first; category-free rules (zone / level / material) last, so they only take what no category rule takes.
  */
-export function vaultRules(R, zones = []) {
+export function vaultRules(R, zones = [], { createMissing = false } = {}) {
   const zoneWords = new Set(zones.flatMap((z) => words(z)));
   const out = [];
   for (const r of R) {
     if (r.manual || r.isDefault || r.protected) continue;
-    const base = { id: `plan-${slug(r.workset)}`, workset: r.workset, source: "workset_plan", ...(r.models?.length ? { models: r.models } : {}) };
+    // models (G9): where the workset is; a rule that may create its workset (create, create_missing) applies everywhere.
+    const base = { id: `plan-${slug(r.workset)}`, workset: r.workset, source: "workset_plan", ...(r.models?.length && !r.create && !createMissing ? { models: r.models } : {}) };
     if (r.links) { out.push({ ...base, category: ["RVT Links"], ...(r.codes.length ? { type: wordRegex(r.codes) } : {}), spec: r.codes.length ? 9 : 1, cat: 1 }); continue; }
     if (r.cad) { out.push({ ...base, category: ["CAD Imports"], spec: 1, cat: 1 }); continue; }
     if (!r.categories.length && !r.levels.length && !r.words.length && !r.material) continue;
@@ -731,6 +733,10 @@ export function deriveRules(plans) {
   return { rules, ambiguous };
 }
 
+/** Exact model names of a rule's models key (G9), or null when it has none or uses wildcards / exclusions (any model may match). */
+const exactModels = (r) => { const p = [].concat(r?.models ?? []).map((x) => String(x ?? "").trim()).filter(Boolean); return p.length && !p.some((x) => x.startsWith("!") || x.includes("*")) ? p : null; };
+/** Can two rules apply in the same model? Only rules with exact, disjoint models lists cannot. */
+export const modelsMeet = (a, b) => { const x = exactModels(a), y = exactModels(b); return !x || !y || x.some((m) => y.some((n) => modelKey(m) === modelKey(n))); };
 const selector = (r) => JSON.stringify([[].concat(r.category ?? []).map(norm).sort(), r.level ?? "", r.material ?? "", r.zone ?? "", r.type ?? "", r.family ?? "", r.function ?? ""]);
 /**
  * Merge derived rules into a project-requirements object (worksets.rules): new rules first; the same rule again is
@@ -744,8 +750,17 @@ export function mergeRules(json, rules, { overlapsOk = false } = {}) {
   const added = [], same = [], conflicts = [], overlaps = [];
   const list = [...have];
   for (const r of rules) {
-    const hit = have.find((h) => h.id === r.id) ?? have.find((h) => selector(h) === selector(r));
-    if (hit) { if (hit.workset === r.workset && selector(hit) === selector(r)) same.push(r); else conflicts.push({ rule: r, existing: hit }); continue; }
+    // The same rule again (for more models: its exact models list grows; for every model: the list goes).
+    const twin = have.find((h) => h.workset === r.workset && selector(h) === selector(r));
+    if (twin) {
+      const hm = exactModels(twin), rm = exactModels(r);
+      if (hm && rm) twin.models = [...hm, ...rm.filter((m) => !hm.some((n) => modelKey(n) === modelKey(m)))];
+      else if (hm && !r.models) delete twin.models;
+      same.push(r); continue;
+    }
+    // Rules for other models (disjoint models lists, G9) never collide: one project file holds per-model rules.
+    const hit = have.find((h) => h.id === r.id && modelsMeet(h, r)) ?? have.find((h) => selector(h) === selector(r) && modelsMeet(h, r));
+    if (hit) { conflicts.push({ rule: r, existing: hit }); continue; }
     // First match wins: a category-free rule (material / zone only) goes after every rule; another before the first
     // existing rule that is less specific, never ahead of a category rule when it has no category itself.
     const at = !hasCategory(r) ? list.length : (() => { const k = list.findIndex((h) => specificity(h) < specificity(r)); return k < 0 ? list.length : k; })();
@@ -766,6 +781,7 @@ const hasCategory = (r) => [].concat(r.category ?? []).length > 0;
 export const specificity = (r) => (hasCategory(r) ? 8 : 0) + (r.level ? 4 : 0) + (r.zone || r.type || r.family || r.function || r.parameter ? 2 : 0) + (r.material ? 1 : 0);
 /** Can two rules match the same element (another workset)? Unknown regexes count as overlapping only when equal or absent. */
 export function overlap(a, b) {
+  if (!modelsMeet(a, b)) return false;
   const ca = [].concat(a.category ?? []).map(norm), cb = [].concat(b.category ?? []).map(norm);
   if (ca.length && cb.length && !ca.some((c) => cb.includes(c))) return false;
   if (a.material && b.material && a.material !== b.material) return false;

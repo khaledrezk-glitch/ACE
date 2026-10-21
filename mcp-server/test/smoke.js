@@ -627,6 +627,35 @@ assert.ok(wsBlocked.isError || /not been previewed/.test(wsBlocked.content[0].te
 await call("assign_worksets", { dry_run: true, explanation: "preview for the test" });
 const wsApplied = (await call("assign_worksets", { explanation: "move to BEP worksets" })).content[0].text;
 assert.match(wsApplied, /Committed/, "after the identical preview, applying works");
+// --- G9: a workset rule's models key: rules for other models are left out before the request; the reply says which and why ---
+{
+  const prCalls = () => seen.filter((x) => x.command === "project_rules").length;
+  const n0 = prCalls();
+  await call("assign_worksets", { check_only: true, rules: [{ workset: "TST_A", category: "Walls" }] });
+  assert.equal(prCalls(), n0, "G9: rules without a models key need no extra question to Revit");
+  const g9 = await call("assign_worksets", { check_only: true, rules: [
+    { id: "g9-inc", workset: "TST_A", models: "Test" }, { id: "g9-other", workset: "TST_B", models: ["TST_ARC", "TST_MEP"] }, { workset: "TST_C" },
+    { id: "g9-wild", workset: "TST_D", models: "T*" }, { id: "g9-ex", workset: "TST_E", models: ["*", "!test.rvt"] }] });
+  assert.deepEqual(seen.filter((x) => x.command === "assign_worksets").at(-1).args.rules.map((r) => r.workset), ["TST_A", "TST_C", "TST_D"],
+    "G9: include (exact, case-insensitive), no key and wildcard rules are sent; another model's rule and an excluded one are not");
+  assert.equal(g9.content.at(-1).text, "Rules skipped for Test (their models key does not name it): 2 of 5: g9-other (models TST_ARC, TST_MEP), g9-ex (excluded by !test.rvt).");
+  const nA = seen.filter((x) => x.command === "assign_worksets").length;
+  const g9none = await call("assign_worksets", { check_only: true, rules: [{ workset: "TST_B", models: "TST_ARC" }] });
+  assert.ok(g9none.isError && /No workset rule applies to the open model\. Rules skipped for Test .*: 1 of 1: TST_B \(models TST_ARC\)\. Nothing was checked or changed\./.test(g9none.content[0].text)
+    && seen.filter((x) => x.command === "assign_worksets").length === nA, "G9: no rule left for the model: said, Revit not asked to assign");
+  const Wg = await import("../lib/worksets.js"), WPg = await import("../lib/worksetplan.js");
+  assert.deepEqual(Wg.modelNamesOf({ model: "TST_STR_detached.rvt" }), ["tst_str_detached", "tst_str"], "G9: a detached copy is known by its own name too");
+  assert.deepEqual(Wg.modelNamesOf({ model: "TST_STR_jdoe", modelNames: ["TST_STR_jdoe", "tst_str"] }), ["tst_str_jdoe", "tst_str"], "G9: the add-in's names (title, central) are used when sent");
+  assert.ok(Wg.ruleAppliesTo({ models: [] }, ["x"]).applies && Wg.ruleAppliesTo({ models: "!TST_ARC" }, ["tst_str"]).applies && !Wg.ruleAppliesTo({ models: "!TST_*" }, ["tst_str"]).applies, "G9: an empty list applies everywhere; an exclusion alone keeps the others");
+  // Per-model rules in one project file: disjoint models lists never conflict or overlap; the same rule for another model grows its list.
+  const mj = { worksets: { rules: [{ id: "plan-tst-arc-walls", workset: "TST-ARC-WALLS", category: ["Walls"], models: ["TST_ARC"] }] } };
+  const mg = WPg.mergeRules(mj, [{ id: "plan-tst-st-walls", workset: "TST-ST-WALLS", category: ["Walls"], models: ["TST_STR"] }, { id: "plan-tst-arc-walls", workset: "TST-ARC-WALLS", category: ["Walls"], models: ["TST_ARC2"] }]);
+  assert.ok(mg.added.length === 1 && !mg.conflicts.length && !mg.overlaps.length && mg.same.length === 1 && mg.json.worksets.rules.find((r) => r.workset === "TST-ARC-WALLS").models.join() === "TST_ARC,TST_ARC2", "G9: per-model rules merge without conflicts");
+  assert.equal(WPg.mergeRules({ worksets: { rules: [{ id: "a", workset: "TST-ARC-WALLS", category: ["Walls"] }] } }, [{ id: "b", workset: "TST-ST-WALLS", category: ["Walls"], models: ["TST_STR"] }]).conflicts.length, 1, "G9: a rule for every model still conflicts");
+  const vr = (o) => WPg.vaultRules([{ workset: "TST-A", categories: ["Walls"], levels: [], words: [], models: ["Test"], ...o }], [], o.opts)[0];
+  assert.ok(vr({}).models.join() === "Test" && !vr({ create: true }).models && !WPg.vaultRules([{ workset: "TST-A", categories: ["Walls"], levels: [], words: [], models: ["Test"] }], [], { createMissing: true })[0].models,
+    "G9: a saved rule names its models, unless it may create its workset (create, create_missing)");
+}
 // --- parameter_fill: a check is free, a fill needs its own identical dry run in the same model ---
 const plist = path.join(tmp, "params.csv");
 fs.writeFileSync(plist, "﻿parameter_name,categories,type_instance\r\nTST_Site,Project Information,Instance\r\nTST_Area,\"Rooms, Areas, Spaces\",Type\r\nTST_Area,\"Rooms, Areas, Spaces\",Type\r\nTST_X,Furniture,Instance\r\n");
@@ -1699,6 +1728,14 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(avx.isError && wadm().filter((x) => x.args.action === "apply_plan" && !x.args.dry_run && !x.args.check_only).length === nApply, "another allow_visibility_change needs its own dry run");
   const wst = (await call("workset_plan", { action: "status", vault: wv })).content.map((c) => c.text).join("\n");
   assert.match(wst, /At apply, a moved element that a view on a sheet would show differently is held \(stays\) until the user agrees \(allow_visibility_change\)\./);
+  assert.ok(after.filter((r) => r.source === "workset_plan").every((r) => r.models?.join() === "Test") && !/Rules skipped/.test(wst), "G9: rules saved by workset_plan name their models; in that model none is skipped");
+  // G9: the standard's rules for this model only (status and propose); the reply names the skipped ones.
+  const g9v = path.join(tmp, "TST_G9", "ACE Vault"); fs.mkdirSync(g9v, { recursive: true });
+  fs.writeFileSync(path.join(g9v, "project-requirements.json"), JSON.stringify({ worksets: { rules: [{ id: "g9-beams", workset: "TST-ST-BEAMS", category: ["Structural Framing"], models: "Test" }, { id: "g9-arc", workset: "TST-ARC-DOORS", category: ["Doors"], models: ["TST_ARC*"] }] } }));
+  const g9s = (await call("workset_plan", { action: "status", vault: g9v, out_dir: path.join(tmp, "g9stat") })).content.at(-1).text;
+  assert.ok(/Rules skipped for Test \(their models key does not name it\): 1 of 2: g9-arc \(models TST_ARC\*\)\./.test(g9s) && !/TST-ARC-DOORS/.test(g9s), g9s);
+  const g9p = (await call("workset_plan", { action: "propose", vault: g9v, out_dir: path.join(tmp, "g9prop") })).content.at(-1).text;
+  assert.match(g9p, /Rules skipped for Test \(their models key does not name it\): 1 of 2: g9-arc \(models TST_ARC\*\)\./);
   // 1.13.1: an xlsx is read on both sheets; on both, the Groups sheet wins per group; unused decisions are said.
   const wbe = new ExcelJS.Workbook(); await wbe.xlsx.readFile(xlsxF);
   const [shW, shG] = wbe.worksheets;

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased (held until the current submission is closed)
+- **Per-model workset rules (G9):** a rule's `models` key (exact or `*`, `!` excludes, case-insensitive; matched on the
+  title, central / file path and cloud ids) limits it to those models in assign_worksets, workset audit / rename /
+  delete_empty, workset_plan propose / status and the model check; skipped rules are named in the reply. Rules saved by
+  workset_plan list every model they were proposed for. NOTE: rules saved by 1.13.x list only the first model; add the
+  other model names before upgrading, or those models skip the rule (the reply says so).
+
 ## 1.14.9 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **Deliverables folder stays clean:** a DWFx that fails its self-check is kept in `%APPDATA%\ACE-RevitMCP\failed-exports`,

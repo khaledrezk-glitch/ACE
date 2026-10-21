@@ -31,11 +31,18 @@ namespace AceRevitMcp.Rules
         public string DefaultWorkset;
         public string Name;
         public string Source;
+        /// <summary>Rules left out because their models key (G9) does not name this model: (id or workset, why).</summary>
+        public List<(string Rule, string Why)> Skipped = new List<(string Rule, string Why)>();
+        public int Total;
+
+        /// <summary>The names the open model is known by, for a rule's models key (title, central / file name, cloud ids).</summary>
+        public static List<string> ModelNames(Document doc) => RuleModels.Names(doc.Title, ProjectRules.Keys(doc));
 
         public bool NeedsZone => Items.Any(r => r.Zone != null || r.Workset.Contains("{zone}"));
         public bool NeedsDepartment => Items.Any(r => r.Department != null);
 
-        public static WorksetRules Parse(JsonArray rules, string defaultWorkset = null)
+        /// <summary>The rules; with <paramref name="modelNames"/>, a rule whose models key does not name the model is skipped.</summary>
+        public static WorksetRules Parse(JsonArray rules, string defaultWorkset = null, IList<string> modelNames = null)
         {
             List<string> ListOf(JsonNode n) =>
                 n == null ? new List<string>() : n is JsonArray a ? a.Select(x => x?.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)).ToList() : new List<string> { n.ToString() };
@@ -47,6 +54,8 @@ namespace AceRevitMcp.Rules
                 i++;
                 var ws = o["workset"]?.ToString();
                 if (string.IsNullOrWhiteSpace(ws)) continue;
+                r.Total++;
+                if (modelNames != null && !RuleModels.Applies(o["models"], modelNames, out var why)) { r.Skipped.Add((o["id"]?.ToString() ?? ws, why)); continue; }
                 r.Items.Add(new Rule
                 {
                     Index = i, Workset = ws, Categories = ListOf(o["category"]),
@@ -63,13 +72,13 @@ namespace AceRevitMcp.Rules
         /// "worksetRules", else %APPDATA%\ACE-RevitMCP\worksets.json), merged by <see cref="ProjectRules"/>. Null when
         /// there are none (the model check then skips the BEP check). Never the packaged example.
         /// </summary>
-        public static WorksetRules Load(ProjectRules rules)
+        public static WorksetRules Load(ProjectRules rules, IList<string> modelNames = null)
         {
             try
             {
                 var json = (rules ?? ProjectRules.Office()).Section("worksets");
                 if (json?["rules"] is not JsonArray list) return null;
-                var r = Parse(list, json["default_workset"]?.ToString());
+                var r = Parse(list, json["default_workset"]?.ToString(), modelNames);
                 r.Name = json["name"]?.ToString() ?? "worksets";
                 r.Source = (rules ?? ProjectRules.Office()).SourceOf("worksets");
                 return r.Items.Count == 0 ? null : r;
@@ -234,6 +243,7 @@ namespace AceRevitMcp.Rules
             return new JsonObject
             {
                 ["rules"] = $"{Name ?? "rules"} ({Source ?? "given in the request"}), {Items.Count} rules",
+                ["rulesSkipped"] = RuleModels.SkippedText(Skipped, doc.Title, Total),
                 ["mode"] = opt.PlanOnly ? "check only (nothing moved)" : opt.OnlyWorkset1 ? "assign (only elements on Workset1)" : "assign",
                 ["elementsChecked"] = elements.Count - skippedNotWs1,
                 ["alreadyOnTheRightWorkset"] = correct,

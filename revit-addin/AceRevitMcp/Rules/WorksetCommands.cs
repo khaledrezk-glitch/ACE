@@ -13,11 +13,14 @@ namespace AceRevitMcp.Rules
     {
         public static JsonNode Run(UIApplication app, JsonObject args)
         {
+            var names = WorksetRules.ModelNames(app.ActiveUIDocument.Document);   // a rule's models key (G9)
             var rules = args["rules"] is JsonArray given
-                ? WorksetRules.Parse(given, Args.Str(args, "default_workset"))
-                : WorksetRules.Load(ProjectRules.For(app.ActiveUIDocument.Document)) ?? throw new Bridge.CommandException("No workset rules found. Put them in the project's project-requirements.json (section \"worksets\") or the office worksets.json (see bep/worksets.example.json), or pass rules.");
+                ? WorksetRules.Parse(given, Args.Str(args, "default_workset"), names)
+                : WorksetRules.Load(ProjectRules.For(app.ActiveUIDocument.Document), names) ?? throw new Bridge.CommandException("No workset rules found. Put them in the project's project-requirements.json (section \"worksets\") or the office worksets.json (see bep/worksets.example.json), or pass rules.");
             if (args["rules"] is JsonArray && args["rules_name"] is JsonValue) { rules.Name = Args.Str(args, "rules_name"); rules.Source = Args.Str(args, "rules_source"); }
-            if (rules.Items.Count == 0) throw new Bridge.CommandException("The workset rules are empty: each rule needs at least a 'workset'.");
+            if (rules.Items.Count == 0) throw new Bridge.CommandException(rules.Skipped.Count > 0
+                ? "No workset rule applies to this model. " + RuleModels.SkippedText(rules.Skipped, app.ActiveUIDocument.Document.Title, rules.Total)
+                : "The workset rules are empty: each rule needs at least a 'workset'.");
             if (Args.Str(args, "default_workset") is string dw && !string.IsNullOrWhiteSpace(dw)) rules.DefaultWorkset = dw;
             var title = "ACE: assign worksets per the BEP" + (Args.Bool(args, "only_workset1") ? " (Workset1 only)" : "");
             return NativeChange.Run(app, args, "assign_worksets", title, (doc, plan) => rules.Apply(doc, new WorksetRules.Options

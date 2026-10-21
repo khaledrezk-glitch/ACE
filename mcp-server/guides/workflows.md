@@ -144,6 +144,12 @@ Rules in force (D3): the project's project-requirements.json section "worksets" 
 default_workset and naming win key by key), the office worksets.json after it; "inheritOffice": false in the project's
 section uses the project's rules alone. project_rules section "worksets" shows the result and its files; the audit's
 naming rule is the same merged section. Office method: revit_guide methods/workset-cleanup.
+Per-model rules: a rule's "models" key ("TST_STR", ["TST_ARC*", "!TST_ARC_OLD"]; matched on the model's title and
+central / file name, case-insensitive, without .rvt; * wildcard, ! excludes) limits it to those models, so one project
+file holds the rules of every model; a rule without it applies everywhere. assign_worksets, workset_plan (propose,
+status) and the model check leave the other models' rules out and the reply says which were skipped and why: say so to
+the user when a rule they expected did not apply. Rules saved by workset_plan carry the models their workset is in
+(none when the rule may create its workset).
 
 Workset housekeeping ("clean up the worksets", "which worksets are empty", "rename the worksets to the BEP names"):
 assign_worksets action audit first (read-only): every user workset with its element count by category, owner and

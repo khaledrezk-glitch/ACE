@@ -68,7 +68,7 @@ class P {
     System.Text.Json.Nodes.JsonObject Sec(object r, string s) => (System.Text.Json.Nodes.JsonObject)prT.GetMethod("Section").Invoke(r, new object[] { s });
     string Src(object r, string s) => (string)prT.GetMethod("SourceOf").Invoke(r, new object[] { s });
     string Hash(object r, string s) => (string)prT.GetMethod("HashOf").Invoke(r, new object[] { s });
-    object WsLoad(object r) => wsT.GetMethod("Load").Invoke(null, new[] { r });
+    object WsLoad(object r) => wsT.GetMethod("Load").Invoke(null, new[] { r, null });
     var locate = prT.GetMethod("LocateIn");
     string Locate(string[] keys, string[] folders, out string how) { var ps = new object[] { keys, folders, null }; var f = (string)locate.Invoke(null, ps); how = (string)ps[2]; return f; }
 
@@ -568,6 +568,26 @@ class P {
     var wpRow2 = @"{ ""action"": ""apply_plan"", ""workset_plan"": { ""moves"": [{ ""key"": ""TST_A|Walls||||"", ""to"": ""TST_NEW"", ""row"": 9 }] } }";
     var wpRow3 = @"{ ""action"": ""apply_plan"", ""workset_plan"": { ""moves"": [{ ""key"": ""TST_A|Walls||||"", ""to"": ""TST_OTHER"", ""row"": 4 }] } }";
     Check(FpW(wpRow1) == FpW(wpRow2) && FpW(wpRow1) != FpW(wpRow3), "fingerprint: a workset move's row (the decision file line) is information only");
+
+    // G9: a workset rule's models key (which models it applies to), matched on the model's title, central / file name.
+    var rmT = a.GetType("AceRevitMcp.Rules.RuleModels");
+    var names = (System.Collections.Generic.List<string>)rmT.GetMethod("Names").Invoke(null, new object[] { "TST_STR_jdoe", new[] { @"\\srv\TST\TST_STR.rvt", @"C:\Local\TST_STR_jdoe.rvt", "TST_STR_jdoe" } });
+    Check(names.Contains("tst_str") && names.Contains("tst_str_jdoe") && !names.Any(n => n.EndsWith(".rvt")), "model names: title and the central file name, no folder or .rvt");
+    bool Ap(string json, System.Collections.Generic.IList<string> n, out string why) {
+      var args = new object[] { json == null ? null : System.Text.Json.Nodes.JsonNode.Parse(json), n, null };
+      var ok = (bool)rmT.GetMethod("Applies").Invoke(null, args); why = (string)args[2]; return ok; }
+    Check(Ap(null, names, out _) && Ap("[]", names, out _), "no models key: the rule applies to every model");
+    Check(Ap(@"""TST_STR""", names, out _) && Ap(@"[""TST_ARC"", ""tst_str.rvt""]", names, out _), "include: exact name, case and .rvt do not matter (a local copy matches by its central)");
+    Check(!Ap(@"[""TST_ARC""]", names, out var w1) && w1 == "models TST_ARC", "include: another model's rule is skipped, with why");
+    Check(Ap(@"""TST_S*""", names, out _) && !Ap(@"""TST_A*""", names, out _), "wildcard: * matches any run of characters");
+    Check(!Ap(@"[""TST_*"", ""!TST_STR""]", names, out var w2) && w2 == "excluded by !TST_STR" && Ap(@"""!TST_ARC""", names, out _), "exclude: !pattern wins; an exclusion alone keeps every other model");
+    var wrT = a.GetType("AceRevitMcp.Rules.WorksetRules");
+    var wsParsed = wrT.GetMethod("Parse").Invoke(null, new object[] { System.Text.Json.Nodes.JsonNode.Parse(@"[{ ""id"": ""r-all"", ""workset"": ""TST_A"" }, { ""id"": ""r-arc"", ""workset"": ""TST_B"", ""models"": ""TST_ARC*"" }, { ""workset"": ""TST_C"", ""models"": [""!TST_STR""] }, { ""workset"": ""TST_D"", ""models"": ""TST_STR"" }]").AsArray(), null, names });
+    var items = (IList)wrT.GetField("Items").GetValue(wsParsed); var skipped = (IList)wrT.GetField("Skipped").GetValue(wsParsed);
+    var ruleT = a.GetType("AceRevitMcp.Rules.WorksetRules+Rule");
+    Check(items.Count == 2 && skipped.Count == 2 && (int)ruleT.GetField("Index").GetValue(items[1]) == 4, "Parse skips rules for other models; rule numbers stay the file's");
+    var line = (string)rmT.GetMethod("SkippedText").Invoke(null, new object[] { skipped, "TST_STR", 4 });
+    Check(line == "Rules skipped for TST_STR (their models key does not name it): 2 of 4: r-arc (models TST_ARC*), TST_C (excluded by !TST_STR).", line ?? "no line");
 
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }

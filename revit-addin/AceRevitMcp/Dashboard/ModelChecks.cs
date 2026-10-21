@@ -60,7 +60,7 @@ namespace AceRevitMcp.Dashboard
                     x.Counts["Worksets"] = user.Count;
                 });
             // Worksets per the BEP rules (when the office has a rules file): the same engine assign_worksets uses.
-            if (doc.IsWorkshared && Rules.WorksetRules.Load(Rules.ProjectRules.For(doc)) is { } wsRules)
+            if (doc.IsWorkshared && Rules.WorksetRules.Load(Rules.ProjectRules.For(doc), Rules.WorksetRules.ModelNames(doc)) is { } wsRules)
                 Safe("worksets per the BEP", () =>
                 {
                     var plan = wsRules.Apply(doc, new Rules.WorksetRules.Options { PlanOnly = true });

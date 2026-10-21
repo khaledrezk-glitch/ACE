@@ -14,8 +14,9 @@
     "naming": { "pattern": "^[A-Z]-[A-Z0-9-]+$", "allowed": [], "rename": [{ "from": "Workset1", "to": "A-GENERAL" }], "_about": "Optional. pattern: a regex every user workset name must match; allowed: when not empty, the only names allowed; rename: explicit old -> new names. Shared Levels and Grids is exempt. Read by assign_worksets action audit / rename." },
     "rules": [
       { "id": "ws-doors", "workset": "A-DOORS", "category": "Doors", "requirement": "REQ-BEP-0031" },
-      { "id": "ws-ducts", "workset": "M-DUCTS-{level}", "category": ["Ducts", "Duct Fittings"], "requirement": "REQ-BEP-0031" }
-    ]
+      { "id": "ws-ducts", "workset": "M-DUCTS-{level}", "category": ["Ducts", "Duct Fittings"], "requirement": "REQ-BEP-0031", "models": ["*MEP*", "!*_OLD"] }
+    ],
+    "_about_models": "Optional per rule. models: the models the rule applies to, a name or a list matched on the model's title and its central / file name (case-insensitive, without .rvt; * is a wildcard; !name excludes). A rule without it applies to every model. A rule skipped for the open model is named in the reply (assign_worksets, workset_plan, the audit and the model check)."
   },
   "clash": {
     "ranks": { "Cable Trays": { "rank": 45, "discipline": "E" } }

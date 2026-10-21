@@ -28,6 +28,7 @@ namespace AceRevitMcp.Rules
                 {
                     ["model"] = doc.Title, ["projectFile"] = rules.ProjectFile, ["vault"] = vault, ["foundBy"] = rules.FoundBy, ["cloud"] = doc.IsModelInCloud,
                     ["modelFolders"] = new JsonArray(ProjectRules.ModelFolders(doc).Select(k => (JsonNode)k).ToArray()),
+                    ["modelNames"] = new JsonArray(WorksetRules.ModelNames(doc).Select(k => (JsonNode)k).ToArray()),   // a rule's models key (G9)
                     ["section"] = section, ["source"] = rules.SourceOf(section), ["hash"] = rules.HashOf(section), ["rules"] = rules.Section(section),
                 };
             }

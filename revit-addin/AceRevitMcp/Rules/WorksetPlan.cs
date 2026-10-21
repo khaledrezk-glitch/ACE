@@ -253,6 +253,7 @@ namespace AceRevitMcp.Rules
         private static JsonObject Facts(Document doc, JsonObject args, string aceVersion, int maxIds)
         {
             var r = new JsonObject { ["model"] = doc.Title, ["aceVersion"] = aceVersion, ["action"] = "facts", ["checkOnly"] = true, ["workshared"] = doc.IsWorkshared };
+            r["modelNames"] = new JsonArray(WorksetRules.ModelNames(doc).Select(k => (JsonNode)k).ToArray());   // a rule's models key (G9)
             r["levels"] = new JsonArray(new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation)
                 .Select(l => (JsonNode)new JsonObject { ["name"] = l.Name, ["code"] = P.LevelCode(l.Name), ["phrase"] = P.LevelPhrase(l.Name), ["elevation"] = Math.Round(Lengths.Mm(l.Elevation)) }).ToArray());
             r["zones"] = new JsonArray(new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_VolumeOfInterest).WhereElementIsNotElementType()

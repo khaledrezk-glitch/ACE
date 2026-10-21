@@ -149,6 +149,49 @@ export function audit(answer, naming) {
 export const NOT_CHECKED = "not checked: no rules";
 /** A workset name quoted: names may hold commas ("Shared Views, Levels, Grids"), so a list never splits one. */
 export const q = (n) => `"${n}"`;
+
+// ---- G9: which models a workset rule applies to (the rule's "models" key) ----------------------------------------------
+// The add-in has the same logic (Rules/RuleModels.cs) for the rules it reads itself (model check, audit without rules).
+const modelNorm = (s) => String(s ?? "").trim().replace(/\.rvt$/i, "").toLowerCase();
+const modelRx = (p) => new RegExp(`^${modelNorm(p).split("*").map((x) => x.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`, "i");
+/**
+ * The names a model is known by, for a rule's models patterns: what the add-in sends (modelNames: title, central and
+ * file name, cloud ids), else the title; ".rvt" and a detached copy's "_detached" do not matter.
+ */
+export function modelNamesOf(info) {
+  const raw = Array.isArray(info?.modelNames) && info.modelNames.length ? info.modelNames : [info?.model];
+  const out = new Set();
+  for (const n of raw.map(modelNorm).filter(Boolean)) { out.add(n); out.add(n.replace(/_detached$/, "")); }
+  return [...out];
+}
+/**
+ * Whether a rule applies to a model (names from modelNamesOf). models: a string or a list of patterns, case-insensitive,
+ * exact or with * wildcards; "!pattern" excludes. No models key (or no pattern): every model. -> { applies, why }
+ */
+export function ruleAppliesTo(rule, names) {
+  const pats = [].concat(rule?.models ?? []).map((p) => String(p ?? "").trim()).filter((p) => p && p !== "!");
+  if (!pats.length) return { applies: true, why: "" };
+  const hit = (p) => { const rx = modelRx(p); return names.some((n) => rx.test(n)); };
+  const ex = pats.filter((p) => p.startsWith("!")).map((p) => p.slice(1).trim()).find(hit);
+  if (ex) return { applies: false, why: `excluded by !${ex}` };
+  const inc = pats.filter((p) => !p.startsWith("!"));
+  return inc.length && !inc.some(hit) ? { applies: false, why: `models ${inc.join(", ")}` } : { applies: true, why: "" };
+}
+/** The rules for one model: rules whose models key does not name it are skipped. -> { rules, skipped: [{ rule, why }] } */
+export function rulesForModel(rules, names) {
+  const kept = [], skipped = [];
+  for (const r of rules ?? []) {
+    const a = ruleAppliesTo(r, names);
+    if (a.applies) kept.push(r); else skipped.push({ rule: r?.id ?? r?.workset ?? "?", why: a.why });
+  }
+  return { rules: kept, skipped };
+}
+/** One compact line: which rules were skipped for this model and why (counts, up to 10 names). "" when none. */
+export function skippedRulesText(skipped, model, total) {
+  if (!skipped?.length) return "";
+  const more = skipped.length > 10 ? `, +${skipped.length - 10} more` : "";
+  return `Rules skipped for ${model ?? "this model"} (their models key does not name it): ${skipped.length}${total != null ? ` of ${total}` : ""}: ${skipped.slice(0, 10).map((s) => `${s.rule} (${s.why})`).join(", ")}${more}.`;
+}
 /** Why a workset is flagged, in words, for the empty-but-expected and default-workset flags. */
 export const expectedText = (r) => `empty, but ${r.expected.elements} element(s) look like they belong here (${Object.entries(r.expected.on).map(([k, n]) => `${n} on ${q(k)}`).join(", ")})`;
 export const defaultText = (r) => `default workset holds ${r.defaultHolds.elements} element(s) (${r.defaultHolds.structural} structural); assign them by rules. Top: ${r.defaultHolds.top.map(([k, v]) => `${k} ${v}`).join(", ")}`;
