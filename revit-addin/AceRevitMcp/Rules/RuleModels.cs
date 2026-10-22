@@ -22,6 +22,27 @@ namespace AceRevitMcp.Rules
             return n.ToLowerInvariant();
         }
 
+        /// <summary>
+        /// The one name project data is recorded under for a model (e.g. its agreed NWC export view, #36): the central's file
+        /// name for a workshared model (so a local and its central share it), else the file's name, else the title; without
+        /// folder, ".rvt" or a detached copy's "_detached"; case kept. One of <see cref="Names"/> (lowercased).
+        /// </summary>
+        public static string RecordKey(string title, string centralPath, string pathName)
+        {
+            string Bare(string p)
+            {
+                if (string.IsNullOrWhiteSpace(p)) return null;
+                var n = p.Trim();
+                var i = n.LastIndexOfAny(new[] { '\\', '/' });
+                if (i >= 0) n = n.Substring(i + 1);
+                if (n.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase)) n = n.Substring(0, n.Length - 4);
+                if (n.EndsWith("_detached", StringComparison.OrdinalIgnoreCase)) n = n.Substring(0, n.Length - 9);
+                n = n.Trim();
+                return n.Length == 0 ? null : n;
+            }
+            return Bare(centralPath) ?? Bare(pathName) ?? Bare(title);
+        }
+
         /// <summary>The names a model is known by, from its title and its project keys (paths, cloud ids, title).</summary>
         public static List<string> Names(string title, IEnumerable<string> keys)
         {

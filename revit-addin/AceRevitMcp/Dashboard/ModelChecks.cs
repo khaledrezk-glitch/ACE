@@ -59,6 +59,15 @@ namespace AceRevitMcp.Dashboard
                     }
                     x.Counts["Worksets"] = user.Count;
                 });
+            // A central sharing its worksharing identity with another central (a plain file copy, #38): the same check open_model runs.
+            if (doc.IsWorkshared && CentralIdentity.Of(doc) != null)
+                Safe("worksharing identity", () =>
+                {
+                    var clashes = CentralIdentity.Check(doc);
+                    Add(x, "Worksets", "Central shares its identity with another central", clashes.Count, 5, 5,
+                        clashes.Count == 0 ? "No other central open or seen on this machine shares this model's worksharing identity" : string.Join(" ", clashes),
+                        "Detach the copy with worksets preserved, then Save As central over its own path (open_model detach preserve_worksets, save_model save_as as_central overwrite).");
+                });
             // Worksets per the BEP rules (when the office has a rules file): the same engine assign_worksets uses.
             if (doc.IsWorkshared && Rules.WorksetRules.Load(Rules.ProjectRules.For(doc), Rules.WorksetRules.ModelNames(doc)) is { } wsRules)
                 Safe("worksets per the BEP", () =>

@@ -326,14 +326,17 @@ const bridge = http.createServer((req, res) => {
         const at = (f) => path.join(args.out_dir, f);
         for (const f of ["nwc", "ifc", "dwfx"]) if (args[f] && fs.existsSync(at(args[f].file))) { existing.push(at(args[f].file)); if (!args.overwrite) blocked.push({ what: `${f} ${args[f].file}`, why: `${at(args[f].file)} exists`, code: "exists" }); }
         if (args.nwc && !nav) blocked.push({ what: "nwc", why: "the Navisworks exporter is not installed for this Revit", code: "no-exporter" });
-        if (args.nwc && args.nwc.view !== "TST 3D Navis") blocked.push({ what: `nwc view ${args.nwc.view}`, why: `no view is called ${args.nwc.view}`, code: "view-not-found" });
+        const navisViews = { "TST 3D Navis": 120, "TST 3D Sub": 45, "TST 3D Empty": 0 };
+        if (args.nwc && !(args.nwc.view in navisViews)) blocked.push({ what: `nwc view ${args.nwc.view}`, why: `no view is called ${args.nwc.view}`, code: "view-not-found" });
         if (args.ifc?.setup && !args.ifc.config && args.ifc.setup !== "TST model setup") blocked.push({ what: `ifc setup ${args.ifc.setup}`, why: "no IFC setup by that name in the model, and no config", code: "setup-not-found" });
-        const preflight = { navisworksExporter: nav, views: { nwc: args.nwc ? args.nwc.view === "TST 3D Navis" : undefined }, ifcSetup: args.ifc ? (args.ifc.setup === "TST model setup" ? { name: "TST model setup", from: "model" } : args.ifc.setup ?? null) : null, sheets: args.dwfx ? (args.dwfx.sheets ?? []).length : 0, existing, outDir: args.out_dir };
-        const base = { model: "Test", aceVersion: SERVER_VERSION, preflight, blocked, notes: [], echo: args };
+        // 1.14.14 (#36): what the NWC view shows (model elements, top categories); the model's record key.
+        const nwcView = args.nwc && args.nwc.view in navisViews ? { view: args.nwc.view, elements: navisViews[args.nwc.view], categories: navisViews[args.nwc.view] ? [{ name: "Structural Framing", count: navisViews[args.nwc.view] - 20 }, { name: "Floors", count: 20 }] : [] } : null;
+        const preflight = { nwcView, navisworksExporter: nav, views: { nwc: args.nwc ? !!nwcView : undefined }, ifcSetup: args.ifc ? (args.ifc.setup === "TST model setup" ? { name: "TST model setup", from: "model" } : args.ifc.setup ?? null) : null, sheets: args.dwfx ? (args.dwfx.sheets ?? []).length : 0, existing, outDir: args.out_dir };
+        const base = { model: "Test", modelKey: "Test", aceVersion: SERVER_VERSION, preflight, blocked, notes: [], echo: args };
         if (args.check_only) return reply({ ok: true, result: { ...base, success: true, checkOnly: true, files: [] } });
         if (blocked.length) return reply({ ok: true, result: { ...base, success: false, stage: "blocked", error: "Nothing was exported", files: [] } });
         fs.mkdirSync(args.out_dir, { recursive: true });
-        for (const f of ["nwc", "ifc", "dwfx"]) if (args[f]) { fs.writeFileSync(at(args[f].file), "x".repeat(2048)); files.push({ format: f, file: at(args[f].file), bytes: 2048, seconds: 1.5, ...(f === "dwfx" ? { sheets: args.dwfx.sheets.length } : { elements: 120 }), warnings: f === "ifc" ? ["2 elements | not exported"] : [], view: args[f].view }); }
+        for (const f of ["nwc", "ifc", "dwfx"]) if (args[f]) { fs.writeFileSync(at(args[f].file), "x".repeat(2048)); files.push({ format: f, file: at(args[f].file), bytes: 2048, seconds: 1.5, ...(f === "dwfx" ? { sheets: args.dwfx.sheets.length } : f === "nwc" && nwcView ? { elements: nwcView.elements, categories: nwcView.categories } : { elements: 120 }), warnings: f === "ifc" ? ["2 elements | not exported"] : [], view: args[f].view }); }
         return reply({ ok: true, result: { ...base, success: true, files } });
       }
       case "capture_method": {
@@ -363,6 +366,9 @@ const bridge = http.createServer((req, res) => {
             memory: { workingSetGb: 14.8, openModels: 9, idleCopies: ["TST_A", "TST_B"], closedIdleCopies: [{ model: "TST_A", closed: true }, { model: "TST_B", closed: true }] } }
           : { warnings: ["Revit uses 14.8 GB memory with 9 model(s) open (warning above 10 GB, config.json openModelWarnGb, or above 6 models): another model may make Revit run out of memory and crash (live: 9 models, ~15 GB). ACE's own copies that close quietly (nobody changed them): TST_A, TST_B. Close them first (close_model each, or open_model again with close_idle_copies: true)."],
             memory: { workingSetGb: 14.8, openModels: 9, idleCopies: ["TST_A", "TST_B"], closedIdleCopies: null } });
+        // 1.14.14 (#38): a central that is a plain file copy of another shares its worksharing identity: the add-in warns with the fix.
+        if (model.includes("COPY")) Object.assign(extra, { warnings: [`Two centrals share one worksharing identity (central GUID 11111111-2222-3333-4444-555555555555): ${args.path} and C:/Projects/P1/P1-ORIG.rvt (open in this Revit). One is a plain file copy of the other: after one is saved, every edit to the other fails with "deleted in the Central Model". Fix the copy (the central that should be separate, usually the newer file), with the user's OK: 1. close it and any local of it; 2. open_model { path: <the copy>, detach: "preserve_worksets" }; 3. save_model { save_as: { path: <the copy's own path>, as_central: true, overwrite: true } } (allow_risky after the user agreed): a new identity, worksets kept; 4. everyone makes a new local from it.`],
+          centralIdentity: { central: args.path, centralGuid: "11111111-2222-3333-4444-555555555555", episodeGuid: null } });
         return reply({ ok: true, result: { model, path: args.path, workshared: true, detached: args.detach !== "none", audited: args.audit, worksetsOpened: args.worksets, echo: args, ...extra,
           closed: args.close_previous ? (model.includes("KEEP") ? { model: "Test", closed: false, why: "it has unsaved changes" } : { model: "Test", closed: true }) : null,
           openDocuments: args.close_previous && !model.includes("KEEP") ? [model] : ["Test", model] } });
@@ -1330,6 +1336,8 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(oa.args.clear_transmitted === false && oa.args.save_as_central_ok === false && oa.args.close_idle_copies === false, "the flags default false");
   const big = (await call("open_model", { path: "C:/Projects/P1/P1-BIG.rvt" })).content.at(-1).text;
   assert.match(big, /WARNING: Revit uses 14\.8 GB memory with 9 model\(s\) open.*TST_A, TST_B\. Close them first/, "the memory warning reaches Claude with ACE's idle copies");
+  const copy = (await call("open_model", { path: "C:/Projects/P1/P1-COPY.rvt" })).content.at(-1).text;
+  assert.match(copy, /WARNING: Two centrals share one worksharing identity \(central GUID [0-9a-f-]+\): C:\/Projects\/P1\/P1-COPY\.rvt and C:\/Projects\/P1\/P1-ORIG\.rvt .*detach: "preserve_worksets".*as_central: true, overwrite: true/, "#38: the identity warning reaches Claude with both paths and the fix");
   const bigClose = (await call("open_model", { path: "C:/Projects/P1/P1-BIG.rvt", close_idle_copies: true })).content.at(-1).text;
   assert.ok(seen.at(-1).args.close_idle_copies === true && /Closed ACE's idle copies first: TST_A, TST_B\./.test(bigClose), "close_idle_copies passes through; what was closed is said");
   assert.match(om.content.at(-1).text, /^Opened P1-ST-0001 \(audited \/ worksets: all\); closed Test\. Open now: P1-ST-0001\.\nFlagged transmitted: no\.$/);
@@ -1553,6 +1561,60 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   await call("purge_unused", { ...ex, max_passes: 4, dry_run: true });
   const pc = await call("purge_unused", { ...ex, max_passes: 4 });
   assert.ok(pc.isError && /the model changed since the preview: run the dry run again \(pass 2 finds 5 unused elements, the dry run's pass 2 found 4 \(1 not in the dry run/.test(pc.content.map((c) => c.text).join("\n")), "plan-changed names the pass that differs");
+}
+// --- export_deliverables #36: the agreed NWC view per model (the vault's rules/export.json nwc.agreedViews) ---
+{
+  const avRoot = path.join(tmp, "agreed");
+  await call("vault", { action: "init", folder: avRoot, project: "TST", consent: true });
+  const avRules = path.join(avRoot, "ACE Vault", "rules", "export.json");
+  const stored = () => fs.existsSync(avRules) ? JSON.parse(fs.readFileSync(avRules, "utf8")) : {};
+  const ed = () => seen.filter((x) => x.command === "export_deliverables");
+  const o = (n) => ({ out_dir: path.join(avRoot, `out-${n}`), vault: avRoot });
+  const all = (res) => res.content.map((c) => c.text).join("\n");
+  const n0 = ed().length;
+  const nv = await call("export_deliverables", { ...o(0), nwc: {} });
+  assert.ok(nv.isError && ed().length === n0 && /nwc view: no view was given and none is agreed for Test \(.*export\.json nwc\.agreedViews\)\. How to clear: give nwc\.view/.test(all(nv)), "no view and none agreed: blocked before Revit is asked");
+  const c1 = await call("export_deliverables", { ...o(1), nwc: { view: "TST 3D Sub" }, check_only: true });
+  assert.match(all(c1), /NWC view "TST 3D Sub": 45 model element\(s\); categories: Structural Framing 25, Floors 20\./, "check_only shows what the view holds");
+  assert.ok(!stored().nwc, "check_only records nothing");
+  const e1 = await call("export_deliverables", { ...o(1), nwc: { view: "TST 3D Sub" } });
+  assert.ok(!e1.isError && ed().at(-1).args.nwc.view === "TST 3D Sub");
+  assert.match(all(e1), /NWC exported from "TST 3D Sub": 45 model element\(s\); categories: Structural Framing 25, Floors 20\./, "the post-export line: view, elements, categories");
+  assert.match(all(e1), /Agreed NWC view "TST 3D Sub" recorded for Test in .*export\.json nwc\.agreedViews: later exports use it/, "the first export records the agreed view");
+  assert.equal(stored().nwc.agreedViews.Test, "TST 3D Sub", "stored per model in the vault's rules/export.json");
+  const rec = JSON.parse(fs.readFileSync(all(e1).match(/Run record: (.*\.json)/)[1], "utf8"));
+  assert.ok(rec.agreedViews.used.nwc.views === "TST 3D Sub" && rec.agreedViews.recorded[0].model === "Test" && rec.files[0].categories.length === 2, "the run record keeps the view, its source and the categories");
+  const e2 = await call("export_deliverables", { ...o(2), nwc: {} });
+  assert.ok(!e2.isError && ed().at(-1).args.nwc.view === "TST 3D Sub" && /NWC from the agreed view "TST 3D Sub" for Test/.test(all(e2)) && !/Agreed NWC view .* recorded/.test(all(e2)), "no view given: the agreed view is used");
+  const e2b = await call("export_deliverables", { ...o("2b"), nwc: { view: "tst 3d sub" }, check_only: true });
+  assert.ok(!e2b.isError, "the agreed view in another case is the same view");
+  const n3 = ed().length;
+  const e3 = await call("export_deliverables", { ...o(3), nwc: { view: "TST 3D Navis" } });
+  assert.ok(e3.isError && ed().length === n3, "a different view is refused before Revit is asked");
+  assert.match(all(e3), /nwc-view-differs: the agreed NWC view for Test is "TST 3D Sub" \(.*nwc\.agreedViews\); this call asks for "TST 3D Navis"\. How to clear: .*confirm_view_change: true/, "the refusal names both views and how to change");
+  assert.ok(JSON.parse(e3.content.at(-1).text).blocked[0].code === "nwc-view-differs", "the block carries its code");
+  const e4 = await call("export_deliverables", { ...o(4), nwc: { view: "TST 3D Navis" }, confirm_view_change: true });
+  assert.ok(!e4.isError && ed().at(-1).args.nwc.view === "TST 3D Navis" && /Agreed NWC view "TST 3D Navis" changed for Test/.test(all(e4)) && stored().nwc.agreedViews.Test === "TST 3D Navis", "confirm_view_change exports and records the new view");
+  const e5 = await call("export_deliverables", { ...o(5), nwc: { view: "TST 3D Empty" }, confirm_view_change: true, check_only: true });
+  assert.match(all(e5), /NWC view "TST 3D Empty": 0 model element\(s\) \(EMPTY: check the view\)\./, "an empty view is flagged");
+  assert.ok(stored().nwc.agreedViews.Test === "TST 3D Navis", "check_only with confirm_view_change records nothing");
+  // DWFx 3D views (dwfx.views): recorded, a different list refused, none given exports none with a note.
+  const d1 = await call("export_deliverables", { ...o(6), dwfx: { sheets: ["TST-01"], views: ["TST 3D Sub"] } });
+  assert.ok(!d1.isError && JSON.stringify(stored().dwfx.agreedViews.Test) === JSON.stringify(["TST 3D Sub"]), "the DWFx 3D views are recorded");
+  const d2 = await call("export_deliverables", { ...o(7), dwfx: { sheets: ["TST-01"], views: ["TST 3D Navis"] } });
+  assert.ok(d2.isError && /dwfx-views-differ: the agreed DWFx 3D view\(s\) for Test is "TST 3D Sub"/.test(all(d2)), "a different DWFx view list is refused");
+  const d3 = await call("export_deliverables", { ...o(8), dwfx: { sheets: ["TST-01"] }, check_only: true });
+  assert.ok(!d3.isError && !ed().at(-1).args.dwfx.views && /DWFx: the agreed 3D view\(s\) "TST 3D Sub" for Test are not in this export/.test(all(d3)), "no dwfx.views: none added, the agreed ones named");
+  // Keys as patterns (like a rule's models key); two patterns with different views block.
+  fs.writeFileSync(avRules, JSON.stringify({ nwc: { agreedViews: { "Te*": "TST 3D Sub" } } }));
+  assert.ok(ed().length && (await call("export_deliverables", { ...o(9), nwc: {}, check_only: true }), ed().at(-1).args.nwc.view === "TST 3D Sub"), "a pattern key matches the model");
+  fs.writeFileSync(avRules, JSON.stringify({ nwc: { agreedViews: { "Te*": "TST 3D Sub", "*st": "TST 3D Navis" } } }));
+  assert.match(all(await call("export_deliverables", { ...o(10), nwc: {}, check_only: true })), /nwc\.agreedViews has 2 keys for this model with different views/, "ambiguous keys block");
+  // An untrusted vault: the export runs, the view is not recorded (said).
+  const ut = path.join(tmp, "agreed-untrusted", "ACE Vault");
+  fs.mkdirSync(path.join(ut, "rules"), { recursive: true });
+  const u1 = await call("export_deliverables", { out_dir: path.join(tmp, "agreed-untrusted", "out"), vault: ut, nwc: { view: "TST 3D Sub" } });
+  assert.ok(!u1.isError && /Agreed NWC view "TST 3D Sub" NOT recorded for Test: the vault .* is not trusted for writing/.test(all(u1)) && !fs.existsSync(path.join(ut, "rules", "export.json")), "an untrusted vault is never written");
 }
 // --- export_deliverables: names from the vault's naming rule, IFC settings from the vault, blocks reported, a table ---
 {

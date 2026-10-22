@@ -3,6 +3,7 @@
 // setup from the vault) and reports the add-in's pre-flight and per-file results as a table. Pure functions.
 import fs from "node:fs";
 import path from "node:path";
+import { ruleAppliesTo } from "./worksets.js";
 
 export const EXPORT_RULES = path.join("rules", "export.json");
 const BAD = /[\\/:*?"<>|]/g;
@@ -107,6 +108,10 @@ export function resultText(r, { mode, outDir, names = {}, notes = [] }) {
     lines.push("| file | size | time | count | warnings |", "|---|---|---|---|---|");
     for (const f of files) lines.push(`| ${path.basename(f.file ?? "")} | ${size(f.bytes)} | ${f.seconds != null ? `${f.seconds} s` : "-"} | ${f.sheets != null ? `${f.sheets} sheet(s)` : f.elements != null ? `${f.elements} element(s)` : "-"} | ${(f.warnings ?? []).join("; ").replace(/\|/g, "/") || "-"} |`);
   }
+  // #36: what the NWC view holds, so a reviewer sees which view the file came from and what is in it.
+  const nwcFiles = files.filter((f) => f.format === "nwc" && f.view && f.bytes != null);
+  if (nwcFiles.length) for (const f of nwcFiles) lines.push(nwcViewLine(f.view, f, true));
+  else if (pf.nwcView?.view) lines.push(nwcViewLine(pf.nwcView.view, pf.nwcView, false));
   const all = [...notes, ...(r?.notes ?? []).map((n) => typeof n === "string" ? n : JSON.stringify(n))];
   if (all.length) lines.push(`Notes:\n${all.map((n) => `- ${n}`).join("\n")}`);
   return lines.join("\n");
@@ -181,4 +186,87 @@ export function vaultIfcSetups(vaultDir, rules = {}) {
   const d = vaultDir && path.join(vaultDir, "rules", "ifc");
   const files = d && fs.existsSync(d) ? fs.readdirSync(d).filter((f) => /\.json$/i.test(f)).map((f) => f.replace(/\.json$/i, "")) : [];
   return [...new Set([...named, ...files])];
+}
+
+// ---- #36: the agreed export view per model (the vault's rules/export.json nwc.agreedViews, dwfx.agreedViews) ----------
+// A model's NWC is exported from one agreed 3D view; typing the view per call once exported the whole building instead of
+// the agreed part. The view is project data: read from the vault at run time, recorded after the first successful export,
+// and changed only with confirm_view_change: true. Keys: the model's record key (the add-in's modelKey: the central's file
+// name, else the file's, else the title) or a pattern matched like a rule's models key (exact or *, case-insensitive).
+const viewList = (v) => [].concat(v ?? []).map((x) => String(x ?? "").trim()).filter(Boolean);
+const viewKey = (v) => viewList(v).map((x) => x.toLowerCase()).sort().join("\n");
+const showViews = (v) => viewList(v).map((x) => `"${x}"`).join(", ") || "(none)";
+const keyNorm = (s) => String(s ?? "").trim().replace(/\.rvt$/i, "").toLowerCase();
+
+/**
+ * The agreed view(s) of a model: rules[format].agreedViews { key: view (nwc) or [views] (dwfx) }. The model's own key
+ * first, else the keys that match one of its names. -> { key, value } | { problem } | null (none agreed)
+ */
+export function agreedViewOf(rules, format, { key, names = [] } = {}) {
+  const map = rules?.[format]?.agreedViews;
+  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+  const entries = Object.entries(map).filter(([, v]) => viewList(v).length);
+  const own = entries.find(([k]) => key && keyNorm(k) === keyNorm(key));
+  if (own) return { key: own[0], value: own[1] };
+  const all = [...new Set([...names, keyNorm(key)].filter(Boolean))];
+  const hits = entries.filter(([k]) => ruleAppliesTo({ models: [k] }, all).applies);
+  if (!hits.length) return null;
+  if (hits.some(([, v]) => viewKey(v) !== viewKey(hits[0][1])))
+    return { problem: `${format}.agreedViews has ${hits.length} keys for this model with different views (${hits.map(([k, v]) => `${k}: ${showViews(v)}`).join("; ")})` };
+  return { key: hits[0][0], value: hits[0][1] };
+}
+
+/**
+ * Which view(s) this export uses, from the call (given) and the agreed one. NWC: no view given uses the agreed view; a
+ * different one is refused (nwc-view-differs) unless confirm (then it is recorded). DWFx 3D views (dwfx.views): a different
+ * non-empty list is refused (dwfx-views-differ) unless confirm; none given exports none (a note names the agreed ones).
+ * The first view given for a model with none agreed is recorded after a successful export.
+ * -> { views (nwc: a name; dwfx: a list or undefined), from: "agreed" | "call" | null, record, change?, block?, note? }
+ */
+export function viewDecision({ format, given, agreed, confirm = false, model, rulesFile = EXPORT_RULES }) {
+  const where = `${rulesFile} ${format}.agreedViews`;
+  if (agreed?.problem) return { block: { what: `${format} view`, why: `${agreed.problem} (${rulesFile})`, how: `keep one key per model in ${where}`, code: `${format}-view-ambiguous` } };
+  const want = viewList(given), has = agreed ? viewList(agreed.value) : [];
+  const label = format === "nwc" ? "NWC view" : "DWFx 3D view(s)";
+  const out = (v) => format === "nwc" ? v[0] : v;
+  if (!want.length) {
+    if (format === "nwc") {
+      if (has.length) return { views: has[0], from: "agreed", record: false, note: `NWC from the agreed view "${has[0]}" for ${agreed.key} (${where}).` };
+      return { block: { what: "nwc view", why: `no view was given and none is agreed for ${model ?? "this model"} (${where})`, how: "give nwc.view: the 3D view agreed for the Navisworks export (ACE records it for this model after the first export)", code: "view-not-found" } };
+    }
+    return { views: undefined, from: null, record: false, note: has.length ? `DWFx: the agreed 3D view(s) ${showViews(has)} for ${agreed.key} are not in this export (dwfx.views not given).` : undefined };
+  }
+  if (!has.length) return { views: out(want), from: "call", record: true };
+  if (viewKey(want) === viewKey(has)) return { views: out(has), from: "agreed", record: false };   // the agreed spelling
+  const code = format === "nwc" ? "nwc-view-differs" : "dwfx-views-differ";
+  if (!confirm) return { block: {
+    what: `${format} view ${showViews(want)}`,
+    why: `${code}: the agreed ${label} for ${agreed.key} is ${showViews(has)} (${where}); this call asks for ${showViews(want)}`,
+    how: `export from the agreed view (${format === "nwc" ? "leave nwc.view out" : "dwfx.views as agreed"}), or, only when the user confirms the agreed view has changed, pass confirm_view_change: true (the new view is then recorded)`,
+    code } };
+  return { views: out(want), from: "call", record: true, change: { from: has, to: want }, note: `${label} changed with confirm_view_change: ${showViews(has)} -> ${showViews(want)} (recorded for ${agreed.key} after a successful export).` };
+}
+
+/** Records the agreed view(s) of a model in the vault's rules/export.json (created when missing; other keys kept). -> the file */
+export function recordAgreedView(vaultDir, format, key, value) {
+  const f = path.join(vaultDir, EXPORT_RULES);
+  const { rules } = readRules(vaultDir);
+  const next = { ...rules };
+  next[format] = { ...(rules[format] ?? {}) };
+  const map = { ...(next[format].agreedViews ?? {}) };
+  for (const k of Object.keys(map)) if (keyNorm(k) === keyNorm(key)) delete map[k];
+  map[key] = format === "nwc" ? viewList(value)[0] : viewList(value);
+  next[format].agreedViews = map;
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(`${f}.tmp`, JSON.stringify(next, null, 2));
+  fs.renameSync(`${f}.tmp`, f);
+  return f;
+}
+
+/** One line per NWC: the view it was exported from, its model elements and top categories (#36 post-export check). */
+export function nwcViewLine(view, { elements, categories } = {}, exported = true) {
+  if (!view) return null;
+  const cats = (categories ?? []).map((c) => `${c.name} ${c.count}`).join(", ");
+  const n = elements == null ? "element count not read" : elements < 0 ? "elements could not be counted" : `${elements} model element(s)`;
+  return `NWC ${exported ? "exported from" : "view"} "${view}": ${n}${cats ? `; categories: ${cats}` : ""}${elements === 0 ? " (EMPTY: check the view)" : ""}.`;
 }

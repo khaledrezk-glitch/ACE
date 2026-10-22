@@ -26,6 +26,8 @@ namespace AceRevitMcp.Commands
     /// so the sheets stay on true paper) and its page is left out of the size check. Writes files, never changes the model (the IFC and DWFx exports run inside a
     /// transaction that is rolled back, as Revit requires a modifiable document: no undo step). check_only answers the pre-flight only; an export refuses
     /// when anything is blocked (no Navisworks exporter, a view or sheet missing, a file that exists without overwrite).
+    /// NWC (#36): preflight.nwcView and the file's entry say what the view shows (model elements, top categories); the answer's
+    /// modelKey is the name the server records the agreed view under (the vault's rules/export.json nwc.agreedViews).
     /// </summary>
     internal static class ExportDeliverables
     {
@@ -42,6 +44,7 @@ namespace AceRevitMcp.Commands
             public List<View> Views = new List<View>();     // dwfx: the 3D views (dwfx.views) exported into this file with its sheets
             public string Printer, PrinterPaper;            // dwfx: the printer and its paper size set (in session, rolled back) for the export
             public bool Oversize;                           // dwfx: a sheet has content beyond its title block frame (allow_oversize): pages scale
+            public JsonObject Contents;                     // nwc: the view's model elements and top categories (ViewContents)
         }
 
         /// <summary>The printers installed for this Windows user (the registry's printer lists), PDF printers first; empty when unreadable.</summary>
@@ -288,6 +291,7 @@ namespace AceRevitMcp.Commands
             var askedViews = new List<string>();    // dwfx.views as given (exact 3D view names)
             var dwfxViews = new List<View>();
             JsonArray sheetExtents = null;   // dwfx: the sheets with content beyond their title block frame (#37)
+            JsonObject nwcView = null;       // nwc: the view's name, model elements and top categories (#36)
 
             View FindView(string name) =>
                 new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<View>().FirstOrDefault(v => !v.IsTemplate && string.Equals(v.Name, name, StringComparison.Ordinal))
@@ -315,7 +319,14 @@ namespace AceRevitMcp.Commands
                 if (!navisworks) Block("nwc", "no-exporter", "the Navisworks exporter is not installed for this Revit", "Install the Navisworks NWC Export Utility for this Revit version (Autodesk), restart Revit, then run again.");
                 if (v == null) Block("nwc view " + name, "view-not-found", string.IsNullOrWhiteSpace(name) ? "no view was given" : $"no view is called {name}", "Give view: the name of a 3D view.");
                 else if (!(v is View3D)) Block("nwc view " + name, "view-not-found", $"{name} is not a 3D view", "Give the name of a 3D view.");
-                if (file != null && v is View3D) jobs.Add(new Job { Format = "nwc", File = file, View = v });
+                if (v is View3D)
+                {
+                    // #36: what the view shows, in the pre-flight and on the exported file, so a reviewer sees "exported from view
+                    // X, N elements, categories ..." (the export itself reports no count; the model is not changed by it).
+                    nwcView = ViewContents(doc, v);
+                    if ((int?)nwcView["elements"] == 0) notes.Add($"NWC: the view {v.Name} shows no model elements: the NWC would be empty. Check the view (section box, filters, worksets, phase).");
+                }
+                if (file != null && v is View3D) jobs.Add(new Job { Format = "nwc", File = file, View = v, Contents = nwcView });
             }
             if (args["ifc"] is JsonObject ifc)
             {
@@ -516,8 +527,9 @@ namespace AceRevitMcp.Commands
                 {
                     ["navisworksExporter"] = navisworks, ["views"] = views, ["dwfxViews"] = args["dwfx"] is JsonObject ? new JsonArray(dwfxViews.Select(v => (JsonNode)v.Name).ToArray()) : null, ["ifcSetup"] = ifcSetup, ["ifcSetupsInModel"] = SetupList(), ["sheets"] = sheetCount,
                     ["sheetList"] = jobs.Any(j => j.Format == "dwfx") ? SheetList(doc, jobs.Where(j => j.Format == "dwfx").SelectMany(j => j.Sheets).ToList()) : null, ["existing"] = existing, ["outDir"] = dir,
-                    ["sheetExtents"] = sheetExtents,
+                    ["sheetExtents"] = sheetExtents, ["nwcView"] = nwcView?.DeepClone(),
                 },
+                ["modelKey"] = Rules.ProjectRulesCommands.ModelKey(doc),
                 ["blocked"] = blocks, ["files"] = new JsonArray(), ["notes"] = notes,
             };
             if (checkOnly) { answer["success"] = true; answer["checkOnly"] = true; return answer; }
@@ -647,6 +659,12 @@ namespace AceRevitMcp.Commands
                     entry["layout"] = layout;
                     if (written) { exportedSheets.AddRange(job.Sheets.Select(x => x.SheetNumber)); exportedViews.AddRange(job.Views.Select(v => v.Name)); }
                 }
+                else if (job.Format == "nwc" && job.Contents != null)
+                {
+                    entry["elements"] = job.Contents["elements"]?.DeepClone();
+                    entry["categories"] = job.Contents["categories"]?.DeepClone();
+                    entry["counted"] = "model elements visible in the view (linked models not counted)";
+                }
                 else entry["elements"] = ElementCount(doc, job.View);
                 entry["warnings"] = warnings;
                 files.Add(entry);
@@ -761,6 +779,25 @@ namespace AceRevitMcp.Commands
         }).ToArray());
 
         /// <summary>The model elements in the view (or in the whole model when no view).</summary>
+        /// <summary>
+        /// A 3D view's exportable content (#36): { view, elements: model elements visible in it (not view-specific, not types),
+        /// categories: [{ name, count }] (the 8 largest, the rest as "other") }; elements -1 when it cannot be read.
+        /// </summary>
+        private static JsonObject ViewContents(Document doc, View view)
+        {
+            var o = new JsonObject { ["view"] = view.Name };
+            try
+            {
+                var cats = new FilteredElementCollector(doc, view.Id).WhereElementIsNotElementType()
+                    .Where(e => e.Category != null && e.Category.CategoryType == CategoryType.Model && !e.ViewSpecific)
+                    .Select(e => e.Category.Name).ToList();
+                o["elements"] = cats.Count;
+                o["categories"] = new JsonArray(PurgeLogic.Top(cats, 8).Select(kv => (JsonNode)new JsonObject { ["name"] = kv.Key, ["count"] = kv.Value }).ToArray());
+            }
+            catch (Exception ex) { o["elements"] = -1; o["problem"] = ex.Message; }
+            return o;
+        }
+
         private static int ElementCount(Document doc, View view)
         {
             try
