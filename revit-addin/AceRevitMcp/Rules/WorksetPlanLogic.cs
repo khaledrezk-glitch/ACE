@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Nodes;
 
 namespace AceRevitMcp.Rules
 {
@@ -194,6 +195,192 @@ namespace AceRevitMcp.Rules
                     "t:" + string.Join(",", (s.TypeIds ?? new List<long>()).OrderBy(i => i).Select(i => i.ToString(inv)))))
                 .OrderBy(l => l, StringComparer.Ordinal);
             return Util.Compat.Sha256Hex(string.Join("\n", lines)).ToLowerInvariant();
+        }
+
+        // ---- the after-check (register #37): what the rules asked for, measured on the model after the commit -------------
+
+        /// <summary>
+        /// Does a type name start with one of the prefixes (the office method: rules match on category, type-name prefix and
+        /// level)? The type part ("Family : SB1 300x600" gives "SB1 300x600") or the whole name, ignoring case and outer spaces.
+        /// </summary>
+        public static bool TypePrefixMatches(string typeName, IEnumerable<string> prefixes, string familyName = null)
+        {
+            var list = (prefixes ?? Enumerable.Empty<string>()).Select(p => (p ?? "").Trim()).Where(p => p.Length > 0).ToList();
+            if (list.Count == 0) return true;
+            var full = (typeName ?? "").Trim();
+            var cut = full.LastIndexOf(" : ", StringComparison.Ordinal);
+            var part = cut >= 0 ? full.Substring(cut + 3).Trim() : full;
+            var fam = (familyName ?? "").Trim();
+            return list.Any(p => part.StartsWith(p, StringComparison.OrdinalIgnoreCase) || full.StartsWith(p, StringComparison.OrdinalIgnoreCase)
+                || (fam.Length > 0 && $"{fam} : {part}".StartsWith(p, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private static List<string> Strings(JsonNode n) =>
+            n == null ? new List<string>() : n is JsonArray a ? a.Select(x => x?.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList()
+            : string.IsNullOrWhiteSpace(n.ToString()) ? new List<string>() : new List<string> { n.ToString().Trim() };
+
+        /// <summary>
+        /// Does an element (as the facts name it) match one selector of an after-check target: { category: [..], level: [exact
+        /// names], type: [exact "Family : Type"], typePrefix: [..], material }? An empty field matches everything; a material
+        /// only rules out an element whose own class is known (concrete / steel) and differs.
+        /// </summary>
+        public static bool SelectorMatches(JsonObject sel, string category, string type, string level, string material)
+        {
+            if (sel == null) return false;
+            bool In(List<string> list, string v) => list.Count == 0 || list.Any(x => string.Equals(x, (v ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+            var cats = Strings(sel["category"]);
+            if (cats.Count == 0) return false;   // a target always names its categories: a category-free selector would claim everything
+            if (!In(cats, category)) return false;
+            if (!In(Strings(sel["level"]), level)) return false;
+            if (!In(Strings(sel["type"]), type)) return false;
+            if (!TypePrefixMatches(type, Strings(sel["typePrefix"]))) return false;
+            var m = sel["material"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(m) && (material == "concrete" || material == "steel") && !string.Equals(m.Trim(), material, StringComparison.OrdinalIgnoreCase)) return false;
+            return true;
+        }
+
+        /// <summary>The after-check targets (the server's after_check.targets) an element matches, by workset name.</summary>
+        public static List<string> TargetsOf(JsonArray targets, string category, string type, string level, string material) =>
+            (targets ?? new JsonArray()).OfType<JsonObject>()
+                .Where(t => !string.IsNullOrWhiteSpace(t["workset"]?.ToString()) && (t["selectors"] as JsonArray ?? new JsonArray()).OfType<JsonObject>().Any(s => SelectorMatches(s, category, type, level, material)))
+                .Select(t => t["workset"].ToString()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        /// <summary>A workset by name after the change: exact, then ignoring case, then ignoring outer spaces (0 = none).</summary>
+        public static long WorksetIdOf(IDictionary<long, string> names, string name)
+        {
+            if (names == null || string.IsNullOrWhiteSpace(name)) return 0;
+            foreach (Func<string, bool> eq in new Func<string, bool>[] { n => n == name, n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase), n => string.Equals((n ?? "").Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase) })
+                foreach (var kv in names) if (eq(kv.Value)) return kv.Key;
+            return 0;
+        }
+
+        /// <summary>
+        /// The after-check, read after the commit (pure counting; the caller re-reads the model). Per target and category: on the
+        /// target now, matching but still on a source / default workset (left behind), matching but on another workset, skipped
+        /// for a stated reason (borrowed, pinned, held for visibility, read-only, not yours yet in a dry run) and excluded by a
+        /// decision (skipped groups). A target fails with code target-missing (it does not exist and was to receive elements),
+        /// target-empty (it was to receive N and holds none of them, or holds nothing while matching elements stay behind) or
+        /// left-behind (matching elements still on a source workset without a stated reason). Also what is still on the default
+        /// workset, by category and by category and type. preview: a dry run's forecast (same counts, same codes).
+        /// </summary>
+        public static JsonObject AfterCheck(IList<(string Workset, long WorksetId, IDictionary<string, int> Planned)> targets,
+            IEnumerable<(long Id, long Ws, string Category, string Type, string Key, IList<string> Targets)> elements,
+            IDictionary<long, string> worksetNames, ICollection<long> sources, ICollection<long> defaults, IDictionary<long, string> skips, ICollection<string> excludeKeys, bool preview)
+        {
+            const int OnT = 0, Left = 1, Other = 2, Skip = 3, Excl = 4;
+            var tl = (targets ?? new List<(string, long, IDictionary<string, int>)>()).GroupBy(t => (t.Workset ?? "").Trim(), StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+            var acc = tl.ToDictionary(t => (t.Workset ?? "").Trim(), t => new SortedDictionary<string, int[]>(StringComparer.Ordinal), StringComparer.OrdinalIgnoreCase);
+            var skipAgg = new SortedDictionary<string, (int Count, List<long> Ids, SortedDictionary<string, int> Cats)>(StringComparer.Ordinal);
+            var defCat = new SortedDictionary<string, int>(StringComparer.Ordinal); var defType = new Dictionary<(string, string), int>();
+            var skipSeen = new HashSet<long>();
+            int[] Row(string t, string cat) { var d = acc[t]; if (!d.TryGetValue(cat, out var r)) d[cat] = r = new int[5]; return r; }
+            foreach (var e in elements ?? Enumerable.Empty<(long, long, string, string, string, IList<string>)>())
+            {
+                var cat = e.Category ?? "";
+                if (defaults != null && defaults.Contains(e.Ws))
+                {
+                    defCat[cat] = defCat.TryGetValue(cat, out var c0) ? c0 + 1 : 1;
+                    var tk = (cat, e.Type ?? ""); defType[tk] = defType.TryGetValue(tk, out var c1) ? c1 + 1 : 1;
+                }
+                if (e.Targets == null || e.Targets.Count == 0) continue;
+                var excluded = excludeKeys != null && e.Key != null && excludeKeys.Contains(e.Key);
+                foreach (var tn in e.Targets.Select(x => (x ?? "").Trim()).Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!acc.ContainsKey(tn)) continue;
+                    var t = tl.First(x => string.Equals((x.Workset ?? "").Trim(), tn, StringComparison.OrdinalIgnoreCase));
+                    var r = Row(tn, cat);
+                    if (t.WorksetId != 0 && e.Ws == t.WorksetId) r[OnT]++;
+                    else if (excluded) r[Excl]++;
+                    else if (sources != null && sources.Contains(e.Ws))
+                    {
+                        if (skips != null && skips.TryGetValue(e.Id, out var why) && !string.IsNullOrWhiteSpace(why))
+                        {
+                            r[Skip]++;
+                            if (skipSeen.Add(e.Id))
+                            {
+                                var a = skipAgg.TryGetValue(why, out var x) ? x : (Count: 0, Ids: new List<long>(), Cats: new SortedDictionary<string, int>(StringComparer.Ordinal));
+                                if (a.Ids.Count < 20) a.Ids.Add(e.Id);
+                                a.Cats[cat] = a.Cats.TryGetValue(cat, out var c2) ? c2 + 1 : 1;
+                                skipAgg[why] = (a.Count + 1, a.Ids, a.Cats);
+                            }
+                        }
+                        else r[Left]++;
+                    }
+                    else r[Other]++;
+                }
+            }
+            JsonObject Counts(IDictionary<string, int> d) => new JsonObject(d.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => new KeyValuePair<string, JsonNode>(kv.Key, kv.Value)));
+            var outT = new JsonArray(); var failures = 0;
+            foreach (var t in tl)
+            {
+                var name = (t.Workset ?? "").Trim();
+                var planned = t.Planned ?? new Dictionary<string, int>();
+                var rows = acc[name];
+                foreach (var cat in planned.Keys) Row(name, cat);
+                int Sum(int k) => rows.Values.Sum(v => v[k]);
+                var plannedTotal = planned.Values.Sum();
+                int onT = Sum(OnT), left = Sum(Left), other = Sum(Other), skip = Sum(Skip), excl = Sum(Excl);
+                string code = null, why = null;
+                var verb = preview ? "would" : "did";
+                if (t.WorksetId == 0 && (plannedTotal > 0 || left > 0)) { code = "target-missing"; why = $"the workset {name} does not exist{(plannedTotal > 0 ? $": {plannedTotal} element(s) were to go there" : "")}"; }
+                else if (onT == 0 && (plannedTotal > 0 || left > 0)) { code = "target-empty"; why = $"{name} {(preview ? "would hold" : "holds")} no matching element{(plannedTotal > 0 ? $" (the plan moves {plannedTotal} there)" : "")}; {left} matching element(s) {(preview ? "would stay" : "are still")} on the source / default workset"; }
+                else if (left > 0) { code = "left-behind"; why = $"{left} matching element(s) {(preview ? "would stay" : "are still")} on the source / default workset ({string.Join(", ", rows.Where(kv => kv.Value[Left] > 0).Select(kv => $"{kv.Value[Left]} {kv.Key}"))}): the plan {verb} not move them"; }
+                if (code != null) failures++;
+                outT.Add(new JsonObject
+                {
+                    ["workset"] = name, ["found"] = t.WorksetId != 0, ["planned"] = plannedTotal, ["onTarget"] = onT, ["leftOnSource"] = left, ["onOther"] = other, ["skipped"] = skip, ["excluded"] = excl,
+                    ["byCategory"] = new JsonObject(rows.Select(kv => new KeyValuePair<string, JsonNode>(kv.Key, new JsonObject
+                    {
+                        ["planned"] = planned.TryGetValue(kv.Key, out var pn) ? pn : 0, ["onTarget"] = kv.Value[OnT], ["leftOnSource"] = kv.Value[Left], ["onOther"] = kv.Value[Other], ["skipped"] = kv.Value[Skip], ["excluded"] = kv.Value[Excl],
+                    }))),
+                    ["code"] = code, ["why"] = why,
+                });
+            }
+            var defTotal = defCat.Values.Sum();
+            return new JsonObject
+            {
+                ["ok"] = failures == 0, ["preview"] = preview, ["failures"] = failures,
+                ["read"] = preview ? "inside the dry run, after the change and before it was rolled back" : "after the commit, by re-reading the model (read-only)",
+                ["targets"] = outT,
+                ["skips"] = new JsonArray(skipAgg.Select(kv => (JsonNode)new JsonObject
+                {
+                    ["reason"] = kv.Key, ["count"] = kv.Value.Count, ["byCategory"] = Counts(kv.Value.Cats), ["sampleIds"] = new JsonArray(kv.Value.Ids.Select(i => (JsonNode)i).ToArray()),
+                }).ToArray()),
+                ["stillOnDefault"] = new JsonObject
+                {
+                    ["workset"] = defaults == null ? null : string.Join(", ", defaults.Where(d => worksetNames != null && worksetNames.ContainsKey(d)).Select(d => worksetNames[d]).Distinct()),
+                    ["total"] = defTotal, ["byCategory"] = Counts(defCat),
+                    ["byType"] = new JsonArray(defType.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key.Item1, StringComparer.Ordinal).ThenBy(kv => kv.Key.Item2, StringComparer.Ordinal).Take(60)
+                        .Select(kv => (JsonNode)new JsonObject { ["category"] = kv.Key.Item1, ["type"] = kv.Key.Item2, ["elements"] = kv.Value }).ToArray()),
+                },
+            };
+        }
+
+        /// <summary>
+        /// After a run: a real apply whose after-check failed is NOT done (stage incomplete, complete false, the reason as the
+        /// error and the note; the change itself stays: ONE undo step, the after-check only read); a clean apply is complete; a
+        /// dry run whose forecast fails says what the apply would leave undone. Returns whether the step is complete.
+        /// </summary>
+        public static bool MarkComplete(JsonObject result, bool dryRun)
+        {
+            if (result == null) return false;
+            var ac = result["afterCheck"] as JsonObject;
+            var applied = result["success"] is JsonValue sv && sv.TryGetValue<bool>(out var s) && s && !(result["rolledBack"] is JsonValue rv && rv.TryGetValue<bool>(out var rb) && rb);
+            if (ac == null || !applied) return applied && !dryRun;
+            var ok = ac["ok"] is JsonValue ov && ov.TryGetValue<bool>(out var o) && o;
+            var fails = (ac["targets"] as JsonArray ?? new JsonArray()).OfType<JsonObject>().Where(t => t["code"] != null).ToList();
+            var text = string.Join("; ", fails.Take(6).Select(t => $"{t["workset"]}: {t["code"]} ({t["why"]})")) + (fails.Count > 6 ? $"; +{fails.Count - 6} more" : "");
+            if (dryRun)
+            {
+                if (!ok && result["notes"] is JsonArray notes) notes.Add($"After-check forecast: the apply would leave work undone on {fails.Count} target(s): {text}. Resolve it (fix the rules or the plan) before applying, or the apply reports the step as not done.");
+                return false;
+            }
+            result["complete"] = ok;
+            if (ok) return true;
+            result["stage"] = "incomplete";
+            result["error"] = $"Applied as ONE undo step, but NOT done: the after-check found {fails.Count} target(s) not done: {text}.";
+            result["note"] = result["error"].ToString() + " The change stays (undo it as one step if wanted); fix the rules or the plan and run again for what is left.";
+            return false;
         }
     }
 }

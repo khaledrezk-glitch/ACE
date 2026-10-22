@@ -695,7 +695,7 @@ namespace AceRevitMcp.Companion
                     ok = r?["success"]?.GetValue<bool>() == true;
                     var c = r?["changed"] as JsonObject;
                     outcome = ok
-                        ? (c != null ? $"added {c["added"]}, modified {c["modified"]}, deleted {c["deleted"]}" : "applied")
+                        ? (c != null ? $"added {c["added"]}, modified {c["modified"]}, deleted {c["deleted"]}{Util.ChangeTracker.Recording.TypesText(c)}" : "applied")
                         : (r?["error"]?.ToString() ?? (r?["errors"] as JsonArray)?.FirstOrDefault()?.ToString() ?? "failed");
                 }
                 ActivityHub.Decide(p, ok ? PendingState.AppliedByPanel : PendingState.Failed, outcome);

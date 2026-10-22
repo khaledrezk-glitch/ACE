@@ -25,6 +25,7 @@ namespace AceRevitMcp.Rules
             public Regex Function, Family, Type, Level, Zone, Department, Value;
             public string Param;
             public string Material;      // "concrete" | "steel" | "other" (WorksetPlanLogic.MaterialClass): the rule skips other classes
+            public List<string> TypePrefixes = new List<string>();   // typePrefix: the type name starts with one of these (the office method: category, type-name prefix, level)
         }
 
         public List<Rule> Items = new List<Rule>();
@@ -78,6 +79,7 @@ namespace AceRevitMcp.Rules
                     Function = Rx(o["function"]), Family = Rx(o["family"]), Type = Rx(o["type"]), Level = Rx(o["level"]),
                     Zone = Rx(o["zone"]), Department = Rx(o["department"]), Param = o["parameter"]?.ToString(), Value = Rx(o["value"]),
                     Material = string.IsNullOrWhiteSpace(o["material"]?.ToString()) ? null : o["material"].ToString().Trim().ToLowerInvariant(),
+                    TypePrefixes = ListOf(o["typePrefix"]).Select(x => x.Trim()).ToList(),
                 });
             }
             return r;
@@ -196,6 +198,7 @@ namespace AceRevitMcp.Rules
                 (r.Function == null || r.Function.IsMatch(function ??= ctx.FunctionOf(e))) &&
                 (r.Family == null || r.Family.IsMatch(familyName ?? "")) &&
                 (r.Type == null || r.Type.IsMatch(typeName ?? "")) &&
+                (r.TypePrefixes.Count == 0 || WorksetPlanLogic.TypePrefixMatches(typeName, r.TypePrefixes, familyName)) &&
                 (r.Level == null || r.Level.IsMatch(levelName ?? "")) &&
                 (r.Zone == null || r.Zone.IsMatch(zone ?? "")) &&
                 (r.Department == null || r.Department.IsMatch(department ??= ctx.DepartmentOf(e, centre) ?? "")) &&
@@ -235,7 +238,9 @@ namespace AceRevitMcp.Rules
             var elements = Candidates(doc);
             var byTarget = new Dictionary<string, int>(); var noRule = new Dictionary<string, int>();
             var moved = new List<long>(); var wrong = new List<string>(); var blocked = new List<long>();
-            int correct = 0, skippedNotWs1 = 0;
+            int correct = 0, skippedNotWs1 = 0, unpinRepin = 0;
+            _planned.Clear(); _skips.Clear(); _onlyWorkset1 = opt.OnlyWorkset1;
+            void Plan(string target, string category) { if (!_planned.TryGetValue(target, out var d)) _planned[target] = d = new Dictionary<string, int>(StringComparer.Ordinal); d[category] = d.TryGetValue(category, out var n) ? n + 1 : 1; }
             foreach (var e in elements)
             {
                 var current = e.WorksetId;
@@ -245,13 +250,15 @@ namespace AceRevitMcp.Rules
                 var (target, rule, typeName) = t.Value;
                 byTarget[target] = byTarget.TryGetValue(target, out var n1) ? n1 + 1 : 1;
                 var ws = Named(target);
-                if (ws == null) continue;
+                if (ws == null) { if (!opt.PlanOnly) Plan(target, e.Category.Name); continue; }
                 if (ws.Id == current) { correct++; continue; }
+                if (!opt.PlanOnly) Plan(target, e.Category.Name);
                 if (wrong.Count < 60) wrong.Add($"{e.Category.Name} {e.Id.Value} ({typeName}): {table.GetWorkset(current)?.Name} -> {target}{(rule > 0 ? $" [rule {rule}]" : " [default]")}");
                 if (opt.PlanOnly) { moved.Add(e.Id.Value); continue; }
-                if (!opt.CanEdit(e)) { blocked.Add(e.Id.Value); continue; }
-                try { e.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM).Set(ws.Id.IntegerValue); moved.Add(e.Id.Value); }
-                catch { blocked.Add(e.Id.Value); }
+                if (!opt.CanEdit(e)) { blocked.Add(e.Id.Value); _skips[e.Id.Value] = "borrowed by another user, or changed in central"; continue; }
+                var (ok, repinned) = SetPinnedSafe(e, ws.Id.IntegerValue);
+                if (ok) { moved.Add(e.Id.Value); if (repinned) unpinRepin++; }
+                else { blocked.Add(e.Id.Value); _skips[e.Id.Value] = e.Pinned ? "pinned: its workset could not be set even unpinned (pinned again)" : "its workset cannot be set (read-only)"; }
             }
 
             JsonObject Dict(Dictionary<string, int> d) => new JsonObject(d.OrderByDescending(kv => kv.Value).Select(kv => new KeyValuePair<string, JsonNode>(kv.Key, kv.Value)));
@@ -269,12 +276,77 @@ namespace AceRevitMcp.Rules
                 ["worksetsMissing"] = Arr(missing),
                 ["worksetsCreated"] = Arr(created),
                 ["inUseByOthers"] = Arr(blocked.Take(100)),
+                ["pinnedUnpinRepin"] = unpinRepin,
                 ["examples"] = Arr(wrong),
                 [opt.PlanOnly ? "wrongIds" : "ids"] = Arr(moved.Take(2000)),
                 ["note"] = (missing.Count > 0 ? "Some target worksets do not exist: create them (create_missing: true) or fix the names in the rules. " : "") +
                            (blocked.Count > 0 ? "Elements in use by others, or changed in central since your last Reload Latest, were skipped: reload latest or ask them to relinquish, then run again. " : "") +
                            "The first matching rule wins; categories without a rule stay where they are unless default_workset is set.",
             };
+        }
+
+        private readonly Dictionary<string, Dictionary<string, int>> _planned = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<long, string> _skips = new Dictionary<long, string>();
+        private bool _onlyWorkset1;
+
+        /// <summary>
+        /// Sets an element's workset; a pinned element Revit refuses is unpinned, set and pinned again in the same transaction
+        /// (the same undo step). -> (set, needed the unpin).
+        /// </summary>
+        internal static (bool Ok, bool Repinned) SetPinnedSafe(Element e, int worksetId)
+        {
+            var p = e?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
+            if (p == null) return (false, false);
+            bool TrySet()
+            {
+                try { return !p.IsReadOnly && p.Set(worksetId); }
+                catch (Autodesk.Revit.Exceptions.ApplicationException) { return false; }
+                catch (InvalidOperationException) { return false; }
+                catch (ArgumentException) { return false; }
+            }
+            if (TrySet()) return (true, false);
+            bool pinned;
+            try { pinned = e.Pinned; } catch { pinned = false; }
+            if (!pinned) return (false, false);
+            var ok = false;
+            try { e.Pinned = false; ok = TrySet(); }
+            catch (Autodesk.Revit.Exceptions.ApplicationException) { ok = false; }
+            catch (InvalidOperationException) { ok = false; }
+            finally
+            {
+                try { if (!e.Pinned) e.Pinned = true; }
+                catch (Autodesk.Revit.Exceptions.ApplicationException) { }
+                catch (InvalidOperationException) { }
+            }
+            return (ok, ok);
+        }
+
+        /// <summary>
+        /// The after-check of an assign run (register #37), read after the commit: every candidate is matched again and counted
+        /// per rule target and category (on the target, still on the source / default workset, elsewhere); elements the run
+        /// left for a reason (borrowed, pinned) are listed, never failed. Only reads.
+        /// </summary>
+        public JsonObject AfterCheck(Document doc, bool preview)
+        {
+            var wsAll = new FilteredWorksetCollector(doc).OfKind(WorksetKind.UserWorkset).ToWorksets().ToList();
+            var names = wsAll.ToDictionary(w => (long)w.Id.IntegerValue, w => w.Name);
+            var defaults = new HashSet<long>(wsAll.Where(w => w.IsDefaultWorkset || string.Equals(w.Name.Trim(), "Workset1", StringComparison.OrdinalIgnoreCase)).Select(w => (long)w.Id.IntegerValue));
+            // An assign run moves every matching element from wherever it is (only_workset1: from Workset1 only).
+            var sources = _onlyWorkset1 ? new HashSet<long>(defaults) : new HashSet<long>(names.Keys);
+            var ctx = new Context(doc, NeedsZone);
+            var elements = new List<(long, long, string, string, string, IList<string>)>();
+            var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in Candidates(doc))
+            {
+                if (e is Level || e is Grid || e is ReferencePlane || e.Category.Id.Value == (long)BuiltInCategory.OST_VolumeOfInterest) continue;   // datums: not a move target here
+                var t = TargetFor(doc, e, ctx);
+                long ws; try { ws = e.WorksetId.IntegerValue; } catch { continue; }
+                if (t != null) matched.Add(t.Value.Workset);
+                elements.Add((e.Id.Value, ws, e.Category.Name, t?.TypeName ?? "", "", t == null ? new List<string>() : new List<string> { t.Value.Workset }));
+            }
+            var targets = _planned.Keys.Concat(matched).Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(n => (n, WorksetPlanLogic.WorksetIdOf(names, n), (IDictionary<string, int>)(_planned.TryGetValue(n, out var d) ? d : new Dictionary<string, int>()))).ToList();
+            return WorksetPlanLogic.AfterCheck(targets, elements, names, sources, defaults, _skips, null, preview);
         }
     }
 }

@@ -392,9 +392,11 @@ namespace AceRevitMcp.Rules
             var retried = new JsonArray();
             var retrySteps = new Dictionary<string, P.Step>(StringComparer.OrdinalIgnoreCase);   // pending_retry answers and steps
             var pending = new JsonArray(); var pendingTotal = 0; var pendingIds = new HashSet<long>();
+            var skipWhy = new Dictionary<long, string>();   // elements the plan leaves, and why (the after-check lists them, never fails on them)
             void PendingOne(long id, string category, bool borrowed, string holder, string from, string to)
             {
                 if (!pendingIds.Add(id)) return;   // one entry per element, with the first (the group's) target
+                skipWhy[id] = borrowed ? $"borrowed by {holder ?? "another user"}" : "changed in central: synchronize first";
                 pendingTotal++;
                 if (pending.Count < 1000)
                     pending.Add(new JsonObject { ["id"] = id, ["category"] = category, ["owner"] = borrowed ? holder : null, ["holder"] = borrowed ? holder : null, ["why"] = borrowed ? "borrowed" : "changed in central", ["from"] = from, ["to"] = to });
@@ -431,7 +433,7 @@ namespace AceRevitMcp.Rules
                 var p = e?.get_Parameter(BuiltInParameter.ELEM_PARTITION_PARAM);
                 var isPinned = false;
                 try { isPinned = e.Pinned; } catch { isPinned = false; }
-                if (p == null || (p.IsReadOnly && !isPinned)) { readOnly.Add(f.Id); return; }   // pinned: the move unpins, sets and pins again if Revit refuses
+                if (p == null || (p.IsReadOnly && !isPinned)) { readOnly.Add(f.Id); skipWhy[f.Id] = "read-only: hosted by or part of another element"; return; }   // pinned: the move unpins, sets and pins again if Revit refuses
                 step.Ids.Add(f.Id);
                 if (isPinned) pinnedIds.Add(f.Id);
                 // A link or CAD import: its type moves with it (RevitLinkType / CADLinkType carry a workset of their own).
@@ -888,6 +890,7 @@ namespace AceRevitMcp.Rules
             var visSkipped = new List<string>(); var visOverCap = new List<string>();
             bool visSnapped = false, visDone = false;
             var heldFrom = new HashSet<long>();
+            var visWhy = new Dictionary<long, string>();   // a held element: the first view it would change
             HashSet<long> Visible(Document dd, long viewId)
             {
                 try
@@ -936,15 +939,21 @@ namespace AceRevitMcp.Rules
                     var (hidden, shown) = P.VisibilityDiff(visMoved, b, a);
                     if (hidden.Count == 0 && shown.Count == 0) continue;
                     var affected = hidden.Concat(shown).ToList();
-                    var held = v.Sheet == null ? new List<long>() : affected.Where(id => !P.VisibilityAllowed(allowVisAll, allowVisNames, v.Name, factById[id].Workset, claimedTo.TryGetValue(id, out var tn) ? tn : null)).ToList();
-                    foreach (var id in held) visHeld.Add(id);
+                    // A sheet view holds every change; an export view (NAVISWORKS / NWC / IFC) holds what the move would hide there.
+                    var hiddenSet = new HashSet<long>(hidden);
+                    var held = (v.Sheet == null ? hidden : affected).Where(id => !P.VisibilityAllowed(allowVisAll, allowVisNames, v.Name, factById[id].Workset, claimedTo.TryGetValue(id, out var tn) ? tn : null)).ToList();
+                    foreach (var id in held)
+                    {
+                        visHeld.Add(id);
+                        if (!visWhy.ContainsKey(id)) visWhy[id] = hiddenSet.Contains(id) ? $"would hide in view {v.Name}" : $"would change what view {v.Name} shows";
+                    }
                     // The cheap reason: the target workset hidden in the view (its own setting or the default), else filters or other settings.
                     var view = dd.GetElement(new ElementId(v.Id)) as View;
                     var wsHidden = view != null && affected.Any(id => { var e = dd.GetElement(new ElementId(id)); return e != null && !SafeVisible(view, e.WorksetId.IntegerValue, defs); });
                     changes.Add(new JsonObject
                     {
                         ["view"] = v.Name, ["sheet"] = v.Sheet, ["exportView"] = v.Sheet == null, ["hidden"] = hidden.Count, ["shown"] = shown.Count,
-                        ["held"] = held.Count, ["accepted"] = v.Sheet == null ? 0 : affected.Count - held.Count,
+                        ["held"] = held.Count, ["accepted"] = (v.Sheet == null ? hidden.Count : affected.Count) - held.Count,
                         ["why"] = wsHidden ? "the target workset is hidden in this view" : "view filters, phases or other view settings",
                         ["categories"] = Counts(affected.GroupBy(id => factById[id].Category).ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal)),
                         ["sampleIds"] = new JsonArray(affected.Take(Math.Max(1, maxIds)).Select(i => (JsonNode)i).ToArray()),
@@ -966,6 +975,10 @@ namespace AceRevitMcp.Rules
                     if (f.TypeId != 0 && f.TypeWorksetId != 0 && typesAllHeld.Contains(f.TypeId) && visTypes.Add(f.TypeId)) { SetWorkset(dd, f.TypeId, f.TypeWorksetId); heldFrom.Add(f.TypeWorksetId); }
                 }
                 if (r["done"] is JsonObject dn0) dn0["moved"] = (int)dn0["moved"] - visHeld.Count(i => !pinFailed.Contains(i) && !notYours.Contains(i));
+                // Held for visibility: listed as skips with the view (never a failure of the step).
+                if (r["skipped"] is JsonArray vsk)
+                    foreach (var g in visHeld.Where(visWhy.ContainsKey).GroupBy(i => visWhy[i]).OrderBy(g => g.Key, StringComparer.Ordinal))
+                        vsk.Add(SkipJson("visibility", g, g.Count(), null, g.Key));
                 r["visibilityChanges"] = changes;
                 r["visibilityChecked"] = new JsonObject
                 {
@@ -985,7 +998,7 @@ namespace AceRevitMcp.Rules
                     };
                     var sv = changes.OfType<JsonObject>().Where(c => (int)c["held"] > 0).Select(c => (string)c["view"]).ToList();
                     if (r["notes"] is JsonArray nn)
-                        nn.Add($"{visHeld.Count} moved element{(visHeld.Count == 1 ? "" : "s")} held: visibility changes on sheet view{(sv.Count == 1 ? "" : "s")} {string.Join(", ", sv.Take(5))}{(sv.Count > 5 ? ", ..." : "")}. They stay where they are; allow_visibility_change (true, or the view or workset names) accepts the change.");
+                        nn.Add($"{visHeld.Count} moved element{(visHeld.Count == 1 ? "" : "s")} held: visibility changes in view{(sv.Count == 1 ? "" : "s")} {string.Join(", ", sv.Take(5))}{(sv.Count > 5 ? ", ..." : "")} (on a sheet, or an export view the move would hide them in). They stay where they are; allow_visibility_change (true, or the view or workset names) accepts the change.");
                 }
             }
             var result = NativeChange.Run(app, args, "workset_admin", "ACE: apply the workset plan", (d, plan) =>
@@ -995,7 +1008,7 @@ namespace AceRevitMcp.Rules
                 r["done"] = done; r["verify"] = null;
                 if (plan) return r;
                 ran.Clear(); created.Clear(); repinned.Clear(); pinBefore.Clear(); pinFailed.Clear(); pinnedDirect = 0;
-                visBefore.Clear(); visHeld.Clear(); visTypes.Clear(); heldFrom.Clear(); visSkipped.Clear(); visOverCap.Clear(); visSnapped = false; visDone = false;
+                visBefore.Clear(); visHeld.Clear(); visWhy.Clear(); visTypes.Clear(); heldFrom.Clear(); visSkipped.Clear(); visOverCap.Clear(); visSnapped = false; visDone = false;
                 void Count(string k, int n) => done[k] = (int)done[k] + n;
                 foreach (var st in steps)
                 {
@@ -1151,6 +1164,10 @@ namespace AceRevitMcp.Rules
                         long wid = o["id"] is JsonValue iv && iv.TryGetValue<long>(out var x0) ? x0 : created.TryGetValue(o["workset"]?.ToString() ?? "", out var x1) ? x1 : 0;
                         o["measured"] = wid != 0 && names.ContainsKey(wid) ? OnWorkset(d, wid) : (int?)null;
                     }
+                // The after-check (register #37): every target the rules or the plan name, counted per category on the model as it is
+                // now (read-only: it never changes or rolls back anything; its verdict is reported, the self-check above decides).
+                try { r["afterCheck"] = AfterCheckOf(d, args, moveSteps, factById, skipWhy, visWhy, pinFailed, notYours, keepKeys, dryRun); }
+                catch (Exception ex) { r["afterCheck"] = new JsonObject { ["ok"] = false, ["error"] = "the after-check could not read the model: " + ex.Message, ["targets"] = new JsonArray() }; }
                 r["verify"] = new JsonObject
                 {
                     ["ok"] = mismatches.Count == 0, ["checked"] = before.Count,
@@ -1170,7 +1187,64 @@ namespace AceRevitMcp.Rules
                     result["note"] = "The self-check found a change beyond the plan (see verify.mismatches): the whole change was rolled back. Nothing was changed.";
             }
             if (result["verify"] is JsonObject v && v["error"] != null && v["checked"] == null) v["checked"] = before.Count;
+            P.MarkComplete(result, dryRun);
             return result;
+        }
+
+        /// <summary>
+        /// The after-check of apply_plan: re-reads the model (a fresh scan after the commit) and counts, for every target, per
+        /// category what is on it, what still matches it on a source / default workset, and what matches it elsewhere. Targets
+        /// come from the request (after_check.targets: the rules' category, level, type prefix, material) and from the moves.
+        /// </summary>
+        private static JsonObject AfterCheckOf(Document d, JsonObject args, List<P.Step> moveSteps, Dictionary<long, Fact> factById, Dictionary<long, string> skipWhy,
+            Dictionary<long, string> visWhy, List<long> pinFailed, HashSet<long> notYours, HashSet<string> keepKeys, bool dryRun)
+        {
+            var spec = args["after_check"] as JsonObject ?? (args["workset_plan"] as JsonObject)?["after_check"] as JsonObject;
+            var given = spec?["targets"] as JsonArray ?? new JsonArray();
+            var wsNow = UserWorksets(d);
+            var names = wsNow.ToDictionary(w => w.Id, w => w.Name);
+            var facts = Scan(d, wsNow, checkout: false);
+            // Targets: the request's, plus each move's target with the groups it moves (category, type, level) as its selectors.
+            var targets = given.OfType<JsonObject>().Select(t => (JsonObject)t.DeepClone()).ToList();
+            JsonObject TargetNamed(string n)
+            {
+                var t = targets.FirstOrDefault(x => string.Equals(x["workset"]?.ToString()?.Trim(), n.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (t == null) targets.Add(t = new JsonObject { ["workset"] = n.Trim(), ["selectors"] = new JsonArray() });
+                return t;
+            }
+            var planned = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var st in moveSteps)
+            {
+                var t = TargetNamed(st.Workset);
+                if (!(t["selectors"] is JsonArray sels)) t["selectors"] = sels = new JsonArray();
+                if (given.Count == 0 || !given.OfType<JsonObject>().Any(x => string.Equals(x["workset"]?.ToString()?.Trim(), st.Workset.Trim(), StringComparison.OrdinalIgnoreCase)))
+                    foreach (var g in st.Ids.Where(factById.ContainsKey).Select(i => factById[i]).GroupBy(f => (f.Category, f.Type, f.Level)))
+                        sels.Add(new JsonObject { ["category"] = new JsonArray(g.Key.Category), ["type"] = new JsonArray(g.Key.Type), ["level"] = new JsonArray(g.Key.Level) });
+                if (!planned.TryGetValue(st.Workset.Trim(), out var pc)) planned[st.Workset.Trim()] = pc = new Dictionary<string, int>(StringComparer.Ordinal);
+                foreach (var f in st.Ids.Where(factById.ContainsKey).Select(i => factById[i])) pc[f.Category] = (pc.TryGetValue(f.Category, out var n) ? n : 0) + 1;
+            }
+            var targetJson = new JsonArray(targets.Select(t => (JsonNode)t).ToArray());
+            // Sources: the default workset (and Workset1) and the ones the request names (worksets the plan empties); without a request,
+            // every workset a move takes elements from (the moves' own groups are the selectors then, so nothing else is claimed).
+            var defaults = new HashSet<long>(wsNow.Where(w => w.IsDefault || string.Equals(w.Name.Trim(), "Workset1", StringComparison.OrdinalIgnoreCase)).Select(w => w.Id));
+            var sources = new HashSet<long>(defaults);
+            if (given.Count == 0) foreach (var st in moveSteps) foreach (var id in st.Ids) if (factById.TryGetValue(id, out var f)) sources.Add(f.WorksetId);
+            foreach (var n in (spec?["sources"] as JsonArray ?? new JsonArray()).Select(x => x?.ToString()))
+            { var id = P.WorksetIdOf(names, n); if (id != 0) sources.Add(id); }
+            // Reasons the plan leaves an element where it is: never a failure of the step.
+            var skips = new Dictionary<long, string>(skipWhy);
+            foreach (var kv in visWhy) skips[kv.Key] = kv.Value;
+            foreach (var id in pinFailed) skips[id] = "pinned: its workset could not be set even unpinned (left where it is, pinned again)";
+            foreach (var id in notYours) if (!skips.ContainsKey(id)) skips[id] = "not yours yet: the dry run leaves it, the apply borrows it";
+            var exclude = new HashSet<string>(keepKeys ?? new HashSet<string>(), StringComparer.Ordinal);
+            foreach (var k in (spec?["exclude_keys"] as JsonArray ?? new JsonArray()).Select(x => x?.ToString()).Where(x => x != null)) exclude.Add(k);
+            // Keys are read before the change (the facts' keys): an excluded group stays where it is, so its key is the same now.
+            var elements = facts.Select(f => (f.Id, f.WorksetId, f.Category, f.Type, f.Key, (IList<string>)P.TargetsOf(targetJson, f.Category, f.Type, f.Level, f.Material))).ToList();
+            var tl = targets.Select(t => t["workset"]?.ToString()?.Trim()).Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(n => (n, P.WorksetIdOf(names, n), (IDictionary<string, int>)(planned.TryGetValue(n, out var pc) ? pc : new Dictionary<string, int>()))).ToList();
+            var ac = P.AfterCheck(tl, elements, names, sources, defaults, skips, exclude, dryRun);
+            ac["sources"] = new JsonArray(sources.Where(names.ContainsKey).Select(i => (JsonNode)names[i]).ToArray());
+            return ac;
         }
 
         private static JsonObject PlanStepJson(P.Step s, int maxIds)

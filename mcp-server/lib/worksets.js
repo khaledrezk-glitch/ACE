@@ -301,3 +301,32 @@ export function planText(r, { action, model, mode, rolledBack = false }) {
   }
   return lines.join("\n");
 }
+
+// ---- the after-check (register #37): read after the commit, per target and category ------------------------------------
+
+const catLine = (o, n = 5) => Object.entries(o ?? {}).sort((x, y) => y[1] - x[1]).slice(0, n).map(([k, v]) => `${v} ${k}`).join(", ");
+/**
+ * The add-in's afterCheck in words: per target (code first: target-missing, target-empty, left-behind; then the ones done)
+ * on it / left behind / elsewhere / skipped per category, the skips with their reasons (never a failure), and what is still
+ * on the default workset by category and by type. "" without an afterCheck.
+ */
+export function afterCheckText(ac, { mode } = {}) {
+  if (!ac) return "";
+  if (ac.error) return `After-check: could not read the model (${ac.error}); the step is NOT confirmed done.`;
+  const pv = ac.preview === true || mode === "dry run";
+  const ts = ac.targets ?? [], bad = ts.filter((t) => t.code), good = ts.filter((t) => !t.code);
+  const lines = [`After-check (${pv ? "forecast inside the dry run" : "after the commit, the model re-read"}; per target: on it / left on the source or default workset / elsewhere): ${bad.length ? `${bad.length} target(s) NOT DONE${pv ? " if applied as planned" : ""}` : `all ${ts.length} target(s) done`}.`];
+  const cats = (t) => Object.entries(t.byCategory ?? {}).filter(([, c]) => c.planned || c.onTarget || c.leftOnSource || c.skipped)
+    .map(([k, c]) => `${k} ${c.onTarget}/${c.leftOnSource}/${c.onOther}${c.skipped ? `, ${c.skipped} skipped` : ""}${c.planned ? ` (planned ${c.planned})` : ""}`).join("; ");
+  for (const t of bad.slice(0, 30)) lines.push(`- ${t.code.toUpperCase()} ${q(t.workset)}: ${t.why ?? ""}${cats(t) ? ` [${cats(t)}]` : ""}`);
+  if (good.length) lines.push(`- done: ${good.slice(0, 30).map((t) => `${q(t.workset)} ${t.onTarget}${t.planned ? ` (planned ${t.planned})` : ""}${t.skipped ? `, ${t.skipped} skipped` : ""}`).join("; ")}${good.length > 30 ? `; +${good.length - 30} more` : ""}`);
+  if (ac.skips?.length) lines.push(`Skipped, left where they are (not a failure):\n${ac.skips.map((s) => `- ${s.count} element(s): ${s.reason}${catLine(s.byCategory) ? ` (${catLine(s.byCategory)})` : ""}${s.sampleIds?.length ? `; ids ${s.sampleIds.slice(0, 8).join(", ")}` : ""}`).join("\n")}`);
+  const d = ac.stillOnDefault;
+  if (d?.total) lines.push(`Still on ${d.workset ? q(d.workset) : "the default workset"}${pv ? " (forecast)" : ""}: ${d.total} element(s); by category: ${catLine(d.byCategory, 12)}; by type:\n${(d.byType ?? []).slice(0, 20).map((x) => `- ${x.category} | ${x.type || "(no type)"}: ${x.elements}`).join("\n")}`);
+  else if (d) lines.push(`Still on ${d.workset ? q(d.workset) : "the default workset"}: nothing.`);
+  return lines.join("\n");
+}
+/** The step's verdict line: an apply whose after-check failed is NOT done (one undo step, kept), whatever moved. */
+export const notDoneLine = (r) => r?.stage === "incomplete" || r?.complete === false
+  ? `Step NOT DONE: ${r.error ?? "the after-check found targets not done"} The change stays as ONE undo step; fix the rules or the plan (see the after-check) and run again for what is left.` : "";
+
