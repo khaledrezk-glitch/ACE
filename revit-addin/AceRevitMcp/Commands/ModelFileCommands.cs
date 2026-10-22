@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
 using AceRevitMcp.Bridge;
+using AceRevitMcp.Util;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Events;
@@ -370,6 +371,15 @@ namespace AceRevitMcp.Commands
                 }
                 catch { /* not readable */ }
 
+            // #38: a central that shares its worksharing identity with another central (a plain file copy): a warning with the fix.
+            JsonNode centralIdentity = null;
+            if (doc.IsWorkshared && !detached)
+            {
+                foreach (var iw in CentralIdentity.Check(doc)) warnings.Add(iw);
+                if (CentralIdentity.Of(doc) is CentralId ci)
+                    centralIdentity = new JsonObject { ["central"] = ci.Path, ["centralGuid"] = ci.CentralGuid, ["episodeGuid"] = ci.EpisodeGuid };
+            }
+
             InstanceRegistry.Update(app);
             return new JsonObject
             {
@@ -378,7 +388,7 @@ namespace AceRevitMcp.Commands
                 ["active"] = app.ActiveUIDocument?.Document?.Title, ["previous"] = PreviousJson(previous), ["openedByAce"] = true, ["handle"] = handle,
                 ["transmitted"] = transmitted, ["transmittedCleared"] = transmittedCleared, ["externalReferences"] = externalReferences,
                 ["unresolvedLinks"] = unresolvedLinks, ["dialogs"] = dialogs, ["notes"] = notes, ["warnings"] = warnings, ["memory"] = memory,
-                ["transmittedClearedOnClose"] = transmittedClearedOnClose,
+                ["transmittedClearedOnClose"] = transmittedClearedOnClose, ["centralIdentity"] = centralIdentity,
             };
         }
 
@@ -629,6 +639,8 @@ namespace AceRevitMcp.Commands
             if (plan.Warning != null) warnings.Add(plan.Warning);
             if (plan.Note != null) notes.Add(plan.Note);
             var clearedOld = ClearPendingTransmitted(app);   // e.g. the file this model was before (no longer open)
+            // #38: a new central has a new identity; record it (replacing a copy's old one) and say if it still clashes.
+            if (asCentral) foreach (var iw in CentralIdentity.Check(doc)) warnings.Add(iw);
             return new JsonObject
             {
                 ["model"] = doc.Title, ["previousModel"] = oldTitle, ["path"] = newPath, ["previousPath"] = oldPath, ["saved"] = true, ["kind"] = SaveAsLogic.Kind(asCentral),

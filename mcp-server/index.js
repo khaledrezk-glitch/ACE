@@ -681,7 +681,7 @@ function modelSwitched(model) {
 
 tool("open_model", {
   title: "Open a model",
-  description: "Open an .rvt in this Revit session and make it active. detach (a central or cloud copy): preserve_worksets or discard_worksets (needs confirm: true, the user's OK: the opened copy loses its workset information). audit: true audits while opening. worksets: all (default), last_viewed, none. close_previous: true closes the model that was active before, without saving (if it cannot be closed, the reply says why and it stays open). Opening can take minutes. clear_transmitted (confirm: true; working copies only) writes into the file on disk: it clears the transmitted flag. save_as_central_ok: allow a model that would need Save As Central. The reply lists every dialog answered, unresolved links and the transmitted flag. A workshared file opened attached gets a <name>_backup folder next to it (a WARNING says so, stronger in a submission / issued / export folder): for read-only or export work use detach: preserve_worksets. Before opening, Revit's memory is checked: above config.json openModelWarnGb (default 10 GB) or more than 6 open models a WARNING lists ACE's own copies nobody changed; close_idle_copies: true closes those first (nothing else is ever closed).",
+  description: "Open an .rvt in this Revit session and make it active. detach (a central or cloud copy): preserve_worksets or discard_worksets (needs confirm: true, the user's OK: the opened copy loses its workset information). audit: true audits while opening. worksets: all (default), last_viewed, none. close_previous: true closes the model that was active before, without saving (if it cannot be closed, the reply says why and it stays open). Opening can take minutes. clear_transmitted (confirm: true; working copies only) writes into the file on disk: it clears the transmitted flag. save_as_central_ok: allow a model that would need Save As Central. The reply lists every dialog answered, unresolved links and the transmitted flag. A workshared file opened attached gets a <name>_backup folder next to it (a WARNING says so, stronger in a submission / issued / export folder): for read-only or export work use detach: preserve_worksets. Before opening, Revit's memory is checked: above config.json openModelWarnGb (default 10 GB) or more than 6 open models a WARNING lists ACE's own copies nobody changed; close_idle_copies: true closes those first (nothing else is ever closed). A central (opened attached) that shares its worksharing identity with another central (a plain file copy, #38) gets a WARNING naming both paths and the fix (open the copy detached with worksets preserved, then save_model save_as as_central overwrite over its own path).",
   inputSchema: {
     path: z.string().min(1).max(1000).describe("Full path of the .rvt"),
     clear_transmitted: z.boolean().optional().describe("Working copies only: clears the transmitted flag in the file on disk (needs confirm: true)"),
@@ -1734,11 +1734,12 @@ tool("job_status", {
 // an existing file is replaced only with overwrite; every pre-flight block is reported, a run record is kept.
 tool("export_deliverables", {
   title: "Export NWC, IFC and DWFx",
-  description: "Exports the open model's deliverables in one call: nwc (a 3D view), ifc (the model or a view; settings from config, a JSON file, or setup, a name: the setup saved in the model first, then the vault's rules/export.json ifc.setups or rules/ifc/<setup>.json; list_ifc_setups lists both), dwfx (one combined file, named by file or name: sheets, a sheet set, or same_as_folder: the sheets whose .dwg/.pdf are in a folder, matched by number then name, nothing guessed; unmatched or ambiguous files block unless allow_unmatched; views: 3D views by exact name, e.g. [\"NAVISWORKS\"], put into the same file as the sheets, first, like a \"3D View: NAVISWORKS\" page; with several paper sizes they go into the largest group's file; a missing, ambiguous or non-exportable name blocks; every sheet on its own paper with no margin: the printer's paper of that size, zoom 100 %, set only for the export; printer: which printer, default Revit's current one; a printer without the size blocks, no-paper-size; anything on a sheet beyond its title block frame blocks, sheet-extents, naming the sheet and elements, since a merged DWFx shrinks every page to the largest sheet's extents; allow_oversize: true exports anyway, scaled); each optional. File names: file, else the vault's rules/export.json nameTemplate ({model}, {date}, {format}), else the model name. out_dir required; an existing file is replaced only with overwrite: true. check_only: the pre-flight only. Blocks (no Navisworks exporter, missing view / setup / sheets, file exists) are reported and nothing is exported. Reply: a table of file, size, time, count, warnings; a run record is written. The model is not changed.",
+  description: "Exports the open model's deliverables in one call: nwc (a 3D view), ifc (the model or a view; settings from config, a JSON file, or setup, a name: the setup saved in the model first, then the vault's rules/export.json ifc.setups or rules/ifc/<setup>.json; list_ifc_setups lists both), dwfx (one combined file, named by file or name: sheets, a sheet set, or same_as_folder: the sheets whose .dwg/.pdf are in a folder, matched by number then name, nothing guessed; unmatched or ambiguous files block unless allow_unmatched; views: 3D views by exact name, e.g. [\"NAVISWORKS\"], put into the same file as the sheets, first, like a \"3D View: NAVISWORKS\" page; with several paper sizes they go into the largest group's file; a missing, ambiguous or non-exportable name blocks; every sheet on its own paper with no margin: the printer's paper of that size, zoom 100 %, set only for the export; printer: which printer, default Revit's current one; a printer without the size blocks, no-paper-size; anything on a sheet beyond its title block frame blocks, sheet-extents, naming the sheet and elements, since a merged DWFx shrinks every page to the largest sheet's extents; allow_oversize: true exports anyway, scaled); each optional. Agreed views (#36): each model's NWC view is project data in the vault's rules/export.json nwc.agreedViews (keyed by the model's central / file name), recorded after the first successful export (trusted vault); nwc.view left out uses it; a different view is refused, nwc-view-differs (dwfx.views likewise, dwfx-views-differ) unless confirm_view_change: true after the user confirmed, which records the new one. The reply names the view each NWC came from, its model elements and top categories. File names: file, else the vault's rules/export.json nameTemplate ({model}, {date}, {format}), else the model name. out_dir required; an existing file is replaced only with overwrite: true. check_only: the pre-flight only. Blocks (no Navisworks exporter, missing view / setup / sheets, file exists) are reported and nothing is exported. Reply: a table of file, size, time, count, warnings; a run record is written. The model is not changed.",
   inputSchema: {
     out_dir: z.string().min(1),
     overwrite: z.boolean().optional(), check_only: z.boolean().optional(),
-    nwc: z.object({ view: z.string().max(200), file: z.string().max(200).optional() }).optional(),
+    nwc: z.object({ view: z.string().max(200).optional().describe("the 3D view; left out: the view agreed for this model (the vault's rules/export.json nwc.agreedViews)"), file: z.string().max(200).optional() }).optional(),
+    confirm_view_change: z.boolean().optional().describe("only after the user confirmed the agreed export view has changed: export from the view given (nwc.view, dwfx.views) instead of the agreed one, and record it"),
     ifc: z.object({ view: z.string().max(200).optional(), setup: z.string().max(200).optional(), config: z.string().optional().describe("IFC settings .json"), file: z.string().max(200).optional() }).optional(),
     dwfx: z.object({ sheets: z.array(z.string().max(50)).max(2000).optional(), sheet_set: z.string().max(200).optional(), file: z.string().max(200).optional(),
       same_as_folder: z.string().optional().describe("the sheets whose .dwg / .pdf are in this folder"), allow_unmatched: z.boolean().optional(),
@@ -1769,12 +1770,24 @@ tool("export_deliverables", {
   const formats = ["nwc", "ifc", "dwfx"].filter((f) => a[f]);
   if (!formats.length) throw new RevitError("Give at least one of nwc, ifc or dwfx.");
   if (a.dwfx?.combined === false) throw new RevitError("dwfx.combined: false is not supported: the add-in always writes ONE combined DWFx. Leave combined out (or true); for one file per sheet, export per sheet with dwfx.sheets: [one] and its own file.");
-  const model = (await callRevit("project_rules", {}, 30))?.model;
+  const pr = await callRevit("project_rules", {}, 30);
+  const model = pr?.model;
   if (!model) throw new RevitError("Revit answered without a model: open the model and run again.");
   const vaultDir = await projectVaultDir(a);
   let rules, rulesFile;
   try { ({ rules, file: rulesFile } = Deliverables.readRules(vaultDir)); } catch (e) { throw new RevitError(e.message); }
   const early = [], notes = [], names = {};
+  // #36: the agreed export view of this model (project data in the vault), never only what this call typed.
+  const modelKey = pr?.modelKey ?? String(model).replace(/\.rvt$/i, "").replace(/_detached$/i, "");
+  const viewFor = {};
+  for (const f of ["nwc", "dwfx"].filter((x) => a[x])) {
+    const d = Deliverables.viewDecision({ format: f, given: f === "nwc" ? a.nwc.view : a.dwfx.views, confirm: !!a.confirm_view_change, model: modelKey,
+      agreed: Deliverables.agreedViewOf(rules, f, { key: modelKey, names: Worksets.modelNamesOf(pr) }), rulesFile: rulesFile ?? Deliverables.EXPORT_RULES });
+    if (d.block) early.push(d.block);
+    if (d.note) notes.push(d.note);
+    viewFor[f] = d;
+  }
+  if (a.confirm_view_change && !Object.values(viewFor).some((d) => d.change)) notes.push("confirm_view_change ignored: no view differs from the agreed one.");
   for (const f of formats) {
     // dwfx.name names the combined file when file is not given (file wins).
     const given = a[f].file?.trim() || (f === "dwfx" ? a.dwfx.name?.trim() : "");
@@ -1808,13 +1821,13 @@ tool("export_deliverables", {
       if (!mt.sheets.length) early.push({ what: "dwfx same_as_folder", why: "no file matches a sheet", code: "no-sheets" });
     } else if (!early.length) early.push({ what: "dwfx same_as_folder", why: `no .dwg or .pdf in ${a.dwfx.same_as_folder}`, code: "no-sheets" });
   }
-  if (early.length) return blockedReply(Deliverables.blocksOf({ blocked: early }).map((b) => ({ what: b.what, why: b.why, how: b.how })), [...notes.filter((n) => n.startsWith("DWFx")), "Blocked before Revit was asked; nothing exported:"].join("\n"));
+  if (early.length) return blockedReply(Deliverables.blocksOf({ blocked: early }).map((b) => ({ what: b.what, why: b.why, how: b.how, code: b.code })), [...notes.filter((n) => n.startsWith("DWFx")), "Blocked before Revit was asked; nothing exported:"].join("\n"));
   const req = { out_dir: a.out_dir, overwrite: !!overwrite, check_only: !!check_only,
-    ...(a.nwc ? { nwc: { view: a.nwc.view, file: names.nwc } } : {}),
+    ...(a.nwc ? { nwc: { view: viewFor.nwc.views, file: names.nwc } } : {}),
     // ifc.setup: the setup saved in the model first (the add-in), then the vault's (sent as config, marked config_from: vault).
     ...(a.ifc ? { ifc: { ...(a.ifc.view ? { view: a.ifc.view } : {}), ...(ifc.setup ? { setup: ifc.setup } : {}), ...(ifc.config ? { config: ifc.config, ...(a.ifc.config ? {} : { config_from: "vault" }) } : {}), file: names.ifc } } : {}),
     ...(a.dwfx ? { dwfx: { ...(dwfxSheets ? { sheets: dwfxSheets } : {}), ...(a.dwfx.sheet_set && !a.dwfx.same_as_folder ? { sheet_set: a.dwfx.sheet_set } : {}), file: names.dwfx,
-      ...(a.dwfx.views?.length ? { views: a.dwfx.views } : {}),
+      ...(viewFor.dwfx?.views?.length ? { views: viewFor.dwfx.views } : {}),
       ...(a.dwfx.combined != null ? { combined: a.dwfx.combined } : {}), ...(a.dwfx.paper ? { paper: a.dwfx.paper } : {}), ...(a.dwfx.allow_paper_fallback ? { allow_paper_fallback: true } : {}),
       ...(a.dwfx.allow_oversize ? { allow_oversize: true } : {}),
       ...(a.dwfx.printer?.trim() ? { printer: a.dwfx.printer.trim() } : {}) } } : {}) };
@@ -1823,6 +1836,8 @@ tool("export_deliverables", {
   const blocked = Deliverables.blocksOf(r).length > 0;
   const lines = [Deliverables.resultText(r, { mode: check_only ? "check" : "export", outDir: a.out_dir, names, notes })];
   if (a.dwfx?.views?.length && Array.isArray(r?.preflight?.dwfxViews)) lines.push(`DWFx 3D views: ${r.preflight.dwfxViews.length} of ${a.dwfx.views.length} found${r.preflight.dwfxViews.length ? ` (${r.preflight.dwfxViews.join(", ")})` : ""}.`);
+  if (viewFor.nwc?.from === "agreed" && Deliverables.blocksOf(r).some((b) => b.code === "view-not-found" && /^nwc/.test(b.what ?? "")))
+    lines.push(`The agreed NWC view "${viewFor.nwc.views}" is not in the model: if it was renamed, give nwc.view with confirm_view_change: true after the user confirmed the new name.`);
   if (check_only) lines.push(blocked ? "Clear the blocks above before exporting." : "Ready: the same call without check_only exports.");
   else {
     // DWFx self-checks from the add-in: sheets asked vs sheets in the files, and each page against its title block size.
@@ -1837,10 +1852,21 @@ tool("export_deliverables", {
       const pr = f.printerPaper ? `; printer paper ${f.printerPaper} on ${f.printer}, zoom 100 %, no margin` : "";
       lines.push((bad.length ? `DWFx page check FAILED for ${bad.length} sheet(s) (${short(bad.map((p) => p.number))}: size, orientation or margin)${f.failedFile ? `; kept as ${f.failedFile}` : ""}` : `DWFx paper size checked: ${f.pageCheck.length} sheet page(s) match their title blocks${f.paper ? ` (${f.paper})` : ""}`) + `${pr}${extText}${vp}.`);
     }
+    // #36: the first view a model was exported from (or a confirmed change) becomes its agreed view in the vault.
+    const agreed = [];
+    for (const [f, d] of Object.entries(viewFor).filter(([, d]) => d.record)) {
+      const ok = (r?.files ?? []).some((x) => x.format === f && x.bytes != null);
+      const label = f === "nwc" ? `NWC view "${d.views}"` : `DWFx 3D view(s) ${d.views.map((v) => `"${v}"`).join(", ")}`;
+      if (!ok) continue;
+      if (!vaultDir || !fs.existsSync(vaultDir)) { lines.push(`Agreed ${label} NOT recorded for ${modelKey}: no project vault (later exports must name the view again).`); continue; }
+      if (!Vault.trusted(path.dirname(CONFIG_PATH), vaultDir)) { lines.push(`Agreed ${label} NOT recorded for ${modelKey}: the vault ${vaultDir} is not trusted for writing (ask the user, then vault with consent: true).`); continue; }
+      try { const file = Deliverables.recordAgreedView(vaultDir, f, modelKey, d.views); agreed.push({ format: f, model: modelKey, views: d.views, change: d.change ?? null, file }); lines.push(`Agreed ${label} ${d.change ? "changed" : "recorded"} for ${modelKey} in ${file} ${f}.agreedViews: later exports use it; another view needs confirm_view_change: true.`); }
+      catch (e) { lines.push(`Agreed ${label} NOT recorded for ${modelKey}: ${e.message}`); }
+    }
     const { dir, note } = await auditFolder(a, r?.model ?? model, { sub: "exports", reports: "exports" });
     const stamp = localDate(new Date(), { time: true });
     const outcome = blocked ? "blocked, nothing exported" : r?.success ? `${(r?.files ?? []).length} file(s) exported` : "export incomplete";
-    const runFile = writeOut(dir, `${ParamExec.fileStem("export-run", r?.model ?? model, stamp)}.json`, JSON.stringify({ at: stamp, model: r?.model ?? model, request: req, outcome, preflight: r?.preflight, blocked: r?.blocked, files: r?.files, sheetCheck: r?.sheetCheck, notes: [...notes, ...(r?.notes ?? [])] }, null, 1));
+    const runFile = writeOut(dir, `${ParamExec.fileStem("export-run", r?.model ?? model, stamp)}.json`, JSON.stringify({ at: stamp, model: r?.model ?? model, request: req, outcome, agreedViews: { used: Object.fromEntries(Object.entries(viewFor).map(([f, d]) => [f, { views: d.views ?? null, from: d.from }])), recorded: agreed }, preflight: r?.preflight, blocked: r?.blocked, files: r?.files, sheetCheck: r?.sheetCheck, notes: [...notes, ...(r?.notes ?? [])] }, null, 1));
     journal({ title: `Export deliverables from ${r?.model ?? model}: ${formats.join(", ")}`, outcome, details: { files: (r?.files ?? []).map((f) => ({ file: f.file, bytes: f.bytes, warnings: f.warnings })), blocked: r?.blocked } });
     lines.push(`Run record: ${runFile}${note ? `\n${note}` : ""}`);
   }

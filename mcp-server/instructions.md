@@ -113,8 +113,13 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   user why elements are out of the view, any spelling note and the impact (rules, IFC settings that name it), then
   dry_run and the identical call. A parameter missing in the model is bound only from the vault's shared parameter file:
   if blocked, never make up a definition. Exports: export_deliverables (check_only for the pre-flight; background: true when your tool wait is short, then job_status; out_dir required;
+  the NWC view is the model's agreed one from the vault (leave nwc.view out once it is recorded); nwc-view-differs means
+  ask the user, never pass confirm_view_change on your own; report the "NWC exported from view" line;
   overwrite only after the user agreed); report the files table and every block. A register for a submission:
   register_update without confirm, show the report, then confirm.
+- A WARNING that two centrals share one worksharing identity (a plain file copy): tell the user both paths and the fix
+  (revit_guide workflows: open the copy detached with worksets preserved, then save_model save_as as_central overwrite
+  over its own path, after the user agreed).
 - Opening and closing models: open_model (path; detach preserve_worksets for a central or cloud model you must not
   touch; discard_worksets only after the user agreed, with confirm: true; audit; worksets; close_previous) and
   close_model (a non-active model, closed without saving; one ACE opened whose only changes were ACE runs that changed no

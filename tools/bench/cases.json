@@ -1041,6 +1041,41 @@
       ]
     },
     {
+      "name": "NWC view contents (#36): the pre-flight counts the 3D view's model elements and top categories and gives the model's record key",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "export_deliverables",
+      "args": {
+        "out_dir": "C:/Temp/ACE bench export",
+        "check_only": true,
+        "nwc": {
+          "view": "{3D}",
+          "file": "bench-view.nwc"
+        }
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "preflight.nwcView.view",
+          "op": "==",
+          "value": "{3D}"
+        },
+        {
+          "path": "preflight.nwcView.elements",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "preflight.nwcView.categories",
+          "op": "length>=",
+          "value": 1
+        },
+        {
+          "path": "modelKey",
+          "op": "exists"
+        }
+      ]
+    },
+    {
       "name": "Purge unused (G10): full purge dry run, 3 passes on the sample, rolled back, says what is left",
       "model": "Snowdon Towers Sample Architectural",
       "command": "purge_unused",

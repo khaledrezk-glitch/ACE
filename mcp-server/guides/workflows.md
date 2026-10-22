@@ -114,6 +114,17 @@ detached copy that becomes a new central). Both need allow_risky after the user 
 save_as the open model IS the new file. A central saved at a new path leaves other users' locals on the old central and
 links to the old file are not repointed: say so. Never do Save As in execute_revit_code when save_model can.
 
+Two centrals with one worksharing identity: a central that is a plain file copy of another (copied in Explorer, not
+made by Save As central) keeps the original's identity; after one is saved, every edit to the other fails with
+"deleted in the Central Model". open_model (attached), save_model save_as as_central and the model check compare the
+model's central GUID (Revit fills it for server centrals) and its file's central episode GUID with the other open models
+and a per-machine record (%APPDATA%\ACE-RevitMCP\central-identities.json) and WARN, naming both paths. The fix, with
+the user's OK, on the copy (the central that should be separate, usually the newer file): close it and any local of
+it; open_model { path: <copy>, detach: "preserve_worksets" }; save_model { save_as: { path: <the copy's own path>,
+as_central: true, overwrite: true } } with allow_risky (a detached copy that was never saved may be saved this way);
+then everyone makes a new local from it. Two paths of one file (a mapped drive and its UNC path) also match: then
+ignore the warning.
+
 The open_model reply lists every dialog Revit raised while opening with the answer ACE gave and why; a dialog that
 "needed a person" (no answer) is a warning: tell the user and check the model before relying on it. It also lists
 unresolved links (type and path) and whether the file was flagged transmitted. Unresolved links belong in the health
@@ -330,7 +341,16 @@ the project prefix) when set; then the sheet name as whole words). Nothing is gu
 more than one, block the export until they are renamed or allow_unmatched: true (after the user agreed); sheets not in
 the folder are listed; same_as_folder wins over dwfx.sheets / sheet_set (said). The DWFx is always ONE combined file
 (combined: false is refused), named by dwfx.file, else dwfx.name, else the naming rule; dwfx.paper: "sheet" keeps each
-sheet's own paper size. Run check_only first for the pre-flight (exporter installed,
+sheet's own paper size. The NWC view is agreed per model and kept as project data: the vault's rules/export.json
+"nwc": { "agreedViews": { "<model>": "<3D view>" } } (keyed by the central's file name, else the file name, else the
+title; a key may be a pattern like a rule's models key). The first successful export records the view given (only in
+a trusted vault; otherwise the reply says it was not recorded); later exports leave nwc.view out and use it. A different
+nwc.view is refused, nwc-view-differs, naming both views: never pass confirm_view_change: true unless the user confirmed
+the agreed view has changed (it then exports and records the new view). dwfx.views is kept the same way
+("dwfx": { "agreedViews": { "<model>": [views] } }, dwfx-views-differ), but views are never added when dwfx.views is left
+out (a note names them). The reply says which view each NWC came from, with its model elements and top categories
+(check_only shows the same for the view before exporting; an empty view is flagged): report that line to the user.
+Run check_only first for the pre-flight (exporter installed,
 views, setup, sheets, existing files); every block is reported with how to clear it and nothing is exported. Show the
 files table (file, size, time, count, warnings) and the run record.
 

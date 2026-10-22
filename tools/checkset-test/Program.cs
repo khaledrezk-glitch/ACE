@@ -705,6 +705,48 @@ class P {
     Check(Mw(2 * GB, 7, new string[0])?.Contains("ACE closes nothing else") == true, "more than 6 models, no idle copies: ask the user, close nothing");
     Check(Mw(11 * GB, 2, new[] { "TST_A" }, true)?.Contains("closed ACE's own idle copies first: TST_A") == true, "close_idle_copies: the warning says what was closed");
 
+    // #36: the name a model's agreed NWC view is recorded under (the central's file name, else the file's, else the title).
+    var rmKey = a.GetType("AceRevitMcp.Rules.RuleModels").GetMethod("RecordKey", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    string RKey(string t, string c, string p) => (string)rmKey.Invoke(null, new object[] { t, c, p });
+    Check(RKey("TST_STR_user1", @"\\srv\TST\TST_STR.rvt", @"C:\Local\TST_STR_user1.rvt") == "TST_STR", "record key: a local is recorded under its central's file name");
+    Check(RKey("TST_STR_detached", null, null) == "TST_STR", "record key: a never-saved detached copy, its title without _detached");
+    Check(RKey("TST_ARC.rvt", null, "C:/TST/TST_ARC.RVT") == "TST_ARC" && RKey("TST Plain", "", "") == "TST Plain", "record key: the file name (any slash, .rvt any case), else the title");
+
+    // #38: two centrals sharing one worksharing identity (a plain file copy).
+    var ciT = a.GetType("AceRevitMcp.Util.CentralIdentityLogic"); var cidT = a.GetType("AceRevitMcp.Util.CentralId");
+    MethodInfo CiM(string n) => ciT.GetMethod(n, BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+    object Cid(string p, string cg, string eg, string seen = null) {
+      var o = Activator.CreateInstance(cidT);
+      foreach (var (f, v) in new (string, object)[] { ("Path", p), ("Model", "TST"), ("CentralGuid", cg), ("EpisodeGuid", eg), ("Seen", seen) }) cidT.GetField(f).SetValue(o, v);
+      return o; }
+    Array Cids(params object[] xs) { var arr = Array.CreateInstance(cidT, xs.Length); for (var i = 0; i < xs.Length; i++) arr.SetValue(xs[i], i); return arr; }
+    const string G1 = "11111111-2222-3333-4444-555555555555", G2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", G3 = "99999999-8888-7777-6666-555555555555";
+    string Shared(object x, object y) => (string)CiM("SharedBy").Invoke(null, new[] { x, y });
+    var cA = Cid(@"\\srv\TST\Sub\TST_A.rvt", G1, G2); var cB = Cid(@"\\srv\TST\Sub\TST_B.rvt", G1, G2);
+    Check(Shared(cA, cB) == "central GUID " + G1, "identity: a copy shares the central GUID");
+    Check(Shared(cA, Cid(@"\\srv\TST\Sub\TST_B.rvt", "00000000-0000-0000-0000-000000000000", G2)) == "episode GUID " + G2, "identity: no central GUID (file-based central): the episode GUID is compared");
+    Check(Shared(cA, Cid("//SRV/tst/sub/tst_a.RVT/", G1, G2)) == null, "identity: the same path (case, slashes) is the same central, not a clash");
+    Check(Shared(cA, Cid(@"\\srv\TST\Sub\TST_C.rvt", G3, null)) == null && Shared(Cid("C:/x.rvt", null, null), Cid("C:/y.rvt", null, null)) == null, "identity: different GUIDs, or none read: no clash");
+    var storedList = Cids(Cid(@"\\srv\TST\Sub\TST_B.rvt", G1, G2, "2026-10-01 09:00"), Cid(@"\\srv\TST\Old\TST_D.rvt", G3, G2, "2026-09-30 08:00"));
+    var clashes = (IList)CiM("Clashes").Invoke(null, new object[] { cA, Cids(cB), storedList });
+    T CF<T>(object t, int i) => (T)t.GetType().GetField("Item" + i).GetValue(t);
+    Check(clashes.Count == 2 && CF<string>(clashes[0], 3) == "open in this Revit" && CF<string>(clashes[1], 3) == "seen on this machine on 2026-09-30 08:00"
+      && CF<string>(clashes[1], 2) == "episode GUID " + G2, "identity: open models first, then the record; one per path (the stored copy of an open one is not repeated)");
+    var warn = (string)CiM("Warning").Invoke(null, new object[] { cA, cB, "central GUID " + G1, "open in this Revit" });
+    Check(warn.Contains(@"\\srv\TST\Sub\TST_A.rvt") && warn.Contains(@"\\srv\TST\Sub\TST_B.rvt") && warn.Contains("deleted in the Central Model")
+      && warn.Contains("detach: \"preserve_worksets\"") && warn.Contains("as_central: true, overwrite: true") && warn.Contains("allow_risky"), "identity warning: both paths, the symptom and the fix with ACE's tools");
+    var ciBack = (IList)CiM("Parse").Invoke(null, new object[] { (string)CiM("Serialize").Invoke(null, new object[] { storedList }) });
+    Check(ciBack.Count == 2 && (string)cidT.GetField("CentralGuid").GetValue(ciBack[0]) == G1 && (string)cidT.GetField("Seen").GetValue(ciBack[1]) == "2026-09-30 08:00", "identity record: written and read back");
+    Check(((IList)CiM("Parse").Invoke(null, new object[] { "not json" })).Count == 0 && ((IList)CiM("Parse").Invoke(null, new object[] { "" })).Count == 0, "identity record: unreadable or empty is no record");
+    var fixedB = Cids(Cid(@"\\SRV\TST\Sub\TST_B.rvt", G3, null));
+    var rem = (IList)CiM("Remember").Invoke(null, new object[] { ciBack, fixedB, new DateTime(2026, 10, 22, 14, 5, 0) });
+    Check(rem.Count == 2 && (string)cidT.GetField("CentralGuid").GetValue(rem[0]) == G3 && (string)cidT.GetField("Seen").GetValue(rem[0]) == "2026-10-22 14:05"
+      && (string)cidT.GetField("Path").GetValue(rem[1]) == @"\\srv\TST\Old\TST_D.rvt", "identity record: a fixed central's new identity replaces its old record (one per path, newest first)");
+    Check(((IList)CiM("Clashes").Invoke(null, new object[] { cA, Cids(), Cids(rem[0]) })).Count == 0, "identity: after Save As central the copy no longer clashes");
+    // The fix's save: a never-saved detached copy (no file of its own, IsReadOnlyFile true) saved as central over the copied file's path.
+    Check(SaR(@"\\srv\TST\Sub\TST_B.rvt", true, true, true, true, true, false) == null && SaRo(false, true, true) == null,
+      "identity fix: save_as { as_central, overwrite } of a detached copy over its source path is allowed (1.14.13: IsReadOnlyFile ignored for save_as)");
+
     try { Directory.Delete(tmp, true); } catch { }
     if (failures > 0) { Console.WriteLine($"check set test FAILED ({failures})"); Environment.Exit(1); }
     Console.WriteLine("check set test passed");
