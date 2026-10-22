@@ -247,7 +247,17 @@ export function versionMismatch(addin, server = VERSION) {
   if (!addin || v3(addin) === v3(server)) return null;
   return `WARNING: version mismatch: this ACE server is ${server}, the add-in in Revit is ${addin}. Restart the ACE server (restart Claude) or reinstall ACE so both are one version; tools may behave as the older one.`;
 }
+/** Background jobs of this server that are queued or running (id -> job); jobs.js keeps it. */
+export const backgroundRuns = new Map();
+
 export async function callRevit(command, args = {}, timeoutSeconds = 120, signal = undefined) {
+  // Revit runs one request at a time. While a background job of this server is queued or running, another call would
+  // wait in Revit's queue behind it and be dropped after 60 s: refuse it at once, before anything is sent.
+  const other = currentCall.getStore()?.job ? null : [...backgroundRuns.values()][0];
+  if (other) {
+    throw new RevitError(`Revit is busy with background job ${other.id} (${other.tool}, started ${other.started}). Revit runs one request at a time, so '${command}' was not sent (nothing ran). ` +
+      `Call job_status with job_id "${other.id}" and send this call again once the job has ended; do not start the job again.`);
+  }
   const cfg = readConfig();
   if (!cfg) {
     throw new RevitError(

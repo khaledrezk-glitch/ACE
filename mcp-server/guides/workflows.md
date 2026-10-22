@@ -102,6 +102,11 @@ read-only steps (run_clash_test, coordination_report interference: true with out
 collect one line per model. The reply says which model was closed, or that the previous one was kept open and why
 (e.g. unsaved changes): report that, never close it another way. A fix (clash_resolve fix, parameter_fill) still needs
 its own dry run and the user's OK per model. A detached copy is saved only with save_model save_as (see below).
+When one execute_revit_code run does the whole batch (it opens the models itself), or any run may take over a minute,
+call it with background: true: the reply is a job id at once and job_status gives the full reply when it ends (the
+journal keeps it too), so a caller that stops waiting after 60 s does not lose an 8-model result. Preview and apply
+work as always (background dry run, then the identical background apply). Revit runs one request at a time: while a
+job runs, other Revit calls are refused at once (nothing sent) and further background jobs queue behind it.
 
 save_model saves a named model (handle, path or model) in place; save_as { path, overwrite, as_central } writes it to a
 new .rvt (existing folder; an existing file only with overwrite: true; as_central only for a workshared model, e.g. a

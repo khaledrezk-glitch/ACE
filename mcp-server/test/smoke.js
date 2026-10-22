@@ -35,6 +35,7 @@ const bridge = http.createServer((req, res) => {
       case "api_lookup": return reply({ ok: true, result: { query: args.query, results: [{ type: "Autodesk.Revit.DB.Wall", members: [{ signature: "static Wall Create(Document document, Curve curve, ElementId levelId, bool structural)" }] }] } });
       case "export_view_image": return reply({ ok: true, result: { view: "Level 1", viewType: "FloorPlan", path: "x.png", mimeType: "image/png", base64: "iVBORw0KGgo=" } });
       case "execute_code":
+        if (args.code.includes("SLOW_RUN")) return setTimeout(() => reply({ ok: true, result: { success: true, transaction: "RolledBack", result: "slow", echoMode: args.mode } }), 400);
         if (args.code.includes("PANEL_APPLIED") && !args.dry_run) return reply({ ok: true, result: { success: true, alreadyApplied: true, note: "applied in panel" } });
         if (args.code.includes("PANEL_REJECTED") && !args.dry_run) return reply({ ok: true, result: { success: false, stage: "rejected", error: "The user cancelled this change in the ACE Companion panel" } });
         if (args.code.includes("PICTURE") && args.dry_run) return reply({ ok: true, result: { success: true, transaction: "RolledBack", wouldChange: { added: 2, modified: 0, deleted: 0 }, previewImages: [{ view: "Plan", mimeType: "image/png", base64: "iVBORw0KGgo=" }, { view: "3D", mimeType: "image/png", base64: "iVBORw0KGgo=" }], echoPreview: args.preview_image } });
@@ -527,6 +528,41 @@ const pic = await call("execute_revit_code", { code: "/*PICTURE*/ return 1;", dr
 assert.equal(pic.content.filter((c) => c.type === "image").length, 2);
 assert.doesNotMatch(pic.content[0].text, /iVBORw0KGgo/);
 assert.match(pic.content[0].text, /"echoPreview":true/);
+
+// --- background code runs (G21): a job id at once, the reply from job_status and the journal; the gate holds ---
+const jobOf = (r) => r.content[0].text.match(/as job (\S+)\./)?.[1];
+const jobEnd = async (id) => { let t = ""; for (let i = 0; i < 200 && !/ (done|failed) at /.test(t); i++) { await new Promise((r) => setTimeout(r, 25)); t = (await call("job_status", { job_id: id })).content[0].text; } return t; };
+const bgEdit = { code: "foreach (var w in ctx.All<Wall>()) w.LookupParameter(\"Mark\").Set(\"TST_BG\");", inputs: { b: 1 } };
+const bgNoPreview = await call("execute_revit_code", { ...bgEdit, explanation: "Set marks", background: true });
+assert.ok(bgNoPreview.isError && /not been previewed/.test(bgNoPreview.content[0].text) && !jobOf(bgNoPreview), "a background apply without the identical preview is refused at once, no job");
+const bgRisky = await call("execute_revit_code", { code: "doc.Save();", mode: "readonly", background: true });
+assert.ok(bgRisky.isError && /saves or closes/.test(bgRisky.content[0].text) && !jobOf(bgRisky), "risky code in the background still needs allow_risky");
+const bgDry = await call("execute_revit_code", { ...bgEdit, dry_run: true, explanation: "Set marks on all walls", background: true });
+const bgDryId = jobOf(bgDry);
+assert.ok(bgDryId && !bgDry.isError, `a background dry run answers with a job id: ${bgDry.content[0].text}`);
+const bgDryReply = await jobEnd(bgDryId);
+assert.match(bgDryReply, / done at [\s\S]*"transaction":"RolledBack"[\s\S]*PREVIEW ONLY/, "job_status returns the dry run's full reply");
+const bgOther = await call("execute_revit_code", { ...bgEdit, inputs: { b: 2 }, explanation: "Set marks", background: true });
+assert.ok(bgOther.isError && /not been previewed/.test(bgOther.content[0].text), "other inputs are not covered by the background preview");
+const bgApply = await call("execute_revit_code", { ...bgEdit, explanation: "Set marks on all walls", background: true });
+assert.match(await jobEnd(jobOf(bgApply)), / done at [\s\S]*"transaction":"Committed"/, "the identical background apply goes through the gate");
+const bgAgain = await call("execute_revit_code", { ...bgEdit, explanation: "Set marks on all walls", background: true });
+assert.ok(bgAgain.isError && /not been previewed/.test(bgAgain.content[0].text), "the background apply used up its preview");
+const bgLog = (await call("get_activity_log", {})).content[0].text;
+assert.match(bgLog, new RegExp(`Background job ${bgDryId} \\(execute_revit_code\\) done`), "the background reply is in the journal too");
+// One request at a time: while a job runs, a foreground Revit call is refused at once; a second job queues behind it.
+const slow = await call("execute_revit_code", { code: "return 1; // SLOW_RUN", mode: "readonly", background: true });
+const slowId = jobOf(slow);
+const fg = await call("execute_revit_code", { code: "return 2;", mode: "readonly" });
+assert.ok(fg.isError && new RegExp(`Revit is busy with background job ${slowId}`).test(fg.content[0].text) && /nothing ran/.test(fg.content[0].text), "a foreground call during a job is refused, nothing sent");
+const slow2 = await call("execute_revit_code", { code: "return 3; // SLOW_RUN", mode: "readonly", background: true });
+assert.match(slow2.content[0].text, new RegExp(`queued behind job ${slowId}`), "a second job queues behind the first");
+assert.match((await call("job_status", { job_id: jobOf(slow2) })).content[0].text, /is queued behind job/);
+assert.match(await jobEnd(slowId), / done at [\s\S]*"result":"slow"/);
+assert.match(await jobEnd(jobOf(slow2)), / done at [\s\S]*"result":"slow"/, "the queued job ran after the first");
+assert.equal(json(await call("execute_revit_code", { code: "return 4;", mode: "readonly" })).echoMode, "readonly", "after the jobs, foreground calls reach Revit again");
+const bgMissing = await call("run_saved_script", { name: "tst_no_such_script", background: true });
+assert.ok(bgMissing.isError && !jobOf(bgMissing), "run_saved_script's background precheck refuses an unknown script at once");
 
 // read-only runs need no preview
 assert.equal(json(await call("execute_revit_code", { code: "return 1;", mode: "readonly" })).echoMode, "readonly");

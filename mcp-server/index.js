@@ -49,7 +49,7 @@ const server = new McpServer(
  * wait for Revit; while a long call runs, a progress note every 15 s keeps a client that asked for progress waiting.
  */
 const METHOD_LIST = Methods.registry();   // office methods: the linked tools' descriptions end with their method
-function tool(name, config, handler) {
+function tool(name, { precheck, ...config }, handler) {
   const method = Methods.descriptionLine(name, METHOD_LIST);
   if (method) config = { ...config, description: `${config.description} ${method}.` };
   server.registerTool(name, config, async (args, extra) => {
@@ -64,13 +64,17 @@ function tool(name, config, handler) {
     const notes = new Set();   // e.g. which Revit session answered when several run
     // background: true (tools that declare it): answer at once with a job id; the run goes on in this server process and
     // its reply lands in a job file that job_status reads (also from another process). For callers with a short wait.
+    // The tool's precheck (e.g. the preview gate, the risky-code screen) answers a refusal at once, before any job starts.
+    // A job queues behind this server's earlier jobs (Revit runs one request at a time); its calls to Revit carry its id.
     if (args?.background && config.inputSchema?.background) {
+      try { precheck?.(args); } catch (err) { if (beat) clearInterval(beat); const r = failure(err); logCall(summarize(name, args, r, Date.now() - started, err)); return r; }
       const job = Jobs.start(name, args);
-      currentCall.run({ notes }, () => handler({ ...args, background: false }))
+      Jobs.enqueue(job, () => currentCall.run({ notes, job: job.id }, () => handler({ ...args, background: false })))
         .then((r) => { if (notes.size && Array.isArray(r?.content)) r.content.push({ type: "text", text: [...notes].join("\n") }); Jobs.finish(job, r); logCall(summarize(name, args, r, Date.now() - started)); },
           (err) => { const r = failure(err); Jobs.finish(job, r); logCall(summarize(name, args, r, Date.now() - started, err)); });
       if (beat) clearInterval(beat);
-      return { content: [{ type: "text", text: `Started ${name} as job ${job.id}. It keeps running in this ACE server; call job_status with job_id "${job.id}" for the reply (job file: ${job.file}). Do not start it again.` }] };
+      const queued = job.behind ? ` It is queued behind job ${job.behind} and starts when that one ends.` : "";
+      return { content: [{ type: "text", text: `Started ${name} as job ${job.id}.${queued} It keeps running in this ACE server; its reply is also written to the activity journal. Call job_status with job_id "${job.id}" for the reply (job file: ${job.file}). Do not start it again.` }] };
     }
     try {
       result = await currentCall.run({ signal: extra?.signal, notes }, () => handler(args ?? {}));
@@ -568,6 +572,7 @@ const codeSchema = {
   compile_only: z.boolean().optional().describe("Only check that the code compiles; run nothing"),
   expect_model: z.string().max(400).optional().describe("The model this code is meant for (title or path): refused, nothing run, when Revit's active model is another one (the user may have switched windows)"),
   preview_image: z.boolean().optional().describe("With dry_run: also return pictures (plan + 3D) of the area that would change, with the changed elements highlighted. Show them to the user before asking for confirmation. Use it for anything visual: placing, moving or creating elements."),
+  background: z.boolean().optional().describe("Answer at once with a job id; the run goes on and job_status returns its full reply (also written to the journal). Use it for runs that open several models or may take over a minute. Same safety: an apply still needs the identical successful dry run first (run the dry run in the background too)"),
 };
 
 /** A preview that changes the model must say what it does: the user reads it on the Apply card before approving. */
@@ -577,7 +582,10 @@ function requireExplanation(dry_run, explanation) {
       "It is shown on the Apply card in the ACE panel. For a multi-step job also give 'plan' (all steps) and 'step' (this one).");
 }
 
-async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image, plan, step, expect_model }) {
+const APPLY_WHY = "Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal.";
+
+/** The server's own checks of a code run, before Revit is asked: consent for no_transaction and risky code, the explanation. */
+function codeChecks({ code, mode, dry_run, inputs, explanation, allow_risky, compile_only }) {
   mode = mode || "auto";
   if (mode === "no_transaction" && !allow_risky && !compile_only)
     throw new RevitError("Blocked for safety: mode no_transaction runs the code with no transaction group, so nothing it does can be rolled back and it is not one undo step. " +
@@ -586,9 +594,19 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
   const modifies = mode !== "readonly" && !compile_only;
   if (modifies) requireExplanation(dry_run, explanation);
   // explanation, plan and step are for people (the Apply card); they are not part of the change's identity.
+  return { mode, risky, modifies, key: fingerprint("code", { code, mode, inputs: inputs || {} }) };
+}
+/** background: true refuses at once what the run itself would refuse: the checks above and an apply with no identical preview. */
+function precheckCode(a) {
+  const { modifies, key } = codeChecks(a);
+  if (modifies && !a.dry_run) { requirePreview(key); if (!a.explanation) throw new RevitError(APPLY_WHY); }
+}
+
+async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image, plan, step, expect_model }) {
+  let risky, modifies, key;
+  ({ mode, risky, modifies, key } = codeChecks({ code, mode, dry_run, inputs, explanation, allow_risky, compile_only }));
   const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, allow_risky: !!allow_risky, preview_image: !!(preview_image && dry_run), explanation, plan, step, ...(expect_model ? { expect_model } : {}) }, timeout_seconds ?? 300);
-  const result = !modifies ? await send() : await gated(fingerprint("code", { code, mode, inputs: inputs || {} }),
-    { apply: !dry_run, explanation, why: "Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal." },
+  const result = !modifies ? await send() : await gated(key, { apply: !dry_run, explanation, why: APPLY_WHY },
     send, (r) => !!r?.success);
   // Preview pictures travel as image blocks, not as base64 inside the JSON text.
   const pictures = Array.isArray(result?.previewImages) ? result.previewImages : [];
@@ -638,6 +656,7 @@ tool("execute_revit_code", {
   description: "The universal tool: compile and run C# against the live Revit 2025 API to do anything the other tools can't: create/modify/delete elements, place families, build views and sheets, analyse geometry, batch-process thousands of elements, cross-check rules, work across open documents. Edits must be previewed (dry_run) and confirmed first; each applied run is ONE undo step (except mode no_transaction: for APIs that fail with 'any open transaction phase', such as SaveAs or RevitLinkType.LoadFrom; needs allow_risky, the dry run only compiles, and the run cannot be undone as one step). Returns the return value, Log() output, what changed, timing, Revit warnings, and compile/runtime errors with line numbers.",
   inputSchema: codeSchema,
   annotations: writes,
+  precheck: precheckCode,
 }, runCode);
 
 tool("backup_model", {
@@ -2740,12 +2759,16 @@ tool("run_saved_script", {
     explanation: z.string().optional().describe("Plain-language description (required when applying changes)"),
     allow_risky: z.boolean().optional(),
     option_label: z.string().max(40).optional().describe("For several previews to choose from: e.g. \"Option A - 10 m2\"; it leads the Apply card title"),
-    plan: codeSchema.plan, step: codeSchema.step,
+    plan: codeSchema.plan, step: codeSchema.step, background: codeSchema.background,
   },
   annotations: writes,
-}, async ({ name, inputs, dry_run, preview_image, timeout_seconds, explanation, allow_risky, option_label, plan, step }) => {
+  precheck: (a) => precheckCode(savedScriptRun(a)),
+}, (a) => runCode(savedScriptRun(a)));
+
+/** run_saved_script's call as execute_revit_code's arguments. */
+function savedScriptRun({ name, inputs, dry_run, preview_image, timeout_seconds, explanation, allow_risky, option_label, plan, step }) {
   const script = findScript(name);
-  return runCode({
+  return {
     code: fs.readFileSync(script.file, "utf8"),
     mode: script.mode || "auto",
     dry_run, preview_image, inputs, timeout_seconds, explanation, allow_risky, plan, step,
@@ -2753,8 +2776,8 @@ tool("run_saved_script", {
     transaction_name: `Claude: ${option_label ? `${option_label} - ` : ""}${script.name}${inputs && Object.keys(inputs).length
       ? ` (${Object.entries(inputs).map(([k, v]) => `${k.replace(/_/g, " ")} ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ")})`
       : ""}`.slice(0, 120),
-  });
-});
+  };
+}
 
 tool("save_script", {
   title: "Save a reusable script",

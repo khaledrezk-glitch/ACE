@@ -111,6 +111,7 @@ export function journal(entry) {
       entry.explanation ? `**What:** ${entry.explanation}` : null,
       `**Result:** ${entry.outcome}`,
       entry.details ? "```json\n" + JSON.stringify(entry.details, null, 1).slice(0, 4000) + "\n```" : null,
+      entry.reply ? "<details><summary>Reply</summary>\n\n```text\n" + String(entry.reply).slice(0, 8000) + "\n```\n</details>" : null,
       entry.code ? "<details><summary>Code</summary>\n\n```csharp\n" + entry.code + "\n```\n</details>" : null,
       "",
     ].filter(Boolean);

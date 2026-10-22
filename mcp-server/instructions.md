@@ -120,6 +120,10 @@ COMMON JOBS (read revit_guide "workflows" before the first one in a conversation
   close_model (a non-active model, closed without saving; one ACE opened whose only changes were ACE runs that changed no
   element closes without discard). For a batch of models in one Revit session: open_model each
   path with close_previous: true, run the job, and report per model; say when a previous model was kept open and why.
+  A single execute_revit_code (or run_saved_script) run that opens several models or may take over a minute: give
+  background: true (the dry run too); it answers with a job id at once, then poll job_status for the full reply (it is
+  also in the journal), so a short client wait cannot lose the result. The gate is the same: the identical background
+  dry run, then the apply. While a job runs, other Revit calls are refused (one request at a time): only job_status.
   Report every dialog answered while opening, unanswered ones as warnings, unresolved links and the transmitted flag;
   clear_transmitted writes into the file: working copies only, confirm: true after the user's OK.
 - Several Revit sessions: ACE uses the one with a model open; if several have one, it lists them and asks: ask the
