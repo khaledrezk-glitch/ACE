@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.15.0 (22 Oct 2026)
+- Add-in and MCP server. Fixes from the first live submission run (register #36-#40, #27).
+- **Workset apply says Done only when it is done (#37):** the name-based planner dropped element groups that tied
+  between two worksets of the same category (e.g. two framing worksets whose words are not in the type names), and the
+  apply then reported success with the targets empty. Ties are now broken by a type-name prefix (`typePrefix`, or the
+  workset name's initials), "FOUNDATION WALLS" means walls only, and every apply (`assign_worksets`, `workset_plan apply`)
+  ends with a read-only after-check per target and category: `target-empty`, `target-missing` and `left-behind` fail the
+  step ("Step NOT DONE"), legitimate skips (borrowed, held for an export view, excluded) are listed with their reason, and
+  what is still on Workset1 is shown by category and type. assign_worksets now unpins, moves and re-pins in one
+  transaction; a move that would hide an element in a NAVISWORKS/NWC/IFC export view is held and listed. New tools/workset-test.
+- **Deleted types labelled as types (#40):** previews and change summaries report "Removes N unused <category> types
+  (0 instances)" separately from deleted elements.
+- **Agreed NWC view per model (#36):** export_deliverables stores each model's NWC view (and DWFx 3D views) in the
+  vault's rules/export.json on the first export, uses it when no view is given, and refuses a different view
+  (`nwc-view-differs`) unless `confirm_view_change: true`. Each export reports the view, its model-element count and top
+  categories.
+- **Two centrals with one identity (#38):** open_model, save_as central and the model check warn when two central paths
+  share a worksharing identity (central GUID or latest episode GUID; per-machine record in
+  %APPDATA%\ACE-RevitMCP\central-identities.json) and give the fix (open detached with worksets, Save As central over its own path).
+- **Background code runs (#27):** execute_revit_code and run_saved_script take `background: true` (job id at once, reply
+  via job_status, also written to the journal); safety checks run before the job starts; other Revit calls are refused
+  while a job runs instead of timing out.
+- #39 (save_as of a detached copy) was already fixed in 1.14.13.
+
 ## 1.14.13 (21 Oct 2026)
 - Add-in and MCP server (loads through the ACE loader without a Revit restart when 1.14.x is installed).
 - **save_model save_as of a never-saved copy:** a detached copy never saved reports `Document.IsReadOnlyFile` true while

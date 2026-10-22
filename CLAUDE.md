@@ -20,6 +20,7 @@ dotnet build revit-addin/AceRevitMcp.Compiler/AceRevitMcp.Compiler.csproj -c Rel
 dotnet run --project tools/tracker-test                                   # change-tracker comparison (after the add-in build)
 dotnet run --project tools/clash-test                                     # clash logic: responsibility, merge, issues (after the add-in build)
 dotnet run --project tools/checkset-test                                  # model check set: thresholds, disabled checks (after the add-in build)
+dotnet run --project tools/workset-test                                   # workset plan: tie-breaks, after-apply check, deleted-type wording (after the add-in build)
 cd mcp-server && npm ci && npm run check                                   # syntax + smoke test (fake Revit bridge)
 pwsh -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$e); $e"
 ```
