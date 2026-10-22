@@ -160,6 +160,12 @@ export function parseName(name, { levels = [], table = W.CATEGORY_TOKENS, strong
     const elementHead = (/S$/.test(x.w) && x.w.length > 3) || MASS_HEADS.has(x.w);
     if (!firstInPart && (!elementHead || before.slice(i + 1).some(isZoneWord))) x.kind = "other";
   });
+  // A singular category word right before a plural (or mass) element head in the same part qualifies it: "FOUNDATION
+  // WALLS" holds walls (FOUNDATION is a word of its name, not Structural Foundations), "WALL FOOTINGS" holds footings.
+  items.forEach((x, i) => {
+    const nx = items[i + 1];
+    if (x.kind === "cat" && nx && nx.seg === x.seg && (nx.kind === "cat" || nx.kind === "strong") && !(/S$/.test(x.w) && x.w.length > 3) && ((/S$/.test(nx.w) && nx.w.length > 3) || MASS_HEADS.has(nx.w))) x.kind = "other";
+  });
   const otherCat = items.some((x) => x.kind === "cat" || x.kind === "strong") || !!out.material;
   for (const x of items) {
     if (x.kind === "levelcat") x.kind = otherCat ? "level" : "cat";
@@ -171,7 +177,29 @@ export function parseName(name, { levels = [], table = W.CATEGORY_TOKENS, strong
     }
   }
   if (out.cad) out.links = false;
+  // The type-name prefix its name implies: the initials of the part that names the category ("STRAP BEAMS" -> SB, "NECK
+  // COLUMNS" -> NC), two letters or more; a tie-breaker only (place), never a filter of a saved rule.
+  const head = parts.map((p) => words(p).filter((w) => !noise.has(w) && !STOP.has(w) && !MATERIAL_TOKENS[w] && !LINK_WORDS.has(w) && !/^\d/.test(w)))
+    .filter((ws0) => ws0.length >= 2 && ws0.some((w) => t[w])).at(-1);
+  if (head && out.categories.length && !out.links && !out.cad) out.initials = head.map((w) => w[0]).join("");
   return out;
+}
+
+/** The singular of a name word (FOOTINGS -> FOOTING, COLUMNS -> COLUMN; GLASS stays). */
+const singular = (w) => w.length > 3 && w.endsWith("S") && !w.endsWith("SS") ? w.slice(0, -1) : w;
+/** The type part of "Family : Type" (or the whole name). */
+const typePart = (t) => { const s0 = String(t ?? ""); const i = s0.lastIndexOf(" : "); return (i >= 0 ? s0.slice(i + 3) : s0).trim(); };
+/**
+ * Does a group's type name carry a rule's type-name prefix? An explicit typePrefix (a rule's own, or vault naming.typePrefixes)
+ * matches the start of the type part or of the whole name; the initials a name implies (STRAP BEAMS -> SB) must be followed by
+ * a non-letter ("SB1 300x600", "SB-2", "SB"). -> the prefix that matched, or null.
+ */
+export function prefixHit(type, r) {
+  const part = up(typePart(type)), full = up(String(type ?? "").trim());
+  for (const p of [].concat(r?.typePrefix ?? []).map((x) => up(String(x ?? "").trim())).filter(Boolean)) if (part.startsWith(p) || full.startsWith(p)) return { prefix: p, explicit: true };
+  const i = r?.initials;
+  if (i && i.length >= 2 && part.startsWith(i) && !/[A-Z]/.test(part.charAt(i.length))) return { prefix: i, explicit: false };
+  return null;
 }
 
 const catIs = (cat, list) => list.some((c) => norm(c) === norm(cat)) || (W.isCad(cat) && list.some((c) => /^cad imports$/i.test(c)));
@@ -216,14 +244,20 @@ export function place(g, rules, groups = [], opts = {}) {
   const cands = rules.filter(usableRule);
   // A type token that names a workset beats level + category ("Floor : SOG 120mm" -> SOG): the vault's typeTokens first.
   if (!/^rvt links$/i.test(g.category) && !W.isCad(g.category)) {
-    const tw = new Set(words(g.type));
+    const tw = new Set(words(g.type).flatMap((w) => [w, singular(w)]));
     for (const [tok, ws] of Object.entries(opts.typeTokens ?? {})) {
       const r = words(tok).length && words(tok).every((t) => tw.has(t)) ? cands.find((x) => norm(x.workset) === norm(ws)) : null;
       if (r) return { workset: r.workset, confidence: "high", reason: `type ${up(tok)} (vault typeTokens)` };
     }
-    let hits = cands.filter((r) => !r.links && !r.cad && !(r.levels?.length && !(g.level && r.levels.includes(g.level))) && (r.distinct ?? r.words ?? []).some((w) => tw.has(w)) && (!r.categories.length || catIs(g.category, r.categories)) && !(r.material && known(g.material) && r.material !== g.material));
+    let hits = cands.filter((r) => !r.links && !r.cad && !(r.levels?.length && !(g.level && r.levels.includes(g.level))) && (r.distinct ?? r.words ?? []).some((w) => tw.has(w) || tw.has(singular(w))) && (!r.categories.length || catIs(g.category, r.categories)) && !(r.material && known(g.material) && r.material !== g.material));
     if (hits.length > 1) { const lv = hits.filter((r) => g.level && r.levels.includes(g.level)); if (lv.length) hits = lv; }
-    if (hits.length === 1) return { workset: hits[0].workset, confidence: "high", reason: `type name ${(hits[0].distinct ?? hits[0].words).filter((w) => tw.has(w)).join(" ")} names the workset` };
+    if (hits.length === 1) return { workset: hits[0].workset, confidence: "high", reason: `type name ${(hits[0].distinct ?? hits[0].words).filter((w) => tw.has(w) || tw.has(singular(w))).join(" ")} names the workset` };
+    // The type-name prefix (the office method: category, type-name prefix, level): among the rules for its category, the one
+    // whose prefix the type carries (an explicit typePrefix, else the initials its name implies: STRAP BEAMS -> SB1 ...).
+    const pre = cands.filter((r) => !r.links && !r.cad && r.categories.length && catIs(g.category, r.categories) && !(r.levels?.length && !(g.level && r.levels.includes(g.level)))
+      && !(r.material && known(g.material) && r.material !== g.material)).map((r) => ({ r, hit: prefixHit(g.type, r) })).filter((x) => x.hit);
+    const preBest = pre.some((x) => x.hit.explicit) ? pre.filter((x) => x.hit.explicit) : pre;
+    if (preBest.length === 1) return { workset: preBest[0].r.workset, confidence: preBest[0].hit.explicit ? "high" : "medium", reason: `type name prefix ${preBest[0].hit.prefix}${preBest[0].hit.explicit ? " (typePrefix)" : ` (the initials of ${q(preBest[0].r.workset)})`}` };
   }
   if (/^rvt links$/i.test(g.category)) {
     const lw = cands.filter((r) => r.links);
@@ -418,7 +452,7 @@ export function propose(list) {
     if (r.isDefault) note.push(defaultName ? "the vault's default name (naming.defaultName)" : "the default workset keeps its name (renaming it is opt-in: naming.defaultName in the vault)");
     const rule = { workset: r.workset, categories: r.categories, levels: r.levels, words: r.words, material: r.material, links: r.links, cad: r.cad, codes: r.codes, manual: r.manual, isDefault: r.isDefault, protected: r.protected, twins,
       // The rule's models (G9: a saved rule applies only there) include the models proposed once as "same as" one of them.
-      assets: r.assets, distinct: r.distinct, models: [...where, ...models.filter((m) => m.sameAs && where.includes(m.sameAs)).map((m) => m.model)] };
+      assets: r.assets, distinct: r.distinct, ...(r.initials ? { initials: r.initials } : {}), models: [...where, ...models.filter((m) => m.sameAs && where.includes(m.sameAs)).map((m) => m.model)] };
     return { Group: section(r, action === "delete"), "Proposed workset": proposed, Action: action, Models: where.length === all.length && all.length > 1 ? `All ${all.length}` : `${where.join(", ")}${where.length > 1 ? ` (${where.length})` : ""}`,
       "What it holds (from its name)": describe(r), "Holds now": holds, "Would receive": recv, "Open / visibility": visText(f.vis), Note: note.join("; "), [DECISION]: "", Rule: JSON.stringify(rule) };
   });
@@ -597,6 +631,8 @@ export function rulesFromRows(rows, ctx = {}) {
     let rule;
     try { rule = r.rule ? JSON.parse(r.rule) : null; } catch { rule = null; }
     if (!rule) rule = { ...parseName(r.proposed.trim(), ctx), twins: [] };
+    // A file proposed before the type-name prefix (initials) was read: the name gives it now.
+    else if (rule.initials === undefined && rule.workset) { const ini = parseName(rule.workset, ctx).initials; if (ini) rule.initials = ini; }
     const from = rule.workset;
     const name = d.kind === "change" ? d.to : (r.proposed.trim() || (rule.isDefault ? "" : rule.workset));
     if (!name) { flagged.push({ line: r.line, what: from, why: "no name: write change to <name>" }); continue; }
@@ -702,7 +738,8 @@ export function vaultRules(R, zones = [], { createMissing = false } = {}) {
     if (!r.categories.length && !r.levels.length && !r.words.length && !r.material) continue;
     const z = r.words.filter((w) => zoneWords.has(w)), t = r.words.filter((w) => !zoneWords.has(w));
     out.push({ ...base, ...(r.categories.length ? { category: r.categories } : {}), ...(r.levels.length ? { level: `^(${r.levels.map(rx).join("|")})$` } : {}),
-      ...(r.material ? { material: r.material } : {}), ...(z.length ? { zone: wordRegex(z) } : {}), ...(t.length ? { type: wordRegex(t) } : {}),
+      ...(r.material ? { material: r.material } : {}), ...(z.length ? { zone: wordRegex(z) } : {}), ...(t.length && !r.typePrefix ? { type: wordRegex(t) } : {}),
+      ...(r.typePrefix ? { typePrefix: [].concat(r.typePrefix) } : {}),
       spec: (r.levels.length ? 2 : 0) + (r.words.length ? 2 : 0) + (r.material ? 1 : 0), cat: r.categories.length ? 1 : 0 });
   }
   return out.sort((a, b) => b.cat - a.cat || b.spec - a.spec).map(({ spec, cat, ...r }) => r);
@@ -847,7 +884,7 @@ export function applyText(r, { model, mode, rolledBack = false }) {
   if (blocks.length) lines.push(`Blocked (nothing changed):\n${blocks.map((b) => `- ${blockLine(b)}`).join("\n")}`);
   const k = (x) => plan.filter((p) => p.kind === x).length;
   lines.push(`Plan: ${plan.length} step(s) (create ${k("create")}, rename ${k("rename")}, move ${k("move")}, delete ${k("delete")})${plan.length ? `:\n${plan.slice(0, 40).map((p) => `- ${stepText(p)}`).join("\n")}${plan.length > 40 ? `\n- ... ${plan.length - 40} more` : ""}` : "."}`);
-  if (r?.skipped?.length) lines.push(`Skipped (borrowed by others; ask them to relinquish, then run again for these):\n${r.skipped.map((s) => `- ${s.key}: ${(s.ids ?? []).length} element(s)${s.holder ? `, held by ${s.holder}` : ""}`).join("\n")}`);
+  if (r?.skipped?.length) lines.push(`Skipped (left where they are; borrowed ones: ask the holder to relinquish, then run again):\n${r.skipped.map((s) => `- ${s.key}: ${Number(s.count ?? 0) || (s.ids ?? []).length} element(s)${s.holder ? `, held by ${s.holder}` : ""}${s.why && s.why !== "borrowed" ? `: ${s.why}` : ""}`).join("\n")}`);
   if (r?.changed?.length) lines.push(`Changed since the plan (the whole plan is refused; propose and confirm again):\n${r.changed.map((c) => `- ${c.key}: ${c.expected} planned, ${c.found} found`).join("\n")}`);
   if (r?.visibility?.length) lines.push(`Visibility in the export views (${(r.exportViews ?? []).map(W.q).join(", ") || "none"}):\n${r.visibility.slice(0, 20).map((v) => `- ${v.wouldHide ? `WOULD HIDE ${v.wouldHide}` : ""}${v.wouldHide && v.wouldShow ? ", " : ""}${v.wouldShow ? `would show ${v.wouldShow}` : ""} element(s) in ${W.q(v.view)}: ${v.key ?? v.move} -> ${v.to}`).join("\n")}`);
   const vc = visChangesOf(r);
@@ -859,7 +896,7 @@ export function applyText(r, { model, mode, rolledBack = false }) {
     const vh = r?.visibilityHeld;
     const heldN = Number(vh?.elements ?? sheetV.reduce((n, c) => n + Number(c.held ?? 0), 0));
     if (bySheet.size) lines.push(`Visibility on sheets (moved elements a view on a sheet would show differently)${heldN ? `: ${heldN} element(s) HELD${vh?.moves?.length ? ` in ${vh.moves.length} move(s)` : ""}, they stay where they are; after the user agreed: allow_visibility_change: true, or the view / workset names` : ""}:\n${[...bySheet].slice(0, 30).map(([sh, cs]) => `- sheet ${sh}:\n${cs.slice(0, 10).map((c) => `  - view ${W.q(c.view)}: ${one(c)}`).join("\n")}`).join("\n")}${bySheet.size > 30 ? `\n- ... ${bySheet.size - 30} more sheet(s)` : ""}`);
-    if (exp.length) lines.push(`Export views (reported, not held):\n${exp.slice(0, 10).map((c) => `- ${W.q(c.view)}: ${one(c)}`).join("\n")}`);
+    if (exp.length) lines.push(`Export views (a move that would hide an element there is held, unless allowed):\n${exp.slice(0, 10).map((c) => `- ${W.q(c.view)}: ${one(c)}`).join("\n")}`);
   }
   const nc = r?.visibilityChecked?.notChecked ?? [];
   if (nc.length) lines.push(`Visibility not checked in: ${nc.slice(0, 10).map(W.q).join(", ")}${nc.length > 10 ? ", ..." : ""}.`);
@@ -878,10 +915,41 @@ export function applyText(r, { model, mode, rolledBack = false }) {
     const v = r?.verify;
     lines.push(!v ? "Self-check: not reported." : v.ok ? `Self-check: ok (element count per category the same before and after${v.checked != null ? `, ${v.checked} checked` : ""}).`
       : `Self-check FAILED: ${(v.mismatches ?? []).slice(0, 5).map((m) => `${m.category ?? m.what}: ${m.before} -> ${m.after}`).join("; ")}; rolled back, nothing changed.`);
+    if (r?.afterCheck) lines.push(W.afterCheckText(r.afterCheck, { mode }));
     const d = r?.done ?? {};
-    lines.push(mode === "dry run" || rolledBack ? "Changes: rolled back, nothing changed." : `Changes: ${[d.created ? `created ${d.created}` : "", d.renamed ? `renamed ${d.renamed}` : "", d.moved ? `moved ${d.moved} element(s)` : "", d.deleted ? `deleted ${d.deleted}` : ""].filter(Boolean).join(", ") || "nothing"} done.`);
+    const did = [d.created ? `created ${d.created}` : "", d.renamed ? `renamed ${d.renamed}` : "", d.moved ? `moved ${d.moved} element(s)` : "", d.deleted ? `deleted ${d.deleted}` : ""].filter(Boolean).join(", ") || "nothing";
+    lines.push(mode === "dry run" || rolledBack ? "Changes: rolled back, nothing changed." : W.notDoneLine(r) ? `Changes: ${did} (applied, ONE undo step).\n${W.notDoneLine(r)}` : `Changes: ${did} done.`);
   }
   return lines.join("\n");
+}
+
+/**
+ * The after-check a workset plan asks the add-in for (register #37): every target the confirmed rules name (category, level,
+ * material, type prefix; links, CAD and category-free rules are left to their moves) and every move's target with its groups
+ * (category, type, level); the sources (the default workset and the worksets the plan deletes) and the groups that stay by
+ * decision (skipKeys, reset keepKeys). only: just the targets the filtered plan moves elements to.
+ * -> { targets: [{ workset, selectors }], sources, exclude_keys }
+ */
+export function afterCheckSpec(pf, plan, facts, { keepKeys = [], only = null } = {}) {
+  const ws = facts?.worksets ?? [];
+  const ren = new Map((plan?.rename ?? []).map((r) => [norm(r.from), r.to]));
+  const fin = (n) => ren.get(norm(n)) ?? n;
+  const exists = new Set([...ws.map((w) => norm(fin(w.name))), ...(plan?.create ?? []).map(norm)]);
+  const gone = new Set((plan?.delete ?? []).map(norm));
+  const targets = new Map();
+  const at = (n) => targets.get(norm(n)) ?? targets.set(norm(n), { workset: n, selectors: [] }).get(norm(n));
+  for (const r of pf?.rules ?? []) {
+    if (!usableRule(r) || r.delete || r.links || r.cad || !r.categories?.length || r.categories.every((c) => DATUM.test(c))) continue;
+    if (!exists.has(norm(r.workset)) || gone.has(norm(r.workset))) continue;
+    const tp = [].concat(r.typePrefix ?? []).filter(Boolean);
+    at(r.workset).selectors.push({ category: r.categories, ...(r.levels?.length ? { level: r.levels } : {}), ...(r.material ? { material: r.material } : {}), ...(tp.length ? { typePrefix: tp } : {}) });
+  }
+  for (const m of plan?.moves ?? []) at(m.to).selectors.push({ category: [m.category], type: [m.type ?? ""], level: [m.level ?? ""] });
+  let list = [...targets.values()].filter((t) => t.selectors.length);
+  if (only) { const to = new Set((plan?.moves ?? []).map((m) => norm(m.to))); list = list.filter((t) => to.has(norm(t.workset))); }
+  const dflt = ws.find((w) => w.isDefault || W.isDefaultName(w.name))?.name;
+  const sources = [...new Set([dflt ? fin(dflt) : null, ...(plan?.delete ?? [])].filter(Boolean))];
+  return { targets: list, sources, exclude_keys: [...new Set([...(pf?.skipKeys ?? []), ...(keepKeys ?? [])])] };
 }
 /** The plan file written by confirm -> its plan, checked. */
 export function readPlanFile(json) {
@@ -910,6 +978,7 @@ export function stdTarget(g, rules = []) {
     if (r.zone && !jsRx(r.zone)?.test(g.zone ?? "")) continue;
     if (r.type && !jsRx(r.type)?.test(g.type ?? "")) continue;
     if (r.family && !jsRx(r.family)?.test(g.type ?? "")) continue;
+    if ([].concat(r.typePrefix ?? []).filter(Boolean).length && !prefixHit(g.type, { typePrefix: r.typePrefix })) continue;
     const workset = String(r.workset).replace(/\{level\}/g, g.level ?? "").replace(/\{zone\}/g, g.zone ?? "").replace(/\{category\}/g, g.category ?? "");
     return { workset, rule: r, why: `standard rule ${r.id ?? ruleText(r)}${r.clause ? ` (${r.clause})` : ""}` };
   }

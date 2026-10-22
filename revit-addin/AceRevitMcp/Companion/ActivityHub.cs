@@ -167,7 +167,7 @@ namespace AceRevitMcp.Companion
             if (result is JsonObject r)
             {
                 var change = r["wouldChange"] as JsonObject ?? r["changed"] as JsonObject;
-                if (change != null) detail = $"added {change["added"]}, modified {change["modified"]}, deleted {change["deleted"]}";
+                if (change != null) detail = $"added {change["added"]}, modified {change["modified"]}, deleted {change["deleted"]}{Util.ChangeTracker.Recording.TypesText(change)}";
                 else if (r["total"] != null) detail = $"{r["total"]} found";
                 else if (r["applied"] != null) detail = $"{r["applied"]} value(s), {r["failed"]} failed";
                 if (r["error"] != null) detail = r["error"].ToString();
@@ -258,7 +258,7 @@ namespace AceRevitMcp.Companion
                 var c = result?["wouldChange"] as JsonObject;
                 var cats = c?["modifiedByCategory"] as JsonObject ?? c?["addedByCategory"] as JsonObject;
                 summary = c == null ? "Preview succeeded"
-                    : $"Would add {c["added"]}, modify {c["modified"]}, delete {c["deleted"]}" +
+                    : $"Would add {c["added"]}, modify {c["modified"]}, delete {c["deleted"]}{Util.ChangeTracker.Recording.TypesText(c)}" +
                       (cats != null && cats.Count > 0 ? " (" + string.Join(", ", cats.Take(4).Select(kv => $"{kv.Key} {kv.Value}")) + ")" : "");
                 if (result?["revitWarnings"] is JsonArray w && w.Count > 0) summary += $" · {w.Count} Revit warning(s)";
             }

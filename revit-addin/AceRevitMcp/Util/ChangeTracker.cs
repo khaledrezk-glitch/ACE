@@ -113,6 +113,8 @@ namespace AceRevitMcp.Util
             private readonly Dictionary<long, string> _categories = new Dictionary<long, string>();
             private readonly Dictionary<long, string> _names = new Dictionary<long, string>();
             private readonly HashSet<long> _sensitive = new HashSet<long>();   // not building elements: parameters, types, views...
+            private readonly HashSet<long> _types = new HashSet<long>();       // element types (family types, wall types...): reported apart from elements
+            private readonly Dictionary<long, int> _typeInstances = new Dictionary<long, int>();   // a deleted type: its instances while it existed
 
             public Recording(string name)
             {
@@ -196,9 +198,27 @@ namespace AceRevitMcp.Util
                         _names[id] = NameOf(doc, el);
                         // Data many elements depend on (not something Revit updates on its own, like views or tags).
                         if (el is ElementType || el is ParameterElement || el is Family) _sensitive.Add(id);
+                        if (el is ElementType) _types.Add(id);
                     }
                     catch { }
                 }
+                // A deleted type that exists again (a rolled-back preview): how many instances use it. An unused duplicate type that
+                // Revit drops on commit has none: it must not read as deleted building elements.
+                var count = _deleted.Where(i => _types.Contains(i) && !_typeInstances.ContainsKey(i)).ToList();
+                if (count.Count == 0) return;
+                try
+                {
+                    var set = new HashSet<long>(count.Where(i => doc.GetElement(new ElementId(i)) != null));
+                    if (set.Count == 0) return;
+                    foreach (var i in set) _typeInstances[i] = 0;
+                    foreach (var e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
+                    {
+                        long t;
+                        try { t = e.GetTypeId().Value; } catch { continue; }
+                        if (set.Contains(t)) _typeInstances[t]++;
+                    }
+                }
+                catch { /* not counted: reported without an instance count */ }
             }
 
             /// <summary>A Revit warning record: an element without a category on the warnings workset.</summary>
@@ -228,6 +248,48 @@ namespace AceRevitMcp.Util
             internal static string WarningRecordText(int n) => $"{n} resolved warning record{(n == 1 ? "" : "s")}";
 
             private (List<long> Records, List<long> Deleted) Split() => SplitWarningRecords(_deleted, _categories, _warningRecords);
+
+            /// <summary>Real deletions split into elements (instances) and element types.</summary>
+            private (List<long> Records, List<long> Elements, List<long> Types) SplitTypes()
+            {
+                var (records, deleted) = Split();
+                return (records, deleted.Where(i => !_types.Contains(i)).ToList(), deleted.Where(_types.Contains).ToList());
+            }
+
+            /// <summary>
+            /// The deletion lines a person reads before applying (plain logic, tested in tools/workset-test): deleted elements first
+            /// ("Deletes N Walls"), then deleted types apart, with their instance count: "Removes 10 unused Structural Framing types
+            /// (0 instances)" is Revit dropping unused duplicate types, not data loss; a type with instances says how many.
+            /// instances: null = not known (the type could not be read again, e.g. after a real apply).
+            /// </summary>
+            internal static List<string> DeletionLines(IEnumerable<(string Category, string Name, bool IsType, int? Instances)> deleted, int maxGroups = 6)
+            {
+                var lines = new List<string>();
+                var list = (deleted ?? Enumerable.Empty<(string, string, bool, int?)>()).ToList();
+                string Names(IEnumerable<string> n, int max) { var x = n.Where(v => v != null).Distinct().Take(max).ToList(); return x.Count > 0 ? ": " + string.Join(", ", x) : ""; }
+                foreach (var g in list.Where(d => !d.IsType).GroupBy(d => d.Category ?? "elements").OrderByDescending(g => g.Count()).Take(maxGroups))
+                    lines.Add($"Deletes {g.Count()} {g.Key} element{(g.Count() == 1 ? "" : "s")}{Names(g.Select(d => d.Name), 5)}");
+                foreach (var g in list.Where(d => d.IsType).GroupBy(d => d.Category ?? "Types").OrderByDescending(g => g.Count()).Take(maxGroups))
+                {
+                    var n = g.Count(); var s = n == 1 ? "" : "s";
+                    var kind = g.Key == "Types" ? $"type{s}" : $"{g.Key} type{s}";
+                    var known = g.Where(d => d.Instances.HasValue).ToList();
+                    var inst = known.Sum(d => d.Instances.Value);
+                    if (known.Count == n && inst == 0) lines.Add($"Removes {n} unused {kind} (0 instances; no placed element is deleted){Names(g.Select(d => d.Name), 5)}");
+                    else if (known.Count == n) lines.Add($"Deletes {n} {kind} with {inst} instance{(inst == 1 ? "" : "s")}{Names(g.Select(d => d.Name), 5)}");
+                    else lines.Add($"Removes {n} {kind} (instance count not known){Names(g.Select(d => d.Name), 5)}");
+                }
+                return lines;
+            }
+
+            /// <summary>The types part of a change summary for one line (cards, outcomes): ", removes 10 unused type(s)" or "".</summary>
+            internal static string TypesText(JsonObject summary)
+            {
+                var n = summary?["deletedTypes"] is JsonValue v && v.TryGetValue<int>(out var x) ? x : 0;
+                if (n == 0) return "";
+                var inst = summary?["deletedTypeInstances"] is JsonValue w && w.TryGetValue<int>(out var y) ? y : (int?)null;
+                return inst == 0 ? $", removes {n} unused type{(n == 1 ? "" : "s")}" : $", removes {n} type{(n == 1 ? "" : "s")}";
+            }
 
             private static string Label(Element el) =>
                 el.Category?.Name ?? el switch
@@ -272,8 +334,9 @@ namespace AceRevitMcp.Util
                 var d = new JsonObject();
                 if (_added.Count > 0) d["added"] = Part(_added);
                 if (_modified.Count > 0) d["modified"] = Part(_modified);
-                var (records, deleted) = Split();
+                var (records, deleted, types) = SplitTypes();
                 if (deleted.Count > 0) d["deleted"] = Part(deleted);
+                if (types.Count > 0) d["deletedTypes"] = Part(types);
                 if (records.Count > 0) d["resolvedWarningRecords"] = WarningRecordText(records.Count) + " (Revit removed the records of warnings the change resolved; no model element is deleted)";
                 return d;
             }
@@ -283,11 +346,9 @@ namespace AceRevitMcp.Util
             {
                 var a = new JsonArray();
                 var (records, deleted) = Split();
-                foreach (var g in deleted.GroupBy(i => _categories.TryGetValue(i, out var c) ? c : "elements").OrderByDescending(g => g.Count()).Take(6))
-                {
-                    var names = g.Select(i => _names.TryGetValue(i, out var n) ? n : null).Where(n => n != null).Distinct().Take(5).ToList();
-                    a.Add($"Deletes {g.Count()} {g.Key}{(names.Count > 0 ? ": " + string.Join(", ", names) : "")}");
-                }
+                foreach (var line in DeletionLines(deleted.Select(i => (_categories.TryGetValue(i, out var c) ? c : _types.Contains(i) ? "Types" : "elements",
+                             _names.TryGetValue(i, out var n) ? n : null, _types.Contains(i), _typeInstances.TryGetValue(i, out var k) ? k : (int?)null))))
+                    a.Add(line);
                 if (records.Count > 0) a.Add(WarningRecordText(records.Count) + " (warnings the change resolved; no model element is deleted)");
                 foreach (var g in _modified.Where(_sensitive.Contains).GroupBy(i => _categories.TryGetValue(i, out var c) ? c : "data").Take(4))
                 {
@@ -320,13 +381,19 @@ namespace AceRevitMcp.Util
                     return obj;
                 }
 
-                var (records, deleted) = Split();
+                var (records, deleted, types) = SplitTypes();
                 var summary = new JsonObject
                 {
                     ["added"] = _added.Count,
                     ["modified"] = _modified.Count,
-                    ["deleted"] = deleted.Count,
+                    ["deleted"] = deleted.Count,   // elements (instances); element types are counted apart
                 };
+                if (types.Count > 0)
+                {
+                    summary["deletedTypes"] = types.Count;
+                    summary["deletedTypesByCategory"] = ByCategory(types);
+                    if (types.All(_typeInstances.ContainsKey)) summary["deletedTypeInstances"] = types.Sum(i => _typeInstances[i]);
+                }
                 if (records.Count > 0) summary["resolvedWarningRecords"] = records.Count;
                 if (_added.Count > 0) summary["addedByCategory"] = ByCategory(_added);
                 if (_modified.Count > 0) summary["modifiedByCategory"] = ByCategory(_modified);
@@ -335,6 +402,7 @@ namespace AceRevitMcp.Util
                 var attention = Attention();
                 if (attention.Count > 0) summary["attention"] = attention;
                 if (deleted.Count > 0) summary["deletedIds"] = new JsonArray(deleted.Take(200).Select(i => (JsonNode)i).ToArray());
+                if (types.Count > 0) summary["deletedTypeIds"] = new JsonArray(types.Take(200).Select(i => (JsonNode)i).ToArray());
                 if (_modified.Count > 0) summary["modifiedIds"] = new JsonArray(_modified.Take(500).Select(i => (JsonNode)i).ToArray());
                 if (_added.Count > 0 && _added.Count <= 200) summary["addedIds"] = new JsonArray(_added.Select(i => (JsonNode)i).ToArray());
                 summary["note"] = "Counts include elements Revit updates automatically (e.g. views, tags, joined walls).";

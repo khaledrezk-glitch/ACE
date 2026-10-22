@@ -23,14 +23,24 @@ namespace AceRevitMcp.Rules
                 : "The workset rules are empty: each rule needs at least a 'workset'.");
             if (Args.Str(args, "default_workset") is string dw && !string.IsNullOrWhiteSpace(dw)) rules.DefaultWorkset = dw;
             var title = "ACE: assign worksets per the BEP" + (Args.Bool(args, "only_workset1") ? " (Workset1 only)" : "");
-            return NativeChange.Run(app, args, "assign_worksets", title, (doc, plan) => rules.Apply(doc, new WorksetRules.Options
+            var dryRun = Args.Bool(args, "dry_run");
+            var result = NativeChange.Run(app, args, "assign_worksets", title, (doc, plan) => rules.Apply(doc, new WorksetRules.Options
             {
                 PlanOnly = plan,
                 OnlyWorkset1 = Args.Bool(args, "only_workset1"),
                 CreateMissing = Args.Bool(args, "create_missing"),
                 CanEdit = e => !doc.IsWorkshared || (WorksharingUtils.GetCheckoutStatus(doc, e.Id) != CheckoutStatus.OwnedByOtherUser
                                && WorksharingUtils.GetModelUpdatesStatus(doc, e.Id) is not (ModelUpdatesStatus.UpdatedInCentral or ModelUpdatesStatus.DeletedInCentral)),
-            }));
+            }), verify: (d, r) =>
+            {
+                // The after-check (register #37): read after the commit; it reports, it never rolls back.
+                try { r["afterCheck"] = rules.AfterCheck(d, dryRun); }
+                catch (System.Exception ex) { r["afterCheck"] = new JsonObject { ["ok"] = false, ["error"] = "the after-check could not read the model: " + ex.Message, ["targets"] = new JsonArray() }; }
+                return true;
+            });
+            if (result["notes"] == null) result["notes"] = new JsonArray();
+            WorksetPlanLogic.MarkComplete(result, dryRun);
+            return result;
         }
     }
 }

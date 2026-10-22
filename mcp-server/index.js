@@ -1017,7 +1017,7 @@ tool("vault", {
 
 tool("assign_worksets", {
   title: "Assign worksets per the BEP",
-  description: "action assign (default): put elements on the right worksets by the BEP rules: category, function (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or a parameter value; the first matching rule wins and names can use {level}, {zone}, {category}. Rules are the ones in force for the open model (the project's project-requirements.json merged over the office worksets.json, project first; see project_rules) unless given. check_only: true reports what is on the wrong workset (read-only in effect). Otherwise it moves elements, with the usual dry_run preview and confirmation; elements borrowed by others are skipped. One undo step. action audit: read-only table of every user workset (elements by category, owner, open; flags empty, naming, near-duplicate, wrong workset; naming rule from project-requirements.json worksets.naming), files with out_dir. action rename (renames, default: the rule's suggestions) and delete_empty (worksets, move_to for a non-empty one): check, dry_run, then the identical call, ONE undo step, self-checked.",
+  description: "action assign (default): put elements on the right worksets by the BEP rules: category, function (wall function, structural, MEP system, framing type), family / type name, level, zone (scope box), room department or a parameter value; the first matching rule wins and names can use {level}, {zone}, {category}. Rules are the ones in force for the open model (the project's project-requirements.json merged over the office worksets.json, project first; see project_rules) unless given. check_only: true reports what is on the wrong workset (read-only in effect). Otherwise it moves elements, with the usual dry_run preview and confirmation; elements borrowed by others are skipped; pinned ones are unpinned, moved and pinned again. One undo step, then an after-check per rule target and category (NOT done when matching elements stay behind). Rules may use typePrefix (type-name prefix) with category and level. action audit: read-only table of every user workset (elements by category, owner, open; flags empty, naming, near-duplicate, wrong workset; naming rule from project-requirements.json worksets.naming), files with out_dir. action rename (renames, default: the rule's suggestions) and delete_empty (worksets, move_to for a non-empty one): check, dry_run, then the identical call, ONE undo step, self-checked.",
   inputSchema: {
     action: z.enum(["assign", "audit", "rename", "delete_empty"]).optional(),
     renames: z.array(z.object({ from: z.string().max(200), to: z.string().max(200) })).max(200).optional().describe("rename: old -> new (default: the naming rule's suggestions)"),
@@ -1058,7 +1058,12 @@ tool("assign_worksets", {
   if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
   if (!dry_run && result?.success) briefCache.clear();
   journal({ title: `${dry_run ? "Preview" : "Change"}: assign worksets per the BEP`, explanation, outcome: outcomeOf(result, dry_run), details: result?.byWorkset });
-  return withLine(text(result), fm.line);
+  const out = withLine(text(result), fm.line);
+  // The after-check (register #37): per rule target and category, read after the commit; a failed one is NOT done.
+  const acT = [Worksets.afterCheckText(result?.afterCheck, { mode: dry_run ? "dry run" : "apply" }), dry_run ? "" : Worksets.notDoneLine(result)].filter(Boolean).join("\n");
+  if (acT) out.content.push({ type: "text", text: acT });
+  if (!dry_run && result?.stage === "incomplete") out.isError = true;
+  return out;
 });
 
 // Workset administration (assign_worksets audit / rename / delete_empty, bridge command workset_admin). The naming rule
@@ -1321,7 +1326,7 @@ async function worksetStatus(a, timeout, list) {
 
 tool("workset_plan", {
   title: "Plan the worksets (propose, confirm, apply)",
-  description: "Worksets against the standard (vault worksets-standard.json confirmed, else the project list, else office; every reply names it). propose (read-only; refresh: the previous file keeps decisions, marks new / changed / gone; applied rows not re-proposed): one row per target workset from its NAME, groups as detail, CSV + xlsx with a decision column. confirm: the edited file -> a plan per model + rules; save_rules + confirm: true saves them. status (read-only): % correct, wrong (and where to), empty, missing, applied by ACE / changed after apply, pending; HTML / CSV, dashboard tile. apply: plan_file (only: partial; reset: default), check_only, dry_run, identical call, ONE undo step; borrowed -> pending actions.",
+  description: "Worksets against the standard (vault worksets-standard.json confirmed, else the project list, else office; every reply names it). propose (read-only; refresh: the previous file keeps decisions, marks new / changed / gone; applied rows not re-proposed): one row per target workset from its NAME, groups as detail, CSV + xlsx with a decision column. confirm: the edited file -> a plan per model + rules; save_rules + confirm: true saves them. status (read-only): % correct, wrong (and where to), empty, missing, applied by ACE / changed after apply, pending; HTML / CSV, dashboard tile. apply: plan_file (only: partial; reset: default), check_only, dry_run, identical call, ONE undo step; borrowed -> pending actions; after-check per target and category (a target left empty or elements left on Workset1 = NOT done, the step fails; skips listed with reasons; what stays on Workset1 by category and type).",
   inputSchema: {
     action: z.enum(["propose", "confirm", "apply", "status"]),
     paths: z.array(z.string().max(1000)).max(30).optional().describe("Models to open in turn (default: the active model)"),
@@ -1474,7 +1479,9 @@ tool("workset_plan", {
   const sent = new Set(plan.moves.map((m) => m.key));
   const keepWorksets = rs ? rs.manualWorksets : undefined;
   const keepKeys = rs ? [...new Set([...rs.keepKeys, ...rs.plan.moves.filter((m) => !sent.has(m.key)).map((m) => m.key)])] : undefined;
-  const req = { action: "apply_plan", workset_plan: plan, max_ids: a.max_ids ?? 20, expect_version: VERSION,
+  // The after-check (register #37): what the rules and the moves ask for, measured by the add-in after the commit.
+  const afterCheck = WorksetPlan.afterCheckSpec(pf, plan, cur.facts, { keepKeys: keepKeys ?? [], only: a.only ?? null });
+  const req = { action: "apply_plan", workset_plan: plan, max_ids: a.max_ids ?? 20, expect_version: VERSION, after_check: afterCheck,
     ...(rs ? { reset_to: rs.defaultName, keep_worksets: keepWorksets, keep_keys: keepKeys } : {}), ...(retry.length ? { pending_retry: retry } : {}),
     ...(a.allow_visibility_change != null ? { allow_visibility_change: a.allow_visibility_change } : {}) };
   let last = null;
@@ -1605,6 +1612,8 @@ async function planExecute(o) {
   lines.push(`Run record: ${runFile}${dirNote ? `\n${dirNote}` : ""}`);
   out.content.push({ type: "text", text: lines.join("\n") });
   if (rolledBack || (dry_run && !ok(result))) out.isError = true;
+  // An apply whose after-check found work not done is not "Done": the change stays (ONE undo step), the step fails.
+  if (!dry_run && !rolledBack && result?.stage === "incomplete") out.isError = true;
   return out;
 }
 

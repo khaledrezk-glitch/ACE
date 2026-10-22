@@ -129,7 +129,7 @@ namespace AceRevitMcp.Commands
                     : !ok ? "Revit rolled the change back (see revitErrors). Nothing was changed."
                     : dryRun ? "Preview only: the model is unchanged. Apply it from the Apply card in the ACE panel, or confirm to Claude."
                     : $"Applied as ONE undo step named '{title}'.";
-                var anything = (summary?["modified"]?.ToString() ?? "0") + (summary?["added"]?.ToString() ?? "0") + (summary?["deleted"]?.ToString() ?? "0") != "000";
+                var anything = (summary?["modified"]?.ToString() ?? "0") + (summary?["added"]?.ToString() ?? "0") + (summary?["deleted"]?.ToString() ?? "0") + (summary?["deletedTypes"]?.ToString() ?? "0") != "0000";
                 if (ok && dryRun && anything && !fromPanel && !trial)   // a preview in an ACE window is applied there, not from a card
                 {
                     // An Apply card in the Companion, titled for people (the title is not part of the change's identity).

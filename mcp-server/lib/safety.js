@@ -123,6 +123,9 @@ export function journal(entry) {
 export function outcomeOf(result, dryRun) {
   if (!result || result.success === false) return `FAILED - nothing changed (${result?.error || result?.errors?.[0] || "error"})`;
   const c = result.changed || result.wouldChange;
-  const counts = c ? `added ${c.added}, modified ${c.modified}, deleted ${c.deleted}` : "no model changes";
+  // Element types are counted apart from elements: unused duplicate types Revit drops on commit are not data loss.
+  const types = c?.deletedTypes ? `, removed ${c.deletedTypes} type(s)${c.deletedTypeInstances === 0 ? " (unused, 0 instances)" : c.deletedTypeInstances != null ? ` with ${c.deletedTypeInstances} instance(s)` : ""}` : "";
+  const counts = c ? `added ${c.added}, modified ${c.modified}, deleted ${c.deleted}${types}` : "no model changes";
+  if (!dryRun && result.stage === "incomplete") return `APPLIED but NOT DONE (${counts}; ${result.error ?? "the after-check failed"})`;
   return dryRun ? `PREVIEW only, model untouched (would have: ${counts})` : `APPLIED (${counts})`;
 }
