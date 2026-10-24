@@ -42,9 +42,14 @@ namespace AceRevitMcp.Commands
         /// The body creates them with OwnTransaction, so one it leaves open is rolled back here first: the call then fails and
         /// the whole group is rolled back (nothing changed).
         /// </param>
+        /// <param name="warningGate">
+        /// The "no new warnings" rule (WarningGate, G24): an apply that adds a Revit warning the call did not accept
+        /// (accept_warnings / accept_new_warnings) is rolled back whole (stage new-warnings); a dry run reports what it would
+        /// add (newWarnings). Off only for a command with its own warnings guard (clash_resolve).
+        /// </param>
         public static JsonObject Run(UIApplication app, JsonObject args, string kind, string title, Func<Document, bool, JsonObject> body, string rules = null,
             Func<Document, JsonObject, bool> verify = null, Func<Document, JsonObject, IReadOnlyList<(string Text, long[] Ids)>, bool> verifyWithWarnings = null,
-            bool trial = false, bool ownTransactions = false)
+            bool trial = false, bool ownTransactions = false, bool warningGate = true)
         {
             if (verifyWithWarnings != null) verify = null;
             var doc = Args.RequireDoc(app);
@@ -79,6 +84,8 @@ namespace AceRevitMcp.Commands
             string status = null;
             var verifyFailed = false;
             var commitFailed = false;   // Revit refused the commit (errors): a failure for a dry run too, not a preview that rolled back
+            var warningsRefused = false;   // an apply that added a warning the call did not accept: rolled back
+            WarningGate gate = null;
             var recording = ChangeTracker.Begin(title);
             using (var guard = new ModelGuard(app))
             using (var group = new TransactionGroup(doc, title))
@@ -88,6 +95,7 @@ namespace AceRevitMcp.Commands
                 try
                 {
                     recording.NoteWarningRecords(doc);   // so resolved warnings are not reported as deleted elements
+                    if (warningGate) gate = WarningGate.Begin(doc, args);
                     group.Start();
                     if (ownTransactions) _own = new List<Transaction>(); else t.Start();
                     result = body(doc, false);
@@ -100,6 +108,13 @@ namespace AceRevitMcp.Commands
                         verifyFailed = true;
                         group.RollBack();
                         status = "VerifyFailed";
+                        recording.CaptureNames(doc);
+                    }
+                    else if (gate != null && !gate.Check(doc, guard, recording) && !dryRun)
+                    {
+                        warningsRefused = true;
+                        group.RollBack();
+                        status = gate.Stage;
                         recording.CaptureNames(doc);
                     }
                     else if (dryRun) { status = group.RollBack().ToString(); recording.CaptureNames(doc); }
@@ -125,12 +140,17 @@ namespace AceRevitMcp.Commands
                 if (guard.Warnings.Count > 0) result["revitWarnings"] = new JsonArray(guard.Warnings.Distinct().Take(20).Select(w => (JsonNode)w).ToArray());
                 if (guard.Errors.Count > 0) result["revitErrors"] = new JsonArray(guard.Errors.Distinct().Take(20).Select(w => (JsonNode)w).ToArray());
                 if (guard.Dialogs.Count > 0) result["dialogs"] = new JsonArray(guard.Dialogs.Take(10).Select(w => (JsonNode)w).ToArray());
-                result["note"] = verifyFailed ? "The self-check after the writes found planned writes that did not show (see verify): the whole change was rolled back. Nothing was changed."
+                gate?.Report(result, dryRun);
+                if (warningsRefused) { result["stage"] = gate.Stage; result["error"] = gate.Error; result["hint"] = gate.Hint; }
+                result["note"] = warningsRefused ? gate.Error
+                    : verifyFailed ? "The self-check after the writes found planned writes that did not show (see verify): the whole change was rolled back. Nothing was changed."
                     : !ok ? "Revit rolled the change back (see revitErrors). Nothing was changed."
                     : dryRun ? "Preview only: the model is unchanged. Apply it from the Apply card in the ACE panel, or confirm to Claude."
                     : $"Applied as ONE undo step named '{title}'.";
+                if (!warningsRefused && gate?.Outcome != null) result["note"] = result["note"] + " " + gate.Line(dryRun);
                 var anything = (summary?["modified"]?.ToString() ?? "0") + (summary?["added"]?.ToString() ?? "0") + (summary?["deleted"]?.ToString() ?? "0") + (summary?["deletedTypes"]?.ToString() ?? "0") != "0000";
-                if (ok && dryRun && anything && !fromPanel && !trial)   // a preview in an ACE window is applied there, not from a card
+                // A preview whose identical apply would refuse (new warnings not accepted) gets no Apply card.
+                if (ok && dryRun && anything && !fromPanel && !trial && gate?.Refuse != true)   // a preview in an ACE window is applied there, not from a card
                 {
                     // An Apply card in the Companion, titled for people (the title is not part of the change's identity).
                     var cardArgs = (JsonObject)args.DeepClone();

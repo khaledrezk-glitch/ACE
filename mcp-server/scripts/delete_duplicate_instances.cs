@@ -1,6 +1,7 @@
 // @description: Fixes Revit's "identical instances in the same place" warnings: keeps the oldest element of each duplicate group and deletes the copies. Skips elements in use by colleagues (workshared). A deletion probe first: only copies that delete nothing but themselves go; a copy that would take others along (a tag, a hosted element) is listed with what it takes and deleted only when allow_takes_others names it. Preview first.
 // @mode: auto
 // @inputs: {"categories": ["optional category names to limit it to, e.g. Furniture"], "allow_takes_others": ["optional copy ids the probe listed as taking others, to delete anyway once the user agreed"]}
+// @fixes_warnings: identical instances in the same place
 
 var only = args["categories"] is JsonArray ca ? ca.Select(v => v.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase) : null;
 var groups = doc.GetWarnings()

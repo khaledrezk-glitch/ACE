@@ -54,6 +54,21 @@ const bridge = http.createServer((req, res) => {
           return reply({ ok: true, result: { success: true, transaction: "Committed", executed: true } });
         }
         if (args.code.includes("boom")) return reply({ ok: true, result: { success: false, stage: "compile", errors: ["line 1: CS0103"] } });
+        // G24 no new warnings: the add-in's newWarnings block; an unaccepted one refuses the apply (LATE_WARNING: only the apply adds it).
+        if (args.code.includes("NEW_WARNING") || (args.code.includes("LATE_WARNING") && !args.dry_run)) {
+          const acc = args.accept_new_warnings === true || (args.accept_warnings ?? []).some((x) => /walls overlap/i.test(x));
+          const item = { description: "Highlighted walls overlap.", guid: "6e1efefe-c8e0-483d-8482-150b9f1da21a", failing: [10, 40], additional: [], times: 1, accepted: acc };
+          const nw = { count: 1, accepted: acc ? 1 : 0, refused: acc ? 0 : 1, refuse: !acc, before: 2, after: 3, items: [item], more: 0 };
+          if (!args.dry_run && !acc) return reply({ ok: true, result: { success: false, stage: "new-warnings", transaction: "RolledBack", newWarnings: nw,
+            error: "Rolled back: the change would add 1 new Revit warning (Highlighted walls overlap. (elements: 10, 40)). Nothing was changed.", hint: "If the user accepts them: run the dry run again with accept_warnings." } });
+          return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", newWarnings: nw, [args.dry_run ? "wouldChange" : "changed"]: { added: 0, modified: 2, deleted: 0 } } });
+        }
+        if (args.code.includes("FIX_WARNING")) {
+          const ok = !args.inputs?.leave;
+          return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", [args.dry_run ? "wouldChange" : "changed"]: { added: 0, modified: 0, deleted: 2 },
+            newWarnings: { count: 0, accepted: 0, refused: 0, refuse: false, before: 2, after: ok ? 0 : 1, items: [], more: 0 },
+            targetedWarnings: { ok, named: 2, targeted: 2, remaining: ok ? 0 : 1, untouched: 0, items: [], line: ok ? `Targeted warnings: all 2 ${args.dry_run ? "would be" : "are"} gone.` : "Targeted warnings: 1 of 2 would remain: There are identical instances in the same place. (elements: 30, 31)." } } });
+        }
         return reply({ ok: true, result: { success: true, transaction: args.dry_run ? "RolledBack" : "Committed", result: 42, echoMode: args.mode, inputs: args.inputs, [args.dry_run ? "wouldChange" : "changed"]: { added: 1, modified: 2, deleted: 0 } } });
       case "project_rules": {
         const ex = JSON.parse(fs.readFileSync(new URL("../bep/worksets.example.json", import.meta.url), "utf8"));
@@ -286,6 +301,10 @@ const bridge = http.createServer((req, res) => {
         const base = { model: "Test", aceVersion: SERVER_VERSION, source: "Document.GetUnusedElements", maxPasses: args.max_passes, found: 12, kept: 1, keptIds: [77], blocked: [], echo: args };
         if (args.check_only) return reply({ ok: true, result: { ...base, success: true, checkOnly: true, planHash: `ph1-${args.max_passes}`, plan: [p1], unusedLeft: 13 } });
         const all = `ph-all-${args.max_passes}`;
+        // G24: max_passes 5 adds a warning (a purge that leaves a type unresolved): refused unless accepted by name.
+        const warn = args.max_passes === 5 ? (() => { const acc = (args.accept_warnings ?? []).includes("TST unresolved type");
+          return { newWarnings: { count: 1, accepted: acc ? 1 : 0, refused: acc ? 0 : 1, refuse: !acc, before: 0, after: 1, more: 0,
+            items: [{ description: "TST unresolved type", guid: "aaaaaaaa-0000-0000-0000-000000000005", failing: [501], additional: [502], times: 1, accepted: acc }] } }; })() : {};
         if (!args.dry_run && args.max_passes === 4)
           return reply({ ok: true, result: { ...base, success: false, stage: "plan-changed", code: "plan-changed", rolledBack: true, planHash: `ph1-${args.max_passes}`, plan: [p1],
             planChangedDetail: "pass 2 finds 5 unused elements, the dry run's pass 2 found 4 (1 not in the dry run, 0 of the dry run's no longer unused)",
@@ -301,7 +320,7 @@ const bridge = http.createServer((req, res) => {
         return reply({ ok: true, result: { ...base, success: true, planHash: all, plan: [p1, step(2, 4, [{ category: "Materials", found: 4 }], ["TST Paint"]), step(3, 1, [{ category: "Fill Patterns", found: 1 }], ["TST Hatch"])],
           passes, stoppedBecause: "max-passes", totalDeleted: 16, totalAlsoDeleted: 2, unusedLeft: 2, unusedLeftDetail: { linkTypes: 1, skipped: 1, other: 0 },
           rolledBack: false, dryRun: !!args.dry_run, transaction: args.dry_run ? "RolledBack" : "Committed", verify: { ok: true, checked: 18, mismatches: [] },
-          done: args.dry_run ? { deleted: 0, passes: 0 } : counts, ...(args.dry_run ? { wouldDo: counts } : {}) } });
+          done: args.dry_run ? { deleted: 0, passes: 0 } : counts, ...(args.dry_run ? { wouldDo: counts } : {}), ...warn } });
       }
       case "view_membership_fill": {
         // The 1.12.6 contract: the view's elements -> value_in, the rest -> value_out; a missing parameter needs a definition.
@@ -529,6 +548,43 @@ const applied = json(await call("execute_revit_code", { ...edit, explanation: "S
 assert.equal(applied.transaction, "Committed");
 const again = await call("execute_revit_code", { ...edit, explanation: "again" });
 assert.match(again.content[0].text, /not been previewed/, "a repeat needs a fresh preview");
+// --- G24 no new warnings: the preview says what it would add; an unaccepted one is refused, accepting is part of the change ---
+{
+  const all = (r) => r.content.map((c) => c.text).join("\n");
+  const last = () => seen.filter((x) => x.command === "execute_code").at(-1).args;
+  const nw = { code: "/*NEW_WARNING*/ ctx.All<Wall>();", inputs: {}, explanation: "Move two walls" };
+  const d1 = await call("execute_revit_code", { ...nw, dry_run: true });
+  assert.match(all(d1), /Would add 1 new warning\(s\), 1 not accepted:\n- Highlighted walls overlap\. \(elements: 10, 40\) \{6e1efefe-c8e0-483d-8482-150b9f1da21a\}\nThe identical apply would refuse \(new-warnings\) and roll back\. If the user accepts them: run the dry run again with accept_warnings/, "the preview line: would add N new warnings, how to accept");
+  assert.match(all(d1), /this preview cannot be applied as it is/, "no PREVIEW ONLY confirmation for a preview that would refuse");
+  assert.ok(!/ask for confirmation before applying \(same call/.test(all(d1)));
+  assert.match((await call("execute_revit_code", nw)).content[0].text, /not been previewed/, "a preview that would refuse is not one to apply");
+  const acc = { ...nw, accept_warnings: ["walls overlap"] };
+  const d2 = await call("execute_revit_code", { ...acc, dry_run: true });
+  assert.deepEqual(last().accept_warnings, ["walls overlap"], "accept_warnings reaches the add-in");
+  assert.match(all(d2), /Would add 1 new warning\(s\) \(all accepted by this call\):\n- Highlighted walls overlap\. \(elements: 10, 40\) \[accepted\]/);
+  assert.match((await call("execute_revit_code", { ...acc, accept_warnings: ["other"] })).content[0].text, /not been previewed/, "accepting other warnings than the preview is another change");
+  const a2 = await call("execute_revit_code", acc);
+  assert.ok(!a2.isError && last().accept_warnings[0] === "walls overlap" && /New warnings: 1 \(accepted by this call\)/.test(all(a2)), "the identical apply accepts the named warning");
+  await call("execute_revit_code", { ...nw, accept_new_warnings: true, dry_run: true });
+  assert.equal(last().accept_new_warnings, true, "accept_new_warnings reaches the add-in");
+  // The model changed after the preview: the apply adds a warning the preview did not show, and the add-in refuses it.
+  const late = { code: "/*LATE_WARNING*/ ctx.All<Wall>();", inputs: {}, explanation: "Move a wall" };
+  const d3 = await call("execute_revit_code", { ...late, dry_run: true });
+  assert.ok(!d3.isError && /PREVIEW ONLY/.test(all(d3)));
+  const a3 = await call("execute_revit_code", late);
+  assert.ok(a3.isError && /REFUSED \(new-warnings\), rolled back, nothing changed: Rolled back: the change would add 1 new Revit warning \(Highlighted walls overlap/.test(all(a3)), "the refusal says new-warnings and nothing changed");
+  // A warning-fix script names its warnings in its header: they reach the add-in, and the reply says whether they are gone.
+  const fx = await call("run_saved_script", { name: "delete_duplicate_instances", dry_run: true, explanation: "Delete duplicate copies" });
+  assert.deepEqual(last().fixes_warnings, ["identical instances in the same place"], "the script's @fixes_warnings reaches the add-in");
+  assert.ok(!fx.isError);
+  const fix = { code: "/*FIX_WARNING*/ ctx.All<Wall>();", explanation: "Fix duplicates", fixes_warnings: ["identical instances"] };
+  const f1 = await call("execute_revit_code", { ...fix, inputs: {}, dry_run: true });
+  assert.match(all(f1), /New warnings: 0\.\nTargeted warnings: all 2 would be gone\./, "a fix run says its targets are gone");
+  assert.ok(!(await call("execute_revit_code", { ...fix, inputs: {} })).isError, "and applies");
+  const f2 = await call("execute_revit_code", { ...fix, inputs: { leave: true }, dry_run: true });
+  assert.match(all(f2), /Targeted warnings: 1 of 2 would remain: .*The identical apply would fail \(warnings-remain\)/, "a fix run that leaves a target cannot be applied");
+  assert.match((await call("execute_revit_code", { ...fix, inputs: { leave: true } })).content[0].text, /not been previewed/);
+}
 // --- Companion panel decisions come back from the add-in ---
 const panelApplied = { code: "/*PANEL_APPLIED*/ return 1;", inputs: {} };
 await call("execute_revit_code", { ...panelApplied, dry_run: true, explanation: "preview for the test" });
@@ -1613,6 +1669,16 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   await call("purge_unused", { ...ex, max_passes: 4, dry_run: true });
   const pc = await call("purge_unused", { ...ex, max_passes: 4 });
   assert.ok(pc.isError && /the model changed since the preview: run the dry run again \(pass 2 finds 5 unused elements, the dry run's pass 2 found 4 \(1 not in the dry run/.test(pc.content.map((c) => c.text).join("\n")), "plan-changed names the pass that differs");
+  // G24: a dry run that would add a warning cannot be applied; the warning is accepted by name (preview and apply alike).
+  const w5 = { ...ex, max_passes: 5 };
+  const wd = await call("purge_unused", { ...w5, dry_run: true });
+  assert.ok(wd.isError && /Would add 1 new warning\(s\), 1 not accepted:\n- TST unresolved type \(elements: 501, 502\)[\s\S]*The identical apply would refuse \(new-warnings\)[\s\S]*This dry run cannot be applied/.test(wd.content.at(-1).text), "planExecute: the preview line and no apply");
+  assert.match((await call("purge_unused", w5)).content[0].text, /not been previewed/, "the refused preview is not remembered");
+  const wa = { ...w5, accept_warnings: ["TST unresolved type"] };
+  const wd2 = await call("purge_unused", { ...wa, dry_run: true });
+  assert.ok(!wd2.isError && pu().at(-1).args.accept_warnings[0] === "TST unresolved type" && /\(all accepted by this call\)/.test(wd2.content.at(-1).text), "accept_warnings reaches the add-in (dry run)");
+  const wap = await call("purge_unused", wa);
+  assert.ok(!wap.isError && pu().at(-1).args.dry_run === false && pu().at(-1).args.accept_warnings[0] === "TST unresolved type" && /New warnings: 1 \(accepted by this call\)/.test(wap.content.at(-1).text), "the identical apply carries the acceptance");
 }
 // --- export_deliverables #36: the agreed NWC view per model (the vault's rules/export.json nwc.agreedViews) ---
 {

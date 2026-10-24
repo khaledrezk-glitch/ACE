@@ -66,6 +66,7 @@ class P {
     Q(!May(true, true, true, false), "not a workshared model opened attached (a local holds the user's work)");
     Q(May(true, true, false, false), "a non-workshared model ACE opened");
     LoaderTests.Run();
+    WarningTests.Run();
     Console.WriteLine("tracker test passed");
   }
 }

@@ -419,6 +419,10 @@ delete_duplicate_instances; others with a short script that uses the ids. Report
 delete_duplicate_instances probes each copy first (deleted in a rolled-back sub-transaction): only copies that delete
 nothing but themselves go; a copy that would take a tag or a hosted element along is held and listed with what it takes.
 Show those lines; only after the user agrees, name the ids in allow_takes_others (dry run again, then apply).
+A fix run names the warnings it fixes: `fixes_warnings: ["<description part or GUID>"]` on execute_revit_code (a saved
+fix script names them in its `// @fixes_warnings:` header, as delete_duplicate_instances does). The reply's
+targetedWarnings says whether the named warnings the run touched are gone; the apply fails and rolls back
+(`warnings-remain`) when any remain, and like every apply it refuses a NEW warning (`new-warnings`).
 
 ## Production (marks, tags, sheets)
 

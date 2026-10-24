@@ -10,7 +10,8 @@ namespace AceRevitMcp.Util
     /// <summary>
     /// While Claude is driving Revit nobody is at the keyboard to click dialogs. For the duration of
     /// one command this:
-    ///  - deletes warnings (and records them) so transactions commit without the warning dialog,
+    ///  - deletes warnings (and records them) so transactions commit without the warning dialog; the records (Posted) feed
+    ///    the "no new warnings" rule (WarningGate), so deleting a warning never hides a new one from an apply,
     ///  - rolls back transactions that hit real errors (and records why),
     ///  - closes task dialogs with Cancel and acknowledges message boxes that would otherwise block Revit (and records them).
     /// Everything recorded is returned to Claude so it can react.
@@ -22,6 +23,8 @@ namespace AceRevitMcp.Util
         public List<string> Warnings { get; } = new List<string>();
         /// <summary>The same warnings as Warnings: the description alone and the failing and additional element ids.</summary>
         public List<(string Text, long[] Ids)> WarningDetails { get; } = new List<(string Text, long[] Ids)>();
+        /// <summary>The warnings Revit posted, with their failure definition GUID and failing / additional ids apart (WarningGate).</summary>
+        public List<WarningItem> Posted { get; } = new List<WarningItem>();
         public List<string> Errors { get; } = new List<string>();
         public List<string> Dialogs { get; } = new List<string>();
 
@@ -51,10 +54,15 @@ namespace AceRevitMcp.Util
                 if (failure.GetSeverity() == FailureSeverity.Warning)
                 {
                     Warnings.Add(text);
-                    var all = new List<long>();
-                    foreach (var id in ids) all.Add(id.Value);
-                    try { foreach (var id in failure.GetAdditionalElementIds()) all.Add(id.Value); } catch { /* none */ }
-                    WarningDetails.Add((failure.GetDescriptionText(), all.ToArray()));
+                    var failing = new List<long>();
+                    foreach (var id in ids) failing.Add(id.Value);
+                    var additional = new List<long>();
+                    try { foreach (var id in failure.GetAdditionalElementIds()) additional.Add(id.Value); } catch { /* none */ }
+                    string guid = null;
+                    try { guid = failure.GetFailureDefinitionId()?.Guid.ToString(); } catch { /* unknown definition */ }
+                    var item = new WarningItem(guid, failure.GetDescriptionText(), failing, additional);
+                    Posted.Add(item);
+                    WarningDetails.Add((item.Text, item.Ids));
                     accessor.DeleteWarning(failure);
                 }
                 else
@@ -76,6 +84,25 @@ namespace AceRevitMcp.Util
             {
                 e.SetProcessingResult(FailureProcessingResult.Continue);
             }
+        }
+
+        /// <summary>The model's warnings now (Document.GetWarnings), keyed like Posted.</summary>
+        public static List<WarningItem> ModelWarnings(Document doc)
+        {
+            var list = new List<WarningItem>();
+            if (doc == null) return list;
+            IList<FailureMessage> all;
+            try { all = doc.GetWarnings(); } catch { return list; }
+            foreach (var w in all)
+            {
+                var failing = new List<long>(); var additional = new List<long>();
+                string guid = null;
+                try { foreach (var id in w.GetFailingElements()) failing.Add(id.Value); } catch { /* none */ }
+                try { foreach (var id in w.GetAdditionalElements()) additional.Add(id.Value); } catch { /* none */ }
+                try { guid = w.GetFailureDefinitionId()?.Guid.ToString(); } catch { /* unknown definition */ }
+                list.Add(new WarningItem(guid, w.GetDescriptionText(), failing, additional));
+            }
+            return list;
         }
 
         private void OnDialogBoxShowing(object sender, DialogBoxShowingEventArgs e)
