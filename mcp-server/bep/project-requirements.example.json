@@ -1,0 +1,24 @@
+{
+  "schema": "ace.project-requirements/1",
+  "about": "One file per project: the rules the project's EIR / BEP set. Put it beside the central model (or in its 'ACE Vault' folder); for cloud (ACC) models map the model in %APPDATA%\\ACE-RevitMCP\\config.json: \"projects\": { \"<cloud model id>\": \"<project folder>\" }. Every section merges over the office files key by key and the project wins; \"inheritOffice\": false makes a section replace the office one. 'requirement' links a rule to the requirement record it proves (ACE Vault\\requirements.json).",
+  "project": { "name": "Example project", "number": "", "stages": ["2", "3", "4", "5"], "currentStage": "3" },
+  "checks": {
+    "in-place-families": { "warnAt": 1, "failAt": 3, "requirement": "REQ-BEP-0042" },
+    "design-options": { "enabled": false }
+  },
+  "presentation": {
+    "textSizes": [ { "upToScale": 50, "textMm": 3 }, { "textMm": 2.5 } ]
+  },
+  "worksets": {
+    "name": "Example project worksets",
+    "naming": { "pattern": "^[A-Z]-[A-Z0-9-]+$", "allowed": [], "rename": [{ "from": "Workset1", "to": "A-GENERAL" }], "_about": "Optional. pattern: a regex every user workset name must match; allowed: when not empty, the only names allowed; rename: explicit old -> new names. Shared Levels and Grids is exempt. Read by assign_worksets action audit / rename." },
+    "rules": [
+      { "id": "ws-doors", "workset": "A-DOORS", "category": "Doors", "requirement": "REQ-BEP-0031" },
+      { "id": "ws-ducts", "workset": "M-DUCTS-{level}", "category": ["Ducts", "Duct Fittings"], "requirement": "REQ-BEP-0031", "models": ["*MEP*", "!*_OLD"], "modelsScope": "only" }
+    ],
+    "_about_models": "Optional per rule. models: the models the rule applies to, a name or a list matched on the model's title and its central / file name (case-insensitive, without .rvt; * is a wildcard; !name excludes), and modelsScope: \"only\" makes it a limit. A rule without models applies to every model; a models list without modelsScope (saved by workset_plan before 1.14.10, where the rule was proposed) does not limit the rule: it applies everywhere and the reply counts it. A rule skipped for the open model is named in the reply (assign_worksets, workset_plan, the audit and the model check)."
+  },
+  "clash": {
+    "ranks": { "Cable Trays": { "rank": 45, "discipline": "E" } }
+  }
+}

@@ -1,0 +1,205 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Nodes;
+using AceRevitMcp.Bridge;
+using AceRevitMcp.Util;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+
+namespace AceRevitMcp.Commands
+{
+    /// <summary>
+    /// The one way a native command changes the model, exactly like a script run: check_only reads only; dry_run makes the
+    /// change inside a transaction group and rolls it back (an Apply card in the Companion); the identical call applies
+    /// it as ONE undo step, never twice, never in another model than the preview, and never after the user cancelled it.
+    /// </summary>
+    internal static class NativeChange
+    {
+        /// <param name="kind">The bridge command name (the change's identity for previews and Apply cards).</param>
+        /// <param name="title">The undo step and card title, e.g. "ACE: presentation standard".</param>
+        /// <param name="body">Does the work; plan = true means look only (check_only): change and create nothing.</param>
+        /// <param name="rules">
+        /// When the change depends on rules read from a file (not in the request): their fingerprint. It becomes part of the
+        /// change's identity, so an apply after the rules changed is refused: the preview showed other rules.
+        /// </param>
+        /// <param name="verify">
+        /// Optional self-check, called after the transaction committed and before the group is kept (apply) or rolled
+        /// back (dry run), with the document and the body's result (it may add to it). False rolls the whole group back
+        /// and the call fails: nothing is changed. Not called for check_only.
+        /// </param>
+        /// <param name="verifyWithWarnings">
+        /// As verify, with the warnings Revit posted while the transaction committed (ModelGuard deletes them, so the
+        /// model's own warning list does not show them): description and element ids. Used instead of verify when given.
+        /// </param>
+        /// <param name="trial">
+        /// A trial run inside a command (e.g. clash_resolve finding the step behind a warning): always rolled back like a dry
+        /// run, never an Apply card, never marked as applied, whatever dry_run says.
+        /// </param>
+        /// <param name="ownTransactions">
+        /// The body opens and commits its own transactions inside the group (purge_unused: one per pass, a fresh one per retry
+        /// of a refused delete); no transaction is open around it. Still ONE undo step on apply, all rolled back on a dry run.
+        /// The body creates them with OwnTransaction, so one it leaves open is rolled back here first: the call then fails and
+        /// the whole group is rolled back (nothing changed).
+        /// </param>
+        /// <param name="warningGate">
+        /// The "no new warnings" rule (WarningGate, G24): an apply that adds a Revit warning the call did not accept
+        /// (accept_warnings / accept_new_warnings) is rolled back whole (stage new-warnings); a dry run reports what it would
+        /// add (newWarnings). Off only for a command with its own warnings guard (clash_resolve).
+        /// </param>
+        public static JsonObject Run(UIApplication app, JsonObject args, string kind, string title, Func<Document, bool, JsonObject> body, string rules = null,
+            Func<Document, JsonObject, bool> verify = null, Func<Document, JsonObject, IReadOnlyList<(string Text, long[] Ids)>, bool> verifyWithWarnings = null,
+            bool trial = false, bool ownTransactions = false, bool warningGate = true)
+        {
+            if (verifyWithWarnings != null) verify = null;
+            var doc = Args.RequireDoc(app);
+            if (rules != null)
+            {
+                if (args["_rules"] is JsonValue given && given.ToString() != rules && !Args.Bool(args, "dry_run"))
+                    return new JsonObject { ["success"] = false, ["stage"] = "rejected", ["error"] = "The standard changed since this was previewed. Nothing was changed. Preview it again." };
+                args = (JsonObject)args.DeepClone();
+                args["_rules"] = rules;
+            }
+            if (Args.Bool(args, "check_only"))
+            {
+                var plan = body(doc, true);
+                plan["checkOnly"] = true;
+                plan["note"] ??= "Nothing was changed. To apply: preview with dry_run: true, then confirm.";
+                return plan;
+            }
+
+            var dryRun = trial || Args.Bool(args, "dry_run");
+            var fromPanel = Args.Bool(args, "_fromPanel");
+            var hash = Companion.ActivityHub.Fingerprint(kind, args);
+            if (!dryRun && !fromPanel && Companion.ActivityHub.Decided(hash, $"this change ({title})") is { } earlier)
+                return earlier.Rejected
+                    ? new JsonObject { ["success"] = false, ["stage"] = "rejected", ["error"] = earlier.Note }
+                    : new JsonObject { ["success"] = true, ["alreadyApplied"] = true, ["note"] = earlier.Note };
+            if (!dryRun && Companion.ActivityHub.WrongPlace(hash, doc, 0) is string wrong)
+                return new JsonObject { ["success"] = false, ["stage"] = "wrong_model", ["error"] = wrong };
+            if (!dryRun && !fromPanel && rules != null && !Companion.ActivityHub.HasPreview(hash))
+                return new JsonObject { ["success"] = false, ["stage"] = "rejected", ["error"] = "No preview of exactly this change is waiting: the standard may have changed since the preview, or Revit was restarted. Nothing was changed. Preview it again." };
+
+            JsonObject result;
+            string status = null;
+            var verifyFailed = false;
+            var commitFailed = false;   // Revit refused the commit (errors): a failure for a dry run too, not a preview that rolled back
+            var warningsRefused = false;   // an apply that added a warning the call did not accept: rolled back
+            WarningGate gate = null;
+            var recording = ChangeTracker.Begin(title);
+            using (var guard = new ModelGuard(app))
+            using (var group = new TransactionGroup(doc, title))
+            using (var t = new Transaction(doc, title))
+            {
+                var kept = false;
+                try
+                {
+                    recording.NoteWarningRecords(doc);   // so resolved warnings are not reported as deleted elements
+                    if (warningGate) gate = WarningGate.Begin(doc, args);
+                    group.Start();
+                    if (ownTransactions) _own = new List<Transaction>(); else t.Start();
+                    result = body(doc, false);
+                    var committed = !ownTransactions ? t.Commit() : CloseOwn(doc) ? TransactionStatus.Error : TransactionStatus.Committed;
+                    recording.CaptureNames(doc);
+                    if (committed != TransactionStatus.Committed) { group.RollBack(); status = committed.ToString(); commitFailed = true; }
+                    else if ((verify != null && !Verified(verify, doc, result))
+                             || (verifyWithWarnings != null && !Verified((d, r) => verifyWithWarnings(d, r, guard.WarningDetails), doc, result)))
+                    {
+                        verifyFailed = true;
+                        group.RollBack();
+                        status = "VerifyFailed";
+                        recording.CaptureNames(doc);
+                    }
+                    else if (gate != null && !gate.Check(doc, guard, recording) && !dryRun)
+                    {
+                        warningsRefused = true;
+                        group.RollBack();
+                        status = gate.Stage;
+                        recording.CaptureNames(doc);
+                    }
+                    else if (dryRun) { status = group.RollBack().ToString(); recording.CaptureNames(doc); }
+                    else { status = group.Assimilate().ToString(); kept = status == nameof(TransactionStatus.Committed); }
+                }
+                finally
+                {
+                    if (ownTransactions) { CloseOwn(doc); _own = null; }
+                    if (t.HasStarted() && !t.HasEnded()) t.RollBack();
+                    // Never a second exception from here: it would hide the first (the body's or Revit's).
+                    try { if (group.HasStarted() && !group.HasEnded()) group.RollBack(); }
+                    catch (Exception ex) { Log.Warn("NativeChange: the transaction group could not be rolled back: " + ex.Message); }
+                    ChangeTracker.End(recording, kept);
+                }
+                var ok = !commitFailed && (status == nameof(TransactionStatus.Committed) || (dryRun && status == nameof(TransactionStatus.RolledBack)));
+                result["success"] = ok;
+                result["transaction"] = status;
+                result["dryRun"] = dryRun;
+                var summary = recording.Summary();
+                // A change that was not kept never reports "changed": what it would have changed, and rolledBack.
+                result[dryRun ? "wouldChange" : ok ? "changed" : "wouldHaveChanged"] = summary;
+                result["rolledBack"] = !ok;
+                if (guard.Warnings.Count > 0) result["revitWarnings"] = new JsonArray(guard.Warnings.Distinct().Take(20).Select(w => (JsonNode)w).ToArray());
+                if (guard.Errors.Count > 0) result["revitErrors"] = new JsonArray(guard.Errors.Distinct().Take(20).Select(w => (JsonNode)w).ToArray());
+                if (guard.Dialogs.Count > 0) result["dialogs"] = new JsonArray(guard.Dialogs.Take(10).Select(w => (JsonNode)w).ToArray());
+                gate?.Report(result, dryRun);
+                if (warningsRefused) { result["stage"] = gate.Stage; result["error"] = gate.Error; result["hint"] = gate.Hint; }
+                result["note"] = warningsRefused ? gate.Error
+                    : verifyFailed ? "The self-check after the writes found planned writes that did not show (see verify): the whole change was rolled back. Nothing was changed."
+                    : !ok ? "Revit rolled the change back (see revitErrors). Nothing was changed."
+                    : dryRun ? "Preview only: the model is unchanged. Apply it from the Apply card in the ACE panel, or confirm to Claude."
+                    : $"Applied as ONE undo step named '{title}'.";
+                if (!warningsRefused && gate?.Outcome != null) result["note"] = result["note"] + " " + gate.Line(dryRun);
+                var anything = (summary?["modified"]?.ToString() ?? "0") + (summary?["added"]?.ToString() ?? "0") + (summary?["deleted"]?.ToString() ?? "0") + (summary?["deletedTypes"]?.ToString() ?? "0") != "0000";
+                // A preview whose identical apply would refuse (new warnings not accepted) gets no Apply card.
+                if (ok && dryRun && anything && !fromPanel && !trial && gate?.Refuse != true)   // a preview in an ACE window is applied there, not from a card
+                {
+                    // An Apply card in the Companion, titled for people (the title is not part of the change's identity).
+                    var cardArgs = (JsonObject)args.DeepClone();
+                    cardArgs["transaction_name"] = "Claude: " + title.Replace("ACE: ", "");
+                    if (kind == "parameter_fill") { cardArgs.Remove("impact"); cardArgs.Remove("register"); }   // read-only extras: an apply needs neither
+                    Companion.ActivityHub.AddPending(kind, cardArgs, result, doc);
+                }
+                else if (ok && !dryRun && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
+            }
+            return result;
+        }
+
+        [ThreadStatic] private static List<Transaction> _own;
+
+        /// <summary>
+        /// A transaction for a body run with ownTransactions (not started): the caller starts, commits and disposes it; one
+        /// left open is rolled back by Run before the group.
+        /// </summary>
+        public static Transaction OwnTransaction(Document doc, string name)
+        {
+            var t = new Transaction(doc, name);
+            _own?.Add(t);
+            return t;
+        }
+
+        /// <summary>Rolls back the body's transactions still open; true when one was (or the document is still in a transaction).</summary>
+        private static bool CloseOwn(Document doc)
+        {
+            var open = false;
+            foreach (var t in _own ?? new List<Transaction>())
+                try
+                {
+                    if (t.IsValidObject && t.HasStarted() && !t.HasEnded()) { open = true; t.RollBack(); }
+                }
+                catch { open = true; }
+            _own?.Clear();
+            try { open |= doc.IsModifiable; } catch { open = true; }
+            return open;
+        }
+
+        /// <summary>The self-check; an exception counts as a failed check (reported in the result's "verify").</summary>
+        private static bool Verified(Func<Document, JsonObject, bool> verify, Document doc, JsonObject result)
+        {
+            try { return verify(doc, result); }
+            catch (Exception ex)
+            {
+                result["verify"] = new JsonObject { ["ok"] = false, ["error"] = ex.Message, ["mismatches"] = new JsonArray() };
+                return false;
+            }
+        }
+    }
+}

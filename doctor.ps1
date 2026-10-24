@@ -1,0 +1,331 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+  ACE Revit MCP doctor: checks every part of the setup, explains problems, fixes them, writes reports.
+
+.EXAMPLE
+  doctor.cmd                          # check everything, print results
+  doctor.cmd -Fix                     # check, then repair what can be repaired automatically
+  doctor.cmd -Report                  # check + write a Markdown health report
+  doctor.cmd -Report -Note "Claude can't see my model since this morning"   # issue report
+#>
+param(
+    [switch]$Fix,
+    [switch]$Report,
+    [string]$Note = '',
+    [ValidateSet('health', 'issue', 'improvement')][string]$Kind = ''
+)
+
+$ErrorActionPreference = 'Continue'
+Remove-TypeData System.Array -ErrorAction SilentlyContinue
+# Revit years ACE supports: 2024 (.NET Framework 4.8 build, no C# scripts yet) and 2025 (.NET 8 build).
+$RevitYears = @('2024', '2025' | Where-Object { Test-Path (Join-Path $env:ProgramFiles "Autodesk\Revit $_\Revit.exe") })
+$Here      = Split-Path -Parent $MyInvocation.MyCommand.Path
+$AppData   = $env:APPDATA
+$DataDir   = Join-Path $AppData 'ACE-RevitMCP'
+$CfgFile   = Join-Path $DataDir 'config.json'
+$McpDir    = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\mcp-server'
+$InfoFile  = Join-Path $env:LOCALAPPDATA 'ACE-RevitMCP\install-info.json'
+
+$results = New-Object System.Collections.ArrayList
+$fixes   = New-Object System.Collections.ArrayList   # scriptblocks / markers to run with -Fix
+
+function Add-Result($status, $name, $detail, $fixText, $fixKey) {
+    [void]$results.Add([PSCustomObject]@{ Status = $status; Name = $name; Detail = $detail; Fix = $fixText })
+    if ($fixKey -and -not ($fixes -contains $fixKey)) { [void]$fixes.Add($fixKey) }
+    $color = @{ OK = 'Green'; WARN = 'Yellow'; FAIL = 'Red'; INFO = 'Gray' }[$status]
+    Write-Host ("  {0,-4}  {1}: {2}" -f $status, $name, $detail) -ForegroundColor $color
+    if ($fixText -and $status -ne 'OK') { Write-Host "        -> $fixText" -ForegroundColor DarkGray }
+}
+
+function Source-Dir {
+    # Where the install package lives (needed to repair/reinstall).
+    if (Test-Path (Join-Path $Here 'install.ps1')) { return $Here }
+    if (Test-Path $InfoFile) {
+        try { $s = (Get-Content $InfoFile -Raw | ConvertFrom-Json).source; if ($s -and (Test-Path (Join-Path $s 'install.ps1'))) { return $s } } catch { }
+    }
+    return $null
+}
+
+Write-Host "ACE Revit MCP doctor" -ForegroundColor White
+Write-Host "Checking $([Environment]::MachineName) as $([Environment]::UserName)`n"
+
+# --- System -------------------------------------------------------------------------------------
+$os = [Environment]::OSVersion.Version
+Add-Result 'INFO' 'Windows' ("{0} (PowerShell {1})" -f $os, $PSVersionTable.PSVersion)
+
+foreach ($year in $RevitYears) {
+    $revitExe = Join-Path $env:ProgramFiles "Autodesk\Revit $year\Revit.exe"
+    Add-Result 'OK' "Revit $year" ((Get-Item $revitExe).VersionInfo.ProductVersion)
+}
+if (-not $RevitYears) {
+    Add-Result 'FAIL' 'Revit' "Neither Revit 2024 nor 2025 found under $(Join-Path $env:ProgramFiles 'Autodesk')" 'Install Revit 2024 or 2025 (the versions ACE supports).'
+}
+
+$node = Get-Command node -ErrorAction SilentlyContinue
+if ($node) {
+    $nv = (& node --version).Trim()
+    if ([int]($nv.TrimStart('v').Split('.')[0]) -ge 18) { Add-Result 'OK' 'Node.js' "$nv at $($node.Source)" }
+    else { Add-Result 'FAIL' 'Node.js' "$nv is too old (need 18+)" 'Install Node.js LTS.' 'node' }
+} else {
+    Add-Result 'FAIL' 'Node.js' 'Not installed' 'Install Node.js LTS (winget install OpenJS.NodeJS.LTS).' 'node'
+}
+
+# --- Revit add-in -------------------------------------------------------------------------------
+$revitProc = Get-Process -Name Revit -ErrorAction SilentlyContinue | Select-Object -First 1
+$addinOk = $false
+$AddinDirs = @()
+foreach ($year in $RevitYears) {
+    $AddinRoot = Join-Path $AppData "Autodesk\Revit\Addins\$year"
+    $AddinDir  = Join-Path $AddinRoot 'AceRevitMcp'
+    $Manifest  = Join-Path $AddinRoot 'AceRevitMcp.addin'
+    $AddinDirs += $AddinDir
+    # Revit 2024 has no script compiler yet (it runs on .NET 8 only), so it is not required there.
+    $needsCompiler = $year -ne '2024'
+    # Two layouts: the ACE loader (AceRevitMcp.Loader.dll in the manifest, current.json naming payload\<version>-<hash>),
+    # or the older one (AceRevitMcp.dll directly in the folder, needs a Revit restart for every build).
+    $CurrentFile = Join-Path $AddinDir 'current.json'
+    $LoaderDll = Join-Path $AddinDir 'AceRevitMcp.Loader.dll'
+    $current = $null
+    if (Test-Path $CurrentFile) { try { $current = Get-Content $CurrentFile -Raw | ConvertFrom-Json } catch { $current = $null } }
+    $PayloadDir = $AddinDir
+    if ($current -and $current.path) { $PayloadDir = Join-Path $AddinDir ([string]$current.path) }
+    $PayloadDll = Join-Path $PayloadDir 'AceRevitMcp.dll'
+    $expectedTarget = $PayloadDll
+    if ($current) { $expectedTarget = $LoaderDll }
+    $yearOk = (Test-Path $Manifest) -and (Test-Path $PayloadDll) -and ((-not $current) -or (Test-Path $LoaderDll)) -and ((-not $needsCompiler) -or (Test-Path (Join-Path $PayloadDir 'Compiler\AceRevitMcp.Compiler.dll')))
+    if ($yearOk) {
+        $addinOk = $true
+        $ver = (Get-Item $PayloadDll).VersionInfo.FileVersion
+        $manifestText = Get-Content $Manifest -Raw
+        $loaderVer = $null
+        if (Test-Path $LoaderDll) { $loaderVer = (Get-Item $LoaderDll).VersionInfo.FileVersion }
+        if ($manifestText -notmatch [regex]::Escape($expectedTarget)) {
+            Add-Result 'FAIL' "Add-in manifest ($year)" "Points to the wrong file: $Manifest (expected $expectedTarget)" 'Reinstall the add-in.' 'addin'
+        } elseif ($current) {
+            # The loader checks every file of the build against current.json's files list (and refuses unlisted ones).
+            $badFiles = @()
+            if ($current.files) {
+                foreach ($prop in $current.files.PSObject.Properties) {
+                    $f = Join-Path $PayloadDir $prop.Name
+                    if (-not (Test-Path $f) -or (Get-FileHash $f -Algorithm SHA256).Hash -ne ([string]$prop.Value).ToUpperInvariant()) { $badFiles += $prop.Name }
+                }
+            } else { $badFiles += 'current.json has no files list' }
+            $hashOk = ((Get-FileHash $PayloadDll -Algorithm SHA256).Hash -eq ([string]$current.sha256).ToUpperInvariant()) -and -not $badFiles.Count
+            if (-not $hashOk) { Add-Result 'FAIL' "Revit $year add-in" "ACE $($current.version) in $PayloadDir does not match current.json ($(($badFiles | Select-Object -First 3) -join ', ')): the loader will refuse it" 'Reinstall the add-in.' 'addin' }
+            else { Add-Result 'OK' "Revit $year add-in" "ACE loader $loaderVer, ACE $($current.version) in $PayloadDir$(if ($current.previous) { " (fallback: $($current.previous.version))" })$(if (-not $needsCompiler) { ' (C# scripts not available on 2024 yet)' })" }
+        } else {
+            Add-Result 'OK' "Revit $year add-in" "v$ver in $AddinDir (without the ACE loader: every update needs a Revit restart)$(if (-not $needsCompiler) { ' (C# scripts not available on 2024 yet)' })"
+        }
+        $blocked = Get-ChildItem $AddinDir -Recurse -File | Where-Object { Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue }
+        if ($blocked) { Add-Result 'FAIL' "Blocked files ($year)" "$($blocked.Count) add-in file(s) are marked as downloaded from the internet; Revit may refuse to load them." 'Unblock them.' 'unblock' }
+        # What the running Revit of this year has loaded (its instance file): a newer build installed = a reload is pending.
+        if ($current) {
+            Get-ChildItem (Join-Path $DataDir 'instances') -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+                $inst = $null
+                try { $inst = Get-Content $_.FullName -Raw | ConvertFrom-Json } catch { $inst = $null }
+                if ($inst -and ([string]$inst.revitVersion).StartsWith($year) -and (Get-Process -Id $inst.pid -ErrorAction SilentlyContinue)) {
+                    if (-not $inst.loaderVersion) {
+                        Add-Result 'WARN' "Revit $year session (pid $($inst.pid))" "Runs ACE $($inst.aceVersion) without the loader" 'Restart Revit once; after that new builds load without a restart.'
+                    } elseif ($loaderVer -and $inst.loaderVersion -ne (($loaderVer.Split('.')[0..2]) -join '.')) {
+                        Add-Result 'WARN' "Revit $year session (pid $($inst.pid))" "Runs ACE loader $($inst.loaderVersion), $loaderVer is installed" 'Restart Revit to use the new loader.'
+                    } elseif ($inst.aceVersion -ne $current.version) {
+                        Add-Result 'WARN' "Reload pending ($year, pid $($inst.pid))" "Revit runs ACE $($inst.aceVersion), ACE $($current.version) is installed" "Ask Claude to reload ACE (reload_addin), or close all models: ACE then loads it by itself. No restart needed."
+                    } else {
+                        Add-Result 'OK' "Revit $year session (pid $($inst.pid))" "Runs the installed ACE $($inst.aceVersion) (loader $($inst.loaderVersion))"
+                    }
+                }
+            }
+        }
+    } else {
+        Add-Result 'FAIL' "Revit $year add-in" "Not installed (or incomplete) in $AddinDir" 'Install the add-in (Revit may stay open).' 'addin'
+    }
+    $others = Get-ChildItem $AddinRoot -Filter *.addin -ErrorAction SilentlyContinue | Where-Object Name -ne 'AceRevitMcp.addin' | ForEach-Object Name
+    if ($others) { Add-Result 'INFO' "Other Revit $year add-ins" ($others -join ', ') }
+}
+
+if ($revitProc) {
+    $loaded = $false
+    try { $loaded = [bool]($revitProc.Modules | Where-Object ModuleName -like 'AceRevitMcp*') } catch { }
+    if ($loaded) { Add-Result 'OK' 'Revit running' "Add-in loaded (Revit started $($revitProc.StartTime))" }
+    elseif ($addinOk) { Add-Result 'WARN' 'Revit running' 'Add-in is installed but NOT loaded in this Revit session.' "Restart Revit; if asked about 'ACE Revit MCP', click 'Always Load'." }
+    else { Add-Result 'WARN' 'Revit running' 'Add-in not loaded.' 'Install the add-in, then restart Revit.' }
+} else {
+    Add-Result 'INFO' 'Revit running' 'Revit is not open (the live connection checks below need it open with a model).'
+}
+
+# --- Code signing (optional: trust-ace.ps1) ------------------------------------------------------
+$SigningFile = Join-Path $DataDir 'signing.json'
+$signing = $null
+if (Test-Path $SigningFile) { try { $signing = Get-Content $SigningFile -Raw | ConvertFrom-Json } catch { $signing = $null } }
+if (-not $signing -or -not $signing.enabled) {
+    Add-Result 'INFO' 'Code signing' 'Off: Revit shows its "Unsigned Add-In" prompt for ACE' 'Optional: run trust-ace.ps1 once (see USER-GUIDE.md, "Stop the Unsigned Add-In prompt").'
+} else {
+    $thumb = [string]$signing.thumbprint
+    $certMy = Get-Item ("Cert:\CurrentUser\My\" + $thumb) -ErrorAction SilentlyContinue
+    $inPub  = [bool](Get-Item ("Cert:\CurrentUser\TrustedPublisher\" + $thumb) -ErrorAction SilentlyContinue)
+    $inRoot = [bool](Get-Item ("Cert:\CurrentUser\Root\" + $thumb) -ErrorAction SilentlyContinue)
+    if (-not $certMy -or -not $certMy.HasPrivateKey) {
+        Add-Result 'WARN' 'Code signing' "On, but certificate $thumb is not in CurrentUser\My" 'Run trust-ace.ps1 again (or trust-ace.ps1 -Remove to turn signing off).'
+    } elseif ($certMy.NotAfter -lt (Get-Date)) {
+        Add-Result 'WARN' 'Code signing' "Certificate $thumb expired on $($certMy.NotAfter.ToString('yyyy-MM-dd'))" 'Run trust-ace.ps1 again (it creates a new one), then install.ps1.'
+    } elseif (-not ($inPub -and $inRoot)) {
+        $missing = @(); if (-not $inPub) { $missing += 'TrustedPublisher' }; if (-not $inRoot) { $missing += 'Root' }
+        Add-Result 'WARN' 'Code signing' "Certificate $thumb present but not trusted (missing from CurrentUser\$($missing -join ', CurrentUser\'))" 'Run trust-ace.ps1 again and answer Yes to the Windows prompt.'
+    } else {
+        Add-Result 'OK' 'Code signing' "Certificate $thumb present and trusted (valid until $($certMy.NotAfter.ToString('yyyy-MM-dd')))"
+    }
+    foreach ($d in $AddinDirs) {
+        if (-not (Test-Path $d)) { continue }
+        $dlls = @(Get-ChildItem $d -Recurse -File -Filter 'AceRevitMcp*.dll' -ErrorAction SilentlyContinue)
+        if (-not $dlls.Count) { continue }
+        $bad = @($dlls | Where-Object { (Get-AuthenticodeSignature -FilePath $_.FullName).Status -ne 'Valid' })
+        if ($bad.Count) { Add-Result 'WARN' "Signed DLLs ($d)" "$($bad.Count) of $($dlls.Count) not signed or not valid: $(($bad | ForEach-Object { $_.Name }) -join ', ')" 'Run install.ps1 again (it signs the ACE DLLs), or doctor.cmd -Fix.' 'addin' }
+        else { Add-Result 'OK' "Signed DLLs ($d)" "$($dlls.Count) ACE DLL(s) signed, Valid" }
+    }
+}
+
+# --- Config & port ------------------------------------------------------------------------------
+$cfg = $null
+if (Test-Path $CfgFile) { try { $cfg = Get-Content $CfgFile -Raw | ConvertFrom-Json } catch { } }
+if ($cfg -and $cfg.token) {
+    Add-Result 'OK' 'Config' "$CfgFile (port $($cfg.port))"
+    if ($cfg.teamScriptsDir) {
+        if (Test-Path $cfg.teamScriptsDir) { Add-Result 'OK' 'Team scripts' $cfg.teamScriptsDir }
+        else { Add-Result 'WARN' 'Team scripts' "$($cfg.teamScriptsDir) not reachable" 'Connect to the network/OneDrive folder or fix teamScriptsDir in config.json.' }
+    }
+    $listener = Get-NetTCPConnection -LocalPort $cfg.port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($listener) {
+        $owner = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+        if ($owner -and $owner.ProcessName -ne 'Revit' -and $owner.ProcessName -ne 'System') {
+            Add-Result 'FAIL' 'Port' "Port $($cfg.port) is used by '$($owner.ProcessName)', not Revit." 'Move ACE to a free port.' 'port'
+        }
+    }
+} else {
+    Add-Result 'FAIL' 'Config' "$CfgFile missing or invalid" 'Recreate it (then restart Revit).' 'config'
+}
+
+# --- MCP server & Claude ------------------------------------------------------------------------
+$index = Join-Path $McpDir 'index.js'
+if ((Test-Path $index) -and (Test-Path (Join-Path $McpDir 'node_modules\@modelcontextprotocol'))) {
+    $mv = (Get-Content (Join-Path $McpDir 'package.json') -Raw | ConvertFrom-Json).version
+    Add-Result 'OK' 'MCP server' "v$mv in $McpDir"
+    $src = Source-Dir
+    if ($src -and (Test-Path (Join-Path $src 'mcp-server\package.json'))) {
+        $sv = (Get-Content (Join-Path $src 'mcp-server\package.json') -Raw | ConvertFrom-Json).version
+        if ($sv -ne $mv) { Add-Result 'WARN' 'MCP server version' "Installed $mv, package has $sv" 'Update the MCP server.' 'mcp' }
+    }
+} else {
+    Add-Result 'FAIL' 'MCP server' "Not installed (or dependencies missing) in $McpDir" 'Install the MCP server.' 'mcp'
+}
+
+$regScript = Join-Path $McpDir 'lib\register.js'
+if ($node -and (Test-Path $regScript)) {
+    $lines = & node $regScript status 2>$null
+    if (-not $lines) { Add-Result 'WARN' 'Claude registration' 'No Claude config found (is Claude Desktop installed and opened once?).' 'Install Claude Desktop from claude.ai/download, open it once, then run doctor -Fix.' 'mcp' }
+    foreach ($l in @($lines)) {
+        if ($l -match '^OK') { Add-Result 'OK' 'Claude registration' ($l.Substring(4).Trim()) }
+        else { Add-Result 'FAIL' 'Claude registration' ($l.Substring(4).Trim()) 'Quit Claude Desktop (tray icon > Quit), then run doctor -Fix.' 'mcp' }
+    }
+} else {
+    Add-Result 'FAIL' 'Claude registration' 'Cannot check (MCP server or Node.js missing).' 'Install the MCP server.' 'mcp'
+}
+if (Get-Command claude -ErrorAction SilentlyContinue) { Add-Result 'INFO' 'Claude Code CLI' 'Installed (ace-revit registered at user scope by the installer).' }
+
+# --- Live checks through the MCP server's own diagnostics -----------------------------------------
+if ($node -and (Test-Path (Join-Path $McpDir 'lib\diagnostics.js'))) {
+    $json = & node (Join-Path $McpDir 'lib\diagnostics.js') check --json 2>$null | Out-String
+    try {
+        $live = $json | ConvertFrom-Json
+        foreach ($c in $live | Where-Object { $_.name -in 'Revit connection', 'Revit session', 'Version match', 'Open model', 'C# compiler', 'Last 7 days', 'Script library' }) {
+            Add-Result $c.status.ToUpper() $c.name $c.detail $c.fix
+        }
+    } catch { Add-Result 'WARN' 'Live checks' 'Could not run the MCP server diagnostics.' 'Reinstall the MCP server.' 'mcp' }
+}
+
+# --- Recent add-in errors -----------------------------------------------------------------------
+$log = Join-Path $DataDir 'logs\addin.log'
+if (Test-Path $log) {
+    $errs = Get-Content $log -Tail 400 | Where-Object { $_ -match '\[ERROR\]' }
+    if ($errs) { Add-Result 'INFO' 'Add-in log' "$(@($errs).Count) error line(s) recently; last: $((@($errs)[-1]).Substring(0, [Math]::Min(160, (@($errs)[-1]).Length)))" }
+}
+
+$failCount = @($results | Where-Object Status -eq 'FAIL').Count
+$warnCount = @($results | Where-Object Status -eq 'WARN').Count
+Write-Host ""
+if ($failCount -eq 0 -and $warnCount -eq 0) { Write-Host "Everything looks good." -ForegroundColor Green }
+else { Write-Host "$failCount problem(s), $warnCount warning(s)." -ForegroundColor Yellow }
+
+# --- Fix ----------------------------------------------------------------------------------------
+if ($Fix -and $fixes.Count -gt 0) {
+    Write-Host "`nFixing..." -ForegroundColor Cyan
+    $src = Source-Dir
+    foreach ($k in $fixes) {
+        switch ($k) {
+            'unblock' { foreach ($d in $AddinDirs) { Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue | Unblock-File }; Write-Host "  unblocked add-in files" }
+            'node' {
+                if (Get-Command winget -ErrorAction SilentlyContinue) {
+                    winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --accept-package-agreements | Out-Host
+                    $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+                } else { Write-Host "  winget missing: install Node.js LTS from https://nodejs.org" -ForegroundColor Yellow }
+            }
+            'config' {
+                New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+                $bytes = New-Object byte[] 24; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+                $token = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+                $new = [PSCustomObject]@{ port = 48884; token = $token }
+                [IO.File]::WriteAllText($CfgFile, ($new | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+                Write-Host "  recreated $CfgFile (restart Revit to use it)"
+            }
+            'port' {
+                $port = 48885
+                while (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { $port++ }
+                $cfg.port = $port
+                [IO.File]::WriteAllText($CfgFile, ($cfg | ConvertTo-Json -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+                Write-Host "  moved ACE to port $port (restart Revit to use it)"
+            }
+        }
+    }
+    if ($fixes -contains 'addin' -or $fixes -contains 'mcp') {
+        if (-not $src) {
+            Write-Host "  The install package was not found. Open the ACE-RevitMCP package folder and run install.cmd." -ForegroundColor Yellow
+        } elseif ($fixes -contains 'addin' -and (Get-Process -Name Revit -ErrorAction SilentlyContinue) -and -not (Test-Path (Join-Path $src 'revit-addin\AceRevitMcp.Loader')) -and -not (Get-ChildItem (Join-Path $src 'bin\addin') -Recurse -Filter 'AceRevitMcp.Loader.dll' -ErrorAction SilentlyContinue)) {
+            # A package without the ACE loader replaces files Revit has in use.
+            Write-Host "  The add-in needs reinstalling but Revit is open. Save your work, close Revit, and run doctor -Fix again." -ForegroundColor Yellow
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $src 'install.ps1') -NonInteractive -SkipAddin
+        } elseif ($fixes -contains 'addin') {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $src 'install.ps1') -NonInteractive
+        } else {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $src 'install.ps1') -NonInteractive -SkipAddin
+        }
+    }
+    Write-Host "`nDone. Re-run doctor to confirm, and fully quit + reopen Claude Desktop if it was registered again." -ForegroundColor Green
+} elseif ($Fix) {
+    Write-Host "Nothing to fix automatically."
+}
+
+# --- Report -------------------------------------------------------------------------------------
+if ($Report -or $Note -or $Kind) {
+    if (-not $Kind) { $Kind = $(if ($Note) { 'issue' } else { 'health' }) }
+    $md = New-Object System.Text.StringBuilder
+    [void]$md.AppendLine('## Doctor (Windows checks)'); [void]$md.AppendLine('')
+    [void]$md.AppendLine('| Status | Check | Result | Fix |'); [void]$md.AppendLine('|---|---|---|---|')
+    foreach ($r in $results) { [void]$md.AppendLine(("| {0} | {1} | {2} | {3} |" -f $r.Status, $r.Name, ($r.Detail -replace '\|', '/'), ($r.Fix -replace '\|', '/'))) }
+    $extra = Join-Path $env:TEMP 'ace-doctor.md'
+    [IO.File]::WriteAllText($extra, $md.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+    if ($node -and (Test-Path (Join-Path $McpDir 'lib\diagnostics.js'))) {
+        $out = & node (Join-Path $McpDir 'lib\diagnostics.js') report --kind $Kind --note $Note --extra $extra
+        $file = @($out)[0]
+        Write-Host "`nReport written to:`n  $file" -ForegroundColor Green
+        if (@($out).Count -gt 1) { Write-Host "Also copied to the team folder:`n  $(@($out)[1])" -ForegroundColor Green }
+        Write-Host "Send this file to the ACE tool maintainers (or attach it in Claude Code with: 'Work on this ACE Revit MCP report')."
+        try { Start-Process explorer.exe "/select,`"$file`"" } catch { }
+    } else {
+        $file = Join-Path $DataDir ("reports\doctor-$([Environment]::MachineName)-{0:yyyy-MM-dd-HHmmss}.md" -f (Get-Date))
+        New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+        [IO.File]::WriteAllText($file, "# ACE Revit MCP - Doctor report`n`n$Note`n`n" + $md.ToString(), (New-Object System.Text.UTF8Encoding($false)))
+        Write-Host "`nReport written to:`n  $file (MCP server missing, so only Windows checks are included)" -ForegroundColor Yellow
+    }
+}
+
+if ($failCount -gt 0) { exit 1 } else { exit 0 }

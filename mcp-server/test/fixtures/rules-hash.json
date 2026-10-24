@@ -1,0 +1,98 @@
+{
+  "about": "Shared test vector for the T13 rules hash: lib/stamp.js and the add-in's Util/RulesStamp.cs must both give these canonical strings and hashes (mcp-server/test/stamp.js, tools/checkset-test).",
+  "cases": [
+    {
+      "name": "nested keys, arrays keep their order",
+      "input": {
+        "z": 1,
+        "a": {
+          "y": [
+            3,
+            1,
+            2
+          ],
+          "b": "x"
+        },
+        "M": null,
+        "": true
+      },
+      "canonical": "{\"\":true,\"M\":null,\"a\":{\"b\":\"x\",\"y\":[3,1,2]},\"z\":1}",
+      "sha256": "d78fa7929e1e057fff8ee2c55d84489952e7b6299d116833751b55aec40eaa4b"
+    },
+    {
+      "name": "line breaks in strings: CRLF and CR read as LF",
+      "input": {
+        "quote": "Line one\r\nLine two\rthree\nfour"
+      },
+      "canonical": "{\"quote\":\"Line one\\nLine two\\nthree\\nfour\"}",
+      "sha256": "9bcdf683dd8f9e4c81831f64ce4ef7a53661b6c864bf8491fc326cdb3fc41acf"
+    },
+    {
+      "name": "numbers as JavaScript writes them",
+      "input": {
+        "n": [
+          0,
+          0,
+          1,
+          -1,
+          1.5,
+          0.1,
+          100,
+          1e-7,
+          0.000001,
+          1.25e-8,
+          1e+21,
+          1.5e+21,
+          123456789012,
+          9007199254740991,
+          1e+300,
+          -2.5,
+          3
+        ]
+      },
+      "canonical": "{\"n\":[0,0,1,-1,1.5,0.1,100,1e-7,0.000001,1.25e-8,1e+21,1.5e+21,123456789012,9007199254740991,1e+300,-2.5,3]}",
+      "sha256": "03c0400aee92840ecce922d003a9c9f22cb5c0877454d6ff8edcd9becf77d915"
+    },
+    {
+      "name": "escapes and non-ASCII",
+      "input": {
+        "s": "tab\there \"quoted\" back\\slash \u0001 \u001f é 中 😀  / <>&",
+        "ключ": "значение",
+        "Z": 0,
+        "a": 0,
+        "_": 0,
+        "é": 0
+      },
+      "canonical": "{\"Z\":0,\"_\":0,\"a\":0,\"s\":\"tab\\there \\\"quoted\\\" back\\\\slash \\u0001 \\u001f é 中 😀  / <>&\",\"é\":0,\"ключ\":\"значение\"}",
+      "sha256": "c2ce27bec1e779e4ed39a94be4501fc0f33a1b8df6fdfad1cf23809b0a955d16"
+    },
+    {
+      "name": "requirement inputs",
+      "input": {
+        "requirements": [
+          {
+            "id": "REQ-EIR-0001",
+            "severity": {
+              "value": "error"
+            },
+            "source": {
+              "quote": "Doors shall be at least 900 mm wide.\r\n",
+              "page": 4
+            }
+          }
+        ],
+        "decisions": [],
+        "rules": {
+          "checks": {
+            "doors": {
+              "failAt": 1,
+              "requirement": "REQ-EIR-0001"
+            }
+          }
+        }
+      },
+      "canonical": "{\"decisions\":[],\"requirements\":[{\"id\":\"REQ-EIR-0001\",\"severity\":{\"value\":\"error\"},\"source\":{\"page\":4,\"quote\":\"Doors shall be at least 900 mm wide.\\n\"}}],\"rules\":{\"checks\":{\"doors\":{\"failAt\":1,\"requirement\":\"REQ-EIR-0001\"}}}}",
+      "sha256": "0848fe20dfcff88706f4b688f20d980826b09b7ba02c08eee1209b74169db821"
+    }
+  ]
+}

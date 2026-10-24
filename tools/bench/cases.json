@@ -1,0 +1,1249 @@
+{
+  "about": "ACE benchmark: fixed tasks with expected results, run through the Revit bridge (no Claude needed). Run before every release with the Snowdon Towers Sample Architectural model open: node tools/bench/run.mjs. Add a case whenever a bug is fixed or a capability is added, so it can never silently break again.",
+  "cases": [
+    {
+      "name": "Model brief finds the offices on L3-L5",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "model_brief",
+      "args": {
+        "include_families": true
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "rooms[type=Office Unit].count",
+          "op": "==",
+          "value": 3
+        },
+        {
+          "path": "rooms[type=Office Unit].levels",
+          "op": "contains",
+          "value": "L3"
+        },
+        {
+          "path": "families.Furniture",
+          "op": "length>=",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "Family intelligence: chair footprint",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "describe_family",
+      "args": {
+        "name": "Chair-Breuer"
+      },
+      "maxMs": 20000,
+      "expect": [
+        {
+          "path": "[0].footprintMm",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Test fit Office 301 at 10 m2 per person",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "test_fit_out",
+      "dryRun": true,
+      "inputs": {
+        "room_number": "301",
+        "m2_per_person": 10
+      },
+      "maxMs": 20000,
+      "expect": [
+        {
+          "path": "result.workstations",
+          "op": "==",
+          "value": 22
+        },
+        {
+          "path": "result.fitsTarget",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "transaction",
+          "op": "==",
+          "value": "RolledBack"
+        }
+      ]
+    },
+    {
+      "name": "Test fit Office 301 at 8 m2 per person reports the maximum",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "test_fit_out",
+      "dryRun": true,
+      "inputs": {
+        "room_number": "301",
+        "m2_per_person": 8
+      },
+      "maxMs": 20000,
+      "expect": [
+        {
+          "path": "result.workstations",
+          "op": "==",
+          "value": 24
+        },
+        {
+          "path": "result.fitsTarget",
+          "op": "==",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "Preview pictures of a change",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "test_fit_out",
+      "dryRun": true,
+      "previewImage": true,
+      "inputs": {
+        "room_number": "301",
+        "m2_per_person": 10
+      },
+      "maxMs": 40000,
+      "expect": [
+        {
+          "path": "previewImages",
+          "op": "length>=",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "name": "Door width check reads most doors",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "door_width_check",
+      "inputs": {
+        "min_width_mm": 900
+      },
+      "maxMs": 20000,
+      "expect": [
+        {
+          "path": "result.doorsChecked",
+          "op": ">=",
+          "value": 100
+        }
+      ]
+    },
+    {
+      "name": "Insights dashboard",
+      "command": "get_model_insights",
+      "args": {},
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "score",
+          "op": "between",
+          "value": [
+            0,
+            100
+          ]
+        },
+        {
+          "path": "checks",
+          "op": "length>=",
+          "value": 15
+        },
+        {
+          "path": "results.pass",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "checkSet",
+          "op": "exists"
+        },
+        {
+          "path": "checks[key=file-size].status",
+          "op": "exists"
+        },
+        {
+          "path": "checks[key=rooms-without-a-door].status",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Change tracker compares without saving",
+      "command": "model_changes",
+      "args": {
+        "save_snapshot": false
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "models",
+          "op": "length>=",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Clash tests run (all standard tests)",
+      "command": "run_clash_test",
+      "args": {
+        "test": "all",
+        "max_elements": 2000
+      },
+      "maxMs": 600000,
+      "expect": [
+        {
+          "path": "tests",
+          "op": "length>=",
+          "value": 4
+        },
+        {
+          "path": "topIssues",
+          "op": "exists"
+        },
+        {
+          "path": "tests[0].issues",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Coordination sources",
+      "command": "coordination_sources",
+      "args": {},
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "models",
+          "op": "length>=",
+          "value": 1
+        },
+        {
+          "path": "standardTests",
+          "op": "length>=",
+          "value": 4
+        }
+      ]
+    },
+    {
+      "name": "Companion panel cards are readable",
+      "command": "pending_changes",
+      "args": {},
+      "maxMs": 5000,
+      "expect": [
+        {
+          "path": "waiting",
+          "op": "exists"
+        },
+        {
+          "path": "note",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "open_view opens the room's plan",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "open_view",
+      "args": {
+        "room": "301"
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "viewType",
+          "op": "==",
+          "value": "FloorPlan"
+        },
+        {
+          "path": "selected",
+          "op": ">=",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Coordination report with pictures",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "coordination_report",
+      "args": {
+        "max_issues": 3,
+        "rerun": true
+      },
+      "maxMs": 600000,
+      "expect": [
+        {
+          "path": "htmlReport",
+          "op": "exists"
+        },
+        {
+          "path": "excelList",
+          "op": "exists"
+        },
+        {
+          "path": "issues",
+          "op": ">=",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "Structural self-clash plan (ST vs ST, read-only)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "clash_resolve",
+      "args": {
+        "test": "ST vs ST",
+        "a_categories": [
+          "OST_StructuralColumns",
+          "OST_StructuralFraming",
+          "OST_Walls",
+          "OST_Floors",
+          "OST_StructuralFoundation",
+          "OST_Stairs",
+          "OST_Ramps"
+        ],
+        "b_categories": [
+          "OST_StructuralColumns",
+          "OST_StructuralFraming",
+          "OST_Walls",
+          "OST_Floors",
+          "OST_StructuralFoundation",
+          "OST_Stairs",
+          "OST_Ramps"
+        ],
+        "block_on_borrowed": true,
+        "check_only": true,
+        "dry_run": false,
+        "max_ids": 5
+      },
+      "maxMs": 600000,
+      "expect": [
+        {
+          "path": "model",
+          "op": "exists"
+        },
+        {
+          "path": "aceVersion",
+          "op": "exists"
+        },
+        {
+          "path": "before.clashes",
+          "op": ">=",
+          "value": 0
+        },
+        {
+          "path": "plan",
+          "op": "exists"
+        },
+        {
+          "path": "reportOnly",
+          "op": "exists"
+        },
+        {
+          "path": "blocked",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Clash view opens with both models in colour",
+      "command": "clash_view",
+      "args": {},
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "view",
+          "op": "contains",
+          "value": "ACE Clash View"
+        }
+      ]
+    },
+    {
+      "name": "Stored clash results load for the browser",
+      "command": "clash_results",
+      "args": {},
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "clashes",
+          "op": ">=",
+          "value": 0
+        },
+        {
+          "path": "issueList",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Navisworks clash report imports (XML, one test; only a resolved clash, so the browser stays clean)",
+      "command": "import_clash_report",
+      "args": {
+        "path": "repo:tools/clash-test/fixtures/navisworks-report.xml",
+        "test": "MEP vs ARC clearance"
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "format",
+          "op": "==",
+          "value": "Navisworks XML"
+        },
+        {
+          "path": "tests[0].test",
+          "op": "==",
+          "value": "NW: MEP vs ARC clearance"
+        },
+        {
+          "path": "tests[0].reported",
+          "op": "==",
+          "value": 1
+        },
+        {
+          "path": "tests[0].resolved",
+          "op": "==",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Working mode can be read",
+      "command": "working_mode",
+      "args": {},
+      "maxMs": 5000,
+      "expect": [
+        {
+          "path": "mode",
+          "op": "exists"
+        },
+        {
+          "path": "modes",
+          "op": "length>=",
+          "value": 5
+        }
+      ]
+    },
+    {
+      "name": "Change tracker understands a weekday ('since monday')",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "model_changes",
+      "args": {
+        "since": "monday",
+        "save_snapshot": false,
+        "include_links": false
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "models",
+          "op": "length>=",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Read-only script: result first, nothing kept",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "args": {
+        "code": "return ctx.Levels().Count();",
+        "mode": "readonly"
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "result",
+          "op": ">=",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Warnings grouped by type with ids",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "list_warnings",
+      "args": {
+        "types": 10
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "total",
+          "op": ">=",
+          "value": 0
+        },
+        {
+          "path": "warnings",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Tag untagged doors in every floor plan (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "tag_untagged",
+      "dryRun": true,
+      "inputs": {
+        "category": "Doors",
+        "all_floor_plans": true
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "result.views",
+          "op": ">=",
+          "value": 2
+        },
+        {
+          "path": "result.perView",
+          "op": "length>=",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "name": "Renumber doors by room (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "renumber_doors",
+      "dryRun": true,
+      "inputs": {
+        "scheme": "room"
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "result.doors",
+          "op": ">=",
+          "value": 10
+        },
+        {
+          "path": "result.samples",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Sheets for storeys reuse existing plans and skip levels with sheets (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "sheets_for_levels",
+      "dryRun": true,
+      "inputs": {},
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "result.skipped",
+          "op": "exists"
+        },
+        {
+          "path": "result.created",
+          "op": ">=",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "Test fit a whole level in one run (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "test_fit_out",
+      "dryRun": true,
+      "inputs": {
+        "level": "L3",
+        "department": "Office",
+        "m2_per_person": 10
+      },
+      "maxMs": 300000,
+      "expect": [
+        {
+          "path": "result.perRoom",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Duplicate instances fix finds its groups (preview)",
+      "model": "Snowdon Towers Sample Architectural",
+      "script": "delete_duplicate_instances",
+      "dryRun": true,
+      "inputs": {},
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "result.duplicateGroups",
+          "op": ">=",
+          "value": 0
+        }
+      ]
+    },
+    {
+      "name": "Presentation standard check (text height by scale, types per kind)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "presentation_standard",
+      "args": {
+        "check_only": true
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "views",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "checked",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "typesUsed",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Parameter list check (built-in parameters per group, read-only)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance"
+          },
+          {
+            "name": "Elevation",
+            "group": "levels",
+            "level": "instance"
+          },
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance"
+          }
+        ],
+        "all_documents": false,
+        "fill": false,
+        "value": "NA",
+        "max_ids": 5,
+        "check_only": true,
+        "dry_run": false
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "documents[0].summary.rows",
+          "op": "==",
+          "value": 3
+        },
+        {
+          "path": "documents[0].rows[name=Project Name].origin",
+          "op": "==",
+          "value": "built-in"
+        },
+        {
+          "path": "documents[0].rows[name=Elevation].missing",
+          "op": "==",
+          "value": 0
+        },
+        {
+          "path": "documents[0].rows[name=Elevation].isText",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "documents[0].rows[name=Comments].checked",
+          "op": ">=",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Parameter requirements check: categories, discipline scope, key echo, NA counts (read-only)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "any",
+            "categories": [
+              "OST_Walls"
+            ],
+            "key": "r1"
+          },
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance",
+            "categories": [
+              "OST_StructuralColumns"
+            ],
+            "disciplines": [
+              "ZZ"
+            ],
+            "key": "r2"
+          },
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance",
+            "key": "r3"
+          }
+        ],
+        "scope": {
+          "codes": [
+            "AR",
+            "ZZ"
+          ],
+          "models": {
+            "Snowdon": "AR"
+          },
+          "ownership": {
+            "OST_StructuralColumns": [
+              "ZZ"
+            ]
+          }
+        },
+        "all_documents": false,
+        "fill": false,
+        "value": "NA",
+        "max_ids": 5,
+        "check_only": true,
+        "dry_run": false
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "documents[0].discipline",
+          "op": "==",
+          "value": "AR"
+        },
+        {
+          "path": "documents[0].disciplineSource",
+          "op": "==",
+          "value": "mapping"
+        },
+        {
+          "path": "documents[0].rows[key=r1].categories",
+          "op": "contains",
+          "value": "OST_Walls"
+        },
+        {
+          "path": "documents[0].rows[key=r2].status",
+          "op": "==",
+          "value": "out-of-scope"
+        },
+        {
+          "path": "documents[0].rows[key=r3].na",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].rows[key=r3].value",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].preflight",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].summary.outOfScope",
+          "op": ">=",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Parameter plan (1.11): register and impact on the read-only check",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance",
+            "categories": [
+              "OST_Walls"
+            ],
+            "key": "r1"
+          },
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance",
+            "key": "r2"
+          }
+        ],
+        "all_documents": false,
+        "fill": false,
+        "check_only": true,
+        "dry_run": false,
+        "register": true,
+        "impact": true,
+        "max_ids": 5
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "documents[0].register",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].impact",
+          "op": "exists"
+        },
+        {
+          "path": "documents[0].preflight.aceVersion",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Parameter plan (1.11): another server version is refused before any write",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance",
+            "categories": [
+              "OST_Walls"
+            ],
+            "key": "r1"
+          },
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance",
+            "key": "r2"
+          }
+        ],
+        "all_documents": false,
+        "fill": true,
+        "value": "NA",
+        "check_only": false,
+        "dry_run": true,
+        "expect_version": "0.0.1",
+        "max_ids": 5
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "stage",
+          "op": "==",
+          "value": "blocked"
+        },
+        {
+          "path": "blocked[0].code",
+          "op": "==",
+          "value": "version"
+        }
+      ]
+    },
+    {
+      "name": "Parameter plan (1.11.1): title blocks that show a Project Information value are counted in the impact",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Project Name",
+            "group": "project",
+            "level": "instance",
+            "key": "r1"
+          }
+        ],
+        "all_documents": false,
+        "fill": false,
+        "check_only": true,
+        "dry_run": false,
+        "impact": true,
+        "max_ids": 5
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "documents[0].impact.Project Name.titleBlocks.sheets",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "documents[0].impact.Project Name.titleBlocks.families",
+          "op": ">=",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "Parameter plan (1.11.2): a discipline not read from the title is flagged, never guessed",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "parameter_fill",
+      "args": {
+        "rows": [
+          {
+            "name": "Comments",
+            "group": "elements",
+            "level": "instance",
+            "categories": [
+              "OST_Walls"
+            ],
+            "disciplines": [
+              "AR"
+            ],
+            "key": "r1"
+          }
+        ],
+        "scope": {
+          "codes": [
+            "AR",
+            "ST"
+          ],
+          "models": {},
+          "ownership": {},
+          "titleField": 2
+        },
+        "all_documents": false,
+        "fill": false,
+        "check_only": true,
+        "dry_run": false,
+        "max_ids": 5
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "documents[0].discipline",
+          "op": "==",
+          "value": null
+        },
+        {
+          "path": "documents[0].disciplineUnknown",
+          "op": "==",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "View membership fill (1.12.6): a read-only check counts in / out of the default 3D view and gives the reasons",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "view_membership_fill",
+      "args": {
+        "view": "{3D}",
+        "parameter": "Comments",
+        "value_in": "IN",
+        "value_out": "OUT",
+        "categories": [
+          "Walls",
+          "Doors"
+        ],
+        "check_only": true,
+        "dry_run": false,
+        "max_ids": 5
+      },
+      "maxMs": 180000,
+      "expect": [
+        {
+          "path": "counts.processed",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "planHash",
+          "op": "exists"
+        },
+        {
+          "path": "outside",
+          "op": "exists"
+        },
+        {
+          "path": "view.name",
+          "op": "==",
+          "value": "{3D}"
+        }
+      ]
+    },
+    {
+      "name": "Export deliverables (1.12.6): the pre-flight names a missing view and sheet and writes nothing",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "export_deliverables",
+      "args": {
+        "out_dir": "C:/Temp/ACE bench export",
+        "check_only": true,
+        "nwc": {
+          "view": "ACE bench no such view",
+          "file": "bench.nwc"
+        },
+        "dwfx": {
+          "sheets": [
+            "ACE-BENCH-NONE"
+          ],
+          "file": "bench.dwfx"
+        }
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "preflight",
+          "op": "exists"
+        },
+        {
+          "path": "blocked",
+          "op": "length>=",
+          "value": 2
+        }
+      ]
+    },
+    {
+      "name": "Workset facts (1.13.3): read-only; no sketch, sub-element or legend group; levels carry code / phrase",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "workset_admin",
+      "args": {
+        "action": "facts",
+        "check_only": true,
+        "max_ids": 2
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "model",
+          "op": "exists"
+        },
+        {
+          "path": "levels",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "IFC setups in the model (1.13.6): read-only list",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "export_deliverables",
+      "args": {
+        "list_ifc_setups": true,
+        "check_only": true
+      },
+      "maxMs": 60000,
+      "expect": [
+        {
+          "path": "ifcSetups",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "NWC view contents (#36): the pre-flight counts the 3D view's model elements and top categories and gives the model's record key",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "export_deliverables",
+      "args": {
+        "out_dir": "C:/Temp/ACE bench export",
+        "check_only": true,
+        "nwc": {
+          "view": "{3D}",
+          "file": "bench-view.nwc"
+        }
+      },
+      "maxMs": 120000,
+      "expect": [
+        {
+          "path": "preflight.nwcView.view",
+          "op": "==",
+          "value": "{3D}"
+        },
+        {
+          "path": "preflight.nwcView.elements",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "preflight.nwcView.categories",
+          "op": "length>=",
+          "value": 1
+        },
+        {
+          "path": "modelKey",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "Purge unused (G10): full purge dry run, 3 passes on the sample, rolled back, says what is left",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "purge_unused",
+      "args": {
+        "dry_run": true,
+        "max_passes": 3,
+        "max_ids": 5
+      },
+      "maxMs": 600000,
+      "expect": [
+        {
+          "path": "source",
+          "op": "==",
+          "value": "Document.GetUnusedElements"
+        },
+        {
+          "path": "planHash",
+          "op": "exists"
+        },
+        {
+          "path": "unusedLeft",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "reload_addin answers from the ACE loader (G8; no force: nothing swaps when the installed build runs)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "reload_addin",
+      "args": {
+        "force": false
+      },
+      "maxMs": 10000,
+      "expect": [
+        {
+          "path": "loaderVersion",
+          "op": "exists"
+        },
+        {
+          "path": "payloadVersion",
+          "op": "exists"
+        },
+        {
+          "path": "ok",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "why",
+          "op": "exists"
+        }
+      ]
+    },
+    {
+      "name": "no_transaction without allow_risky is refused, nothing runs",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "args": {
+        "code": "return doc.IsModifiable;",
+        "mode": "no_transaction",
+        "dry_run": true
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "stage",
+          "op": "==",
+          "value": "risky"
+        }
+      ]
+    },
+    {
+      "name": "no_transaction dry run only compiles (nothing runs)",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "args": {
+        "code": "return doc.IsModifiable;",
+        "mode": "no_transaction",
+        "dry_run": true,
+        "allow_risky": true
+      },
+      "maxMs": 30000,
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "executed",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "previewable",
+          "op": "==",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "G24: a dry run that adds overlapping walls reports the new warning and would refuse",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "maxMs": 60000,
+      "args": {
+        "code": "var lvl = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation).First();\nvar line = Line.CreateBound(new XYZ(900, 900, 0), new XYZ(910, 900, 0));\nWall.Create(doc, line, lvl.Id, false);\nWall.Create(doc, line, lvl.Id, false);\nreturn \"two overlapping walls\";",
+        "dry_run": true,
+        "transaction_name": "ACE bench: overlapping walls"
+      },
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "newWarnings.count",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "newWarnings.refuse",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "newWarnings.line",
+          "op": "contains",
+          "value": "Would add"
+        }
+      ]
+    },
+    {
+      "name": "G24: accepting the warning by description lets the same dry run pass",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "maxMs": 60000,
+      "args": {
+        "code": "var lvl = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation).First();\nvar line = Line.CreateBound(new XYZ(900, 900, 0), new XYZ(910, 900, 0));\nWall.Create(doc, line, lvl.Id, false);\nWall.Create(doc, line, lvl.Id, false);\nreturn \"two overlapping walls\";",
+        "dry_run": true,
+        "transaction_name": "ACE bench: overlapping walls",
+        "accept_warnings": [
+          "overlap"
+        ]
+      },
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "newWarnings.refuse",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "newWarnings.accepted",
+          "op": ">=",
+          "value": 1
+        }
+      ]
+    }
+  ]
+}

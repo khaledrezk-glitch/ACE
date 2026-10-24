@@ -1,0 +1,42 @@
+{
+  "about": "Office methods (Claude skills) linked to ACE tools. Adding a method: its <name>.md here and one entry below. Each linked tool's description gets \"Office method: revit_guide methods/<name>\" from this file.",
+  "methods": [
+    {
+      "name": "structural-interference-solving",
+      "skill": "structural-interference-solving",
+      "version": 1,
+      "updated": "2026-10-20",
+      "tools": [
+        "clash_resolve",
+        "run_clash_test",
+        "coordination_report",
+        "capture_method"
+      ],
+      "sourceCase": "A senior engineer's manual solve of the structural self-interferences of one structural model of a live project (72 overlaps down to 1), recorded and compared with clash_resolve.",
+      "file": "structural-interference-solving.md"
+    },
+    {
+      "name": "midp-register-update",
+      "skill": "midp-register-update",
+      "version": 1,
+      "updated": "2026-10-20",
+      "tools": [
+        "register_update"
+      ],
+      "sourceCase": "Offline tests of register_update on a live project's MIDP register over four submissions, checked against an earlier hand match.",
+      "file": "midp-register-update.md"
+    },
+    {
+      "name": "workset-cleanup",
+      "skill": "workset-cleanup",
+      "version": 2,
+      "updated": "2026-10-20",
+      "tools": [
+        "assign_worksets",
+        "workset_plan"
+      ],
+      "sourceCase": "The office's workset housekeeping: audit, review, then rename and delete empty worksets against the project's naming rule.",
+      "file": "workset-cleanup.md"
+    }
+  ]
+}

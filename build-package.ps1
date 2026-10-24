@@ -1,0 +1,64 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+  Builds the team release package: dist\ACE-RevitMCP-<version>.zip
+  The package contains the PREBUILT add-in and bundled Node dependencies, so team PCs need
+  neither the .NET SDK nor npm access. Requires (on the build machine only): .NET 8+ SDK, Node.js 18+.
+  The add-in is built for Revit 2024 (bin\addin\2024, .NET Framework 4.8, no script compiler yet) and Revit 2025
+  (bin\addin\2025, .NET 8, with the compiler). Each year also gets the ACE loader (bin\addin\<year>\loader), the only DLL
+  named in the .addin manifest: install.ps1 puts the add-in (the payload) into its own version folder next to it.
+  Put a team.json next to this script (copy team.example.json) to bake team settings into the package.
+#>
+param([string]$Out = (Join-Path $PSScriptRoot 'dist'))
+
+$ErrorActionPreference = 'Stop'
+$Root = $PSScriptRoot
+$version = (Get-Content (Join-Path $Root (Join-Path 'mcp-server' 'package.json')) -Raw | ConvertFrom-Json).version
+$name = "ACE-RevitMCP-$version"
+$stage = Join-Path $Out $name
+$npm = if ($env:OS -eq 'Windows_NT') { 'npm.cmd' } else { 'npm' }
+
+Write-Host "Building $name" -ForegroundColor Cyan
+if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+$addinOut = Join-Path (Join-Path $stage 'bin') 'addin'
+$addinProj = Join-Path $Root (Join-Path 'revit-addin' (Join-Path 'AceRevitMcp' 'AceRevitMcp.csproj'))
+$loaderProj = Join-Path $Root (Join-Path 'revit-addin' (Join-Path 'AceRevitMcp.Loader' 'AceRevitMcp.Loader.csproj'))
+foreach ($t in @(@('2024', 'net48'), @('2025', 'net8.0-windows'))) {
+    & dotnet publish $addinProj -c Release -f $t[1] -o (Join-Path $addinOut $t[0]) --nologo -v quiet
+    if ($LASTEXITCODE -ne 0) { throw "Add-in build for Revit $($t[0]) failed" }
+    & dotnet publish $loaderProj -c Release -f $t[1] -o (Join-Path (Join-Path $addinOut $t[0]) 'loader') --nologo -v quiet
+    if ($LASTEXITCODE -ne 0) { throw "ACE loader build for Revit $($t[0]) failed" }
+}
+& dotnet publish (Join-Path $Root (Join-Path 'revit-addin' (Join-Path 'AceRevitMcp.Compiler' 'AceRevitMcp.Compiler.csproj'))) -c Release -o (Join-Path (Join-Path $addinOut '2025') 'Compiler') --nologo -v quiet
+if ($LASTEXITCODE -ne 0) { throw 'Compiler build failed' }
+Get-ChildItem $addinOut -Recurse -Filter *.pdb | Remove-Item -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $Root (Join-Path 'revit-addin' 'AceRevitMcp.addin.template')) -Destination (Join-Path $stage 'bin')
+
+$mcp = Join-Path $stage 'mcp-server'
+New-Item -ItemType Directory -Force -Path $mcp | Out-Null
+foreach ($item in 'index.js', 'instructions.md', 'package.json', 'package-lock.json', 'lib', 'guides', 'scripts', 'lessons', 'bep') {
+    Copy-Item (Join-Path (Join-Path $Root 'mcp-server') $item) -Destination $mcp -Recurse -Force
+}
+Push-Location $mcp
+try {
+    & $npm ci --omit=dev --no-audit --no-fund --loglevel=error
+    if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+} finally { Pop-Location }
+
+foreach ($f in 'install.ps1', 'install.cmd', 'trust-ace.ps1', 'doctor.ps1', 'doctor.cmd', 'report.cmd', 'uninstall.ps1', 'test-connection.ps1',
+               'README.md', 'USER-GUIDE.md', 'AGENT-GUIDE.md', 'REQUIREMENTS.md', 'TEAM-DEPLOYMENT.md', 'FIRST-TEST.md', 'CHANGELOG.md',
+               'team.example.json', 'team.json', 'checkset.example.json') {
+    $p = Join-Path $Root $f
+    if (Test-Path $p) { Copy-Item $p -Destination $stage }
+}
+
+if (Test-Path (Join-Path $Root 'branding')) { Copy-Item (Join-Path $Root 'branding') -Destination $stage -Recurse -Force }
+
+$zip = Join-Path $Out "$name.zip"
+if (Test-Path $zip) { Remove-Item $zip -Force }
+Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
+$size = [Math]::Round((Get-Item $zip).Length / 1MB, 1)
+Write-Host "Package ready: $zip ($size MB)" -ForegroundColor Green
+Write-Host "Share it with the team: unzip, then double-click install.cmd."

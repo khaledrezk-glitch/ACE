@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Isolated C# compiler. It is loaded into its own AssemblyLoadContext by the add-in so the
+    Roslyn version here never clashes with Roslyn copies other add-ins (e.g. Dynamo) load into Revit.
+    Only primitive types (string, string[], byte[]) cross the boundary.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>AceRevitMcp.Compiler</RootNamespace>
+    <AssemblyName>AceRevitMcp.Compiler</AssemblyName>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- install.ps1 fills in the path of the ACE loader (AceRevitMcp.Loader.dll); the loader loads the ACE build named in
+     current.json next to it. For development, ACE can still be loaded directly: Assembly = the path of AceRevitMcp.dll,
+     FullClassName = AceRevitMcp.App (then every new build needs a Revit restart). -->
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>ACE Revit MCP</Name>
+    <Assembly>{{ASSEMBLY_PATH}}</Assembly>
+    <AddInId>6F1B8E2A-3C4D-4E5F-9A0B-ACE000000001</AddInId>
+    <FullClassName>AceRevitMcp.Loader.LoaderApp</FullClassName>
+    <VendorId>ACE</VendorId>
+    <VendorDescription>Lets Claude control Revit through the Model Context Protocol</VendorDescription>
+  </AddIn>
+</RevitAddIns>

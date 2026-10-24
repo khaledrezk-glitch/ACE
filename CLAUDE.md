@@ -1,0 +1,95 @@
+# ACE Revit MCP: notes for Claude Code (maintainers)
+
+## Layout
+- `revit-addin/AceRevitMcp`: Revit add-in, built for Revit 2025 (net8.0-windows) and Revit 2024 (net48) from one source;
+  use `Util/Compat.cs` instead of .NET 5+ only APIs, and `#if NETFRAMEWORK` only where a runtime feature differs (the code runner). `Bridge/` is the localhost HTTP + ExternalEvent
+  queue, `Commands/` holds native commands (registered in `CommandRegistry.cs`), `Scripting/` is the
+  C# code runner (TransactionGroup wrapping, dry runs, change tracking), and `Util/` has JSON, ModelGuard
+  (warnings/dialogs) and ChangeTracker (DocumentChanged, safe undo).
+- `revit-addin/AceRevitMcp.Compiler`: Roslyn, loaded in an isolated AssemblyLoadContext. Only primitives cross the boundary.
+- `mcp-server/index.js`: MCP tools and prompts. `lib/`: `core` (config/bridge), `safety` (preview gate,
+  risky-code screen, journal), `scripts` (built-in < team < user library), `telemetry` (local call log),
+  `diagnostics` (checks, recommendations, reports; also a CLI).
+- `mcp-server/instructions.md`: what Claude is told at connection time. `guides/*.md`: expert knowledge (`revit_guide`).
+- `install.ps1`, `doctor.ps1`, `build-package.ps1`: Windows PowerShell 5.1 compatible (no `??`, no ternaries).
+
+## Checks before pushing
+```bash
+dotnet build revit-addin/AceRevitMcp/AceRevitMcp.csproj -c Release       # both targets (2024 + 2025), must be warning-free
+dotnet build revit-addin/AceRevitMcp.Compiler/AceRevitMcp.Compiler.csproj -c Release
+dotnet run --project tools/tracker-test                                   # change-tracker comparison (after the add-in build)
+dotnet run --project tools/clash-test                                     # clash logic: responsibility, merge, issues (after the add-in build)
+dotnet run --project tools/checkset-test                                  # model check set: thresholds, disabled checks (after the add-in build)
+dotnet run --project tools/workset-test                                   # workset plan: tie-breaks, after-apply check, deleted-type wording (after the add-in build)
+cd mcp-server && npm ci && npm run check                                   # syntax + smoke test (fake Revit bridge)
+pwsh -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('install.ps1',[ref]$null,[ref]$e); $e"
+```
+Scripts in `mcp-server/scripts/*.cs` and any API usage in `guides/*.md` must compile against the Revit 2025 reference
+assemblies (NuGet `Nice3point.Revit.Api.RevitAPI` 2025.0.2), exactly as the add-in wraps them:
+```bash
+dotnet publish revit-addin/AceRevitMcp.Compiler -c Release -o tools/script-check/compiler   # once
+dotnet run --project tools/script-check -- mcp-server/scripts tools/risk-cases               # every script must PASS
+```
+`tools/risk-cases` holds scripts the compiler's risk screen must catch (`EXPECT_RISK`); built-in scripts must need no
+`allow_risky`.
+With Revit open (on a Windows PC), also run the benchmark: `node tools/bench/run.mjs`.
+
+## Company reference material
+The repository is private. Keep ACE reference documents the user supplies in the repo so every session and
+build has them: brand material in `branding/` (`ACE_BRAND_GUIDELINES.md`, logo files), other standards and
+references in `docs/reference/`. Apply them (e.g. brand colours and fonts in `branding/brand.json`) rather than
+guessing. Before committing such files, confirm the GitHub repository is still private.
+
+## Invariants (don't break)
+- A real (non-dry-run) modification requires an identical, successful dry run in the same session (`lib/safety.js`).
+- `readonly` runs are always rolled back. Every applied run is exactly ONE undo step.
+- Risky code (files, processes, network, save/close/sync) needs `allow_risky` after user consent.
+- The MCP server registers as `ace-revit` and never touches other servers in the Claude config
+  (PowerShell property names are case-insensitive: never add a key that could equal an existing one).
+- Keep Add-in and MCP server versions in step (`AceRevitMcp.csproj` `<Version>` = `mcp-server/package.json` version);
+  add a line to `CHANGELOG.md` for each release.
+
+## Architecture and integration (read before adding a capability)
+`docs/ARCHITECTURE-CONCEPT.md` is the map of layers, engines and capabilities. Before building anything new, answer its
+integration rule (which engine, where its rules come from, what it publishes, what it connects to, what it merges) and
+update the inventory and the duplication list. Prefer extending an engine over adding a parallel one. Changes to the
+add-in or MCP server wait for the user's go-ahead while the concept is under review.
+
+## Showcase reminder (the user asked for this)
+When a circle in `docs/ARCHITECTURE-CONCEPT.md` is complete AND verified live in Revit (a real model, not only offline
+tests), remind the user to create a presentation on it, highlighting the hidden capabilities and the thinking behind
+them. Keep the "Showcase" list in that document up to date (what is ready to show, with the story and the demo).
+
+## Development team and backlog
+`docs/BACKLOG.md` is the ranked list of what to build. Development cycles run as the saved workflow `ace-dev-cycle`
+(agents in `.claude/agents/`): `mode: "propose"` returns a short list, the owner approves it once, `mode: "build"`
+implements, reviews and reports. Nothing runs on its own; see `docs/DEV-TEAM.md` for the roles and the cost rules.
+
+## The learning loop (keep it running with every change)
+ACE is meant to get better continuously. Every release should pass through this loop:
+1. **Collect:** team members run the learning report (`report_issue` kind `learning`, `share_with_team: true`) and share `issue-*.md` reports.
+   Claude saves lessons as it works (`lessons` action `remember`, team-shared ones land in the team `lessons` folder).
+2. **Review:** read the learning reports (first-time-right trend, repeated compile errors, recipe candidates, failing
+   scripts, slow calls) and the team lessons.
+3. **Improve:** fix guides/instructions for repeated API mistakes, add ScriptContext helpers, turn recipe candidates into
+   tested built-in scripts, and **promote good team lessons** into `mcp-server/lessons/built-in.jsonl` (reviewed wording,
+   stable `id`). Wrong or outdated built-in lessons are removed there.
+4. **Tidy:** before each release, run `/code-review` (bugs; report first, then fix) and `/simplify` (reuse, duplication,
+   efficiency) over the release's changes, plus a whole-codebase pass every few releases. Fold the findings into the
+   duplication list in `docs/ARCHITECTURE-CONCEPT.md` when they are about structure rather than lines of code.
+5. **Prove:** add or extend a case in `tools/bench/cases.json` for every fix or new capability, then run the benchmark with
+   the Snowdon sample open: `node tools/bench/run.mjs` (all cases must pass; history in `logs/bench-history.jsonl`).
+6. **Release:** bump the version, CHANGELOG, `build-package.ps1`.
+
+## Working on a user report (`issue-*.md` / `improvement-*.md` from report_issue or doctor)
+1. Read "What happened", **Health checks** and **Recommendations** first. Setup problems (❌ rows) usually
+   mean an installer or doctor improvement, not a code bug.
+2. Use the **Appendix** (failing calls with error, stage, compile messages and the exact C# code) to
+   reproduce. Compile failures from API misuse → fix `guides/*.md` / `instructions.md` so Claude stops
+   making that mistake (and consider a `ScriptContext` helper). Runtime failures in saved scripts → fix
+   the script and compile-check it.
+3. Usage table: frequent `execute_revit_code` patterns → candidates for built-in scripts or native commands;
+   slow calls → performance.
+4. Fix, add or extend a smoke-test assertion, run the checks above, bump the version, update CHANGELOG, commit.
+5. Reply with a short summary the user can understand: what was wrong, what changed, and whether they need
+   to update (build a new package with `build-package.ps1`).

@@ -1,0 +1,76 @@
+using System;
+using System.Collections.Generic;
+using System.Text.Json.Nodes;
+using AceRevitMcp.Bridge;
+using AceRevitMcp.Scripting;
+using Autodesk.Revit.UI;
+
+namespace AceRevitMcp.Commands
+{
+    internal sealed class CommandRegistry
+    {
+        private readonly Dictionary<string, Func<UIApplication, JsonObject, JsonNode>> _commands =
+            new Dictionary<string, Func<UIApplication, JsonObject, JsonNode>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["ping"] = ModelCommands.Ping,
+                ["get_document_info"] = ModelCommands.DocumentInfo,
+                ["get_selection"] = ModelCommands.Selection,
+                ["query_elements"] = ModelCommands.QueryElements,
+                ["get_element_details"] = ModelCommands.ElementDetails,
+                ["set_parameters"] = EditCommands.SetParameters,
+                ["select_elements"] = EditCommands.SelectElements,
+                ["export_view_image"] = ViewCommands.ExportImage,
+                ["list_views"] = ViewCommands.ListViews,
+                ["open_view"] = ViewCommands.OpenView,
+                ["execute_code"] = CodeRunner.Run,
+                ["backup_model"] = BackupCommands.Backup,
+                ["undo_last_claude_change"] = UndoCommands.UndoLast,
+                ["api_lookup"] = InsightCommands.ApiLookup,
+                ["describe_category"] = InsightCommands.DescribeCategory,
+                ["list_types"] = InsightCommands.ListTypes,
+                ["get_model_insights"] = Dashboard.DashboardCommands.Insights,
+                ["model_brief"] = BriefCommands.ModelBrief,
+                ["describe_family"] = BriefCommands.DescribeFamily,
+                ["snapshot_model"] = Tracking.ChangeTracking.SnapshotCommand,
+                ["list_snapshots"] = Tracking.ChangeTracking.ListCommand,
+                ["model_changes"] = Tracking.ChangeTracking.ChangesCommand,
+                ["run_clash_test"] = Coordination.ClashCommands.Run,
+                ["import_clash_report"] = Coordination.ClashImport.Run,
+                ["set_clash_status"] = Coordination.ClashCommands.SetStatus,
+                ["coordination_sources"] = Coordination.ClashCommands.Sources,
+                ["pending_changes"] = Companion.ActivityHub.PendingCommand,
+                ["coordination_report"] = Coordination.CoordinationReport.Build,
+                ["clash_results"] = Coordination.ClashCommands.Results,
+                ["working_mode"] = Ribbon.WorkModes.Command,
+                ["clash_view"] = Coordination.ClashView.Overview,
+                ["open_clash_browser"] = (app, args) => { Coordination.ClashBrowser.ShowFor(app); return new System.Text.Json.Nodes.JsonObject { ["opened"] = true }; },
+                ["focus_clash"] = Coordination.ClashView.Focus,
+                ["reset_clash_view"] = Coordination.ClashView.Reset,
+                ["list_warnings"] = Dashboard.WarningCommands.List,
+                ["presentation_standard"] = Dashboard.PresentationCommands.Run,
+                ["assign_worksets"] = Rules.WorksetCommands.Run,
+                ["workset_admin"] = Rules.WorksetAdmin.Run,
+                ["project_rules"] = Rules.ProjectRulesCommands.Run,
+                ["compliance"] = Rules.ComplianceCommands.Run,
+                ["audit_summary"] = Rules.AuditSummary.Run,
+                ["parameter_fill"] = Rules.ParameterFill.Run,
+                ["clash_resolve"] = Coordination.ClashResolve.Run,
+                ["open_model"] = ModelFileCommands.Open,
+                ["close_model"] = ModelFileCommands.Close,
+                ["save_model"] = ModelFileCommands.Save,
+                ["capture_method"] = CaptureMethod.Run,
+                ["view_membership_fill"] = Rules.ViewMembership.Run,
+                ["export_deliverables"] = ExportDeliverables.Run,
+                ["reload_addin"] = LoaderLink.ReloadCommand,
+                ["purge_unused"] = PurgeUnused.Run,
+                ["ace_self_test"] = SelfTest.Run,
+            };
+
+        public JsonNode Execute(string command, UIApplication app, JsonObject args)
+        {
+            if (!_commands.TryGetValue(command, out var handler))
+                throw new CommandException($"Unknown command '{command}'. Known: {string.Join(", ", _commands.Keys)}");
+            return handler(app, args);
+        }
+    }
+}

@@ -1,0 +1,200 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
+namespace AceRevitMcp.Compiler
+{
+    /// <summary>
+    /// Finds what a script really calls, by the compiler's resolved symbols rather than by its text, so aliases,
+    /// fully qualified names, comments, escaped characters or "var" cannot hide a call to files, programs, the network,
+    /// reflection, or saving / closing / syncing models. Each risk needs the user's consent (allow_risky).
+    /// The MCP server's text screen stays as a quick first check.
+    /// </summary>
+    internal static class RiskScreen
+    {
+        /// <summary>
+        /// Ends the reason of a call that escapes the run's TransactionGroup rollback (saving, closing, syncing, borrowing,
+        /// renaming worksets, exporting, unloading links, writing the shared parameter file): a dry run or readonly run refuses it
+        /// even with allow_risky ("cannot be previewed: not undoable"). The add-in looks for this text.
+        /// </summary>
+        public const string NotUndoable = " (not undoable)";
+        private const string NU = NotUndoable;
+
+        private static readonly (string Prefix, string Why)[] Namespaces =
+        {
+            ("System.IO.Compression", "creates, changes or deletes files on disk"),
+            ("System.Net", "uses the network"),
+            ("System.Reflection", "uses reflection to reach code beyond the Revit API"),
+            ("System.Runtime.Loader", "loads external code"),
+            ("System.Runtime.InteropServices", "loads external code"),
+            ("Microsoft.Win32", "changes Windows settings"),
+        };
+
+        private static readonly (string Type, string Why)[] Types =
+        {
+            ("System.IO.File", "reads or changes files on disk"), ("System.IO.Directory", "reads or changes files on disk"),
+            ("System.IO.FileInfo", "reads or changes files on disk"), ("System.IO.DirectoryInfo", "reads or changes files on disk"),
+            ("System.IO.FileStream", "reads or changes files on disk"), ("System.IO.StreamWriter", "creates, changes or deletes files on disk"),
+            ("System.IO.StreamReader", "reads files on disk"), ("System.IO.BinaryWriter", "creates, changes or deletes files on disk"),
+            ("System.IO.DriveInfo", "reads or changes files on disk"),
+            ("System.Diagnostics.Process", "starts other programs"), ("System.Diagnostics.ProcessStartInfo", "starts other programs"),
+            ("System.Activator", "uses reflection to reach code beyond the Revit API"),
+            ("System.AppDomain", "loads external code"),
+            ("System.IO.MemoryMappedFiles.MemoryMappedFile", "reads or changes files on disk"),
+        };
+
+        private static readonly (string Type, string Member, string Why)[] Members =
+        {
+            ("System.Environment", "Exit", "closes programs"), ("System.Environment", "FailFast", "closes programs"),
+            ("System.Type", "GetType", "uses reflection to reach code beyond the Revit API"),   // the static Type.GetType(string)
+            ("System.Type", "InvokeMember", "uses reflection to reach code beyond the Revit API"),
+            ("System.Type", "GetMethod", "uses reflection to reach code beyond the Revit API"),
+            ("System.Type", "GetMethods", "uses reflection to reach code beyond the Revit API"),
+            ("System.Type", "GetField", "uses reflection to reach code beyond the Revit API"),
+            ("System.Type", "GetProperty", "uses reflection to reach code beyond the Revit API"),
+            ("System.Type", "GetConstructor", "uses reflection to reach code beyond the Revit API"),
+            ("Autodesk.Revit.DB.Document", "Save", "saves or closes a model" + NU), ("Autodesk.Revit.DB.Document", "SaveAs", "saves or closes a model" + NU),
+            ("Autodesk.Revit.DB.Document", "SaveCloudModel", "saves or closes a model" + NU), ("Autodesk.Revit.DB.Document", "SaveAsCloudModel", "saves or closes a model" + NU),
+            ("Autodesk.Revit.DB.Document", "Close", "saves or closes a model" + NU),
+            ("Autodesk.Revit.DB.Document", "SynchronizeWithCentral", "syncs with the central model" + NU),
+            ("Autodesk.Revit.DB.Document", "ReloadLatest", "syncs with the central model" + NU),
+            ("Autodesk.Revit.DB.Document", "EnableWorksharing", "enables worksharing" + NU),
+            ("Autodesk.Revit.DB.Document", "Export*", "exports files from the model" + NU),
+            ("Autodesk.Revit.DB.WorksharingUtils", "RelinquishOwnership", "syncs with the central model" + NU),
+            ("Autodesk.Revit.DB.WorksharingUtils", "CheckoutElements", "borrows elements from the central model" + NU),
+            ("Autodesk.Revit.DB.WorksharingUtils", "CheckoutWorksets", "borrows worksets from the central model" + NU),
+            ("Autodesk.Revit.DB.WorksharingUtils", "CreateNewLocal", "creates, changes or deletes files on disk" + NU),
+            ("Autodesk.Revit.DB.WorksetTable", "RenameWorkset", "renames a workset" + NU),
+            ("Autodesk.Revit.DB.RevitLinkType", "Unload", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.DB.RevitLinkType", "UnloadLocally", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.DB.RevitLinkType", "LoadFrom", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.ApplicationServices.Application", "OpenDocumentFile", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.UI.UIApplication", "OpenAndActivateDocument", "opens other models or unloads links" + NU),
+            ("Autodesk.Revit.UI.UIApplication", "PostCommand", "triggers Revit commands" + NU),
+            ("Autodesk.Revit.UI.UIDocument", "SaveAndClose", "saves or closes a model" + NU),
+            ("Autodesk.Revit.UI.UIDocument", "SaveAs", "saves or closes a model" + NU),
+            ("Autodesk.Revit.ApplicationServices.Application", "CopyModel", "creates, changes or deletes files on disk" + NU),
+            ("Autodesk.Revit.DB.TransmissionData", "WriteTransmissionData", "creates, changes or deletes files on disk" + NU),
+            ("Autodesk.Revit.DB.PrintManager", "SubmitPrint", "prints or writes files" + NU),
+            ("Autodesk.Revit.DB.DefinitionGroups", "Create", "changes the shared parameter file" + NU),
+            ("Autodesk.Revit.DB.Definitions", "Create", "changes the shared parameter file" + NU),
+            ("System.IO.Path", "GetTempFileName", "creates, changes or deletes files on disk" + NU),
+            ("System.Xml.XmlDocument", "Save", "creates, changes or deletes files on disk" + NU),
+            ("System.Xml.Linq.XDocument", "Save", "creates, changes or deletes files on disk" + NU),
+            ("System.Xml.Linq.XElement", "Save", "creates, changes or deletes files on disk" + NU),
+            ("System.Xml.XmlWriter", "Create", "creates, changes or deletes files on disk" + NU),
+        };
+
+        public static string[] Find(CSharpCompilation compilation, SyntaxTree tree)
+        {
+            var model = compilation.GetSemanticModel(tree);
+            var found = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var node in tree.GetRoot().DescendantNodes())
+            {
+                if (node is not (InvocationExpressionSyntax or ObjectCreationExpressionSyntax or ImplicitObjectCreationExpressionSyntax
+                    or MemberAccessExpressionSyntax or IdentifierNameSyntax)) continue;
+                var info = model.GetSymbolInfo(node);
+                var symbol = info.Symbol ?? info.CandidateSymbols.FirstOrDefault();
+                var type = model.GetTypeInfo(node).Type;
+                if (type?.TypeKind == TypeKind.Dynamic) found.Add("uses dynamic code that cannot be checked");
+                if (symbol == null) continue;
+                var why = Check(symbol, node, model);
+                if (why != null) found.Add(why);
+            }
+            return found.ToArray();
+        }
+
+        private static string Check(ISymbol symbol, SyntaxNode node, SemanticModel model)
+        {
+            var owner = symbol as INamedTypeSymbol ?? symbol.ContainingType;
+            if (owner == null) return null;
+            var typeName = Name(owner.OriginalDefinition);
+            var (decided, fileWhy) = FileVerdict(typeName, symbol, node, model);
+            if (decided) return fileWhy;
+            var ns = owner.ContainingNamespace?.ToDisplayString() ?? "";
+            // Reading a property (e.GetType().Name) is harmless; calling or creating something is what counts.
+            var readsOnly = symbol is IPropertySymbol or IFieldSymbol;
+            foreach (var (prefix, why) in Namespaces)
+                if (!readsOnly && (ns == prefix || ns.StartsWith(prefix + ".", StringComparison.Ordinal))) return why;
+            foreach (var (t, why) in Types)
+                if (typeName == t || InheritsFrom(owner, t)) return why;
+            if (symbol is IMethodSymbol m)
+            {
+                foreach (var (t, member, why) in Members)
+                {
+                    if (member.EndsWith("*", StringComparison.Ordinal) ? !m.Name.StartsWith(member.TrimEnd('*'), StringComparison.Ordinal) : m.Name != member) continue;
+                    if (t == "System.Type" && member == "GetType" && !m.IsStatic) continue;   // obj.GetType() is harmless
+                    if (typeName == t || InheritsFrom(owner, t)) return why;
+                }
+            }
+            return null;
+        }
+
+        private const string Writes = "creates, changes or deletes files on disk" + NU;
+        private static readonly string[] WriterTypes = { "System.IO.StreamWriter", "System.IO.BinaryWriter", "System.Xml.XmlWriter" };
+        private static readonly string[] SaveTypes = { "System.Xml.XmlDocument", "System.Xml.Linq.XDocument", "System.Xml.Linq.XElement" };
+        private static readonly string[] PathTypes = { "System.IO.File", "System.IO.Directory", "System.IO.FileInfo", "System.IO.DirectoryInfo" };
+        private static readonly string[] WriteVerbs = { "Write", "Append", "Create", "Delete", "Move", "Copy", "Replace", "Set", "Encrypt", "Decrypt", "OpenWrite", "Open" };
+
+        /// <summary>
+        /// Whether a file API use writes to disk (not undone by a rollback), decided at the call from the overload and its
+        /// arguments: a writer or XML save on a path writes, on a stream / TextWriter / StringWriter does not (the stream's own
+        /// creation decides); a FileStream, File.Open or FileInfo.Open with FileAccess.Read only reads; File / Directory members
+        /// that create, change, move or delete write. When it cannot be told (a FileStream or Open with variable arguments, a
+        /// method passed as a delegate) it counts as a write. (false, _) = not a file API this rule knows: the other lists decide.
+        /// </summary>
+        private static (bool Decided, string Why) FileVerdict(string type, ISymbol symbol, SyntaxNode node, SemanticModel model)
+        {
+            var isWriter = WriterTypes.Contains(type); var isStream = type == "System.IO.FileStream"; var isMapped = type == "System.IO.MemoryMappedFiles.MemoryMappedFile";
+            var isSave = SaveTypes.Contains(type) && symbol.Name == "Save"; var isPath = PathTypes.Contains(type);
+            if (!(isWriter || isStream || isMapped || isSave || isPath)) return (false, null);
+            if (symbol is not IMethodSymbol m)
+                return isPath ? (false, null) : (true, null);   // naming the type, or reading a property, does nothing yet
+            var call = node is InvocationExpressionSyntax or BaseObjectCreationExpressionSyntax;
+            if (!call)
+            {
+                // The member access or name inside a call: the call node itself decides (with its arguments).
+                var n = node;
+                while (n.Parent is MemberAccessExpressionSyntax ma && ma.Name == n) n = ma;
+                if (n.Parent is InvocationExpressionSyntax inv && inv.Expression == n) return (true, null);
+                if (n == node && node.Parent is MemberAccessExpressionSyntax outer && outer.Expression == node) return (true, null);
+                return (isWriter || isStream || isMapped || isSave || (isPath && IsWriteVerb(m.Name))) ? (true, Writes) : (false, null);   // a method group: cannot tell
+            }
+            var args = node is InvocationExpressionSyntax i ? i.ArgumentList?.Arguments : ((BaseObjectCreationExpressionSyntax)node).ArgumentList?.Arguments;
+            bool ReadAccess() => args?.Any(x => model.GetSymbolInfo(x.Expression).Symbol is IFieldSymbol f && f.ContainingType?.Name == "FileAccess" && f.Name == "Read") == true;
+            var first = m.Parameters.FirstOrDefault()?.Type?.SpecialType;
+            if (isMapped) return (true, Writes);
+            if (isWriter)
+            {
+                if (type == "System.Xml.XmlWriter") return m.Name == "Create" && first == SpecialType.System_String ? (true, Writes) : (true, null);
+                return m.MethodKind == MethodKind.Constructor && first == SpecialType.System_String ? (true, Writes) : (true, null);
+            }
+            if (isSave) return first == SpecialType.System_String ? (true, Writes) : (true, null);
+            if (isStream)
+            {
+                if (m.MethodKind != MethodKind.Constructor) return (true, null);
+                return ReadAccess() ? (true, "reads files on disk") : (true, Writes);
+            }
+            // File / Directory / FileInfo / DirectoryInfo
+            if (m.MethodKind == MethodKind.Constructor) return (false, null);
+            if (m.Name == "Open") return ReadAccess() ? (true, "reads files on disk") : (true, Writes);
+            return IsWriteVerb(m.Name) ? (true, Writes) : (false, null);
+        }
+
+        private static bool IsWriteVerb(string name) =>
+            WriteVerbs.Any(v => name.StartsWith(v, StringComparison.Ordinal)) && !name.StartsWith("OpenRead", StringComparison.Ordinal) && !name.StartsWith("OpenText", StringComparison.Ordinal);
+
+        private static bool InheritsFrom(INamedTypeSymbol type, string name)
+        {
+            for (var t = type.BaseType; t != null; t = t.BaseType)
+                if (Name(t.OriginalDefinition) == name) return true;
+            return false;
+        }
+
+        private static string Name(INamedTypeSymbol t) =>
+            t.ContainingNamespace == null || t.ContainingNamespace.IsGlobalNamespace ? t.MetadataName : $"{t.ContainingNamespace.ToDisplayString()}.{t.MetadataName}";
+    }
+}
