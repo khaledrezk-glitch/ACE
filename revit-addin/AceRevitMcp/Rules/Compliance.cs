@@ -38,6 +38,8 @@ namespace AceRevitMcp.Rules
             public List<Result> Results = new List<Result>();
             /// <summary>The model check this run was made from: score and every check's result (the report's model findings).</summary>
             public int? Score;
+            /// <summary>Which ACE made the run and over which rules (backlog T13): aceVersion, mcpVersion, rulesHash, rulesInputs.</summary>
+            public JsonObject Stamp;
             internal List<Check> Checks = new List<Check>();
             public Dictionary<string, int> Summary = new Dictionary<string, int>();
             public Dictionary<string, int> NotMetBySeverity = new Dictionary<string, int>();
@@ -56,6 +58,7 @@ namespace AceRevitMcp.Rules
             {
                 Model = model, User = user, Time = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"), ProjectFile = rules?.ProjectFile,
                 RulesHash = RulesHashOf(rules), RequirementsHash = RequirementsHashOf(requirements), Checks = checks.ToList(),
+                Stamp = RulesStamp.Of(StampInputs(rules, requirements, decisions)),
             };
             run.Id = run.Time.Replace(":", "").Replace("-", "") + "-" + Hash(model + run.RulesHash + run.RequirementsHash).Substring(0, 4);
 
@@ -148,6 +151,22 @@ namespace AceRevitMcp.Rules
             if (string.IsNullOrWhiteSpace(s)) return null;
             s = System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
             return s.Length > max ? s.Substring(0, max - 1) + "…" : s;
+        }
+
+        /// <summary>
+        /// The rule and requirement inputs a run uses, for its stamp's rules hash: the rules in force per section (office merged
+        /// with project-requirements.json, which holds the bindings), the vault's requirement records and its decisions.
+        /// </summary>
+        internal static JsonObject StampInputs(ProjectRules rules, JsonObject requirements, JsonObject decisions)
+        {
+            var sections = new JsonObject();
+            if (rules != null) foreach (var s in ProjectRules.Sections) if (rules.Section(s) is JsonObject o) sections[s] = o;
+            return new JsonObject
+            {
+                ["rules"] = sections,
+                ["requirements"] = (requirements?["records"] ?? requirements?["requirements"])?.DeepClone(),
+                ["decisions"] = decisions?["decisions"]?.DeepClone(),
+            };
         }
 
         internal static string RulesHashOf(ProjectRules rules) => rules == null ? null : Hash(string.Join("|", ProjectRules.Sections.Select(rules.HashOf)));
@@ -257,6 +276,7 @@ namespace AceRevitMcp.Rules
                 ["rulesHash"] = run.RulesHash, ["requirementsHash"] = run.RequirementsHash, ["projectFile"] = run.ProjectFile, ["vault"] = run.Vault,
                 ["score"] = run.Score,
             },
+            ["stamp"] = run.Stamp?.DeepClone(),
             ["checks"] = new JsonArray(run.Checks.Select(c => (JsonNode)new JsonObject
             {
                 ["key"] = c.Key, ["area"] = c.Area, ["name"] = c.Name, ["count"] = c.Count, ["of"] = c.Of, ["unit"] = c.Unit, ["status"] = c.Status, ["detail"] = c.Detail,

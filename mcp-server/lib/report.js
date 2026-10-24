@@ -6,6 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { docx } from "./docx.js";
 import { locationOf } from "./vault.js";
+import { VERSION } from "./core.js";
+import { label as stampLabel, short } from "./stamp.js";
 
 /** One CSV cell: quoted when it holds a quote, comma, semicolon or line break; a list is joined with "|". */
 export const csvCell = (c) => { const s = Array.isArray(c) ? c.join("|") : String(c ?? ""); return /[",;\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
@@ -77,6 +79,10 @@ export function build(v, run, { by = "", brand = {}, date = new Date() } = {}) {
   const open = rows.filter((r) => OPEN.has(r.status));
   const openBySev = Object.fromEntries(["error", "warning", "info"].map((s) => [s, open.filter((r) => r.severity === s).length]));
   const stale = v.reqs.updated && meta.time && v.reqs.updated > meta.time;
+  // T13: which ACE made the model check and over which rules (the run record's stamp; older records have none).
+  const runStamp = run.stamp ?? null;
+  const stampLine = `${stampLabel(runStamp)} (report by ACE server ${VERSION})`;
+  const rulesChanged = !!(prev?.rulesHash && runStamp?.rulesHash && prev.rulesHash !== runStamp.rulesHash);
 
   // This audit vs the last one.
   let trend = null;
@@ -86,7 +92,7 @@ export function build(v, run, { by = "", brand = {}, date = new Date() } = {}) {
       since: prev.file, closed: Object.keys(was).filter((id) => OPEN.has(was[id]) && results.get(id)?.status === "met"),
       newOpen: open.filter((r) => !OPEN.has(was[r.requirement])).map((r) => r.requirement),
       repeated: open.filter((r) => OPEN.has(was[r.requirement])).map((r) => r.requirement),
-      scoreThen: prev.score,
+      scoreThen: prev.score, rulesThen: prev.rulesHash ?? null, rulesChanged,
     };
   }
   const docs = v.register.documents.map((d) => ({ ...d, changedSince: prev?.documents ? (prev.documents[d.key] ? prev.documents[d.key] !== d.sha256 : "new") : null }));
@@ -100,6 +106,7 @@ export function build(v, run, { by = "", brand = {}, date = new Date() } = {}) {
     ["Project", [project.name, project.number].filter(Boolean).join(" · ") || "(not set in the vault)"],
     ["Model", model], ["Report", `${rev}, ${day}`], ["Auditor", by || "(not given)"],
     ["Model check", `${meta.time ?? "?"} by ${meta.user ?? "?"} (run ${meta.id ?? "?"})${meta.score != null ? `, model score ${meta.score}/100` : ""}`],
+    ["Made by", `${stampLabel(runStamp)}${runStamp?.mcpVersion ? `, server ${runStamp.mcpVersion} at the model check` : ""}; this report by ACE server ${VERSION}${runStamp?.rulesHash ? `; rules hash ${runStamp.rulesHash} over ${(runStamp.rulesInputs ?? []).join(", ") || "no inputs"}` : "; the model check was made by an ACE that did not stamp its rules: run it again for a stamped result"}`],
     ["Audited against", v.register.documents.map((d) => `${d.key} ${d.title ?? ""} rev ${d.revision || "?"}`.trim()).join("; ") || "(no documents registered)"],
   ];
   const summaryLines = [
@@ -107,6 +114,7 @@ export function build(v, run, { by = "", brand = {}, date = new Date() } = {}) {
     `Open findings by severity: ${openBySev.error} error, ${openBySev.warning} warning, ${openBySev.info} info.`,
     meta.score != null ? `Model health score: ${meta.score}/100${trend?.scoreThen != null ? ` (last audit: ${trend.scoreThen})` : ""}.` : null,
     trend ? `Since the last audit (${trend.since}): ${trend.closed.length} closed, ${trend.newOpen.length} new, ${trend.repeated.length} still open.` : "This is the first audit of this model in this vault.",
+    rulesChanged ? `Rules changed between audits: the last audit used rules ${short(prev.rulesHash)}, this one rules ${short(runStamp.rulesHash)}. A change in a result may come from the rules, not only from the model.` : null,
     stale ? "Note: requirements changed after this model check. Run the model check again for a current result." : null,
   ].filter(Boolean);
   const matrixHead = ["Requirement", "Source", "Requirement text", "Test", "Evidence", "Status", "Severity", "Decision"];
@@ -141,7 +149,7 @@ th{background:#f3f3f3;position:sticky;top:0}.cover td:first-child{width:180px;co
 .kpi{display:inline-block;margin:0 24px 8px 0}.kpi b{display:block;font-size:26px}
 @media print{th{position:static}.page{max-width:none}}
 </style></head><body><div class="page">
-<h1>Master audit report</h1><div class="m">${e(project.name || "")} ${e(model)} · ${rev} · ${day}</div>
+<h1>Master audit report</h1><div class="m">${e(project.name || "")} ${e(model)} · ${rev} · ${day}</div><div class="m stamp">${e(stampLine)}</div>
 <h2>Cover</h2><table class="cover">${cover.map(([k, val]) => `<tr><td>${e(k)}</td><td>${e(val)}</td></tr>`).join("")}</table>
 <h2>Summary</h2>
 <div>${["met", "partly", "not-met", "not-checkable"].map((s) => `<span class="kpi"><b>${count(s)}</b>${badge(s)}</span>`).join("")}</div>
@@ -156,11 +164,12 @@ ${rows.map((r, i) => `<tr>${matrix[i].map((c, j) => `<td>${j === 5 ? badge(r.sta
 <h2>Actions</h2>${table(actHead, actRows)}
 <h2>Contradictions</h2><p class="m">Not part of this report yet: comparing documents with each other and with ACE's settings is planned (backlog V3).</p>
 <p class="m">Made by ACE from the vault at ${e(v.dir)} and model check run ${e(meta.id ?? "?")}. Status and severity are separate scales: an accepted deviation is shown beside the status and never counted as met.</p>
+<p class="m stamp">${e(stampLine)}</p>
 </div></body></html>`;
 
   // ---- DOCX -------------------------------------------------------------------------------------------------------
   const docxBuf = docx([
-    { h: 1, text: "Master audit report" }, { p: `${project.name || ""} ${model} · ${rev} · ${day}`.trim(), muted: true },
+    { h: 1, text: "Master audit report" }, { p: `${project.name || ""} ${model} · ${rev} · ${day}`.trim(), muted: true }, { p: stampLine, muted: true },
     { table: { rows: cover.map(([k, val]) => [{ text: k, bold: true }, val]) } },
     { h: 1, text: "Summary" }, ...summaryLines.map((l) => ({ p: l })),
     { h: 2, text: "The actions that matter most" }, top.length ? { bullets: top.map((r) => `${r.requirement} (${r.severity}): ${clip(r.evidence ?? r.text, 200)}`) } : { p: "No open findings.", muted: true },
@@ -171,17 +180,20 @@ ${rows.map((r, i) => `<tr>${matrix[i].map((c, j) => `<td>${j === 5 ? badge(r.sta
     { h: 1, text: "Decisions and deviations" }, decRows.length ? { table: { head: decHead, rows: decRows } } : { p: "None.", muted: true },
     { h: 1, text: "Actions" }, actRows.length ? { table: { head: actHead, rows: actRows } } : { p: "None.", muted: true },
     { h: 1, text: "Contradictions" }, { p: "Not part of this report yet: comparing documents with each other and with ACE's settings is planned (backlog V3).", muted: true },
+    { p: stampLine, muted: true },
   ], { title: `Master audit report ${model} ${rev}`, font: brand.font ?? "Poppins", accent });
 
   const csv = toCsv([actHead, ...actRows]);
 
   const sidecar = {
     schema: "ace.audit/1", model, rev, date: day, by, run: meta.id, score: meta.score ?? null,
+    stamp: runStamp, rulesHash: runStamp?.rulesHash ?? null, reportBy: VERSION,
     statuses: Object.fromEntries(rows.map((r) => [r.requirement, r.status])),
     documents: Object.fromEntries(v.register.documents.map((d) => [d.key, d.sha256])),
   };
   const summary = { requirements: rows.length, met: count("met"), partly: count("partly"), notMet: count("not-met"), notCheckable: count("not-checkable"),
-    notEvaluated: count("not evaluated"), openBySeverity: openBySev, score: meta.score ?? null, trend: trend && { closed: trend.closed.length, new: trend.newOpen.length, stillOpen: trend.repeated.length },
+    notEvaluated: count("not evaluated"), openBySeverity: openBySev, score: meta.score ?? null, trend: trend && { closed: trend.closed.length, new: trend.newOpen.length, stillOpen: trend.repeated.length, rulesChanged },
+    aceVersion: runStamp?.aceVersion ?? null, rulesHash: runStamp?.rulesHash ?? null,
     staleRun: !!stale };
   sidecar.summary = summary;
   return { name, rev, html, docx: docxBuf, csv, sidecar, summary };

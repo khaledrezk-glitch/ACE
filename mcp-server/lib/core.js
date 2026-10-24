@@ -250,6 +250,10 @@ export function versionMismatch(addin, server = VERSION) {
 /** Background jobs of this server that are queued or running (id -> job); jobs.js keeps it. */
 export const backgroundRuns = new Map();
 
+// The add-in version of the Revit session last called (run records the server writes are stamped with it, T13).
+let lastAddinVersion = null;
+export const addinVersion = () => lastAddinVersion;
+
 export async function callRevit(command, args = {}, timeoutSeconds = 120, signal = undefined) {
   // Revit runs one request at a time. While a background job of this server is queued or running, another call would
   // wait in Revit's queue behind it and be dropped after 60 s: refuse it at once, before anything is sent.
@@ -265,6 +269,7 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
     );
   }
   const chosen = await resolveSession(args?.expect_model, { exact: true });
+  if (chosen?.aceVersion) lastAddinVersion = chosen.aceVersion;
   const mismatch = versionMismatch(chosen?.aceVersion);
   if (mismatch) currentCall.getStore()?.notes?.add(mismatch);
   const base = bridgeUrl(cfg, chosen?.port);
@@ -274,7 +279,8 @@ export async function callRevit(command, args = {}, timeoutSeconds = 120, signal
   try {
     // The add-in answers within the timeout (it reports its own timeouts); this is only the backstop. The client's
     // cancel stops the wait here; a request Revit has not started yet is then skipped by the add-in.
-    response = await post(`${base}/command`, { "Content-Type": "application/json", "X-Ace-Token": cfg.token },
+    // X-Ace-Mcp-Version: run records the add-in writes name this server's version too (backlog T13).
+    response = await post(`${base}/command`, { "Content-Type": "application/json", "X-Ace-Token": cfg.token, "X-Ace-Mcp-Version": VERSION },
       JSON.stringify({ command, args, timeoutSeconds, requestId }), { timeoutMs: (timeoutSeconds + 15) * 1000, signal: clientSignal });
   } catch (err) {
     const reason = err?.cause?.code || err?.name || err?.message;

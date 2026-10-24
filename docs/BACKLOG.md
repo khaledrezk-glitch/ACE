@@ -193,7 +193,7 @@ A1, A3 and A4 have build-ready specs and are no longer blocked by open decisions
 | T10 | Companion "Clash issues" tile showed the list's type name instead of the count | S | done (1.9.0) |
 | T11 | One settings resolver for all rule files; the server no longer falls back to the packaged example workset rules (it asks the add-in for the rules in force) | S | done (1.9.0) |
 | T12 | Requirement values hard-coded in the model check (900 mm door width, key parameter list, sheet and project information fields) move to check options in the check set, then C1; the two scripts that repeat them become thin callers | S | open |
-| T13 | Stamp the add-in version and a hash of the check definitions in every compliance run record and the master report | S | open; proposed 18 Oct by the KhloudTools review (`analysis/17`), build waits for the owner |
+| T13 | Stamp the add-in version and a hash of the check definitions in every compliance run record and the master report | S | built (unreleased): compliance, worksets, parameter, clash and export run records carry `stamp` { aceVersion, mcpVersion, rulesHash (SHA-256 over canonical JSON of the rule inputs), rulesInputs }; the master report shows "ACE <ver> · rules <12 hex>" and says when the rules changed between audits; shared test vector `mcp-server/test/fixtures/rules-hash.json` |
 | T14 | `CanEdit` also reports "pinned" and "in group X" next to workset ownership | S | open; proposed 18 Oct by the KhloudTools review (`analysis/17`), build waits for the owner |
 
 ## 6. Later

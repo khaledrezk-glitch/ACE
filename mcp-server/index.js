@@ -14,6 +14,7 @@ import path from "node:path";
 import { CONFIG_PATH, DATA_DIR, GUIDES_DIR, JOURNAL_DIR, REPORTS_DIR, ROOT, RevitError, VERSION, callRevit, chooseInstance, currentCall, describeInstance, failure, forgetInstances, healthAtPort, portOfPid, preferredInstance, localDate, pinSession, preferInstance, readConfig, sameTitle, sessionKey, sessionLabel, text } from "./lib/core.js";
 import * as Vault from "./lib/vault.js";
 import * as Report from "./lib/report.js";
+import * as Stamp from "./lib/stamp.js";
 import * as ParamList from "./lib/paramlist.js";
 import * as ParamSources from "./lib/paramsources.js";
 import * as ParamActions from "./lib/paramactions.js";
@@ -1336,11 +1337,11 @@ async function worksetStandard(a) {
 /** The vault files of a model's workset work: apply records and pending (borrowed) actions, in its audit folder. */
 async function worksetFiles(a, facts) {
   const storeKey = ClashResolve.storeKeyOf(facts, facts?.model ?? "model");
-  const { dir, note } = await auditFolder(a, storeKey, { sub: "worksets", reports: "worksets" });
+  const { dir, note, vault } = await auditFolder(a, storeKey, { sub: "worksets", reports: "worksets" });
   const read = (f, d) => { try { return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, "utf8")) : d; } catch { return d; } };
   const applied = path.join(dir, "worksets-applied.json"), pending = path.join(dir, "pending-actions.json"), status = path.join(dir, "worksets-status.json");
   const save = (f, j) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(`${f}.tmp`, JSON.stringify(j, null, 1)); fs.renameSync(`${f}.tmp`, f); };
-  return { dir, note, storeKey, files: { applied, pending, status },
+  return { dir, note, vault, storeKey, files: { applied, pending, status },
     records: () => read(applied, { records: [] }).records ?? [], pending: () => read(pending, { actions: [] }).actions ?? [],
     addRecord: (rec) => { const j = read(applied, { schema: "ace.worksets-applied/1", records: [] }); j.records = [...(j.records ?? []), rec]; save(applied, j); },
     setPending: (actions) => save(pending, { schema: "ace.pending-actions/1", kind: "worksets", model: facts?.model, storeKey, updated: localDate(new Date(), { time: true }), actions }),
@@ -1536,6 +1537,7 @@ tool("workset_plan", {
     name: "workset plan", command: "workset_admin", req, ident: { action: "apply_plan", plan, model: pf.model, reset: a.reset ?? null, only: a.only ?? null, retry: retry.map((r) => r.id), visibility: a.allow_visibility_change ?? null }, modelMust: pf.model,
     // The bridge field "plan" is the workset plan here, so no panel checklist (plan / step) is sent.
     check_only, dry_run, explanation, plan: undefined, step: undefined, state: wplanState, timeout, a, folder: { sub: "worksets", reports: "worksets" },
+    stampInputs: { "workset-plan": pf },
     planOf: WorksetPlan.planOf, identity: Worksets.planIdentity, blocksOf: (r) => Worksets.blocksOf(r).map(Worksets.blockWithHow), rolledBackOf: Worksets.rolledBackOf,
     render: (r, mode, model, rolledBack) => {
       last = { r, mode, rolledBack };
@@ -1561,6 +1563,7 @@ tool("workset_plan", {
     const extra = [];
     try {
       const rec = WorksetPlan.applyRecord({ model: pf.model, storeKey: vf.storeKey, plan, result: last.r, at, only: a.only });
+      rec.stamp = runStamp(vf.vault, { "workset-plan": pf }, last.r?.aceVersion);
       vf.addRecord(rec);
       const stillIds = new Set((last.r.pending ?? []).map((p) => String(p.id)));
       // The add-in answers retried [{ id, ok, why }] (older: [ids]); without it, sent and no longer pending counts as done.
@@ -1617,9 +1620,10 @@ async function planExecute(o) {
   if (!model) throw new RevitError("Revit answered without a model: open the model and run again.");
   if (o.modelMust && WorksetPlan.modelKey(o.modelMust) !== WorksetPlan.modelKey(model))
     return blockedReply([{ what: "the plan", why: `it is for ${o.modelMust}, the active model is ${model}`, how: `open ${o.modelMust} (open_model) and run again` }], "Blocked before anything changed:", { model });
-  const { dir, note: dirNote } = await auditFolder(a, model, o.folder);
+  const { dir, note: dirNote, vault } = await auditFolder(a, model, o.folder);
   const stamp = localDate(new Date(), { time: true });
-  const record = (x) => writeOut(dir, `${ParamExec.fileStem(`${command.replace(/_/g, "-")}-run`, model, stamp)}.json`, JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, request: req, ...x }, null, 1));
+  const runStampOf = runStamp(vault, o.stampInputs ?? {}, pre?.aceVersion);
+  const record = (x) => writeOut(dir, `${ParamExec.fileStem(`${command.replace(/_/g, "-")}-run`, model, stamp)}.json`, JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, stamp: runStampOf, request: req, ...x }, null, 1));
   const stop = (b, lead) => {
     record({ outcome: "blocked", blocked: b });
     journal({ title: `Blocked: ${name}`, explanation, outcome: "BLOCKED - nothing changed", details: { blocked: b } });
@@ -1905,10 +1909,10 @@ tool("export_deliverables", {
       try { const file = Deliverables.recordAgreedView(vaultDir, f, modelKey, d.views); agreed.push({ format: f, model: modelKey, views: d.views, change: d.change ?? null, file }); lines.push(`Agreed ${label} ${d.change ? "changed" : "recorded"} for ${modelKey} in ${file} ${f}.agreedViews: later exports use it; another view needs confirm_view_change: true.`); }
       catch (e) { lines.push(`Agreed ${label} NOT recorded for ${modelKey}: ${e.message}`); }
     }
-    const { dir, note } = await auditFolder(a, r?.model ?? model, { sub: "exports", reports: "exports" });
+    const { dir, note, vault } = await auditFolder(a, r?.model ?? model, { sub: "exports", reports: "exports" });
     const stamp = localDate(new Date(), { time: true });
     const outcome = blocked ? "blocked, nothing exported" : r?.success ? `${(r?.files ?? []).length} file(s) exported` : "export incomplete";
-    const runFile = writeOut(dir, `${ParamExec.fileStem("export-run", r?.model ?? model, stamp)}.json`, JSON.stringify({ at: stamp, model: r?.model ?? model, request: req, outcome, agreedViews: { used: Object.fromEntries(Object.entries(viewFor).map(([f, d]) => [f, { views: d.views ?? null, from: d.from }])), recorded: agreed }, preflight: r?.preflight, blocked: r?.blocked, files: r?.files, sheetCheck: r?.sheetCheck, notes: [...notes, ...(r?.notes ?? [])] }, null, 1));
+    const runFile = writeOut(dir, `${ParamExec.fileStem("export-run", r?.model ?? model, stamp)}.json`, JSON.stringify({ at: stamp, model: r?.model ?? model, stamp: runStamp(vault, {}, r?.aceVersion ?? r?.preflight?.aceVersion), request: req, outcome, agreedViews: { used: Object.fromEntries(Object.entries(viewFor).map(([f, d]) => [f, { views: d.views ?? null, from: d.from }])), recorded: agreed }, preflight: r?.preflight, blocked: r?.blocked, files: r?.files, sheetCheck: r?.sheetCheck, notes: [...notes, ...(r?.notes ?? [])] }, null, 1));
     journal({ title: `Export deliverables from ${r?.model ?? model}: ${formats.join(", ")}`, outcome, details: { files: (r?.files ?? []).map((f) => ({ file: f.file, bytes: f.bytes, warnings: f.warnings })), blocked: r?.blocked } });
     lines.push(`Run record: ${runFile}${note ? `\n${note}` : ""}`);
   }
@@ -2329,14 +2333,24 @@ function blockedReply(blocks, lead, extra = {}) {
  * the reports folder (with a note when a vault was found but is not trusted). -> { dir, note }
  */
 async function auditFolder(a, model, { sub = "parameters", reports = "parameter-fill" } = {}) {
-  if (a.report_dir) return { dir: a.report_dir };
   const dir = await projectVaultDir(a);
+  // vault: the project vault found (trusted or not), whose rule inputs the run record's stamp hashes (T13).
+  const vault = dir && fs.existsSync(dir) ? dir : null;
+  if (a.report_dir) return { dir: a.report_dir, vault };
   const fallback = path.join(REPORTS_DIR, reports);
-  if (dir && fs.existsSync(dir)) {
-    if (Vault.trusted(path.dirname(CONFIG_PATH), dir)) return { dir: path.join(dir, "04 Audits", ParamExec.safeName(model), sub) };
-    return { dir: fallback, note: `vault not trusted: files written to ${fallback} (ACE writes into ${dir} once the user allows it: vault with consent: true).` };
+  if (vault) {
+    if (Vault.trusted(path.dirname(CONFIG_PATH), dir)) return { dir: path.join(dir, "04 Audits", ParamExec.safeName(model), sub), vault };
+    return { dir: fallback, vault, note: `vault not trusted: files written to ${fallback} (ACE writes into ${dir} once the user allows it: vault with consent: true).` };
   }
-  return { dir: fallback };
+  return { dir: fallback, vault };
+}
+/**
+ * The stamp of a run record (backlog T13): the add-in and server versions and the rules hash over the vault's rule and
+ * requirement inputs (project-requirements.json, requirements.json, decisions.json, rules/**) plus what the run read
+ * elsewhere (extra, e.g. a plan file). aceVersion: the add-in that answered, when the reply named it.
+ */
+function runStamp(vault, extra = {}, aceVersion = undefined) {
+  return Stamp.stamp({ ...Stamp.vaultInputs(vault), ...extra }, { aceVersion });
 }
 /** register_update's report folder: report_dir, else the trusted vault's 04 Audits/registers, else ACE's reports folder. */
 function registerReportDir(a) {
@@ -2405,13 +2419,15 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
   const active = docs[0];
   if (!active) throw new RevitError("Revit answered without a model: open the model to fill and run again.");
   const model = active.model;
-  const { dir, note: dirNote } = await auditFolder(a, model);
+  const { dir, note: dirNote, vault } = await auditFolder(a, model);
   const stamp = localDate(new Date(), { time: true });
   const register = active.register ?? check.register ?? [];
   // P7: the register of genuinely blank values, written before any fill (dry run and apply).
   const registerFile = writeOut(dir, `${ParamExec.fileStem("missing-register", model, stamp)}.csv`, ParamExec.registerCsv(model, register));
   writeOut(dir, `${ParamExec.fileStem("missing-register", model, stamp)}.md`, ParamExec.registerMarkdown(model, register, { dryRun: dry_run }));
-  const record = (o) => writeOut(dir, `${ParamExec.fileStem("fill-run", model, stamp)}.json`, JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, registerFile, ...o }, null, 1));
+  // The parameter sources (list rows, LOIN, checker, mapping) are this run's rules besides the vault's.
+  const fillStamp = runStamp(vault, { "parameter-sources": { rows: src.bridgeRows ?? null, mapping: src.mapping?.mapping ?? null } }, active.preflight?.aceVersion ?? check.aceVersion);
+  const record = (o) => writeOut(dir, `${ParamExec.fileStem("fill-run", model, stamp)}.json`, JSON.stringify({ at: stamp, model, dryRun: !!dry_run, explanation, stamp: fillStamp, registerFile, ...o }, null, 1));
 
   const version = active.preflight?.aceVersion ?? check.aceVersion;
   if (!version || !sameVersion(version, VERSION)) {
@@ -2682,9 +2698,10 @@ async function clashResolve(a, { action, dry_run, explanation, plan, step }) {
   if (!model) throw new RevitError("Revit answered without a model: open the model to fix and run again.");
   // Run records and evidence under the clash store key (the central model's name), so local copies' runs connect.
   const storeKey = ClashResolve.storeKeyOf(pre, model);
-  const { dir, note: dirNote } = await auditFolder(a, storeKey, { sub: "clashes", reports: "clash-resolve" });
+  const { dir, note: dirNote, vault } = await auditFolder(a, storeKey, { sub: "clashes", reports: "clash-resolve" });
   const stamp = localDate(new Date(), { time: true });
-  const record = (o) => writeOut(dir, ClashResolve.recordName(storeKey, stamp), JSON.stringify({ at: stamp, model, storeKey, dryRun: !!dry_run, explanation, request: req, ...o }, null, 1));
+  const clashStamp = runStamp(vault, {}, pre?.aceVersion);
+  const record = (o) => writeOut(dir, ClashResolve.recordName(storeKey, stamp), JSON.stringify({ at: stamp, model, storeKey, dryRun: !!dry_run, explanation, stamp: clashStamp, request: req, ...o }, null, 1));
   const stop = (b, lead) => {
     record({ outcome: "blocked", blocked: b });
     journal({ title: "Blocked: clash resolve", explanation, outcome: "BLOCKED - nothing changed", details: { blocked: b } });

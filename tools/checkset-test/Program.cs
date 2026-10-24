@@ -181,6 +181,27 @@ class P {
     var rec = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Directory.GetFiles(runsDir)[0]));
     Check((int)rec["run"]["score"] == 72 && ((System.Text.Json.Nodes.JsonArray)rec["checks"]).Count == 3 && (string)rec["checks"][1]["key"] == "elements-on-the-wrong-workset-bep" && (int)rec["checks"][1]["of"] == 100,
       "the run record carries the model check (score and every check) for the master report");
+    // T13: the run record's stamp: add-in version and a rules hash over the rules, requirements and decisions the run used.
+    Check(rec["stamp"]?["aceVersion"]?.ToString() == a.GetName().Version.ToString(3) && System.Text.RegularExpressions.Regex.IsMatch(rec["stamp"]?["rulesHash"]?.ToString() ?? "", "^[0-9a-f]{64}$")
+      && string.Join(",", ((System.Text.Json.Nodes.JsonArray)rec["stamp"]["rulesInputs"]).Select(x => x.ToString())) == "decisions,requirements,rules",
+      "the run record is stamped with the add-in version and the rules hash over decisions, requirements and rules");
+    var stampT = a.GetType("AceRevitMcp.Util.RulesStamp");
+    string Canon(System.Text.Json.Nodes.JsonNode n) => (string)stampT.GetMethod("Canonical").Invoke(null, new object[] { n });
+    string RHash(System.Text.Json.Nodes.JsonNode n) => (string)stampT.GetMethod("Hash").Invoke(null, new object[] { n });
+    // The shared test vector: the add-in and the MCP server (lib/stamp.js) give the same canonical text and hash.
+    var up = new DirectoryInfo(AppContext.BaseDirectory);
+    while (up != null && !File.Exists(Path.Combine(up.FullName, "mcp-server", "test", "fixtures", "rules-hash.json"))) up = up.Parent;
+    var vector = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(up.FullName, "mcp-server", "test", "fixtures", "rules-hash.json")));
+    foreach (var c in (System.Text.Json.Nodes.JsonArray)vector["cases"])
+      Check(Canon(c["input"]) == c["canonical"].ToString() && RHash(c["input"]) == c["sha256"].ToString(), "rules hash vector (same as the server): " + c["name"]);
+    Check(RHash(System.Text.Json.Nodes.JsonNode.Parse("{\"b\":[1,2],\"a\":{\"y\":\"x\\r\\ny\",\"x\":1}}")) == RHash(System.Text.Json.Nodes.JsonNode.Parse("{\"a\":{\"x\":1,\"y\":\"x\\ny\"},\"b\":[1,2]}")),
+      "rules hash: reordered keys and CRLF in a string give the same hash");
+    var mcpBefore = stampT.GetField("McpVersion").GetValue(null);
+    stampT.GetField("McpVersion").SetValue(null, "9.9.9");
+    var run4 = forModel.Invoke(null, new object[] { pr2, cks, "Model A", "model-a", "tester", 72 });
+    var st4 = (System.Text.Json.Nodes.JsonObject)runT.GetField("Stamp").GetValue(run4);
+    Check(st4["mcpVersion"]?.ToString() == "9.9.9" && st4["rulesHash"].ToString() == rec["stamp"]["rulesHash"].ToString(), "the MCP server's version (from the bridge header) is stamped; the same inputs give the same hash");
+    stampT.GetField("McpVersion").SetValue(null, mcpBefore);
     File.WriteAllText(Path.Combine(dir, "trusted-vaults.json"), "[\"\", null, " + System.Text.Json.JsonSerializer.Serialize(vaultDir) + "]");
     Check((bool)compT.GetMethod("Trusted", flags).Invoke(null, new object[] { vaultDir }), "a bad entry in the trust list does not untrust the other vaults");
     var beside = Path.Combine(tmp, "Beside"); Directory.CreateDirectory(beside);

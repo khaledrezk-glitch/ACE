@@ -21,6 +21,8 @@ const notUndoableRuns = [];   // execute_code runs of not-undoable code the fake
 // The ACE loader's view in /health (reload_addin): a swap is reported there once the new build listens.
 const fakeLoader = { build: "1.13.3-aaaaaaaaaaaa#1", loaderVersion: "1.0.0", payloadVersion: "1.13.3", previous: null, pending: true, pendingVersion: "1.13.4", lastReload: { at: "startup", ok: true, why: "ACE 1.13.3 loaded" } };
 
+// The MCP server version each bridge call named (header X-Ace-Mcp-Version, T13).
+const mcpHeaders = new Set();
 const bridge = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") { res.setHeader("Content-Type", "application/json"); return res.end(JSON.stringify({ ok: true, service: "ace-revit-mcp", revitVersion: "2025", build: fakeLoader.build, loader: fakeLoader })); }
   let body = "";
@@ -29,6 +31,7 @@ const bridge = http.createServer((req, res) => {
     const reply = (o) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(o?.ok ? { ...o, build: fakeLoader.build } : o)); };
     if (req.headers["x-ace-token"] !== token) return reply({ ok: false, error: "bad token" });
     const { command, args } = JSON.parse(body);
+    mcpHeaders.add(req.headers["x-ace-mcp-version"] ?? null);
     seen.push({ command, args });
     switch (command) {
       case "ping": return reply({ ok: true, result: { revit: "Autodesk Revit 2025", addinVersion: "1.2.0.0", activeDocument: "Test.rvt" } });
@@ -1011,6 +1014,11 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.match(dryText, /Missing register: .*missing-register-Test-.*\.csv/);
   assert.ok(fs.readdirSync(regDir).some((f) => /^missing-register-Test-.*\.md$/.test(f)), "register summary");
   assert.ok(fs.readdirSync(regDir).some((f) => /^fill-run-Test-.*\.json$/.test(f)), "run record");
+  {
+    // T13: the run record names the add-in, this server and the rules hash over what the run used.
+    const fr = JSON.parse(fs.readFileSync(path.join(regDir, fs.readdirSync(regDir).find((f) => /^fill-run-Test-.*\.json$/.test(f))), "utf8"));
+    assert.ok(fr.stamp?.mcpVersion === SERVER_VERSION && /^[0-9a-f]{64}$/.test(fr.stamp.rulesHash) && fr.stamp.rulesInputs.includes("parameter-sources"), "fill run record: stamp with versions and rules hash");
+  }
 
   // One gate per plan: another selection is another plan; the identical call applies with expect_model; once.
   assert.match((await call("parameter_fill", { action: "fill", ...xs, actions: [ids.find((i) => i.startsWith("fill-"))], explanation: "Fill only" })).content[0].text, /not been previewed/, "a different selection needs its own dry run");
@@ -1522,6 +1530,8 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const ra = await call("assign_worksets", rx);
   assert.ok(!ra.isError && wa().at(-1).args.dry_run === false && wa().at(-1).args.expect_plan === "wh-rename:7TST_Beams" && wa().at(-1).args.expect_model === "Test");
   assert.match(ra.content.at(-1).text, /\(applied as ONE undo step\)[\s\S]*Changes: renamed 1 done\.[\s\S]*Run record: .*workset-admin-run-Test-/);
+  const wr = JSON.parse(fs.readFileSync(ra.content.at(-1).text.match(/Run record: (.*\.json)/)[1], "utf8"));
+  assert.ok(wr.stamp?.aceVersion === SERVER_VERSION && wr.stamp.mcpVersion === SERVER_VERSION && /^[0-9a-f]{64}$/.test(wr.stamp.rulesHash), "workset run record: stamp with the add-in that answered");
   assert.match((await call("assign_worksets", rx)).content[0].text, /not been previewed/, "a preview is used once");
   // Renames from the naming rule when none are given; the same suggestion again on the apply.
   await call("assign_worksets", { action: "rename", explanation: "Rename per the rule", dry_run: true });
@@ -1702,6 +1712,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.equal(stored().nwc.agreedViews.Test, "TST 3D Sub", "stored per model in the vault's rules/export.json");
   const rec = JSON.parse(fs.readFileSync(all(e1).match(/Run record: (.*\.json)/)[1], "utf8"));
   assert.ok(rec.agreedViews.used.nwc.views === "TST 3D Sub" && rec.agreedViews.recorded[0].model === "Test" && rec.files[0].categories.length === 2, "the run record keeps the view, its source and the categories");
+  assert.ok(rec.stamp?.mcpVersion === SERVER_VERSION && /^[0-9a-f]{64}$/.test(rec.stamp.rulesHash) && rec.stamp.rulesInputs.includes("rules/export.json"), "export run record: stamp, the vault's rules/export.json among the inputs");
   const e2 = await call("export_deliverables", { ...o(2), nwc: {} });
   assert.ok(!e2.isError && ed().at(-1).args.nwc.view === "TST 3D Sub" && /NWC from the agreed view "TST 3D Sub" for Test/.test(all(e2)) && !/Agreed NWC view .* recorded/.test(all(e2)), "no view given: the agreed view is used");
   const e2b = await call("export_deliverables", { ...o("2b"), nwc: { view: "tst 3d sub" }, check_only: true });
@@ -2551,6 +2562,8 @@ assert.equal(fit({ a: 1 }), '{"a":1}', "replies are compact JSON");
   for (const [n, t] of Object.entries({ trust, inst, doc, pkg }))
     assert.ok(!/\?\?/.test(t.replace(/#.*$/gm, "")), `${n}: no ?? (Windows PowerShell 5.1)`);
 }
+
+assert.deepEqual([...mcpHeaders], [SERVER_VERSION], "every bridge call names this server's version (X-Ace-Mcp-Version, T13)");
 
 await client.close();
 fs.rmSync(tmp, { recursive: true, force: true });

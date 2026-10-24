@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node test/smoke.js && node test/register.js && node test/vault.js && node test/paramlist.js && node test/paramsources.js && node test/paramexec.js && node test/instances.js && node test/registerupdate.js"
+    "check": "node --check index.js && node test/smoke.js && node test/register.js && node test/vault.js && node test/stamp.js && node test/paramlist.js && node test/paramsources.js && node test/paramexec.js && node test/instances.js && node test/registerupdate.js"
   },
   "engines": {
     "node": ">=18"

@@ -149,6 +149,10 @@ namespace AceRevitMcp.Bridge
                     return;
                 }
 
+                // The MCP server names its version on every call: run records the add-in writes carry it (backlog T13).
+                var mcp = ctx.Request.Headers["X-Ace-Mcp-Version"];
+                if (!string.IsNullOrWhiteSpace(mcp) && mcp.Length <= 32) RulesStamp.McpVersion = mcp.Trim();
+
                 if (ctx.Request.ContentLength64 > MaxBodyBytes)
                 {
                     await WriteAsync(ctx, 413, Error($"Request too large (over {MaxBodyBytes / 1024 / 1024} MB)."));
