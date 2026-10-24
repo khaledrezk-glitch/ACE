@@ -37,6 +37,10 @@ namespace AceRevitMcp.Util
 
             /// <summary>Compliance per requirement from the last model check (C1+); null when the model has no project file.</summary>
             public Rules.Compliance.Run Compliance;
+            /// <summary>The run before <see cref="Compliance"/> (for "newly met / newly not met"); null when there is none.</summary>
+            public Rules.Compliance.Run PreviousCompliance;
+            /// <summary>True when <see cref="Compliance"/> was read back from disk when the model opened (not run in this session).</summary>
+            public bool ComplianceFromDisk;
 
             public readonly ClashSession Session = new ClashSession();
         }
@@ -78,9 +82,19 @@ namespace AceRevitMcp.Util
             var e = Entry(model); e.Changes = diffs; e.ChangesReport = report; e.ChangeCount = diffs.Sum(d => d.Changes.Count); Raise();
         }
 
-        public static void PublishCompliance(string model, Rules.Compliance.Run run)
+        /// <summary>
+        /// A new compliance run: the one it replaces becomes the previous run (the deltas compare with it), and the change
+        /// count "since last audit" starts again. <paramref name="previous"/> and <paramref name="fromDisk"/> are for the run
+        /// read back when a model opens (DM1): it keeps its own previous run and does not reset the count.
+        /// </summary>
+        public static void PublishCompliance(string model, Rules.Compliance.Run run, Rules.Compliance.Run previous = null, bool fromDisk = false)
         {
-            var e = Entry(model); e.Compliance = run; Raise();
+            var e = Entry(model);
+            if (fromDisk) e.PreviousCompliance = previous;
+            else if (run != null && e.Compliance != null && e.Compliance.Id != run.Id) e.PreviousCompliance = e.Compliance;
+            e.Compliance = run;
+            e.ComplianceFromDisk = fromDisk && run != null;
+            Raise();
         }
 
         private static void Raise() { try { Changed?.Invoke(); } catch { } }

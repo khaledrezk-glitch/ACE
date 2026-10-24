@@ -39,6 +39,8 @@ namespace AceRevitMcp.Dashboard
             {
                 var run = Rules.Compliance.ForModel(Rules.ProjectRules.For(doc), x.Checks, doc.Title, Tracking.Snapshots.ModelKey(doc), user, x.Score);
                 StatusStore.PublishCompliance(doc.Title, run);
+                var e = StatusStore.For(doc.Title);
+                if (run != null) Rules.ComplianceStore.Save(doc, e?.Compliance, e?.PreviousCompliance);   // read back when the model opens (DM1)
                 return run;
             }
             catch (Exception ex) { Log.Warn($"Compliance: {ex.Message}"); return null; }

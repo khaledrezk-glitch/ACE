@@ -62,6 +62,8 @@ namespace AceRevitMcp
                 // After a reload the documents are already open: the instance file names them now, not at the next switch.
                 var ui = PayloadEntry.Get<UIApplication>("uiApplication");
                 if (ui != null) InstanceRegistry.Update(ui);
+                // ... and the Companion shows their last compliance run at once (DM1).
+                if (ui != null) foreach (Document d in ui.Application.Documents) Rules.ComplianceStore.LoadInto(d);
                 // What the build before this one left in the loader's store (plain data): models ACE opened, the last
                 // undoable Claude run.
                 Commands.ModelFileCommands.Restore(PayloadEntry.Store);
