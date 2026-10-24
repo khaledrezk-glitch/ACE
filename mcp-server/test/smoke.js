@@ -17,7 +17,8 @@ const regFiles = () => { try { return fs.readdirSync(regDir).filter((f) => f.sta
 const token = "test-token";
 const seen = [];
 let fakeOpened = null;   // workset_plan paths: the model open_model opened last (facts answer for it)
-const notUndoableRuns = [];   // execute_code runs of not-undoable code the fake bridge executed
+const notUndoableRuns = [];
+let selfTestRuns = 0;   // ace_self_test calls the fake add-in answered   // execute_code runs of not-undoable code the fake bridge executed
 // The ACE loader's view in /health (reload_addin): a swap is reported there once the new build listens.
 const fakeLoader = { build: "1.13.3-aaaaaaaaaaaa#1", loaderVersion: "1.0.0", payloadVersion: "1.13.3", previous: null, pending: true, pendingVersion: "1.13.4", lastReload: { at: "startup", ok: true, why: "ACE 1.13.3 loaded" } };
 
@@ -417,6 +418,15 @@ const bridge = http.createServer((req, res) => {
         if (args.save_as) return reply({ ok: true, result: { model: "TST_Copy", path: args.save_as.path, saved: true, kind: args.save_as.as_central ? "save_as central" : "save_as", overwritten: !!args.save_as.overwrite, ms: 5, echo: args,
           warnings: args.save_as.as_central ? ["The central moved from C:/TST/old.rvt to " + args.save_as.path + ": other users' local copies still point at the old central."] : [] } });
         return reply({ ok: true, result: { model: args.model ?? "Test", saved: true, kind: "file", ms: 3, echo: args } });
+      case "ace_self_test": {
+        // G26: the add-in's answer; the second call reports an open model that changed (the FAIL line reaches Claude as is).
+        selfTestRuns++;
+        const ok = selfTestRuns === 1;
+        const lines = ["PASS blank project (2.1 s)", "PASS save as (1.0 s)", "PASS save as central (1.4 s)", "PASS workset apply (0.8 s)", "PASS parameter fill (1.1 s)", "PASS purge unused (0.9 s)", "PASS deletion probe (0.2 s)", "PASS clean-up (blank project closed unsaved, temp files deleted) (0.3 s)",
+          ok ? "PASS open models untouched (0.1 s)" : "FAIL open models untouched: open model TST_A changed: IsModified no -> yes"];
+        return reply({ ok: true, result: { passed: ok, overall: ok ? "OVERALL PASS: 9 of 9 tools passed (7.9 s)" : "OVERALL FAIL: 1 of 9 tools failed (7.9 s)", lines, notes: ok ? [] : ["No structural framing family in the blank project: a generic model box stands in."],
+          report: "C:/Users/TST/AppData/Roaming/ACE-RevitMCP/self-test/self-test-2026-10-24_153012.txt", openDocumentsChecked: 1, echo: args } });
+      }
       case "reload_addin": {
         const base = { loaderVersion: fakeLoader.loaderVersion, payloadVersion: fakeLoader.payloadVersion, previous: fakeLoader.previous };
         if (!fakeLoader.pending && !args.force) return reply({ ok: true, result: { ...base, ok: true, scheduled: false, why: `ACE ${fakeLoader.payloadVersion} is already the installed build (force reloads it anyway).` } });
@@ -481,7 +491,7 @@ const json = (r) => JSON.parse(r.content[0].text);
 }
 
 const tools = (await client.listTools()).tools.map((t) => t.name).sort();
-assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "job_status", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "purge_unused", "register_update", "reload_addin", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_model", "save_script", "saved_scripts", "select_elements", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
+assert.deepEqual(tools, ["assign_worksets", "backup_model", "capture_method", "check_setup", "clash_resolve", "clash_view", "close_model", "coordination_report", "describe_category", "describe_family", "execute_revit_code", "export_deliverables", "find_elements", "get_activity_log", "get_element_details", "get_model_brief", "get_selection", "job_status", "lessons", "list_types", "list_views", "list_warnings", "model_changes", "model_dashboard", "open_model", "open_view", "parameter_check", "parameter_fill", "pending_changes", "presentation_standard", "project_rules", "purge_unused", "register_update", "reload_addin", "report_issue", "revit_api_lookup", "revit_guide", "revit_status", "run_clash_test", "run_saved_script", "save_model", "save_script", "saved_scripts", "select_elements", "self_test", "set_clash_status", "set_parameters", "snapshots", "undo_last_claude_change", "vault", "view_image", "view_membership_fill", "working_mode", "workset_plan"]);
 assert.match(client.getInstructions(), /SAFETY PROTOCOL/);
 assert.match(client.getInstructions(), /revit_api_lookup/);
 const prompts = (await client.listPrompts()).prompts.map((p) => p.name).sort();
@@ -2529,6 +2539,31 @@ assert.ok(!quick.isError, "the brief's quick mode (formerly get_model_overview) 
   const same = json(await call("reload_addin"));
   assert.ok(same.ok === true && same.scheduled === false && /already the installed build/.test(same.why), "nothing new installed: no swap, said plainly");
   assert.equal(seen.filter((x) => x.command === "reload_addin").at(-1).args.force, false, "force is off unless asked");
+}
+
+{ // G26: self_test runs in Revit on its own blank project: no preview, no explanation, one line per tool back to Claude.
+  const st = await call("self_test");
+  assert.ok(!st.isError, "self_test needs no preview or explanation (it changes no open model)");
+  const t = st.content[0].text;
+  assert.match(t, /^PASS blank project \(2\.1 s\)$/m, "one line per tool");
+  assert.match(t, /^PASS workset apply \(0\.8 s\)$/m);
+  assert.match(t, /^OVERALL PASS: 9 of 9 tools passed/m, "the overall line");
+  assert.match(t, /^Report: .*self-test-2026-10-24_153012\.txt$/m, "the report file is named");
+  const sent = seen.filter((x) => x.command === "ace_self_test");
+  assert.equal(sent.length, 1, "one bridge call");
+  assert.deepEqual(sent[0].args, {}, "nothing but the command is sent (the add-in picks nothing from the user's model)");
+  const bad = (await call("self_test")).content[0].text;
+  assert.match(bad, /^FAIL open models untouched: open model TST_A changed: IsModified no -> yes$/m, "a changed open model is a FAIL line");
+  assert.match(bad, /^OVERALL FAIL/m);
+  assert.match(bad, /Notes:\n- No structural framing family/, "notes follow the lines");
+  const bg = (await call("self_test", { background: true })).content[0].text;
+  assert.match(bg, /Started self_test as job/, "background: true answers with a job id");
+  const jobId = bg.match(/as job (\S+?)\./)[1];
+  let js = "";
+  for (let i = 0; i < 50 && !/OVERALL/.test(js); i++) { await new Promise((r) => setTimeout(r, 40)); js = (await call("job_status", { job_id: jobId })).content[0].text; }
+  assert.match(js, /OVERALL FAIL/, "job_status returns the self-test lines");
+  const instr = fs.readFileSync(new URL("../instructions.md", import.meta.url), "utf8");
+  assert.match(instr, /self_test/, "instructions name self_test");
 }
 
 const pc = (await call("pending_changes")).content[0].text;

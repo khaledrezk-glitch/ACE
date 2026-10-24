@@ -67,6 +67,7 @@ class P {
     Q(May(true, true, false, false), "a non-workshared model ACE opened");
     LoaderTests.Run();
     WarningTests.Run();
+    SelfTestTests.Run(a);
     Console.WriteLine("tracker test passed");
   }
 }

@@ -133,6 +133,17 @@ namespace AceRevitMcp
             catch (Exception ex) { Log.Warn($"Ribbon icons: {ex.Message}"); }
             Ribbon.WorkModes.RegisterButton(panel.Name, Ribbon.RibbonSlots.Add(panel, companion), (sz, dim) => Icons.Companion(sz, dim));
             Ribbon.WorkModes.RegisterButton(panel.Name, Ribbon.RibbonSlots.Add(panel, status), (sz, dim) => Icons.Status(sz, dim));
+            // G26: the owner checks a new install without Claude (needs a model open: Revit disables ribbon commands with none).
+            try
+            {
+                var selfTest = Ribbon.RibbonSlots.Button("AceSelfTest", "Self-\ntest", typeof(Commands.SelfTestCommand).FullName);
+                selfTest.ToolTip = "Check every ACE write tool on a blank test project ACE creates and closes: one PASS / FAIL line per tool. Your open models are not changed (proved before and after).";
+                selfTest.LongDescription = "Report saved in %APPDATA%\\ACE-RevitMCP\\self-test. Claude can run it too (self_test).";
+                try { selfTest.LargeImage = Icons.Line(32, Ribbon.Glyphs.Checklist, planned: false); selfTest.Image = Icons.Line(16, Ribbon.Glyphs.Checklist, planned: false); }
+                catch (Exception ex) { Log.Warn($"Icon self-test: {ex.Message}"); }
+                Ribbon.WorkModes.RegisterButton(panel.Name, Ribbon.RibbonSlots.Add(panel, selfTest), (sz, dim) => Icons.Line(sz, Ribbon.Glyphs.Checklist, planned: false, dim: dim));
+            }
+            catch (Exception ex) { Log.Warn($"Self-test button: {ex.Message}"); }
 
             // Planned tools (roadmap): real buttons that open a card explaining what each will do.
             try { AddPlannedTools(application, tab, panel); }

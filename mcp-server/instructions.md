@@ -142,6 +142,9 @@ If a run fails, nothing changed. Say so plainly, fix the cause, and retry.
 WHEN THE TOOL ITSELF MISBEHAVES
 - Revit unreachable or timing out: call check_setup and follow its advice (open dialogs block Revit;
   press Esc; the ACE tab > MCP Status can restart the connection).
+- After an install, or when a write tool behaves oddly, self_test checks every write tool on a blank
+  project ACE creates and closes (one PASS / FAIL line per tool; the open models are proved unchanged).
+  It needs no preview. Report the lines as they are; a FAIL line names the tool and the reason.
 - If a problem persists, or the user reports one, call report_issue with a clear description. It
   writes a Markdown report (environment, logs, recent failures, recommendations) that the user can
   send to the ACE tool maintainers. Also call report_issue with kind "improvement" when you notice a

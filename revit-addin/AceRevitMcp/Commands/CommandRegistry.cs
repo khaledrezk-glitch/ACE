@@ -63,6 +63,7 @@ namespace AceRevitMcp.Commands
                 ["export_deliverables"] = ExportDeliverables.Run,
                 ["reload_addin"] = LoaderLink.ReloadCommand,
                 ["purge_unused"] = PurgeUnused.Run,
+                ["ace_self_test"] = SelfTest.Run,
             };
 
         public JsonNode Execute(string command, UIApplication app, JsonObject args)

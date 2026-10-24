@@ -2918,6 +2918,27 @@ tool("check_setup", {
   return text(`${bad ? `${bad} problem(s) found.` : "Everything essential works."}\n\n${lines.join("\n")}`);
 });
 
+// G26 (register #43): ace_self_test runs each write tool's real engine on a blank project the add-in creates, saves only into
+// %TEMP%\ACE-selftest, closes unsaved and deletes; the open models are fingerprinted before and after. Not gated: it is not a
+// change to the user's model (it never edits, saves or closes another document); the tests themselves pass the gate in Revit
+// (check, dry run, identical apply with the dry run's planHash, self-check).
+tool("self_test", {
+  title: "Self-test ACE in Revit (blank test project)",
+  description: "Checks a new install: the add-in creates its own blank project, runs every write tool on it end to end (save_as, save_as central, workset apply with its after-check, parameter fill, purge unused, deletion probe; each through check, dry run and the identical apply), closes it without saving, deletes its temp files and proves every open model is unchanged (IsModified, element count, element type list). One PASS / FAIL line per tool plus an overall line; the report file is in %APPDATA%\\ACE-RevitMCP\\self-test. Changes no open model, needs no preview. Takes about a minute (background: true for a client with a short wait). Also on the ribbon: ACE > Claude MCP > Self-test.",
+  inputSchema: {
+    background: z.boolean().optional().describe("answer at once with a job id; job_status returns the result lines"),
+    timeout_seconds: z.number().int().min(60).max(1800).optional(),
+  },
+  annotations: benign,
+}, async ({ timeout_seconds }) => {
+  const r = await callRevit("ace_self_test", {}, timeout_seconds ?? 600);
+  const lines = Array.isArray(r?.lines) ? r.lines : [];
+  if (!lines.length) return text(r);
+  const out = [...lines, r.overall, ...(r.report ? [`Report: ${r.report}`] : []), ...((r.notes ?? []).length ? ["", "Notes:", ...r.notes.map((n) => `- ${n}`)] : [])].filter((x) => x != null);
+  journal({ title: "Self-test (blank test project)", explanation: "ACE self-test on its own blank project", outcome: r.passed ? "PASS" : "FAIL", details: { lines, overall: r.overall, report: r.report } });
+  return { content: [{ type: "text", text: out.join("\n") }] };
+});
+
 tool("reload_addin", {
   title: "Load a new ACE build into Revit (no restart)",
   description: "After install.ps1 put a new ACE build in place while Revit was open (it prints 'no Revit restart needed'): loads it into the running Revit. The ACE loader swaps it when Revit is idle (no command, transaction or dialog); the bridge restarts on the same port and the Companion panel reloads. Waits for the swap and reports loaderVersion, payloadVersion, previous, ok and why; on a failure the previous build runs again. Previews made before the reload must be made again. force reloads even when the installed build already runs. Without the ACE loader (an older install) Revit must restart instead.",

@@ -512,13 +512,24 @@ namespace AceRevitMcp.Commands
                 doc = FindDoc(app, args, out var which);
                 if (doc == null) throw new CommandException(which + " Nothing was saved.");
             }
+            return SaveDocument(app, doc, args);
+        }
+
+        /// <summary>
+        /// save_model for a document already chosen (the bridge command above, or the self-test with its own blank project):
+        /// the same refusals, plain save and save_as. allow_risky and dry_run are checked by the caller.
+        /// </summary>
+        /// <param name="clearPending">False for the self-test: the transmitted flags other files wait for are cleared at the next
+        /// close ACE makes, never by the self-test (it writes no file but its own).</param>
+        internal static JsonNode SaveDocument(UIApplication app, Document doc, JsonObject args, bool clearPending = true)
+        {
             if (doc.IsFamilyDocument) throw new CommandException($"{doc.Title} is a family: save_model saves project models. Nothing was saved.");
             if (doc.IsLinked) throw new CommandException($"{doc.Title} is a linked model: save it from its own file. Nothing was saved.");
             if (doc.IsModelInCloud) throw new CommandException($"{doc.Title} is a cloud model: ACE does not save cloud models (use Synchronize in Revit). Nothing was saved.");
             var saveAs = args["save_as"] as JsonObject;
             var readOnly = SaveAsLogic.ReadOnlyRefusal(doc.Title, doc.IsReadOnly, doc.IsReadOnlyFile, saveAs != null);
             if (readOnly != null) throw new CommandException(readOnly + " Nothing was saved.");
-            if (saveAs != null) return SaveAs(app, doc, saveAs);
+            if (saveAs != null) return SaveAs(app, doc, saveAs, clearPending);
             if (string.IsNullOrEmpty(doc.PathName)) throw new CommandException($"{doc.Title} has never been saved (no file path; e.g. a detached copy): give save_as {{ path }} to save it to a new file. Nothing was saved.");
             long? Size() { try { return new FileInfo(doc.PathName).Length; } catch { return null; } }
             string kind;
@@ -585,7 +596,7 @@ namespace AceRevitMcp.Commands
         /// called (SaveAsLogic.Refusal: .rvt, folder exists, an existing file only with overwrite, not the model's own file,
         /// as_central only for a workshared model). Afterwards the model is that file: ACE's handle record follows it.
         /// </summary>
-        private static JsonNode SaveAs(UIApplication app, Document doc, JsonObject saveAs)
+        private static JsonNode SaveAs(UIApplication app, Document doc, JsonObject saveAs, bool clearPending = true)
         {
             var target = (Args.Str(saveAs, "path") ?? "").Trim().Trim('"');
             var overwrite = Args.Bool(saveAs, "overwrite");
@@ -638,7 +649,7 @@ namespace AceRevitMcp.Commands
             if (plan.Clear) PendingTransmittedClear.Add(newPath);
             if (plan.Warning != null) warnings.Add(plan.Warning);
             if (plan.Note != null) notes.Add(plan.Note);
-            var clearedOld = ClearPendingTransmitted(app);   // e.g. the file this model was before (no longer open)
+            var clearedOld = clearPending ? ClearPendingTransmitted(app) : null;   // e.g. the file this model was before (no longer open)
             // #38: a new central has a new identity; record it (replacing a copy's old one) and say if it still clashes.
             if (asCentral) foreach (var iw in CentralIdentity.Check(doc)) warnings.Add(iw);
             return new JsonObject
