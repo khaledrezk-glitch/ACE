@@ -1,6 +1,6 @@
-// @description: Fixes Revit's "identical instances in the same place" warnings: keeps the oldest element of each duplicate group and deletes the copies. Skips elements in use by colleagues (workshared). Preview first.
+// @description: Fixes Revit's "identical instances in the same place" warnings: keeps the oldest element of each duplicate group and deletes the copies. Skips elements in use by colleagues (workshared). A deletion probe first: only copies that delete nothing but themselves go; a copy that would take others along (a tag, a hosted element) is listed with what it takes and deleted only when allow_takes_others names it. Preview first.
 // @mode: auto
-// @inputs: {"categories": ["optional category names to limit it to, e.g. Furniture"]}
+// @inputs: {"categories": ["optional category names to limit it to, e.g. Furniture"], "allow_takes_others": ["optional copy ids the probe listed as taking others, to delete anyway once the user agreed"]}
 
 var only = args["categories"] is JsonArray ca ? ca.Select(v => v.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase) : null;
 var groups = doc.GetWarnings()
@@ -33,14 +33,21 @@ foreach (var g in groups)
         if (Removable(e)) toDelete.Add(e); else protectedCopies.Add(e.Id.Value);
     }
 }
-var deletable = ctx.Editable(toDelete);
+var editable = ctx.Editable(toDelete);
+// The deletion probe (rolled back): only copies that delete nothing else go, unless allow_takes_others names them.
+var probe = ctx.ProbeDeletion(editable.Select(e => e.Id), ctx.Ids("allow_takes_others"));
+var forward = new HashSet<long>(probe.Forward.Select(i => i.Value));
+var deletable = editable.Where(e => forward.Contains(e.Id.Value)).ToList();
 var deleted = deletable.Count == 0 ? new List<ElementId>() : doc.Delete(deletable.Select(e => e.Id).ToList()).ToList();
 
 return new
 {
     duplicateGroups = kept.Count,
     copiesDeleted = deletable.Count,
-    elementsRemovedInTotal = deleted.Count,   // includes anything hosted on the copies (e.g. tags)
+    elementsRemovedInTotal = deleted.Count,   // includes what the copies named in allow_takes_others take along (e.g. tags)
+    deletionProbe = probe.Summary,
+    heldByProbe = probe.Held.Count == 0 ? null : probe.Lines.Take(20).ToList(),
+    probe = probe.Held.Count == 0 ? null : probe.Report,
     byCategory = deletable.GroupBy(e => e.Category?.Name ?? "?").ToDictionary(g => g.Key, g => g.Count()),
     keptIds = kept.Take(50),
     notDeleted = protectedCopies.Count == 0 ? null : $"{protectedCopies.Count} copies host other elements or are in groups and were left: check them by hand (ids {string.Join(", ", protectedCopies.Take(20))})",

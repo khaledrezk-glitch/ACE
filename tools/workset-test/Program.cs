@@ -1,5 +1,5 @@
 // Workset after-check test (no Revit needed): dotnet run --project tools/workset-test (after the add-in build)
-// Register #37 (an apply said done while elements stayed on Workset1) and #40 (unused types read as deleted elements).
+// Register #37 (an apply said done while elements stayed on Workset1), #40 (unused types read as deleted elements) and #42 (deletion probe).
 using System; using System.Collections.Generic; using System.Linq; using System.Reflection; using System.Text.Json.Nodes;
 class P {
   static int failures;
@@ -88,6 +88,57 @@ class P {
     var tt = rec.GetMethod("TypesText", S);
     Check((string)tt.Invoke(null, new object[] { JsonNode.Parse("{\"deletedTypes\":10,\"deletedTypeInstances\":0}").AsObject() }) == ", removes 10 unused types"
       && (string)tt.Invoke(null, new object[] { JsonNode.Parse("{\"deleted\":2}").AsObject() }) == "", "a card line names removed types apart");
+
+    // Register #42: the deletion probe (bulk first, halves only where something else goes, capped) and its gateP.
+    var DP = a.GetType("AceRevitMcp.Util.DeletionProbeLogic");
+    object F(object o, string n) => o.GetType().GetField(n).GetValue(o);
+    // A fake model: what Revit deletes with each id; 99 is refused alone; deletes are counted.
+    var deps = new Dictionary<long, long[]> { [3] = new long[] { 100 }, [6] = new long[] { 200 }, [5] = new long[] { 4 } };
+    var probeCalls = 0;
+    Func<List<long>, ValueTuple<ICollection<long>, string>> fake = chunk => {
+      probeCalls++;
+      if (chunk.Contains(99)) return (null, "TST cannot delete");
+      var gone = new HashSet<long>(chunk); foreach (var i in chunk) if (deps.TryGetValue(i, out var d)) gone.UnionWith(d);
+      return (gone, null);
+    };
+    object Probe(IEnumerable<long> c, int max, IEnumerable<long> notOthers = null, bool bulk = false) { probeCalls = 0; return DP.GetMethod("Probe", S).Invoke(null, new object[] { c, fake, max, notOthers, bulk }); }
+    string Status(object r, long id) => (string)F(((System.Collections.IEnumerable)F(r, "Outcomes")).Cast<object>().First(o => (long)F(o, "Id") == id), "Status");
+    List<long> Others(object r, long id) => (List<long>)F(((System.Collections.IEnumerable)F(r, "Outcomes")).Cast<object>().First(o => (long)F(o, "Id") == id), "Others");
+    var cleanP = Probe(new long[] { 1, 2, 4, 7, 8 }, 200);
+    Check(probeCalls == 1 && (int)F(cleanP, "Deletes") == 1 && new long[] { 1, 2, 4, 7, 8 }.All(i => Status(cleanP, i) == "only-target"), "probe: a clean list costs ONE bulk delete, every candidate only the target");
+    var mixed = Probe(new long[] { 1, 2, 3, 4, 5, 6, 7, 8 }, 200);
+    Check(Status(mixed, 3) == "takes-others" && Others(mixed, 3).SequenceEqual(new long[] { 100 }) && Status(mixed, 6) == "takes-others" && Others(mixed, 6).SequenceEqual(new long[] { 200 }), "probe: the candidates that take others are found with exactly what they take");
+    Check(new long[] { 1, 2, 4, 5, 7, 8 }.All(i => Status(mixed, i) == "only-target") && probeCalls < 8 + 8, "probe: taking another candidate is not 'others' (5 takes 4); halves, not one delete per id up front");
+    var capped = Probe(new long[] { 1, 2, 3, 4, 5, 6, 7, 8 }, 2);
+    Check((bool)F(capped, "Capped") && (int)F(capped, "Deletes") == 2 && new long[] { 1, 2, 3, 4, 5, 6, 7, 8 }.Count(i => Status(capped, i) == "not-probed") > 0, "probe: the cap stops it, the rest is not probed");
+    var refused = Probe(new long[] { 1, 99 }, 200);
+    Check(Status(refused, 99) == "refused" && Status(refused, 1) == "only-target", "probe: a candidate Revit refuses alone is 'refused', the others still classified");
+    var nother = Probe(new long[] { 3 }, 200, new long[] { 100 });
+    Check(Status(nother, 3) == "only-target", "probe: ids named not-others (the rest of a purge pass) never count as others");
+    Probe(new long[] { 1, 2, 3, 4 }, 200, null, true);
+    var withBulk = probeCalls;
+    Probe(new long[] { 1, 2, 3, 4 }, 200, null, false);
+    Check(withBulk == probeCalls - 1, "probe: a bulk delete the caller already saw take others is not repeated (starts with the halves)");
+    var gateP = DP.GetMethod("Gate", S).Invoke(null, new object[] { mixed, new HashSet<long> { 3 } });
+    var fwd = (List<long>)gateP.GetType().GetField("Item1").GetValue(gateP);
+    var heldP = ((System.Collections.IEnumerable)gateP.GetType().GetField("Item2").GetValue(gateP)).Cast<object>().Select(o => (long)F(o, "Id")).ToList();
+    Check(fwd.SequenceEqual(new long[] { 1, 2, 3, 4, 5, 7, 8 }) && heldP.SequenceEqual(new long[] { 6 }), "gate: only the target goes; a candidate that takes others goes only when the call names it (3), else held (6)");
+    var gatePCap = DP.GetMethod("Gate", S).Invoke(null, new object[] { capped, new HashSet<long> { 1, 2, 3, 4, 5, 6, 7, 8 } });
+    var heldPCap = ((System.Collections.IEnumerable)gatePCap.GetType().GetField("Item2").GetValue(gatePCap)).Cast<object>().Count(o => (string)F(o, "Status") == "not-probed");
+    Check(heldPCap > 0, "gate: not probed (the cap) is held even when named: never deleted unseen");
+    var sum = (string)DP.GetMethod("Summary", S).Invoke(null, new object[] { mixed, "allow_takes_others", new HashSet<long> { 3 } });
+    Check(sum == "Deletion probe: 6 of 8 delete only themselves; 2 take 2 other elements with them (1 named in allow_takes_others goes ahead; 1 held: name it in allow_takes_others to delete it anyway).", sum);
+    Check((string)DP.GetMethod("Summary", S).Invoke(null, new object[] { cleanP, null, null }) == "Deletion probe: all 5 delete only themselves.", "summary: a clean probe in one line");
+    var capSum = (string)DP.GetMethod("Summary", S).Invoke(null, new object[] { capped, null, null });
+    Check(capSum.Contains("not probed") && capSum.EndsWith("The probe stopped at its cap of 2 deletes (each rolled back)."), capSum);
+    // The others in the change summary's #40 wording: elements apart from types, a type with its instance count.
+    var o3 = ((System.Collections.IEnumerable)F(mixed, "Outcomes")).Cast<object>().First(o => (long)F(o, "Id") == 6);
+    var info = new Dictionary<long, (string, string, bool, int?)> { [200] = ("Furniture", "TST Chair : 600", true, 0) };
+    var lineP = (string)DP.GetMethod("OthersLine", S).Invoke(null, new object[] { o3, "Furniture", "TST Chair : 600", info });
+    Check(lineP == "id 6 (Furniture: TST Chair : 600) takes 1 other with it: removes 1 unused Furniture type (0 instances; no placed element is deleted): TST Chair : 600", lineP);
+    var o1 = ((System.Collections.IEnumerable)F(mixed, "Outcomes")).Cast<object>().First(o => (long)F(o, "Id") == 3);
+    var lineP2 = (string)DP.GetMethod("OthersLine", S).Invoke(null, new object[] { o1, "Furniture", null, new Dictionary<long, (string, string, bool, int?)> { [100] = ("Furniture Tags", "TST Tag", false, null) } });
+    Check(lineP2 == "id 3 (Furniture) takes 1 other with it: deletes 1 Furniture Tags element: TST Tag", lineP2);
 
     Console.WriteLine(failures == 0 ? "workset test passed" : $"workset test FAILED ({failures})");
     Environment.Exit(failures == 0 ? 0 : 1);

@@ -165,6 +165,22 @@ namespace AceRevitMcp.Scripting
         }
 
         /// <summary>
+        /// The deletion probe (register #42): deletes the candidates in rolled-back sub-transactions (inside the run's
+        /// transaction; a rolled-back transaction when none is open) and says which delete only themselves and which take
+        /// other elements along (tags, hosted elements, types...). Forward holds what may be deleted: "only the target", plus
+        /// the candidates that take others when allowTakesOthers names them. Bulk first, halves only where something else
+        /// goes, at most maxDeletes probe deletes (the rest is held, not probed). The model is unchanged by the probe.
+        /// </summary>
+        public DeletionCheck ProbeDeletion(IEnumerable<ElementId> ids, IEnumerable<long> allowTakesOthers = null, int maxDeletes = Util.DeletionProbeLogic.DefaultMaxDeletes)
+        {
+            var allowed = new HashSet<long>(allowTakesOthers ?? Enumerable.Empty<long>());
+            var rep = Util.DeletionProbe.Run(Doc, (ids ?? Enumerable.Empty<ElementId>()).Where(i => i != null).Select(i => i.Value), maxDeletes);
+            var (forward, held) = Util.DeletionProbeLogic.Gate(rep.Result, allowed);
+            return new DeletionCheck(forward.Select(i => new ElementId(i)).ToList(), held.Select(o => o.Id).ToList(),
+                Util.DeletionProbe.ToJson(rep, "allow_takes_others", allowed));
+        }
+
+        /// <summary>
         /// Run a named transaction (for mode "manual"). Warnings are cleared automatically;
         /// returns the final status (Committed / RolledBack).
         /// </summary>
@@ -183,5 +199,26 @@ namespace AceRevitMcp.Scripting
                 throw;
             }
         }
+    }
+
+    /// <summary>The result of ctx.ProbeDeletion: what may be deleted, what is held and why (Report is returned to Claude as is).</summary>
+    public sealed class DeletionCheck
+    {
+        internal DeletionCheck(List<ElementId> forward, List<long> held, JsonObject report)
+        {
+            Forward = forward; Held = held; Report = report;
+        }
+
+        /// <summary>The ids that may be deleted: only the target, or named in allowTakesOthers.</summary>
+        public List<ElementId> Forward { get; }
+        /// <summary>Held: they take others (not named), Revit refuses them alone, or they were not probed (the cap).</summary>
+        public List<long> Held { get; }
+        /// <summary>One line for people, e.g. "Deletion probe: 12 of 14 delete only themselves; 2 take 3 other elements with them (held: ...)".</summary>
+        public string Summary => Report["summary"]?.ToString();
+        /// <summary>One line per held candidate: what it would take with it.</summary>
+        public List<string> Lines => (Report["held"] as JsonArray ?? new JsonArray()).Select(h => h?["line"]?.ToString()).Where(l => l != null).ToList();
+        public bool Capped => Report["capped"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+        /// <summary>The whole probe as JSON (counts, summary, held entries with other ids, categories, instances and types).</summary>
+        public JsonObject Report { get; }
     }
 }

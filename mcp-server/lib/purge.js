@@ -31,8 +31,11 @@ export function planText(r, { model, mode, rolledBack = false, a = {} }) {
     lines.push(p ? `Pass 1 would purge ${p.count}: ${cats(p.byCategory)}${p.names?.length ? ` (e.g. ${p.names.slice(0, 5).join("; ")})` : ""}. Later passes (what becomes unused once these are gone) show in the dry run.` : "Nothing is unused: nothing to purge.");
   } else {
     const verb = mode === "dry run" || rolledBack ? "would delete" : "deleted";
-    for (const p of r?.passes ?? [])
+    for (const p of r?.passes ?? []) {
       lines.push(`Pass ${p.pass}: found ${p.found}, ${verb} ${p.deleted}${p.alsoDeleted ? ` (+${p.alsoDeleted} dependent)` : ""}${p.failed ? `, skipped ${p.failed}` : ""}${p.attempts > 1 ? ` (${p.attempts} deletes: the set was split)` : ""}. ${cats(p.byCategory)}${p.names?.length ? `; e.g. ${p.names.join("; ")}` : ""}.`);
+      const dp = probeText(p.deletionProbe);
+      if (dp) lines.push(dp);
+    }
     const total = r?.totalDeleted ?? 0;
     lines.push(`Total: ${verb} ${total} in ${(r?.passes ?? []).length} pass(es)${r?.stoppedBecause ? ` (stopped: ${STOP[r.stoppedBecause] ?? r.stoppedBecause})` : ""}.`);
     const d = r?.unusedLeftDetail;
@@ -46,4 +49,14 @@ export function planText(r, { model, mode, rolledBack = false, a = {} }) {
   }
   if (r?.planHash) lines.push(`planHash: ${r.planHash}`);
   return lines.join("\n");
+}
+
+/**
+ * The deletion probe (register #42) in words: its summary, then what each candidate that takes others would take (the
+ * add-in's lines: elements apart from types, with instance counts). "" without a probe. Shared by purge and workset previews.
+ */
+export function probeText(dp, { indent = "  ", max = 10 } = {}) {
+  if (!dp?.summary) return "";
+  const held = (dp.held ?? []).filter((h) => h?.line);
+  return [`${indent}${dp.summary}`, ...held.slice(0, max).map((h) => `${indent}- ${h.line}`), held.length > max ? `${indent}- ... ${held.length - max} more` : ""].filter(Boolean).join("\n");
 }

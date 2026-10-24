@@ -180,6 +180,8 @@ ctx.Level("Level 1"), ctx.Levels(), ctx.Selection(), ctx.El(id), ctx.Str/Num/Boo
 ctx.Mm/M/Cm/ToMm/ToM/SqmFromInternal/Deg, ctx.Transact("name", () => {...}) (mode "manual"), ctx.IsDryRun.
 Workshared model: edit ctx.Editable(list) (skips elements in use by others or changed in central and reports them),
 or check ctx.CanEdit(e, out var why); otherwise one element in use rolls back the whole run.
+Deleting by id: var p = ctx.ProbeDeletion(ids, ctx.Ids("allow_takes_others")); delete only p.Forward (deletes
+nothing else); return p.Summary and p.Lines (what each held one would take along) so the user can name them.
 Files: write only with ctx.WriteOutput("name.csv", text) (into ctx.OutputFolder, allowed in every mode). Other file
 writes, Save/SaveAs, RenameWorkset, sync and exports cannot be undone: readonly refuses them and a dry run only
 compiles and screens them (not executed), so the real run needs allow_risky and the user's consent.

@@ -416,6 +416,9 @@ differ.
 list_warnings groups the model's warnings by type with counts, element ids and the known fix. Show the elements
 (select_elements), then fix one type at a time with a preview: identical instances with the saved script
 delete_duplicate_instances; others with a short script that uses the ids. Report what was left and why.
+delete_duplicate_instances probes each copy first (deleted in a rolled-back sub-transaction): only copies that delete
+nothing but themselves go; a copy that would take a tag or a hosted element along is held and listed with what it takes.
+Show those lines; only after the user agrees, name the ids in allow_takes_others (dry run again, then apply).
 
 ## Production (marks, tags, sheets)
 

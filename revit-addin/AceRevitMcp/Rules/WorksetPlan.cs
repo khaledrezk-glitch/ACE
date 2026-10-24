@@ -1187,6 +1187,7 @@ namespace AceRevitMcp.Rules
                     result["note"] = "The self-check found a change beyond the plan (see verify.mismatches): the whole change was rolled back. Nothing was changed.";
             }
             if (result["verify"] is JsonObject v && v["error"] != null && v["checked"] == null) v["checked"] = before.Count;
+            Util.DeletionProbe.CheckPreview(doc, result, dryRun);   // the deletion line (#40, #42): what each deletion takes along
             P.MarkComplete(result, dryRun);
             return result;
         }

@@ -227,7 +227,11 @@ const bridge = http.createServer((req, res) => {
           const acX = { afterCheck: { ok: !acFail, preview: !!args.dry_run, failures: acFail ? 1 : 0, targets: [acT], skips: [{ reason: "would hide in view TST NAVISWORKS", count: 1, byCategory: { Stairs: 1 }, sampleIds: [7] }],
             stillOnDefault: { workset: "Workset1", total: 3, byCategory: { Stairs: 3 }, byType: [{ category: "Stairs", type: "TST Stair : A", elements: 3 }] } },
             ...(acFail && !args.dry_run ? { stage: "incomplete", complete: false, error: "Applied as ONE undo step, but NOT done: the after-check found 1 target(s) not done: TST-ST-STAIRS: target-empty." } : {}) };
-          return reply({ ok: true, result: { ...baseP, ...np, ...keptP, ...x13, ...acX, success: true, blocked: [], rolledBack: !!args.dry_run, verify: { ok: true, checked: 9, mismatches: [] },
+          // G25 (#40, #42): the dry run removes unused types; the deletion probe says each removes only itself.
+          const wcP = args.dry_run ? { wouldChange: { added: 0, modified: 9, deleted: 0, deletedTypes: 2, deletedTypeInstances: 0,
+            attention: ["Removes 2 unused Structural Framing types (0 instances; no placed element is deleted): TST Beam : 300x600", "Deletion probe: all 2 delete only themselves."],
+            deletionProbe: { summary: "Deletion probe: all 2 delete only themselves.", candidates: 2, onlyTarget: 2, takesOthers: 0, held: [] } } } : {};
+          return reply({ ok: true, result: { ...baseP, ...np, ...keptP, ...x13, ...acX, ...wcP, success: true, blocked: [], rolledBack: !!args.dry_run, verify: { ok: true, checked: 9, mismatches: [] },
             done: args.dry_run ? { created: 0, renamed: 0, moved: 0, deleted: 0 } : { created: (p.create ?? []).length, renamed: (p.rename ?? []).length, moved, deleted: (p.delete ?? []).length } } });
         }
         const ws = [
@@ -288,7 +292,9 @@ const bridge = http.createServer((req, res) => {
             error: "Nothing was changed", blocked: [{ what: "the whole plan", why: "differs", code: "plan-changed" }] } });
         if (args.expect_plan && args.expect_plan !== all) return reply({ ok: true, result: { ...base, success: false, stage: "plan-changed", code: "plan-changed", error: "plan differs", blocked: [{ what: "the plan", why: "differs", code: "plan-changed" }] } });
         const passes = [
-          { pass: 1, found: 12, deleted: 11, alsoDeleted: 2, failed: 1, attempts: 5, byCategory: [{ category: "Families", found: 7, deleted: 6 }, { category: "Materials", found: 5, deleted: 5 }], names: ["TST Chair: TST 600"], skipped: [{ id: 901, name: "TST Stuck", category: "Families", error: "TST refused" }] },
+          { pass: 1, found: 12, deleted: 11, alsoDeleted: 2, failed: 1, attempts: 5, byCategory: [{ category: "Families", found: 7, deleted: 6 }, { category: "Materials", found: 5, deleted: 5 }], names: ["TST Chair: TST 600"], skipped: [{ id: 901, name: "TST Stuck", category: "Families", error: "TST refused" }],
+            ...(args.dry_run ? { deletionProbe: { summary: "Deletion probe: 11 of 12 delete only themselves; 1 takes 2 other elements with it.", candidates: 12, onlyTarget: 11, takesOthers: 1, capped: false, deletes: 7,
+              held: [{ id: 305, status: "takes-others", line: "id 305 (Materials: TST Glass) takes 2 others with it: deletes 2 Materials elements: TST Glass Asset", others: 2, otherIds: [306, 307] }] } } : {}) },
           { pass: 2, found: 4, deleted: 4, alsoDeleted: 0, failed: 0, attempts: 1, byCategory: [{ category: "Materials", found: 4, deleted: 4 }], names: ["TST Paint"], skipped: [] },
           { pass: 3, found: 1, deleted: 1, alsoDeleted: 0, failed: 0, attempts: 1, byCategory: [{ category: "Fill Patterns", found: 1, deleted: 1 }], names: ["TST Hatch"], skipped: [] }];
         const counts = { deleted: 16, passes: 3 };
@@ -1593,6 +1599,8 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   const dt = dr.content.at(-1).text;
   assert.match(dt, /Pass 1: found 12, would delete 11 \(\+2 dependent\), skipped 1 \(5 deletes: the set was split\)\. Families 6\/7, Materials 5/);
   assert.match(dt, /Pass 3: found 1, would delete 1\. Fill Patterns 1; e\.g\. TST Hatch\./);
+  // G25 (#42): the dry run says which unused element takes the dependents along (report only).
+  assert.match(dt, /Pass 1: found 12, [^\n]*\n  Deletion probe: 11 of 12 delete only themselves; 1 takes 2 other elements with it\.\n  - id 305 \(Materials: TST Glass\) takes 2 others with it: deletes 2 Materials elements: TST Glass Asset\nPass 2/, "purge dry run: the deletion probe per pass");
   assert.match(dt, /Total: would delete 16 in 3 pass\(es\) \(stopped: max_passes reached\)\.\nUnused left after the last pass: 2 \(link types 1, could not be purged 1, other 0\)\./);
   assert.match(dt, /- 901 TST Stuck \(Families\): TST refused/);
   assert.match(dt, /Plan: pass-1 12, pass-2 4, pass-3 1 \(the apply must find exactly these, pass by pass\)\.\nplanHash: ph-all-3[\s\S]*PREVIEW ONLY/, "the dry run's plan and planHash cover every pass");
@@ -1944,6 +1952,8 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(pvault2, "rules", "parameter-m
   assert.ok(!dr.isError && /PREVIEW ONLY/.test(dr.content.at(-1).text) && wadm().at(-1).args.action === "apply_plan" && wadm().at(-1).args.dry_run === true);
   assert.ok(wadm().at(-1).args.workset_plan?.moves?.length && !("plan" in wadm().at(-1).args), "1.13.1: the plan travels as workset_plan, never as the panel's plan");
   assert.match(dr.content.at(-1).text, /Kept \(not empty after the moves\): "TST-ST-OLD" 0 \(holds 2 types \(a plan moves instances only\)\)/);
+  // G25 (#40, #42): the preview's deletion line, with the deletion probe (each removed type takes nothing else).
+  assert.match(dr.content.at(-1).text, /Deletions in this preview:\n- Removes 2 unused Structural Framing types \(0 instances; no placed element is deleted\): TST Beam : 300x600\nDeletion probe: all 2 delete only themselves\./, "the workset preview's deletion line with the probe");
   // 1.13.6: moves that would hide elements are held, grouped by sheet and view; status names the switch.
   assert.match(dr.content.at(-1).text, /Visibility on sheets \(moved elements a view on a sheet would show differently\): 1 element\(s\) HELD in 1 move\(s\), they stay where they are; after the user agreed: allow_visibility_change: true, or the view \/ workset names:\n- sheet TST-01 - TST Ground Plan:\n  - view "TST L1 Plan": 1 hidden; HELD 1 \(1 Stairs\): the target workset is hidden in this view\nExport views \(a move that would hide an element there is held, unless allowed\):\n- "TST NAVISWORKS": 1 hidden \(1 Stairs\)/, "held moves grouped by sheet and view");
   // Register #37: the dry run shows the after-check forecast per target and category, and what stays on Workset1 by category and type.

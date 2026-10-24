@@ -7,6 +7,7 @@ import ExcelJS from "exceljs";
 import { parseCsv } from "./paramlist.js";
 import { toCsv } from "./report.js";
 import { blockLine } from "./paramexec.js";
+import { probeText } from "./purge.js";
 import * as W from "./worksets.js";
 import { esc } from "./vault.js";
 import { brandedPage, chips } from "./interference.js";
@@ -916,6 +917,10 @@ export function applyText(r, { model, mode, rolledBack = false }) {
     lines.push(!v ? "Self-check: not reported." : v.ok ? `Self-check: ok (element count per category the same before and after${v.checked != null ? `, ${v.checked} checked` : ""}).`
       : `Self-check FAILED: ${(v.mismatches ?? []).slice(0, 5).map((m) => `${m.category ?? m.what}: ${m.before} -> ${m.after}`).join("; ")}; rolled back, nothing changed.`);
     if (r?.afterCheck) lines.push(W.afterCheckText(r.afterCheck, { mode }));
+    // The preview's deletion line (#40) with the deletion probe (#42): what each deleted element or type takes along.
+    const del = (r?.wouldChange?.attention ?? []).filter((x) => /^(Deletes|Removes) /.test(x));
+    const dp = probeText(r?.wouldChange?.deletionProbe, { indent: "" });
+    if (mode === "dry run" && (del.length || dp)) lines.push(`Deletions in this preview:\n${[...del.map((x) => `- ${x}`), dp].filter(Boolean).join("\n")}`);
     const d = r?.done ?? {};
     const did = [d.created ? `created ${d.created}` : "", d.renamed ? `renamed ${d.renamed}` : "", d.moved ? `moved ${d.moved} element(s)` : "", d.deleted ? `deleted ${d.deleted}` : ""].filter(Boolean).join(", ") || "nothing";
     lines.push(mode === "dry run" || rolledBack ? "Changes: rolled back, nothing changed." : W.notDoneLine(r) ? `Changes: ${did} (applied, ONE undo step).\n${W.notDoneLine(r)}` : `Changes: ${did} done.`);

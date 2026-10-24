@@ -1079,7 +1079,8 @@ tool("assign_worksets", {
   journal({ title: `${dry_run ? "Preview" : "Change"}: assign worksets per the BEP`, explanation, outcome: outcomeOf(result, dry_run), details: result?.byWorkset });
   const out = withLine(text(result), fm.line);
   // The after-check (register #37): per rule target and category, read after the commit; a failed one is NOT done.
-  const acT = [Worksets.afterCheckText(result?.afterCheck, { mode: dry_run ? "dry run" : "apply" }), dry_run ? "" : Worksets.notDoneLine(result)].filter(Boolean).join("\n");
+  const acT = [Worksets.afterCheckText(result?.afterCheck, { mode: dry_run ? "dry run" : "apply" }), dry_run ? "" : Worksets.notDoneLine(result),
+    dry_run ? Purge.probeText(result?.wouldChange?.deletionProbe, { indent: "" }) : ""].filter(Boolean).join("\n");
   if (acT) out.content.push({ type: "text", text: acT });
   if (!dry_run && result?.stage === "incomplete") out.isError = true;
   return out;
@@ -1711,7 +1712,7 @@ tool("view_membership_fill", {
 const purgeState = new Map();
 tool("purge_unused", {
   title: "Full purge unused (3 passes until zero)",
-  description: "Full Purge Unused (Revit's own unused list), 3 passes until zero, one undo step; for specific types use Revit's Purge dialog by hand. Not an element delete: each pass deletes the list Revit's Purge Unused shows (Document.GetUnusedElements, all categories: families, types, materials, styles... nothing placed) with ONE delete, and passes repeat until a pass finds nothing (max_passes, default 3, at most 5). Revit link types are never purged; a set Revit refuses is split in halves (never per-id deletes) and what still fails is listed. check_only (pass 1, read-only), then dry_run (every pass, rolled back), then the identical call: the apply must find exactly what each dry-run pass found, else nothing changes. Reply: per pass found / deleted / by category, the total, \"unused left after the last pass\" and the planHash. Never delete unused elements by id with execute_revit_code.",
+  description: "Full Purge Unused (Revit's own unused list), 3 passes until zero, one undo step; for specific types use Revit's Purge dialog by hand. Not an element delete: each pass deletes the list Revit's Purge Unused shows (Document.GetUnusedElements, all categories: families, types, materials, styles... nothing placed) with ONE delete, and passes repeat until a pass finds nothing (max_passes, default 3, at most 5). Revit link types are never purged; a set Revit refuses is split in halves (never per-id deletes) and what still fails is listed; a dry-run pass whose delete takes dependents names which element takes what (deletion probe, report only). check_only (pass 1, read-only), then dry_run (every pass, rolled back), then the identical call: the apply must find exactly what each dry-run pass found, else nothing changes. Reply: per pass found / deleted / by category, the total, \"unused left after the last pass\" and the planHash. Never delete unused elements by id with execute_revit_code.",
   inputSchema: {
     max_passes: z.number().int().min(1).max(5).optional().describe("default 3 (the manual method); the run stops earlier when a pass finds nothing"),
     check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().optional(),

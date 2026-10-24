@@ -39,6 +39,7 @@ namespace AceRevitMcp.Rules
                 return true;
             });
             if (result["notes"] == null) result["notes"] = new JsonArray();
+            Util.DeletionProbe.CheckPreview(app.ActiveUIDocument.Document, result, dryRun);   // the deletion line (#40, #42)
             WorksetPlanLogic.MarkComplete(result, dryRun);
             return result;
         }

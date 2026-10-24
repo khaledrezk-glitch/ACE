@@ -28,6 +28,14 @@ namespace AceRevitMcp.Commands
     {
         public const string Source = "Document.GetUnusedElements";
         private const int MaxAttempts = 12;
+        /// <summary>
+        /// The deletion probe of the dry run (register #42), report only: a pass whose ONE delete takes elements outside
+        /// Revit's unused list is rolled back once, its halves are probed (group testing, each probe its own rolled-back
+        /// Transaction, never per-id SubTransactions, which crashed Revit 2025 on large purges), then the pass deletes as before.
+        /// At most this many probe deletes per dry run; the apply never probes (same deletes as the dry run). A pass whose
+        /// bulk delete takes nothing outside the list costs nothing extra.
+        /// </summary>
+        private const int MaxProbeDeletes = 60;
 
         private sealed class Previewed
         {
@@ -184,6 +192,8 @@ namespace AceRevitMcp.Commands
                     deletedAll.Clear(); linkTypesBefore.Clear();
                     linkTypesBefore.AddRange(linkTypes.Where(i => d.GetElement(new ElementId(i)) != null));
                     var goneByPass = new Dictionary<int, HashSet<long>>();
+                    var probes = new Dictionary<int, JsonObject>();
+                    var probeLeft = MaxProbeDeletes;
                     var passArr = new JsonArray();
                     Func<int, List<long>, string> sameAsPreview = previewed == null ? null
                         : (n, set) => L.Compare(n, n <= previewed.Passes.Count ? previewed.Passes[n - 1] : new List<long>(), set);
@@ -191,7 +201,20 @@ namespace AceRevitMcp.Commands
                     {
                         Describe(d, set);
                         var gone = goneByPass[n] = new HashSet<long>();
-                        return L.DeleteSet(set, chunk => TryDelete(d, n, chunk, linkTypes, gone), MaxAttempts);
+                        var passSet = new HashSet<long>(set);
+                        // Dry run only: the first delete of this pass that takes elements outside the list is probed (see MaxProbeDeletes).
+                        Func<List<long>, bool> wantsProbe = ids => dryRun && probeLeft > 0 && !probes.ContainsKey(n) && ids.Any(i => !passSet.Contains(i));
+                        Action<List<long>> probe = chunk =>
+                        {
+                            try
+                            {
+                                var rep = Util.DeletionProbe.Run(d, chunk, probeLeft, passSet, bulkTakesOthers: true);
+                                probeLeft -= rep.Result.Deletes;
+                                probes[n] = Util.DeletionProbe.ToJson(rep, null, null, maxIds);
+                            }
+                            catch (Exception ex) { probeLeft = 0; probes[n] = new JsonObject { ["summary"] = "Deletion probe: failed (" + ex.Message + "); the purge is unchanged." }; }
+                        };
+                        return L.DeleteSet(set, chunk => TryDelete(d, n, chunk, linkTypes, gone, wantsProbe, probe), MaxAttempts);
                     }, maxPasses, null, sameAsPreview, out var stop, out var stopDetail);
                     // A pass that differs from the dry run stops before it deletes anything: the whole group is rolled back.
                     if (stop == "plan-changed") throw new PlanChangedException(stopDetail);
@@ -211,7 +234,7 @@ namespace AceRevitMcp.Commands
                         totalAlso += alsoDeleted;
                         var skipped = p.Result.Failed.Select(f => new { f.Id, f.Error })
                             .Concat(p.Result.NotTried.Select(i => new { Id = i, Error = $"not tried: the {MaxAttempts} attempts of this pass were used up" })).ToList();
-                        passArr.Add(new JsonObject
+                        var passJson = new JsonObject
                         {
                             ["pass"] = p.Number, ["found"] = p.Found.Count, ["deleted"] = p.Result.Deleted.Count, ["alsoDeleted"] = alsoDeleted,
                             ["failed"] = skipped.Count, ["attempts"] = p.Result.Attempts,
@@ -220,7 +243,11 @@ namespace AceRevitMcp.Commands
                             {
                                 ["id"] = f.Id, ["name"] = names.TryGetValue(f.Id, out var nm) ? nm : null, ["category"] = labels.TryGetValue(f.Id, out var lb) ? lb : null, ["error"] = f.Error,
                             }).ToArray()),
-                        });
+                        };
+                        // What takes the dependents along (dry run, report only; the purge itself is unchanged).
+                        if (probes.TryGetValue(p.Number, out var pr)) passJson["deletionProbe"] = pr;
+                        else if (dryRun && alsoDeleted > 0) passJson["deletionProbe"] = new JsonObject { ["summary"] = $"Deletion probe: not run for this pass (its cap of {MaxProbeDeletes} probe deletes per dry run was used up).", ["capped"] = true };
+                        passArr.Add(passJson);
                     }
                     // One more look, read-only: what Revit still calls unused after the last pass (link types and skipped included).
                     var raw = d.GetUnusedElements(new HashSet<ElementId>()).Select(i => i.Value).ToList();
@@ -270,7 +297,9 @@ namespace AceRevitMcp.Commands
         /// One delete attempt in its own transaction: the ids still present, ONE Document.Delete, committed. Null when done;
         /// else why not, with the transaction rolled back (a Revit link type among what Revit would delete counts as a refusal).
         /// </summary>
-        private static string TryDelete(Document d, int pass, List<long> chunk, ISet<long> linkTypes, ISet<long> passGone)
+        /// <param name="wantsProbe">Dry run: given what the delete took, true to roll it back, run probe(chunk) and delete again.</param>
+        private static string TryDelete(Document d, int pass, List<long> chunk, ISet<long> linkTypes, ISet<long> passGone,
+            Func<List<long>, bool> wantsProbe = null, Action<List<long>> probe = null)
         {
             using (var t = NativeChange.OwnTransaction(d, $"ACE: purge unused, pass {pass}"))
             {
@@ -282,6 +311,12 @@ namespace AceRevitMcp.Commands
                     var gone = d.Delete(live) ?? new List<ElementId>();
                     var hit = gone.Select(g => g.Value).FirstOrDefault(linkTypes.Contains);
                     if (hit != 0) { t.RollBack(); return $"it would also delete Revit link type {hit}"; }
+                    if (wantsProbe != null && probe != null && wantsProbe(gone.Select(g => g.Value).ToList()))
+                    {
+                        t.RollBack();
+                        probe(chunk);   // no transaction open now: the probe's own, each rolled back
+                        return TryDelete(d, pass, chunk, linkTypes, passGone);
+                    }
                     var status = t.Commit();
                     if (status != TransactionStatus.Committed) return $"Revit rolled the delete back ({status})";
                     foreach (var g in gone) passGone.Add(g.Value);
