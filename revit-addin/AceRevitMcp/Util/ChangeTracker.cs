@@ -59,6 +59,24 @@ namespace AceRevitMcp.Util
 
         public static void MarkUndone() => LastChangeWasClaude = false;
 
+        /// <summary>
+        /// The self-test (ace_self_test): the undo state as it is now. Disposing the scope puts it back, so the runs on the
+        /// self-test's own blank document (closed afterwards) never replace what "undo last Claude change" undoes in the
+        /// user's model; those runs touch no other document's undo stack.
+        /// </summary>
+        internal static IDisposable KeepLastChange()
+        {
+            var (was, name, document) = (LastChangeWasClaude, LastClaudeChangeName, LastClaudeChangeDocument);
+            return new LastScope(() => { LastChangeWasClaude = was; LastClaudeChangeName = name; LastClaudeChangeDocument = document; });
+        }
+
+        private sealed class LastScope : IDisposable
+        {
+            private Action _restore;
+            public LastScope(Action restore) { _restore = restore; }
+            public void Dispose() { var r = _restore; _restore = null; r?.Invoke(); }
+        }
+
         private const string StoreKey = "changeTracker.lastClaudeChange";
         private static bool _live;
 

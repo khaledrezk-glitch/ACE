@@ -197,6 +197,15 @@ Also:
 
 Good practice: work on a **copy** or a model you've saved recently, especially while learning.
 
+**Self-test after an install** (ACE tab → Claude MCP → **Self-test**, or ask Claude to run `self_test`): ACE creates its
+own blank test project, runs every write tool on it (save as, save as central, worksets, parameter fill, purge unused,
+deletion probe), closes it without saving and deletes its temp files (`%TEMP%\ACE-selftest`). You read one line per tool,
+e.g. `PASS workset apply (0.8 s)` or `FAIL parameter fill: <reason>`; the report is in `%APPDATA%\ACE-RevitMCP\self-test`.
+Why it needs no preview: it changes no open model. It never edits, saves or closes another document, and it proves this:
+before and after, it records each open model's "modified" flag, element count and element type list, and any difference
+is a FAIL line. Inside the test project every tool still passes the gate (preview, then the identical apply). Open any
+model first: Revit greys out ribbon buttons when no model is open (Claude's `self_test` works without one).
+
 ## 5. When something goes wrong
 
 | Symptom | What to do |

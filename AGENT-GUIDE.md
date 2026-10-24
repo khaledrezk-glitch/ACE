@@ -28,7 +28,7 @@ parameters you use, title blocks, view templates), the better Claude's defaults 
 | Understand | `revit_status`, `get_model_brief` (`quick: true` for the basics), `model_dashboard` (health score, findings, HTML report), `get_selection`, `find_elements`, `get_element_details`, `describe_category` (real parameters, % filled), `list_types` (loaded families/types), `list_views`, `view_image` (sees views) |
 | Knowledge | `revit_api_lookup` (the real Revit API on this PC: signatures, overloads, enums), `revit_guide` (expert guides: planning, performance, transactions, geometry, families, views and sheets, parameters and units, MEP and structure, links and worksharing) |
 | Change (gated) | `execute_revit_code` (full Revit API in C#), `set_parameters`, `run_saved_script`, `select_elements` |
-| Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |
+| Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log`, `self_test` (checks every write tool on a blank project ACE creates and closes) |
 | Library | `saved_scripts` (list, or one script's source), `save_script` (personal or team) |
 | Support | `check_setup`, `report_issue` |
 | Prompts | *Do a Revit task*, *Model QA check*, *Report a problem* |

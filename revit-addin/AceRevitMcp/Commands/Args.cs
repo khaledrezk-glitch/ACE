@@ -11,7 +11,22 @@ namespace AceRevitMcp.Commands
     internal static class Args
     {
         public static Document RequireDoc(UIApplication app) =>
-            app.ActiveUIDocument?.Document ?? throw new CommandException("No document is open in Revit. Open a model first.");
+            _scoped ?? app.ActiveUIDocument?.Document ?? throw new CommandException("No document is open in Revit. Open a model first.");
+
+        [ThreadStatic] private static Document _scoped;
+
+        /// <summary>
+        /// The self-test (ace_self_test) only: while the scope is open, the commands it runs work on its own blank document
+        /// instead of the active model (RequireDoc returns it). Revit's main thread only; nested scopes are refused.
+        /// </summary>
+        internal static IDisposable Scoped(Document doc)
+        {
+            if (_scoped != null) throw new InvalidOperationException("A document scope is already open.");
+            _scoped = doc ?? throw new ArgumentNullException(nameof(doc));
+            return new DocScope();
+        }
+
+        private sealed class DocScope : IDisposable { public void Dispose() => _scoped = null; }
 
         public static string Str(JsonObject a, string name) =>
             a[name] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;

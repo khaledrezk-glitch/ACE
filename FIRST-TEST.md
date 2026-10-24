@@ -10,6 +10,8 @@ projects. **Use a copy of a model**, e.g. one of Revit's sample projects (File >
 2. Double-click `install.cmd` and wait for **Done!**
 3. Start Revit 2025. When asked about **ACE Revit MCP**, click **Always Load**.
 4. Open your scratch model. Click the **ACE** tab > **MCP Status**. It should say *Claude connection is running*.
+   Then click **ACE** tab > **Self-test**: about a minute later every line should read **PASS** (ACE tests its tools
+   on a blank project of its own; your model is not changed).
 5. Fully quit Claude Desktop (tray icon > Quit), then start it again.
 
 ## 1. Connection (read-only)

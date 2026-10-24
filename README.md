@@ -99,7 +99,7 @@ can already do today. **ACE tab → Roadmap** shows the whole plan. Details: [RO
 | Understand | `revit_status`, `get_model_brief`, `model_dashboard`, `get_selection`, `find_elements`, `get_element_details`, `describe_category`, `list_types`, `list_views`, `view_image` |
 | Knowledge | `revit_api_lookup` (the real Revit API on the PC), `revit_guide` (9 expert guides) |
 | Change (gated by preview + confirmation) | **`execute_revit_code`**, `set_parameters`, `run_saved_script`, `select_elements` |
-| Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log` |
+| Safety | `backup_model`, `undo_last_claude_change`, `get_activity_log`, `self_test` (checks every write tool on a blank project ACE creates and closes) |
 | Library | `saved_scripts` (list, or one script's source), `save_script` (personal or team) |
 | Support | `check_setup`, `report_issue` |
 

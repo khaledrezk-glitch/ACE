@@ -332,6 +332,29 @@ namespace AceRevitMcp.Companion
             return p;
         }
 
+        /// <summary>
+        /// The self-test (ace_self_test): the Companion's cards as they are now. Disposing the scope puts them back exactly
+        /// (list, order, states), so the self-test's own previews and applies on its blank document leave no card and never
+        /// touch, drop or decide a card the user has waiting.
+        /// </summary>
+        internal static IDisposable Isolated()
+        {
+            var saved = Pending.Select(p => (Card: p, p.State, p.DecidedAt, p.Outcome)).ToList();
+            return new RestoreScope(() =>
+            {
+                Pending.Clear();
+                foreach (var s in saved) { s.Card.State = s.State; s.Card.DecidedAt = s.DecidedAt; s.Card.Outcome = s.Outcome; Pending.Add(s.Card); }
+                Raise();
+            });
+        }
+
+        private sealed class RestoreScope : IDisposable
+        {
+            private Action _restore;
+            public RestoreScope(Action restore) { _restore = restore; }
+            public void Dispose() { var r = _restore; _restore = null; r?.Invoke(); }
+        }
+
         public static void MarkAppliedByClaude(string hash)
         {
             foreach (var p in Pending.Where(p => p.Hash == hash && p.State == PendingState.Waiting))
