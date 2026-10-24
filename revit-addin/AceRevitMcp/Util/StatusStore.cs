@@ -41,6 +41,8 @@ namespace AceRevitMcp.Util
             public Rules.Compliance.Run PreviousCompliance;
             /// <summary>True when <see cref="Compliance"/> was read back from disk when the model opened (not run in this session).</summary>
             public bool ComplianceFromDisk;
+            /// <summary>For a run read back from disk: the model's file was saved after that audit (changes made then are not counted).</summary>
+            public bool SavedAfterAudit;
 
             public readonly ClashSession Session = new ClashSession();
         }
@@ -94,6 +96,8 @@ namespace AceRevitMcp.Util
             else if (run != null && e.Compliance != null && e.Compliance.Id != run.Id) e.PreviousCompliance = e.Compliance;
             e.Compliance = run;
             e.ComplianceFromDisk = fromDisk && run != null;
+            if (!fromDisk) e.SavedAfterAudit = false;
+            if (!fromDisk && run != null) ChangeTracker.ResetSinceAudit(model);
             Raise();
         }
 

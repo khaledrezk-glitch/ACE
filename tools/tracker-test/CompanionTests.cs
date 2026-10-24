@@ -58,6 +58,40 @@ static class CompanionTests {
     var newest = ComplianceStoreLogic.NewestRecords(new[] { "r/20261019T170000Z-0001.json", "r/20261020T081000Z-ab12.json", "r/20261018T090000Z-ffff.json", "r/notes.txt" });
     Check(newest.SequenceEqual(new[] { "r/20261020T081000Z-ab12.json", "r/20261019T170000Z-0001.json" }), "vault fallback: the two newest run records, newest first");
 
+    Deltas();
     if (failures > 0) { Console.WriteLine($"companion test FAILED ({failures})"); Environment.Exit(1); }
+  }
+
+  // DM2: the percentage, newly met / newly not met, and the words on Home, the tab header and each card.
+  static void Deltas() {
+    var before = ComplianceStoreLogic.ParseRun(Record("20261020T151000Z-0001", "2026-10-20T15:10:00Z",
+      ("TST-REQ-01", "not-met", 2140, "elements-on-workset1"), ("TST-REQ-02", "met", 0, "levels-and-grids-not-pinned"),
+      ("TST-REQ-03", "not-checkable", null, null), ("TST-REQ-04", "partly", 12, "views-named-copy"), ("TST-REQ-05", "not-met", 3, "revit-links-not-pinned")));
+    var after = ComplianceStoreLogic.ParseRun(Record("20261020T153000Z-0002", "2026-10-20T15:30:00Z",
+      ("TST-REQ-01", "met", 0, "elements-on-workset1"), ("TST-REQ-02", "not-met", 4, "levels-and-grids-not-pinned"),
+      ("TST-REQ-03", "not-checkable", null, null), ("TST-REQ-04", "partly", 7, "views-named-copy"), ("TST-REQ-05", "not-met", 3, "revit-links-not-pinned"),
+      ("TST-REQ-06", "met", 0, "file-size")));
+    Check(ComplianceDeltaLogic.Percent(before) == 25 && ComplianceDeltaLogic.Percent(after) == 40, "percent: met of the checkable (1 of 4, then 2 of 5)");
+    Check(ComplianceDeltaLogic.Percent(ComplianceStoreLogic.ParseRun(Record("x", "2026-10-20T15:30:00Z", ("R", "not-checkable", null, null)))) == null, "percent: none checkable gives none");
+    var d = ComplianceDeltaLogic.Compare(before, after);
+    Check(d.NewlyMet == 1 && d.NewlyNotMet == 1 && d.Net == 1, "delta: one newly met, one newly not met, one more met (a new requirement counts)");
+    Check(d.For("TST-REQ-05") == null && d.For("TST-REQ-03") == null && d.For("TST-REQ-06") == null, "delta: unchanged and new requirements have no card line");
+    Check(ComplianceDeltaLogic.CardText(d.For("TST-REQ-01")) == "Newly met since the last audit: was NOT MET (2,140), now 0", "card: newly met with the count it had");
+    Check(ComplianceDeltaLogic.CardText(d.For("tst-req-02")) == "Newly not met since the last audit: was MET, now NOT MET (4)", "card: newly not met (requirement ids ignore case)");
+    Check(ComplianceDeltaLogic.CardText(d.For("TST-REQ-04")) == "Since the last audit: was 12, now 7", "card: same status, fewer failing");
+    Check(ComplianceDeltaLogic.Compare(null, after).Changes.Count == 0, "delta: no previous run, no changes");
+    var now = new DateTime(2026, 10, 22, 9, 0, 0);   // a Thursday
+    Check(ComplianceDeltaLogic.When(new DateTime(2026, 10, 22, 8, 5, 0), now) == "today 08:05", "when: today");
+    Check(ComplianceDeltaLogic.When(new DateTime(2026, 10, 20, 17, 10, 0), now) == "Tue 17:10", "when: this week by weekday");
+    Check(ComplianceDeltaLogic.When(new DateTime(2026, 10, 1, 17, 10, 0), now) == "1 Oct 17:10", "when: older by date");
+    var tue = new DateTime(2026, 10, 20, 17, 10, 0);
+    Check(ComplianceDeltaLogic.HeaderText(d, tue, now) == "Since the previous audit (Tue 17:10): 25% to 40% · 1 newly met · 1 newly not met", "tab header delta");
+    Check(ComplianceDeltaLogic.HeaderText(ComplianceDeltaLogic.Compare(after, after), tue, now) == "Same result as the previous audit (Tue 17:10)", "tab header: nothing changed");
+    Check(ComplianceDeltaLogic.HeaderText(d, null, now) == null, "tab header: no previous run, no line");
+    Check(ComplianceDeltaLogic.TileNote(new List<string> { "TST-EIR rev B", "TST-BEP rev 2", "TST-LOIN rev 1" }, tue, now) == "against TST-EIR rev B +2 · last audit Tue 17:10", "Home tile note");
+    Check(ComplianceDeltaLogic.TileNote(null, tue, now) == "last audit Tue 17:10", "Home tile note without a vault register");
+    Check(ComplianceDeltaLogic.SinceAuditText(tue, now, 0, 9, false, false) == "Since last audit (Tue 17:10): 0 changes, 9 not met", "since last audit line");
+    Check(ComplianceDeltaLogic.SinceAuditText(tue, now, 1, 2140, true, true) == "Since last audit (Tue 17:10): 1 change since the model opened, 2,140 not met · the file was saved after this audit: Re-run audit to be sure", "since last audit line for a run read back from disk, file saved since");
+    Check(ComplianceDeltaLogic.LocalTime("2026-10-20T15:10:00Z") == new DateTime(2026, 10, 20, 15, 10, 0, DateTimeKind.Utc).ToLocalTime() && ComplianceDeltaLogic.LocalTime("junk") == null, "run time read as local time");
   }
 }

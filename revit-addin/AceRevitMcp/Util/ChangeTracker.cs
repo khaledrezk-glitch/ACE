@@ -54,8 +54,33 @@ namespace AceRevitMcp.Util
 
             // Anything the user does (commit, undo, redo) means the undo stack top is no longer ours.
             if (op == UndoOperation.TransactionCommitted || op == UndoOperation.TransactionUndone || op == UndoOperation.TransactionRedone)
+            {
                 LastChangeWasClaude = false;
+                try
+                {
+                    var doc = e.GetDocument();
+                    NoteSinceAudit(doc.Title, e.GetAddedElementIds().Concat(e.GetModifiedElementIds()).Concat(e.GetDeletedElementIds()).Select(i => i.Value));
+                }
+                catch { /* counting is a convenience, never a failure */ }
+            }
         }
+
+        // ---- changes since the last audit (DM2): elements added, modified or deleted since the last compliance run ----
+
+        private static readonly Dictionary<string, HashSet<long>> SinceAudit = new Dictionary<string, HashSet<long>>(StringComparer.OrdinalIgnoreCase);
+
+        private static void NoteSinceAudit(string model, IEnumerable<long> ids)
+        {
+            if (string.IsNullOrEmpty(model)) return;
+            if (!SinceAudit.TryGetValue(model, out var set)) SinceAudit[model] = set = new HashSet<long>();
+            foreach (var id in ids) set.Add(id);
+        }
+
+        /// <summary>Elements changed in this model (by the user, by an applied ACE run, by undo / redo) since its last compliance run in this session.</summary>
+        public static int ChangesSinceAudit(string model) => !string.IsNullOrEmpty(model) && SinceAudit.TryGetValue(model, out var s) ? s.Count : 0;
+
+        /// <summary>A new compliance run: the count starts again.</summary>
+        public static void ResetSinceAudit(string model) { if (!string.IsNullOrEmpty(model)) SinceAudit.Remove(model); }
 
         public static void MarkUndone() => LastChangeWasClaude = false;
 
@@ -96,6 +121,7 @@ namespace AceRevitMcp.Util
         public static void End(Recording recording, bool keptChanges)
         {
             if (_current == recording) _current = null;
+            if (keptChanges && recording.Committed > 0) NoteSinceAudit(LastClaudeChangeDocument, recording.ChangedIds);
             // A rolled-back (dry) run leaves the undo stack exactly as it was before.
             if (!keptChanges && recording.Committed > 0)
             {
@@ -128,6 +154,8 @@ namespace AceRevitMcp.Util
             public int Committed { get; private set; }
             /// <summary>Elements added, modified or deleted (resolved warning records included): 0 means the run changed no element.</summary>
             public int ElementChanges => _added.Count + _modified.Count + _deleted.Count;
+            /// <summary>Every element id the run added, modified or deleted.</summary>
+            internal IEnumerable<long> ChangedIds => _added.Concat(_modified).Concat(_deleted);
             internal bool PreviousWasClaude { get; }
             internal string PreviousName { get; }
             internal string PreviousDocument { get; }

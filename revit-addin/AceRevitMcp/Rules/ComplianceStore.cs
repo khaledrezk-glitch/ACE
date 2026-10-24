@@ -68,6 +68,16 @@ namespace AceRevitMcp.Rules
                 var (last, previous) = Read(doc);
                 if (last == null) return;
                 StatusStore.PublishCompliance(title, last, previous, fromDisk: true);
+                // Saved after the audit (a minute's grace): what changed then is not in this session's count, so Home says so.
+                try
+                {
+                    var path = doc.PathName;
+                    var at = ComplianceDeltaLogic.LocalTime(last.Time);
+                    var entry = StatusStore.For(title);
+                    if (entry != null && at.HasValue && !string.IsNullOrEmpty(path) && File.Exists(path))
+                        entry.SavedAfterAudit = File.GetLastWriteTime(path) > at.Value.AddMinutes(1);
+                }
+                catch { }
                 Log.Info($"Companion state: last compliance run {last.Id} of '{title}' read back ({last.Results.Count} requirements)");
             }
             catch (Exception ex) { Log.Warn($"Companion state: could not read the last compliance run: {ex.Message}"); }

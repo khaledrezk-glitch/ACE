@@ -242,9 +242,23 @@ namespace AceRevitMcp.Companion
             var glance = Card();
             var gb = (StackPanel)glance.Child;
             gb.Children.Add(Section("At a glance"));
-            var tiles = new UniformGrid { Columns = 3 };
             // Every number here comes from the status store, which the engines publish to.
             var status = StatusStore.For(model);
+            var compliance = status?.Compliance;
+            // With a requirements vault, compliance leads (DM2): four tiles in two rows, so each keeps a readable width.
+            var tiles = new UniformGrid { Columns = compliance != null ? 2 : 3 };
+            if (compliance != null)
+            {
+                var pct = Rules.ComplianceDeltaLogic.Percent(compliance);
+                var at = Rules.ComplianceDeltaLogic.LocalTime(compliance.Time);
+                if (_against.RunId != compliance.Id) _against = (compliance.Id, AgainstText(compliance.Vault), AgainstDocs(compliance.Vault));
+                var tile = Stat(pct.HasValue ? $"{pct}%" : "-", "Compliance", Rules.ComplianceDeltaLogic.TileNote(_against.Docs, at, DateTime.Now), Rules.ComplianceDeltaLogic.Count(compliance, "not-met") > 0);
+                tile.Cursor = System.Windows.Input.Cursors.Hand;
+                tile.ToolTip = string.IsNullOrEmpty(_against.Against) ? "Open the Compliance tab" : $"Against {_against.Against}. Open the Compliance tab";
+                tile.Background = Brushes.Transparent;   // hit-testable everywhere, not only on the text
+                tile.MouseLeftButtonUp += (s, e) => Show("Compliance");
+                tiles.Children.Add(tile);
+            }
             var health = status?.Health;
             if (health != null)
                 tiles.Children.Add(Stat(health.Score.ToString(), $"Health · {health.Grade}", $"{health.Checks.Count(c => c.Status == "fail")} to act on · {health.Time:HH:mm}", health.Score < 65));
@@ -257,6 +271,13 @@ namespace AceRevitMcp.Companion
                 tiles.Children.Add(Stat(status.ChangeCount.ToString(), "Changes", diffs[0].Since.HasValue ? $"since {diffs[0].Since:d MMM HH:mm}" : "first snapshot taken", false));
             else tiles.Children.Add(Stat("-", "Changes", "See what changed", false));
             gb.Children.Add(tiles);
+            if (compliance != null && Rules.ComplianceDeltaLogic.LocalTime(compliance.Time) is DateTime audited)
+                gb.Children.Add(new TextBlock
+                {
+                    Text = Rules.ComplianceDeltaLogic.SinceAuditText(audited, DateTime.Now, ChangeTracker.ChangesSinceAudit(model), Rules.ComplianceDeltaLogic.Count(compliance, "not-met"),
+                        status.ComplianceFromDisk, status.SavedAfterAudit),
+                    Foreground = _c.Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0),
+                });
             panel.Children.Add(glance);
 
             // Quick actions (run in Revit straight away; no Claude needed)
@@ -338,7 +359,7 @@ namespace AceRevitMcp.Companion
         // ---- Compliance (C1+): status per requirement from the last model check, grouped by kind -------------
 
         private string _complianceGroup;
-        private (string RunId, string Against) _against;
+        private (string RunId, string Against, List<string> Docs) _against;
         private static readonly string[] StatusOrder = { "not-met", "partly", "met", "not-checkable" };
         private static string StatusWord(string s) => s switch { "not-met" => "NOT MET", "partly" => "PARTLY", "met" => "MET", _ => "NOT CHECKABLE" };
         private Brush StatusBrush(string s) => s switch
@@ -367,13 +388,17 @@ namespace AceRevitMcp.Companion
             }
 
             // Header: what the model was audited against, when, and the overall picture.
-            if (_against.RunId != run.Id) _against = (run.Id, AgainstText(run.Vault));
+            if (_against.RunId != run.Id) _against = (run.Id, AgainstText(run.Vault), AgainstDocs(run.Vault));
+            var previous = StatusStore.For(model)?.PreviousCompliance;
+            var delta = previous != null ? Rules.ComplianceDeltaLogic.Compare(previous, run) : null;
             var head = Card();
             var hb = (StackPanel)head.Child;
             hb.Children.Add(Section("Compliance"));
             if (!string.IsNullOrEmpty(_against.Against)) hb.Children.Add(new TextBlock { Text = "Against " + _against.Against, Foreground = _c.Text, TextWrapping = TextWrapping.Wrap });
             var when = DateTime.TryParse(run.Time, null, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var t) ? t.ToLocalTime().ToString("d MMM HH:mm") : run.Time;
-            hb.Children.Add(new TextBlock { Text = $"Model check {when} · {run.Results.Count} requirements", Foreground = _c.Muted, FontSize = 11, Margin = new Thickness(0, 0, 0, 6) });
+            hb.Children.Add(new TextBlock { Text = $"Model check {when} · {run.Results.Count} requirements", Foreground = _c.Muted, FontSize = 11, Margin = new Thickness(0, 0, 0, delta == null ? 6 : 0) });
+            var deltaText = Rules.ComplianceDeltaLogic.HeaderText(delta, Rules.ComplianceDeltaLogic.LocalTime(previous?.Time), DateTime.Now);
+            if (deltaText != null) hb.Children.Add(new TextBlock { Text = deltaText, Foreground = _c.Text, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 6) });
             int n(string st) => run.Results.Count(x => x.Status == st);
             var checkable = n("met") + n("partly") + n("not-met");
             var tiles = new UniformGrid { Columns = 3 };
@@ -398,7 +423,8 @@ namespace AceRevitMcp.Companion
                     var worst = g.Items.Select(x => x.Status).OrderBy(x => Array.IndexOf(StatusOrder, x)).First();
                     var met = g.Items.Count(x => x.Status == "met");
                     var counted = g.Items.Count(x => x.Status != "not-checkable");
-                    var row = Row(StatusBrush(worst), $"{Cap(g.Kind)}   {(counted == 0 ? "not checkable" : $"{met} / {counted} met")}",
+                    var changed = delta == null ? 0 : g.Items.Count(x => delta.For(x.Requirement) is { } c && (c.NewlyMet || c.NewlyNotMet));
+                    var row = Row(StatusBrush(worst), $"{Cap(g.Kind)}   {(counted == 0 ? "not checkable" : $"{met} / {counted} met")}{(changed > 0 ? $"   ({changed} changed since the last audit)" : "")}",
                         string.Join(" · ", g.Items.Where(x => x.Status is "not-met" or "partly").Take(3).Select(x => $"{x.Requirement} {StatusWord(x.Status).ToLowerInvariant()}")), worst == "not-met");
                     var button = new Button { Content = row, Background = Brushes.Transparent, BorderThickness = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Stretch, Cursor = System.Windows.Input.Cursors.Hand, Padding = new Thickness(0) };
                     var kind = g.Kind;
@@ -413,7 +439,7 @@ namespace AceRevitMcp.Companion
                 back.Click += (s, e) => { _complianceGroup = null; Render(); };
                 panel.Children.Add(back);
                 panel.Children.Add(Section(Cap(open.Kind)));
-                foreach (var x in open.Items.Take(200)) panel.Children.Add(RequirementCard(run, x));
+                foreach (var x in open.Items.Take(200)) panel.Children.Add(RequirementCard(run, x, delta?.For(x.Requirement)));
                 if (open.Items.Count > 200) panel.Children.Add(Hint($"... and {open.Items.Count - 200} more: see the master report."));
             }
 
@@ -444,7 +470,7 @@ namespace AceRevitMcp.Companion
             return panel;
         }
 
-        private Border RequirementCard(Rules.Compliance.Run run, Rules.Compliance.Result x)
+        private Border RequirementCard(Rules.Compliance.Run run, Rules.Compliance.Result x, Rules.ComplianceDeltaLogic.Change change = null)
         {
             var card = Card();
             card.BorderBrush = StatusBrush(x.Status);
@@ -455,6 +481,13 @@ namespace AceRevitMcp.Companion
             if (source.Length > 0) b.Children.Add(new TextBlock { Text = source, Foreground = _c.Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap });
             if (!string.IsNullOrWhiteSpace(x.Text)) b.Children.Add(new TextBlock { Text = $"\u201C{x.Text}\u201D", Foreground = _c.Text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) });
             if (!string.IsNullOrWhiteSpace(x.Evidence)) b.Children.Add(new TextBlock { Text = x.Evidence, Foreground = _c.Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap });
+            // What changed since the last audit (DM2): newly met in green, newly not met in the rule colour.
+            if (Rules.ComplianceDeltaLogic.CardText(change) is string moved)
+                b.Children.Add(new TextBlock
+                {
+                    Text = moved, FontSize = 11, FontWeight = change.NewlyMet || change.NewlyNotMet ? FontWeights.SemiBold : FontWeights.Normal, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0),
+                    Foreground = change.NewlyMet ? new SolidColorBrush(Coordination.ClashColours.Green) : change.NewlyNotMet ? _c.Rule : _c.Text,
+                });
             if (!string.IsNullOrWhiteSpace(x.Decision)) b.Children.Add(new TextBlock { Text = "Decision: " + x.Decision, Foreground = _c.Text, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
             // The failing elements of the bound checks, to look at in the model.
             var ids = x.Status is "not-met" or "partly"
@@ -489,12 +522,18 @@ namespace AceRevitMcp.Companion
         // "EIR rev 3.0 · BEP rev 09 ..." from the vault register (read once per run).
         private static string AgainstText(string vault)
         {
+            var docs = AgainstDocs(vault);
+            return docs == null || docs.Count == 0 ? null : string.Join(" · ", docs);
+        }
+
+        private static List<string> AgainstDocs(string vault)
+        {
             try
             {
                 var f = System.IO.Path.Combine(vault ?? "", "vault.json");
                 if (!System.IO.File.Exists(f)) return null;
                 var docs = JsonNode.Parse(System.IO.File.ReadAllText(f))?["documents"] as JsonArray;
-                return docs == null ? null : string.Join(" · ", docs.Select(d => $"{d?["key"]}{(string.IsNullOrWhiteSpace(d?["revision"]?.ToString()) ? "" : " rev " + d["revision"])}"));
+                return docs?.Select(d => $"{d?["key"]}{(string.IsNullOrWhiteSpace(d?["revision"]?.ToString()) ? "" : " rev " + d["revision"])}").ToList();
             }
             catch { return null; }
         }
