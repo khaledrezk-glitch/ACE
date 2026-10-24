@@ -41,6 +41,11 @@ namespace AceRevitMcp.Companion
         /// <summary>What changes, per kind and category, with names; and what deserves a second look (deletions, shared data).</summary>
         public JsonObject Details;
         public List<string> Attention = new List<string>();
+        /// <summary>
+        /// The preview's reply itself (not a copy): a tool may add lines after the card was made (the workset tools' deletion
+        /// probe, the after-check forecast), so the card reads it when drawn (DM5).
+        /// </summary>
+        public JsonObject Result;
         public List<long> ElementIds = new List<long>();
         /// <summary>Preview pictures of the change (plan, 3D), when Claude asked for them.</summary>
         public System.Collections.Generic.List<byte[]> Images = new System.Collections.Generic.List<byte[]>();
@@ -278,6 +283,7 @@ namespace AceRevitMcp.Companion
                 Attention = (change?["attention"] as JsonArray)?.Select(x => x?.ToString()).Where(x => x != null).ToList() ?? new List<string>(),
                 ElementIds = (change?["modifiedIds"] as JsonArray)?.Select(x => long.TryParse(x?.ToString(), out var id) ? id : 0).Where(id => id > 0).ToList() ?? new List<long>(),
                 Images = images,
+                Result = result,
                 Hash = hash,
                 Kind = kind,
                 Args = clean,

@@ -639,12 +639,24 @@ namespace AceRevitMcp.Companion
                     if (rest.Length > 0) body.Children.Add(new TextBlock { Text = rest, Foreground = _c.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0) });
                 }
                 else body.Children.Add(new TextBlock { Text = p.Summary, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text });
-                // Deletions and changes to shared data (parameters, types, families): shown plainly, before the buttons.
-                if (p.Attention.Count > 0)
+                // The safety checks the preview ran (DM5): new warnings (G24), what deletions take along (G25).
+                var checks = Companion.ApplyCardLogic.Checks(p.Result);
+                if (checks.Count > 0)
+                {
+                    var box = new StackPanel();
+                    box.Children.Add(new TextBlock { Text = "Checked before applying", FontWeight = FontWeights.SemiBold, Foreground = _c.Muted, FontSize = 11 });
+                    foreach (var l in checks)
+                        box.Children.Add(new TextBlock { Text = l.Text, TextWrapping = TextWrapping.Wrap, FontSize = 11, Foreground = l.Key ? _c.Rule : _c.Text, FontWeight = l.Key ? FontWeights.SemiBold : FontWeights.Normal });
+                    body.Children.Add(new Border { BorderBrush = _c.Border, BorderThickness = new Thickness(1), Padding = new Thickness(6, 4, 6, 4), Margin = new Thickness(0, 6, 0, 0), Child = box });
+                }
+                // Deletions and changes to shared data (parameters, types, families): shown plainly, before the buttons. Read from
+                // the reply as it is now: a tool may add lines after the card was made.
+                var attention = Companion.ApplyCardLogic.Attention(p.Result, p.Attention);
+                if (attention.Count > 0)
                 {
                     var box = new StackPanel();
                     box.Children.Add(new TextBlock { Text = "Look at this before applying", FontWeight = FontWeights.SemiBold, Foreground = _c.Rule, FontSize = 11 });
-                    foreach (var a in p.Attention) box.Children.Add(new TextBlock { Text = a, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text, FontSize = 11 });
+                    foreach (var a in attention) box.Children.Add(new TextBlock { Text = a, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text, FontSize = 11 });
                     body.Children.Add(new Border { BorderBrush = _c.Rule, BorderThickness = new Thickness(1), Padding = new Thickness(6, 4, 6, 4), Margin = new Thickness(0, 6, 0, 0), Child = box });
                 }
                 // What exactly changes, per category, with names.
@@ -659,7 +671,7 @@ namespace AceRevitMcp.Companion
                             list.Children.Add(new TextBlock { Text = $"{cat}: {text}", TextWrapping = TextWrapping.Wrap, FontSize = 11, Foreground = _c.Muted });
                     }
                     list.Children.Add(new TextBlock { Text = "Changed counts include elements Revit updates by itself (views, tags, joins).", TextWrapping = TextWrapping.Wrap, FontSize = 10, Foreground = _c.Muted, Margin = new Thickness(0, 4, 0, 0) });
-                    body.Children.Add(new Expander { Header = "What exactly changes", Content = list, Margin = new Thickness(0, 6, 0, 0), Foreground = _c.Text, IsExpanded = p.Attention.Count > 0 });
+                    body.Children.Add(new Expander { Header = "What exactly changes", Content = list, Margin = new Thickness(0, 6, 0, 0), Foreground = _c.Text, IsExpanded = attention.Count > 0 });
                 }
                 foreach (var bytes in p.Images.Take(2))
                 {
@@ -773,6 +785,9 @@ namespace AceRevitMcp.Companion
                         ? (c != null ? $"added {c["added"]}, modified {c["modified"]}, deleted {c["deleted"]}{Util.ChangeTracker.Recording.TypesText(c)}" : "applied")
                         : (r?["error"]?.ToString() ?? (r?["errors"] as JsonArray)?.FirstOrDefault()?.ToString() ?? "failed");
                 }
+                // What the apply checked (DM5): new warnings, and the after-check verdict when the tool has one.
+                var after = Companion.ApplyCardLogic.AfterApply(r);
+                if (after.Count > 0) outcome += " · " + string.Join(" ", after.Select(l => l.Text));
                 ActivityHub.Decide(p, ok ? PendingState.AppliedByPanel : PendingState.Failed, outcome);
                 Journal.Append($"Change (applied in ACE panel): {p.Title}", null,
                     ok ? $"APPLIED by the user from the ACE Companion panel ({outcome})" : $"FAILED - nothing changed ({outcome})");

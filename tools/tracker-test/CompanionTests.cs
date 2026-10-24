@@ -60,6 +60,7 @@ static class CompanionTests {
 
     Deltas();
     Bands();
+    ApplyCard();
     if (failures > 0) { Console.WriteLine($"companion test FAILED ({failures})"); Environment.Exit(1); }
   }
 
@@ -120,5 +121,33 @@ static class CompanionTests {
     var failed = ComplianceDeltaLogic.Failed("apply", "Revit is busy.", at);
     Check(failed.Text == "Re-audit after your apply failed: Revit is busy. The change itself stands; press Re-run audit." && failed.Tone == "failed" && failed.RunId == null, "band: failure says so, the change stands");
     Check(ComplianceDeltaLogic.Skipped("undo", 41.6, at).Text == "Not re-audited after the undo: the model check took 42 s last time. Press Re-run audit when ready.", "band: too slow to repeat by itself");
+  }
+
+  // DM5: the Apply card prints the preview's safety fields (G24 new warnings, G25 deletion probe) and the after-check.
+  static void ApplyCard() {
+    var result = JsonNode.Parse(@"{ ""success"": true, ""dryRun"": true,
+      ""newWarnings"": { ""count"": 0, ""refuse"": false, ""line"": ""New warnings: 0."" },
+      ""wouldChange"": { ""added"": 0, ""modified"": 12, ""deleted"": 2, ""attention"": [ ""Deletes 2 elements."" ],
+        ""deletionProbe"": { ""summary"": ""Deletion probe: 1 of 2 deletes only itself."", ""held"": [ { ""line"": ""TST wall type takes 3 walls along."" } ] } },
+      ""notes"": [ ""After-check forecast: the apply would leave work undone on 1 target(s): TST-WS: x (y)."", ""other note"" ] }") as JsonObject;
+    var checks = AceRevitMcp.Companion.ApplyCardLogic.Checks(result);
+    Check(checks.Count == 3 && checks[0].Text == "New warnings: 0." && !checks[0].Key, "card: New warnings: 0 (not highlighted)");
+    Check(checks[1].Text == "Deletion probe: 1 of 2 deletes only itself." && checks[1].Key && checks[2].Text == "TST wall type takes 3 walls along." && checks[2].Key, "card: deletion probe summary and what a deletion takes along (highlighted)");
+    // The workset tools add the probe's lines to attention after the card was made: shown once, in the checks box.
+    ((JsonArray)result["wouldChange"]["attention"]).Add("Deletion probe: 1 of 2 deletes only itself.");
+    var att = AceRevitMcp.Companion.ApplyCardLogic.Attention(result, new List<string> { "Deletes 2 elements." });
+    Check(att.SequenceEqual(new[] { "Deletes 2 elements.", "After-check forecast: the apply would leave work undone on 1 target(s): TST-WS: x (y)." }), "card: attention read from the reply now, the after-check forecast added, no line twice");
+    var warn = JsonNode.Parse(@"{ ""newWarnings"": { ""count"": 1, ""refuse"": false, ""line"": ""Would add 1 new warning: Highlighted walls overlap. (elements: 10, 40) [accepted]. Accepted by this call (1)."" } }") as JsonObject;
+    Check(AceRevitMcp.Companion.ApplyCardLogic.Checks(warn).Single().Key, "card: an accepted new warning is highlighted");
+    var purge = JsonNode.Parse(@"{ ""passes"": [ { ""pass"": 1, ""deletionProbe"": { ""summary"": ""Deletion probe: all 5 delete only themselves."" } },
+      { ""pass"": 2, ""deletionProbe"": { ""summary"": ""Deletion probe: not run for this pass."", ""capped"": true } } ] }") as JsonObject;
+    var pc = AceRevitMcp.Companion.ApplyCardLogic.Checks(purge);
+    Check(pc.Count == 2 && pc[0].Text == "Pass 1: Deletion probe: all 5 delete only themselves." && !pc[0].Key && pc[1].Key, "card: purge passes, each with its probe; a capped probe is highlighted");
+    Check(AceRevitMcp.Companion.ApplyCardLogic.Checks(null).Count == 0 && AceRevitMcp.Companion.ApplyCardLogic.Checks(new JsonObject()).Count == 0, "card: a reply without the fields adds nothing");
+    var applied = JsonNode.Parse(@"{ ""success"": true, ""complete"": true, ""newWarnings"": { ""count"": 0, ""line"": ""New warnings: 0."" },
+      ""afterCheck"": { ""ok"": true, ""stillOnDefault"": { ""workset"": ""Workset1"", ""total"": 0 } } }") as JsonObject;
+    Check(string.Join(" ", AceRevitMcp.Companion.ApplyCardLogic.AfterApply(applied).Select(l => l.Text)) == "New warnings: 0. Applied and checked: done, 0 left on Workset1.", "after apply: new warnings and the after-check verdict");
+    var notDone = JsonNode.Parse(@"{ ""success"": true, ""complete"": false, ""error"": ""Applied as ONE undo step, but NOT done: x."" }") as JsonObject;
+    Check(AceRevitMcp.Companion.ApplyCardLogic.AfterApply(notDone).Single().Key, "after apply: not done is highlighted with the tool's words");
   }
 }
