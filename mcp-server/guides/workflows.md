@@ -416,6 +416,10 @@ differ.
 list_warnings groups the model's warnings by type with counts, element ids and the known fix. Show the elements
 (select_elements), then fix one type at a time with a preview: identical instances with the saved script
 delete_duplicate_instances; others with a short script that uses the ids. Report what was left and why.
+A fix run names the warnings it fixes: `fixes_warnings: ["<description part or GUID>"]` on execute_revit_code (a saved
+fix script names them in its `// @fixes_warnings:` header, as delete_duplicate_instances does). The reply's
+targetedWarnings says whether the named warnings the run touched are gone; the apply fails and rolls back
+(`warnings-remain`) when any remain, and like every apply it refuses a NEW warning (`new-warnings`).
 
 ## Production (marks, tags, sheets)
 

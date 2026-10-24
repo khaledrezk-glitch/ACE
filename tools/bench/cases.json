@@ -1180,6 +1180,70 @@
           "value": false
         }
       ]
+    },
+    {
+      "name": "G24: a dry run that adds overlapping walls reports the new warning and would refuse",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "maxMs": 60000,
+      "args": {
+        "code": "var lvl = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation).First();\nvar line = Line.CreateBound(new XYZ(900, 900, 0), new XYZ(910, 900, 0));\nWall.Create(doc, line, lvl.Id, false);\nWall.Create(doc, line, lvl.Id, false);\nreturn \"two overlapping walls\";",
+        "dry_run": true,
+        "transaction_name": "ACE bench: overlapping walls"
+      },
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "newWarnings.count",
+          "op": ">=",
+          "value": 1
+        },
+        {
+          "path": "newWarnings.refuse",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "newWarnings.line",
+          "op": "contains",
+          "value": "Would add"
+        }
+      ]
+    },
+    {
+      "name": "G24: accepting the warning by description lets the same dry run pass",
+      "model": "Snowdon Towers Sample Architectural",
+      "command": "execute_code",
+      "maxMs": 60000,
+      "args": {
+        "code": "var lvl = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation).First();\nvar line = Line.CreateBound(new XYZ(900, 900, 0), new XYZ(910, 900, 0));\nWall.Create(doc, line, lvl.Id, false);\nWall.Create(doc, line, lvl.Id, false);\nreturn \"two overlapping walls\";",
+        "dry_run": true,
+        "transaction_name": "ACE bench: overlapping walls",
+        "accept_warnings": [
+          "overlap"
+        ]
+      },
+      "expect": [
+        {
+          "path": "success",
+          "op": "==",
+          "value": true
+        },
+        {
+          "path": "newWarnings.refuse",
+          "op": "==",
+          "value": false
+        },
+        {
+          "path": "newWarnings.accepted",
+          "op": ">=",
+          "value": 1
+        }
+      ]
     }
   ]
 }

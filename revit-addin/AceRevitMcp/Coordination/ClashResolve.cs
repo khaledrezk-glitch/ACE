@@ -440,7 +440,7 @@ namespace AceRevitMcp.Coordination
             JsonObject RunOnce(bool trial)
             {
                 retryDrop.Clear(); lastOthersOk = true; lastWarnOk = true; lastFresh = new List<(string Text, long[] Ids)>();
-                return NativeChange.Run(app, args, "clash_resolve", Title, body, verifyWithWarnings: verify, trial: trial);
+                return NativeChange.Run(app, args, "clash_resolve", Title, body, verifyWithWarnings: verify, trial: trial, warningGate: false);   // its own warnings guard (same WarningLogic.Fresh)
             }
             // The failures of a run that drop_failing_steps can act on: Revit errors that rolled the commit back, or new warnings
             // that alone failed the guard (every other check passed). Null: none (the run passed, or failed for another reason).
@@ -1283,17 +1283,9 @@ namespace AceRevitMcp.Coordination
             return o;
         }
 
-        private static List<(string Text, long[] Ids)> Warnings(Document doc)
-        {
-            var list = new List<(string, long[])>();
-            foreach (var w in doc.GetWarnings())
-            {
-                var ids = new List<long>();
-                try { foreach (var id in w.GetFailingElements()) ids.Add(id.Value); foreach (var id in w.GetAdditionalElements()) ids.Add(id.Value); } catch { }
-                list.Add((w.GetDescriptionText(), ids.ToArray()));
-            }
-            return list;
-        }
+        /// <summary>The model's warnings as the guard compares them: description and failing + additional ids (read by ModelGuard).</summary>
+        private static List<(string Text, long[] Ids)> Warnings(Document doc) =>
+            ModelGuard.ModelWarnings(doc).Select(w => (w.Text, w.Ids)).ToList();
 
         /// <summary>Existence, type, location, tag count, the dimensions referencing each element (tags and dimensions collected once), and for walls that may be trimmed the elements they host.</summary>
         private static Dictionary<long, ClashResolveLogic.ElementState> Snapshot(Document doc, IList<long> ids, ICollection<long> hostedFor = null)

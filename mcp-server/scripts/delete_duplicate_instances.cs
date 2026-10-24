@@ -1,6 +1,7 @@
 // @description: Fixes Revit's "identical instances in the same place" warnings: keeps the oldest element of each duplicate group and deletes the copies. Skips elements in use by colleagues (workshared). Preview first.
 // @mode: auto
 // @inputs: {"categories": ["optional category names to limit it to, e.g. Furniture"]}
+// @fixes_warnings: identical instances in the same place
 
 var only = args["categories"] is JsonArray ca ? ca.Select(v => v.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase) : null;
 var groups = doc.GetWarnings()

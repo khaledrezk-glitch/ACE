@@ -130,3 +130,50 @@ export function outcomeOf(result, dryRun) {
   if (!dryRun && result.stage === "incomplete") return `APPLIED but NOT DONE (${counts}; ${result.error ?? "the after-check failed"})`;
   return dryRun ? `PREVIEW only, model untouched (would have: ${counts})` : `APPLIED (${counts})`;
 }
+
+// ---------------------------------------------------------------------------------------------
+// No new warnings (G24): every apply is rolled back by the add-in when it adds a Revit warning the call did not accept.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The warning parameters of an apply tool, only those given: accept_warnings (descriptions or failure GUIDs),
+ * accept_new_warnings (all), fixes_warnings (a warning-fix run). They are part of the change's identity, so an apply
+ * that accepts warnings needs a preview that accepted the same ones.
+ */
+export function warningArgs(a = {}) {
+  const out = {};
+  const list = (v) => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : []);
+  if (list(a.accept_warnings).length) out.accept_warnings = list(a.accept_warnings);
+  if (a.accept_new_warnings === true) out.accept_new_warnings = true;
+  if (list(a.fixes_warnings).length) out.fixes_warnings = list(a.fixes_warnings);
+  return out;
+}
+
+/** A preview whose identical apply the add-in would refuse: new warnings not accepted, or a fix run's targets left. */
+export const warningsRefuse = (r) => r?.newWarnings?.refuse === true || r?.targetedWarnings?.ok === false;
+
+const WARNING_REFUSALS = new Set(["new-warnings", "warnings-remain"]);
+export const warningRefused = (r) => WARNING_REFUSALS.has(r?.stage);
+
+const warningText = (w) => `${w.description ?? "(no description)"}${[...(w.failing ?? []), ...(w.additional ?? [])].length ? ` (elements: ${[...new Set([...(w.failing ?? []), ...(w.additional ?? [])])].slice(0, 10).join(", ")})` : ""}${w.times > 1 ? ` x${w.times}` : ""}`;
+export const ACCEPT_HOW = "If the user accepts them: run the dry run again with accept_warnings: [\"<description or GUID>\", ...] (or accept_new_warnings: true for all), then the identical call to apply.";
+
+/** The reply lines about warnings: the refusal, "new warnings: N" (what a dry run would add) and a fix run's targets. */
+export function warningLines(r, dryRun) {
+  if (!r) return [];
+  if (warningRefused(r)) return [`REFUSED (${r.stage}), rolled back, nothing changed: ${r.error ?? "the change added warnings"}${r.hint ? `\n${r.hint}` : ""}`];
+  const lines = [];
+  const n = r.newWarnings;
+  if (n) {
+    const items = (n.items ?? []).slice(0, 10);
+    const list = items.map((w) => `- ${warningText(w)}${w.accepted ? " [accepted]" : ""}${w.guid ? ` {${w.guid}}` : ""}`);
+    if ((n.items?.length ?? 0) + (n.more ?? 0) > items.length) list.push(`- ... ${(n.items?.length ?? 0) + (n.more ?? 0) - items.length} more`);
+    if (!n.count) lines.push("New warnings: 0.");
+    else if (dryRun) lines.push(`Would add ${n.count} new warning(s)${n.refused ? `, ${n.refused} not accepted` : " (all accepted by this call)"}:\n${list.join("\n")}${n.refuse ? `\nThe identical apply would refuse (new-warnings) and roll back. ${ACCEPT_HOW}` : ""}`);
+    else lines.push(`New warnings: ${n.count} (accepted by this call):\n${list.join("\n")}`);
+  }
+  const t = r.targetedWarnings;
+  if (t) lines.push(t.ok ? `${t.line ?? `Targeted warnings: ${t.targeted} ${dryRun ? "would be" : "are"} gone.`}`
+    : `${t.line ?? `Targeted warnings: ${t.remaining} of ${t.targeted} remain.`}${dryRun ? " The identical apply would fail (warnings-remain) and roll back: fix the cause or limit the run, then preview again." : ""}`);
+  return lines;
+}

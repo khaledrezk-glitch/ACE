@@ -14,6 +14,11 @@
   save_as) when one exists.
 - Warnings are deleted and returned in `revitWarnings`; errors roll the run back and appear in `revitErrors`.
   Common: "Highlighted walls overlap", "Room is not in a properly enclosed region", "Duplicate mark value".
+- No new warnings: the model's warnings are compared before and after (failure definition GUID + failing ids +
+  additional ids; one that only lost elements is not new). An apply that adds one the call did not accept rolls back
+  whole (`stage: "new-warnings"`); the dry run reports `newWarnings` (count, items, `refuse`) and cannot be applied as it
+  is. Accepting: `accept_warnings` (description part or GUID) or `accept_new_warnings: true`, given to the dry run and
+  the identical apply. Avoid the warning instead where you can (join, trim or move so walls do not overlap).
 - Throw to abort: `throw new Exception("Expected ~40 rooms but found 400, stopping")`. Nothing is changed.
 - Elements owned by another user (workshared) can't be edited: check
   `WorksharingUtils.GetCheckoutStatus(doc, id) == CheckoutStatus.OwnedByOtherUser` and skip with a reason.

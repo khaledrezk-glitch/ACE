@@ -12,5 +12,7 @@
   <ItemGroup>
     <!-- The ACE loader's payload selection is plain C# (no Revit): compiled in directly, so no loader build is needed. -->
     <Compile Include="../../revit-addin/AceRevitMcp.Loader/PayloadSelection.cs" Link="PayloadSelection.cs" />
+    <!-- The "no new warnings" rule (G24) is plain C# too: keys, before / after diff, acceptance, fix-run targets. -->
+    <Compile Include="../../revit-addin/AceRevitMcp/Util/WarningLogic.cs" Link="WarningLogic.cs" />
   </ItemGroup>
 </Project>

@@ -164,6 +164,7 @@ namespace AceRevitMcp.Util
 
             public ICollection<long> AddedIds => _added;
             public ICollection<long> ModifiedIds => _modified;
+            public ICollection<long> DeletedIds => _deleted;
 
             public void Add(DocumentChangedEventArgs e)
             {

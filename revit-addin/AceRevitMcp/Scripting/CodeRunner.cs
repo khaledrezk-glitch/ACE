@@ -211,6 +211,7 @@ public static class AceScript
             string transactionStatus = null;
             var recording = ChangeTracker.Begin(name);
             var keptChanges = false;
+            WarningGate gate = null;   // "no new warnings" (G24): the active model's warnings before vs after, for every change run
 
             using (var guard = new ModelGuard(uiapp))
             {
@@ -228,6 +229,7 @@ public static class AceScript
                     // transaction it cannot change the model (readonly skips the preview requirement).
                     if (doc != null && !doc.IsReadOnly)
                     {
+                        if (mode != "readonly") gate = WarningGate.Begin(doc, args);
                         group = new TransactionGroup(doc, name);
                         group.Start();
                     }
@@ -252,6 +254,8 @@ public static class AceScript
                         if (committed != TransactionStatus.Committed)
                             throw new CommandException("Revit refused to commit the changes (see revitErrors).");
                     }
+                    // New warnings (or a fix run that left its targets): an apply is rolled back whole, a dry run reports them.
+                    if (gate != null && group != null && !gate.Check(doc, guard, recording) && !dryRun) throw new WarningsRefused();
                     // A picture of the previewed change, taken before the rollback (the temporary views go with it).
                     if (dryRun && group != null && mode != "readonly" && previewImage)
                     {
@@ -325,6 +329,7 @@ public static class AceScript
                 if (guard.Warnings.Count > 0) response["revitWarnings"] = Grouped(guard.Warnings);
                 if (guard.Errors.Count > 0) response["revitErrors"] = Grouped(guard.Errors);
                 if (guard.Dialogs.Count > 0) response["dialogs"] = ToArray(guard.Dialogs);
+                gate?.Report(response, dryRun);
             }
 
             if (ctx.Output.Count > 0) response["output"] = ToArray(ctx.Output);
@@ -334,6 +339,15 @@ public static class AceScript
                 response["skippedCount"] = ctx.Skipped.Count;
             }
 
+            if (failure is WarningsRefused && rollbackFailed.Count == 0)
+            {
+                response["success"] = false;
+                response["stage"] = gate.Stage;
+                response["error"] = gate.Error;
+                response["hint"] = gate.Hint;
+                response["note"] = "All changes from this run were rolled back. The model is exactly as before.";
+                return response;
+            }
             if (failure != null)
             {
                 response["success"] = false;
@@ -361,14 +375,15 @@ public static class AceScript
             }
 
             response["success"] = true;
-            if (tracked && dryRun) Companion.ActivityHub.AddPending("execute_code", args, response, doc, activeView);
+            // A preview whose identical apply would refuse (new warnings not accepted, targets left) gets no Apply card.
+            if (tracked && dryRun && gate?.Refuse != true) Companion.ActivityHub.AddPending("execute_code", args, response, doc, activeView);
             else if (tracked && !fromPanel) Companion.ActivityHub.MarkAppliedByClaude(hash);
             if (mode == "readonly") { /* keep any note set above */ }
             else if (dryRun)
-                response["note"] = "Dry run: the script ran completely, then every change was rolled back. The model is unchanged.";
+                response["note"] = "Dry run: the script ran completely, then every change was rolled back. The model is unchanged." + (gate?.Outcome != null ? " " + gate.Line(true) : "");
             else
             {
-                response["note"] = $"Applied as ONE undo step named '{name}' (Ctrl+Z in Revit, or undo_last_claude_change).";
+                response["note"] = $"Applied as ONE undo step named '{name}' (Ctrl+Z in Revit, or undo_last_claude_change)." + (gate?.Outcome != null ? " " + gate.Line(false) : "");
                 // A committed run that changed nothing still marks the model modified (e.g. a health check in mode auto).
                 if (mode == "auto" && keptChanges && recording.ElementChanges == 0)
                     response["hint"] = NoElementChangedHint;
@@ -380,6 +395,9 @@ public static class AceScript
             foreach (var kv in rest) if (!ordered.ContainsKey(kv.Key)) ordered[kv.Key] = kv.Value;
             return ordered;
         }
+
+        /// <summary>Thrown inside the run when the warning gate refuses an apply: the normal failure path rolls everything back.</summary>
+        private sealed class WarningsRefused : Exception { public WarningsRefused() : base("new warnings") { } }
 
         internal const string NoElementChangedHint = "no element changed: run checks like this in mode readonly (the committed transaction still marks the model modified; " +
             "close_model closes a model ACE opened whose only changes were such runs).";

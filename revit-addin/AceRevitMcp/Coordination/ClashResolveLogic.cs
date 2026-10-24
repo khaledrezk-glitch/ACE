@@ -789,29 +789,11 @@ namespace AceRevitMcp.Coordination
         public static (int After, List<string> New, bool Ok) WarningsWithIds(IList<(string Text, long[] Ids)> existing, IList<(string Text, long[] Ids)> afterInModel,
             IList<(string Text, long[] Ids)> posted, out List<(string Text, long[] Ids)> freshItems)
         {
-            freshItems = new List<(string, long[])>();
+            // The counting is the shared "no new warnings" rule (Util/WarningLogic.Fresh), keyed here by description and ids.
             string Key((string Text, long[] Ids) w) => (w.Text ?? "") + "|" + string.Join(",", (w.Ids ?? new long[0]).OrderBy(i => i));
-            Dictionary<string, int> Count(IList<(string Text, long[] Ids)> l)
-            {
-                var d = new Dictionary<string, int>(StringComparer.Ordinal);
-                foreach (var w in l ?? new List<(string, long[])>()) d[Key(w)] = d.TryGetValue(Key(w), out var n) ? n + 1 : 1;
-                return d;
-            }
-            var before = Count(existing); var inModel = Count(afterInModel); var post = Count(posted);
-            var sample = new Dictionary<string, (string Text, long[] Ids)>(StringComparer.Ordinal);
-            foreach (var w in (afterInModel ?? new List<(string, long[])>()).Concat(posted ?? new List<(string, long[])>())) if (!sample.ContainsKey(Key(w))) sample[Key(w)] = w;
-            var total = 0;
-            var fresh = new List<string>();
-            foreach (var k in inModel.Keys.Union(post.Keys).OrderBy(k => k, StringComparer.Ordinal))
-            {
-                var n = Math.Max(inModel.TryGetValue(k, out var m) ? m : 0, post.TryGetValue(k, out var p) ? p : 0);
-                total += n;
-                var had = before.TryGetValue(k, out var h) ? h : 0;
-                if (n <= had) continue;
-                var w = sample[k];
-                freshItems.Add((w.Text, w.Ids ?? new long[0]));
-                fresh.Add(w.Text + (w.Ids != null && w.Ids.Length > 0 ? $" (elements: {string.Join(", ", w.Ids)})" : "") + (n - had > 1 ? $" x{n - had}" : ""));
-            }
+            var found = Util.WarningLogic.Fresh(existing ?? new List<(string, long[])>(), afterInModel, posted, Key, out var total);
+            freshItems = found.Select(f => (f.Item.Text, f.Item.Ids ?? new long[0])).ToList();
+            var fresh = found.Select(f => f.Item.Text + (f.Item.Ids != null && f.Item.Ids.Length > 0 ? $" (elements: {string.Join(", ", f.Item.Ids)})" : "") + (f.Extra > 1 ? $" x{f.Extra}" : "")).ToList();
             return (total, fresh, fresh.Count == 0);
         }
     }

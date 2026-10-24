@@ -191,3 +191,10 @@ that fail with "any open transaction phase" (RevitLinkType.LoadFrom, SaveAs, clo
 running it. Compile errors give line numbers in your code; results include scriptMs (timing).
 Warnings are auto-dismissed and returned; hard Revit errors roll the whole run back. A dialog Revit shows during a run is
 closed with Cancel (never confirmed) and returned in "dialogs": if it asked a question, ask the user.
+No new warnings: every apply (execute_revit_code, run_saved_script, parameter_fill, assign_worksets, workset_plan,
+view_membership_fill, purge_unused) is rolled back whole (refusal "new-warnings") when it adds a Revit warning the call did
+not accept; every reply says "New warnings: N". A dry run lists what the apply WOULD add and cannot be applied as it is:
+tell the user each warning (description, elements); only if they accept them, run the dry run again with
+accept_warnings: ["<description part or GUID>", ...] (accept_new_warnings: true only when they accept all), then the
+identical call. A warning-fix run gives fixes_warnings (saved fix scripts name theirs): it fails ("warnings-remain") when a
+named warning it touched is still there.

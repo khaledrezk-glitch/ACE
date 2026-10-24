@@ -30,7 +30,7 @@ import * as Deliverables from "./lib/deliverables.js";
 import * as Jobs from "./lib/jobs.js";
 import * as Methods from "./lib/methods.js";
 import os from "node:os";
-import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode } from "./lib/safety.js";
+import { fingerprint, gated, journal, outcomeOf, previews, requirePreview, screenCode, warningArgs, warningLines, warningRefused, warningsRefuse } from "./lib/safety.js";
 import { findScript, listScripts, saveScript } from "./lib/scripts.js";
 import { logCall, summarize } from "./lib/telemetry.js";
 import { buildReport, runChecks } from "./lib/diagnostics.js";
@@ -558,6 +558,23 @@ tool("select_elements", {
   annotations: { ...benign, idempotentHint: true },
 }, async (a) => text(await callRevit("select_elements", a)));
 
+// No new warnings (G24): every apply is rolled back by the add-in when it adds a Revit warning the call did not accept.
+// These are part of the change's identity: a preview that accepts warnings is applied by the identical call.
+const warningInputs = {
+  accept_warnings: z.array(z.string().min(1).max(300)).max(50).optional().describe("Only after the user accepted them: the new Revit warnings this change may add, by description (or part of it) or failure GUID, as the preview listed them; any other new warning still rolls the apply back (new-warnings). Give it to the dry run and the identical apply"),
+  accept_new_warnings: z.boolean().optional().describe("Only after the user accepted every new warning the preview listed: the apply keeps them all (give it to the dry run and the identical apply)"),
+};
+const fixInputs = {
+  fixes_warnings: z.array(z.string().min(1).max(300)).max(20).optional().describe("A warning-fix run: the warnings it fixes (description part or GUID). The reply says whether the ones it touched are gone; the apply rolls back when any remain (warnings-remain)"),
+};
+/** The words about warnings for a reply (refusal, new warnings, fix targets), added to its content. */
+function addWarningLines(out, result, dryRun) {
+  const lines = warningLines(result, dryRun);
+  if (lines.length) out.content.push({ type: "text", text: lines.join("\n") });
+  if (warningRefused(result)) out.isError = true;
+  return out;
+}
+
 const codeSchema = {
   code: z.string().describe("C# method body using the Revit API (see server instructions for what's in scope)."),
   mode: z.enum(["auto", "manual", "readonly", "no_transaction"]).optional().describe("auto (default) = one transaction; manual = your own transactions; readonly = always rolled back (use it for read-only checks: health checks, audits); no_transaction = no transaction group at all, only for APIs that refuse an open transaction (SaveAs, Close of another model, RevitLinkType.LoadFrom, TransmissionData): needs allow_risky, its dry run only compiles (nothing runs), and the run cannot be rolled back or undone as one step"),
@@ -573,6 +590,7 @@ const codeSchema = {
   expect_model: z.string().max(400).optional().describe("The model this code is meant for (title or path): refused, nothing run, when Revit's active model is another one (the user may have switched windows)"),
   preview_image: z.boolean().optional().describe("With dry_run: also return pictures (plan + 3D) of the area that would change, with the changed elements highlighted. Show them to the user before asking for confirmation. Use it for anything visual: placing, moving or creating elements."),
   background: z.boolean().optional().describe("Answer at once with a job id; the run goes on and job_status returns its full reply (also written to the journal). Use it for runs that open several models or may take over a minute. Same safety: an apply still needs the identical successful dry run first (run the dry run in the background too)"),
+  ...warningInputs, ...fixInputs,
 };
 
 /** A preview that changes the model must say what it does: the user reads it on the Apply card before approving. */
@@ -585,7 +603,7 @@ function requireExplanation(dry_run, explanation) {
 const APPLY_WHY = "Give 'explanation': one or two plain sentences saying what this change does. It is recorded in the user's activity journal.";
 
 /** The server's own checks of a code run, before Revit is asked: consent for no_transaction and risky code, the explanation. */
-function codeChecks({ code, mode, dry_run, inputs, explanation, allow_risky, compile_only }) {
+function codeChecks({ code, mode, dry_run, inputs, explanation, allow_risky, compile_only, ...rest }) {
   mode = mode || "auto";
   if (mode === "no_transaction" && !allow_risky && !compile_only)
     throw new RevitError("Blocked for safety: mode no_transaction runs the code with no transaction group, so nothing it does can be rolled back and it is not one undo step. " +
@@ -594,7 +612,9 @@ function codeChecks({ code, mode, dry_run, inputs, explanation, allow_risky, com
   const modifies = mode !== "readonly" && !compile_only;
   if (modifies) requireExplanation(dry_run, explanation);
   // explanation, plan and step are for people (the Apply card); they are not part of the change's identity.
-  return { mode, risky, modifies, key: fingerprint("code", { code, mode, inputs: inputs || {} }) };
+  // Accepted warnings and fix targets are: an apply that accepts warnings needs a preview that accepted the same ones.
+  const wa = warningArgs(rest);
+  return { mode, risky, modifies, wa, key: fingerprint("code", { code, mode, inputs: inputs || {}, ...(Object.keys(wa).length ? { warnings: wa } : {}) }) };
 }
 /** background: true refuses at once what the run itself would refuse: the checks above and an apply with no identical preview. */
 function precheckCode(a) {
@@ -602,12 +622,13 @@ function precheckCode(a) {
   if (modifies && !a.dry_run) { requirePreview(key); if (!a.explanation) throw new RevitError(APPLY_WHY); }
 }
 
-async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image, plan, step, expect_model }) {
-  let risky, modifies, key;
-  ({ mode, risky, modifies, key } = codeChecks({ code, mode, dry_run, inputs, explanation, allow_risky, compile_only }));
-  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, allow_risky: !!allow_risky, preview_image: !!(preview_image && dry_run), explanation, plan, step, ...(expect_model ? { expect_model } : {}) }, timeout_seconds ?? 300);
+async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_seconds, explanation, allow_risky, compile_only, preview_image, plan, step, expect_model, ...rest }) {
+  let risky, modifies, key, wa;
+  ({ mode, risky, modifies, key, wa } = codeChecks({ code, mode, dry_run, inputs, explanation, allow_risky, compile_only, ...rest }));
+  const send = () => callRevit("execute_code", { code, mode, dry_run, inputs, transaction_name, compile_only, allow_risky: !!allow_risky, preview_image: !!(preview_image && dry_run), explanation, plan, step, ...(expect_model ? { expect_model } : {}), ...wa }, timeout_seconds ?? 300);
+  // A preview whose identical apply would refuse (new warnings not accepted, a fix run's targets left) is not one to apply.
   const result = !modifies ? await send() : await gated(key, { apply: !dry_run, explanation, why: APPLY_WHY },
-    send, (r) => !!r?.success);
+    send, (r) => !!r?.success && !warningsRefuse(r));
   // Preview pictures travel as image blocks, not as base64 inside the JSON text.
   const pictures = Array.isArray(result?.previewImages) ? result.previewImages : [];
   if (result && pictures.length) result.previewImages = pictures.map((p) => `${p.view} image attached`);
@@ -639,9 +660,12 @@ async function runCode({ code, mode, dry_run, inputs, transaction_name, timeout_
     if (p?.base64) out.content.push({ type: "image", data: p.base64, mimeType: p.mimeType || "image/png" });
   }
   if (pictures.length) out.content.push({ type: "text", text: `The ${pictures.map((p) => p.view).join(" and ")} picture(s) above show the previewed change (changed elements highlighted in red). Describe what they show to the user.` });
+  if (modifies) addWarningLines(out, result, dry_run);
   if (result && result.success === false) {
     out.isError = true;
     if (result.stage === "compile") out.content.push({ type: "text", text: "Tip: check uncertain members with revit_api_lookup before retrying." });
+  } else if (modifies && dry_run && warningsRefuse(result)) {
+    out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged, and this preview cannot be applied as it is (see the warnings above). Tell the user which warnings the change would add or leave; only if they accept them, preview again as said, then apply the identical call." });
   } else if (modifies && dry_run && result?.previewable === false) {
     // Not-undoable calls (save, sync, export, rename workset...) and mode no_transaction: compiled and screened, not executed; nothing to preview.
     out.content.push({ type: "text", text: `${result.warning ?? "Not previewed: this script cannot be undone."} Tell the user exactly what the real run would do and that it cannot be rolled back; only if they agree, run the identical call with dry_run: false and allow_risky: true.` });
@@ -1054,6 +1078,7 @@ tool("assign_worksets", {
     explanation: z.string().max(600).optional(),
     plan: z.array(z.string().max(120)).max(15).optional(), step: z.number().int().min(1).optional(),
     timeout_seconds: z.number().int().min(10).max(3600).optional().describe("Default 900 (large models)"),
+    ...warningInputs,
   },
   annotations: writes,
 }, async ({ check_only, dry_run, explanation, timeout_seconds, rules_file, plan, step, action, ...a }) => {
@@ -1065,14 +1090,14 @@ tool("assign_worksets", {
   const req = {
     rules: fm.rules, default_workset: a.default_workset ?? src.default_workset ?? "",
     only_workset1: !!a.only_workset1, create_missing: !!a.create_missing,
-    rules_name: src.name || "rules", rules_source: src.file,
+    rules_name: src.name || "rules", rules_source: src.file, ...warningArgs(a),
   };
   const seconds = timeout_seconds ?? 900;
   if (check_only) return withLine(text(await callRevit("assign_worksets", { ...req, check_only: true }, seconds)), fm.line);
   requireExplanation(dry_run, explanation);
   const result = await gated(fingerprint("worksets", req),
     { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    () => callRevit("assign_worksets", { ...req, dry_run: !!dry_run, explanation, plan, step }, seconds), (r) => r?.success === true);
+    () => callRevit("assign_worksets", { ...req, dry_run: !!dry_run, explanation, plan, step }, seconds), (r) => r?.success === true && !warningsRefuse(r));
   if (result?.alreadyApplied) return text(result);
   if (["rejected", "wrong_model"].includes(result?.stage)) return { isError: true, content: [{ type: "text", text: result.error }] };
   if (!dry_run && result?.success) briefCache.clear();
@@ -1081,6 +1106,7 @@ tool("assign_worksets", {
   // The after-check (register #37): per rule target and category, read after the commit; a failed one is NOT done.
   const acT = [Worksets.afterCheckText(result?.afterCheck, { mode: dry_run ? "dry run" : "apply" }), dry_run ? "" : Worksets.notDoneLine(result)].filter(Boolean).join("\n");
   if (acT) out.content.push({ type: "text", text: acT });
+  addWarningLines(out, result, dry_run);
   if (!dry_run && result?.stage === "incomplete") out.isError = true;
   return out;
 });
@@ -1367,6 +1393,7 @@ tool("workset_plan", {
     max_ids: z.number().int().min(0).max(500).optional(),
     check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().max(600).optional(),
     report_dir: z.string().optional(), timeout_seconds: z.number().int().min(10).max(3600).optional(),
+    ...warningInputs,
   },
   annotations: writes,
 }, async ({ action, check_only, dry_run, explanation, timeout_seconds, ...a }) => {
@@ -1576,7 +1603,9 @@ async function planExecute(o) {
     return out;
   }
   requireExplanation(dry_run, explanation);
-  const reqKey = fingerprint(`${command}.request`, ident);
+  // Accepted warnings (G24) are part of the request and the change: the apply must accept what its preview accepted.
+  const wa = warningArgs(a);
+  const reqKey = fingerprint(`${command}.request`, Object.keys(wa).length ? { ...ident, warnings: wa } : ident);
   const prev = dry_run ? null : state.get(reqKey);
   if (!dry_run) { if (!prev) requirePreview(`none:${reqKey}`); requirePreview(prev.key); }
   const session = await pinSession();
@@ -1607,11 +1636,12 @@ async function planExecute(o) {
     return out;
   }
   if (!o.planOf(pre).length) { const out = text(pre); out.content.push({ type: "text", text: `${o.render(pre, "check", model, false)}\n${o.nothing(model)} No dry run needed.` }); return out; }
-  const key = fingerprint(`${command}.plan`, { model, req: ident, plan: o.identity(pre) });
+  const key = fingerprint(`${command}.plan`, { model, req: ident, plan: o.identity(pre), ...(Object.keys(wa).length ? { warnings: wa } : {}) });
   if (prev && prev.key !== key) return stop([ClashResolve.PLAN_CHANGED], `Blocked in ${model}; nothing changed:`);
-  const ok = (r) => r?.success === true && !o.blocksOf(r).length && r?.verify?.ok !== false;   // a dry run is always rolled back: its self-check decides
+  // A dry run is always rolled back: its self-check decides, and the warnings it would add (an apply refuses unaccepted ones).
+  const ok = (r) => r?.success === true && !o.blocksOf(r).length && r?.verify?.ok !== false && !warningsRefuse(r);
   const result = await gated(key, { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    () => callRevit(command, { ...req, check_only: false, dry_run: !!dry_run, explanation, ...(plan ? { plan } : {}), ...(step ? { step } : {}), expect_model: dry_run ? model : prev.model, ...(!dry_run && prev.planHash ? { expect_plan: prev.planHash } : {}) }, timeout), ok);
+    () => callRevit(command, { ...req, check_only: false, dry_run: !!dry_run, explanation, ...(plan ? { plan } : {}), ...(step ? { step } : {}), expect_model: dry_run ? model : prev.model, ...(!dry_run && prev.planHash ? { expect_plan: prev.planHash } : {}), ...wa }, timeout), ok);
   if (dry_run && ok(result)) state.set(reqKey, { key, model: result.model ?? model, planHash: result.planHash ?? pre.planHash ?? null });
   if (!dry_run) state.delete(reqKey);
   if (result?.alreadyApplied) return text(result);
@@ -1620,12 +1650,12 @@ async function planExecute(o) {
   if (result?.stage === "blocked" || (o.blocksOf(result).length && result?.success !== true))
     return stop(o.blocksOf(result).length ? o.blocksOf(result) : [{ what: "the plan", why: result?.error ?? "refused by the add-in" }], `Blocked in ${model}: ${result?.error ?? "nothing changed"}`);
   const rolledBack = !dry_run && o.rolledBackOf(result);
-  const outcome = rolledBack ? "self-check failed, rolled back" : outcomeOf(result, dry_run);
-  const runFile = record({ outcome, plan: o.planOf(result), done: result?.done, wouldDo: result?.wouldDo, verify: result?.verify });
+  const outcome = rolledBack ? (warningRefused(result) ? `${result.stage}, rolled back` : "self-check failed, rolled back") : outcomeOf(result, dry_run);
+  const runFile = record({ outcome, plan: o.planOf(result), done: result?.done, wouldDo: result?.wouldDo, verify: result?.verify, newWarnings: result?.newWarnings, targetedWarnings: result?.targetedWarnings });
   journal({ title: `${dry_run ? "Preview" : "Change"}: ${name} in ${model} (${o.planOf(result).length} step(s))`, explanation, outcome, details: { plan: o.planOf(result).slice(0, 30), verify: result?.verify, done: result?.done } });
   if (!dry_run && result?.success && !rolledBack) briefCache.clear();
   const out = text(result);
-  const lines = [o.render(result, dry_run ? "dry run" : "apply", model, rolledBack)];
+  const lines = [o.render(result, dry_run ? "dry run" : "apply", model, rolledBack), ...warningLines(result, dry_run)];
   if (dry_run) lines.push(ok(result) ? "PREVIEW ONLY - the model is unchanged. Show the user the plan and ask for confirmation. Apply with the identical call (without dry_run): ONE approval, ONE undo step."
     : "This dry run cannot be applied (see above). Fix the cause, then run the dry run again.");
   lines.push(`Run record: ${runFile}${dirNote ? `\n${dirNote}` : ""}`);
@@ -1679,6 +1709,7 @@ tool("view_membership_fill", {
     check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().optional(),
     plan: z.string().optional(), step: z.string().optional(),
     max_ids: z.number().int().min(0).max(500).optional(), timeout_seconds: z.number().int().min(10).max(3600).optional(),
+    ...warningInputs,
   },
   annotations: writes,
 }, async ({ check_only, dry_run, explanation, plan, step, timeout_seconds, ...a }) => {
@@ -1717,6 +1748,7 @@ tool("purge_unused", {
     check_only: z.boolean().optional(), dry_run: z.boolean().optional(), explanation: z.string().optional(),
     plan: z.string().optional(), step: z.string().optional(), report_dir: z.string().optional(), vault: z.string().optional(),
     max_ids: z.number().int().min(0).max(500).optional(), timeout_seconds: z.number().int().min(30).max(3600).optional(),
+    ...warningInputs,
   },
   annotations: writes,
 }, async ({ check_only, dry_run, explanation, plan, step, timeout_seconds, ...a }) => {
@@ -2260,7 +2292,7 @@ function paramAnswer(src, result, a, { dryRun, fill, plan, draftOnly = 0, rolled
   };
   const out = text(body);
   out.content.push({ type: "text", text: summary + (large ? `\nThe full table (${cells} model x row cells) is in the report files, not shown here: ${reports.join(", ")}` : reports ? `\nReport: ${reports.join(", ")}` : "") });
-  if (fill && dryRun && result?.success) out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Show the user the plan below and ask for confirmation; then repeat the identical parameter_fill call without dry_run (ONE approval, ONE undo step for this model)." });
+  if (fill && dryRun && result?.success && !warningsRefuse(result)) out.content.push({ type: "text", text: "PREVIEW ONLY - the model is unchanged. Show the user the plan below and ask for confirmation; then repeat the identical parameter_fill call without dry_run (ONE approval, ONE undo step for this model)." });
   if (plan) out.content.push({ type: "text", text: "FILL PLAN (read-only, no transaction): counts of what a fill would set. To fill: parameter_fill action fill with dry_run: true, then the identical call after the user confirms." });
   return out;
 }
@@ -2446,7 +2478,7 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
     derive: mine.derive, bind: mine.bind, ...(mine.rebind.length ? { rebind: mine.rebind } : {}), max_ids: a.max_ids ?? 20, expect_version: VERSION,
     ...(a.test_force_verify_mismatch ? { test_force_verify_mismatch: true } : {}) };
   const key = fingerprint("parameter_fill.plan", { model, rows: req.rows, scope: req.scope, fill: req.fill, value: req.value, na: req.na_values, derive: req.derive, bind: req.bind, rebind: req.rebind,
-    force: !!a.test_force_verify_mismatch, files: src.hash });
+    force: !!a.test_force_verify_mismatch, files: src.hash, ...(Object.keys(warningArgs(a)).length ? { warnings: warningArgs(a) } : {}) });
   if (prev && prev.key !== key) {
     const b = [{ what: "the apply", why: `the model changed since the dry run, so the plan is different now (${ParamExec.planLine(mine)}): this exact change has not been previewed`, how: "run the dry run again, show the user the new plan, then apply" }];
     record({ outcome: "blocked", blocked: b });
@@ -2455,8 +2487,8 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
   const expect = dry_run ? model : prev?.model;   // the dry run and the apply both name the model they are for
   const result = await gated(key,
     { apply: !dry_run, explanation, why: "Give 'explanation': a plain sentence describing this change for the activity journal." },
-    async () => ParamSources.normaliseAnswer(await callRevit("parameter_fill", { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step, ...(dry_run ? { impact: true } : {}), ...(expect ? { expect_model: expect } : {}) }, 900)),
-    (r) => r?.success === true);
+    async () => ParamSources.normaliseAnswer(await callRevit("parameter_fill", { ...req, check_only: false, dry_run: !!dry_run, explanation, plan, step, ...(dry_run ? { impact: true } : {}), ...(expect ? { expect_model: expect } : {}), ...warningArgs(a) }, 900)),
+    (r) => r?.success === true && !warningsRefuse(r));
   if (dry_run && result?.success) execState.set(reqKey, { key, hash: src.hash, files: src.fileHashes, model: result.model ?? model });
   if (!dry_run) execState.delete(reqKey);
   if (result?.alreadyApplied) return text(result);
@@ -2517,9 +2549,11 @@ async function paramExecute(src, a, { dry_run, explanation, plan, step }) {
     : `Self-check FAILED: ${v.mismatchCount ?? v.mismatches?.length} mismatch(es); the whole plan was rolled back, nothing changed. ${(v.mismatches ?? []).slice(0, 5).map((m) => `${m.name ?? m.key}${m.id != null ? ` #${m.id}` : ""}: expected ${JSON.stringify(m.expected)}, found ${JSON.stringify(m.actual)}`).join("; ")}`);
   if (items.length) lines.push(`Requirement items${rolledBack ? " (unchanged, rolled back)" : ""}: ${items.map((i) => `${i.id} ${i.status}`).join("; ")}.`);
   if (others.length) lines.push(`Other open models (read-only plans; switch to the model and run the same call, one approval each): ${others.join("; ")}`);
+  lines.push(...warningLines(result, dry_run));
+  if (dry_run && warningsRefuse(result)) lines.push("This dry run cannot be applied as it is (see the warnings above).");
   lines.push(`Missing register: ${registerFile}${evidence ? `\nEvidence: ${evidence}` : ""}${dirNote ? `\n${dirNote}` : ""}`);
   out.content.push({ type: "text", text: lines.join("\n") });
-  if (rolledBack) out.isError = true;
+  if (rolledBack || (dry_run && warningsRefuse(result))) out.isError = true;
   return out;
 }
 const uniqList = (l) => [...new Set(l)];
@@ -2574,6 +2608,7 @@ tool("parameter_fill", {
     dry_run: z.boolean().optional(),
     explanation: z.string().max(600).optional(),
     plan: z.array(z.string().max(120)).max(15).optional(), step: z.number().int().min(1).optional(),
+    ...warningInputs,
   },
   annotations: writes,
 }, async ({ action, dry_run, explanation, plan, step, ...a }) => {
@@ -2795,18 +2830,22 @@ tool("run_saved_script", {
     allow_risky: z.boolean().optional(),
     option_label: z.string().max(40).optional().describe("For several previews to choose from: e.g. \"Option A - 10 m2\"; it leads the Apply card title"),
     plan: codeSchema.plan, step: codeSchema.step, background: codeSchema.background,
+    ...warningInputs,
   },
   annotations: writes,
   precheck: (a) => precheckCode(savedScriptRun(a)),
 }, (a) => runCode(savedScriptRun(a)));
 
 /** run_saved_script's call as execute_revit_code's arguments. */
-function savedScriptRun({ name, inputs, dry_run, preview_image, timeout_seconds, explanation, allow_risky, option_label, plan, step }) {
+function savedScriptRun({ name, inputs, dry_run, preview_image, timeout_seconds, explanation, allow_risky, option_label, plan, step, accept_warnings, accept_new_warnings }) {
   const script = findScript(name);
+  // A warning-fix script names the warnings it fixes in its header (// @fixes_warnings: a; b): the run must leave none it touched.
+  const fixes = (script.fixes_warnings ?? "").split(";").map((x) => x.trim()).filter(Boolean);
   return {
     code: fs.readFileSync(script.file, "utf8"),
     mode: script.mode || "auto",
-    dry_run, preview_image, inputs, timeout_seconds, explanation, allow_risky, plan, step,
+    dry_run, preview_image, inputs, timeout_seconds, explanation, allow_risky, plan, step, accept_warnings, accept_new_warnings,
+    ...(fixes.length ? { fixes_warnings: fixes } : {}),
     // The name is the card title in the ACE panel: the option label first, then every input, so options differ.
     transaction_name: `Claude: ${option_label ? `${option_label} - ` : ""}${script.name}${inputs && Object.keys(inputs).length
       ? ` (${Object.entries(inputs).map(([k, v]) => `${k.replace(/_/g, " ")} ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ")})`
