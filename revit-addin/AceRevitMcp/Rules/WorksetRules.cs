@@ -238,7 +238,7 @@ namespace AceRevitMcp.Rules
             var elements = Candidates(doc);
             var byTarget = new Dictionary<string, int>(); var noRule = new Dictionary<string, int>();
             var moved = new List<long>(); var wrong = new List<string>(); var blocked = new List<long>();
-            int correct = 0, skippedNotWs1 = 0, unpinRepin = 0;
+            int correct = 0, skippedNotWs1 = 0, unpinRepin = 0, targetMissing = 0;
             _planned.Clear(); _skips.Clear(); _onlyWorkset1 = opt.OnlyWorkset1;
             void Plan(string target, string category) { if (!_planned.TryGetValue(target, out var d)) _planned[target] = d = new Dictionary<string, int>(StringComparer.Ordinal); d[category] = d.TryGetValue(category, out var n) ? n + 1 : 1; }
             foreach (var e in elements)
@@ -250,7 +250,15 @@ namespace AceRevitMcp.Rules
                 var (target, rule, typeName) = t.Value;
                 byTarget[target] = byTarget.TryGetValue(target, out var n1) ? n1 + 1 : 1;
                 var ws = Named(target);
-                if (ws == null) { if (!opt.PlanOnly) Plan(target, e.Category.Name); continue; }
+                // Target workset missing: the element is not where the rules put it. A check counts it as wrong (a requirement
+                // must not read "met" before the BEP worksets exist); an assign cannot move it (worksetsMissing says why).
+                if (ws == null)
+                {
+                    targetMissing++;
+                    if (!opt.PlanOnly) { Plan(target, e.Category.Name); continue; }
+                    if (wrong.Count < 60) wrong.Add($"{e.Category.Name} {e.Id.Value} ({typeName}): {table.GetWorkset(current)?.Name} -> {target} (workset missing){(rule > 0 ? $" [rule {rule}]" : " [default]")}");
+                    moved.Add(e.Id.Value); continue;
+                }
                 if (ws.Id == current) { correct++; continue; }
                 if (!opt.PlanOnly) Plan(target, e.Category.Name);
                 if (wrong.Count < 60) wrong.Add($"{e.Category.Name} {e.Id.Value} ({typeName}): {table.GetWorkset(current)?.Name} -> {target}{(rule > 0 ? $" [rule {rule}]" : " [default]")}");
@@ -274,6 +282,7 @@ namespace AceRevitMcp.Rules
                 ["byWorkset"] = Dict(byTarget),
                 ["noMatchingRule"] = Dict(noRule),
                 ["worksetsMissing"] = Arr(missing),
+                ["onMissingTarget"] = targetMissing,
                 ["worksetsCreated"] = Arr(created),
                 ["inUseByOthers"] = Arr(blocked.Take(100)),
                 ["pinnedUnpinRepin"] = unpinRepin,
