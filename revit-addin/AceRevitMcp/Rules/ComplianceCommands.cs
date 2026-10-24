@@ -42,6 +42,8 @@ namespace AceRevitMcp.Rules
             };
             var o = Compliance.ToJson(filtered, max);
             o["ranNow"] = ranNow;
+            // Read back from disk when the model opened (DM1): the model may have changed since; run: true checks it now.
+            if (!ranNow && StatusStore.For(doc.Title)?.ComplianceFromDisk == true) o["fromEarlierSession"] = true;
             o["outOfDate"] = ranNow ? null : Compliance.OutOfDate(run, rules);
             o["shown"] = System.Math.Min(max, filtered.Results.Count);
             o["of"] = filtered.Results.Count;

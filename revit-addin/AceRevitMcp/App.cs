@@ -52,6 +52,7 @@ namespace AceRevitMcp
                 Dispatcher = dispatcher;
                 application.ControlledApplication.DocumentChanged += ChangeTracker.OnDocumentChanged;
                 Tracking.ChangeTracking.Attach(application);
+                Rules.ReAudit.Attach(application);
                 Server = new BridgeServer(Config, dispatcher, application.ControlledApplication.VersionNumber);
                 InstanceRegistry.Attach(application);
                 Server.Start();
@@ -62,6 +63,8 @@ namespace AceRevitMcp
                 // After a reload the documents are already open: the instance file names them now, not at the next switch.
                 var ui = PayloadEntry.Get<UIApplication>("uiApplication");
                 if (ui != null) InstanceRegistry.Update(ui);
+                // ... and the Companion shows their last compliance run at once (DM1).
+                if (ui != null) foreach (Document d in ui.Application.Documents) Rules.ComplianceStore.LoadInto(d);
                 // What the build before this one left in the loader's store (plain data): models ACE opened, the last
                 // undoable Claude run.
                 Commands.ModelFileCommands.Restore(PayloadEntry.Store);
@@ -97,6 +100,7 @@ namespace AceRevitMcp
             Dispatcher = null;
             if (application != null) Step("document events", () => application.ControlledApplication.DocumentChanged -= ChangeTracker.OnDocumentChanged);
             Step("change tracking", Tracking.ChangeTracking.Detach);
+            Step("re-audit", Rules.ReAudit.Detach);
             Step("models opened by ACE", () => Commands.ModelFileCommands.SaveAndForget(PayloadEntry.Store));
             Step("undo state", () => ChangeTracker.Save(PayloadEntry.Store));
             if (application != null) Step("companion", () => Companion.CompanionPane.Unregister(application));

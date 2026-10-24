@@ -67,6 +67,7 @@ namespace AceRevitMcp.Companion
             try
             {
                 var doc = e.Document;
+                Rules.ComplianceStore.LoadInto(doc);   // the last compliance run, once per model (DM1)
                 var uidoc = new UIDocument(doc);
                 Update(doc, uidoc.Selection.GetElementIds());
             }

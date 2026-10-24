@@ -68,6 +68,7 @@ class P {
     LoaderTests.Run();
     WarningTests.Run();
     SelfTestTests.Run(a);
+    CompanionTests.Run();
     Console.WriteLine("tracker test passed");
   }
 }
