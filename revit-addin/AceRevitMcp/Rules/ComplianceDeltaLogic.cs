@@ -117,5 +117,50 @@ namespace AceRevitMcp.Rules
             var line = $"Since last audit ({When(auditLocal, nowLocal)}): {c}, {N(notMet)} not met";
             return savedAfterAudit ? line + " · the file was saved after this audit: Re-run audit to be sure" : line;
         }
+    
+        // ---- the re-audit band (DM3) ------------------------------------------------------------------------
+
+        /// <summary>The band after an automatic re-audit: its words and tone (better, worse, same, failed, skipped).</summary>
+        public sealed class Band
+        {
+            public string Text, Tone, Reason, RunId;
+            public DateTime At;
+        }
+
+        private static string Lead(string reason) => reason switch { "undo" => "After undo (Ctrl+Z): ", "redo" => "After redo (Ctrl+Y): ", _ => "" };
+        private static string What(string reason) => reason switch { "undo" => "the undo", "redo" => "the redo", _ => "your apply" };
+        private static string Reqs(int n) => n == 1 ? "requirement" : "requirements";
+
+        /// <summary>
+        /// "5 more requirements met since the last audit (43% to 61%) · 1 undo step (Ctrl+Z)", or "N fewer ..." (tone worse),
+        /// or "no change"; after an undo or a redo it says so and has no undo step.
+        /// </summary>
+        public static Band BandFor(Compliance.Run before, Compliance.Run after, string reason, DateTime at)
+        {
+            var d = Compare(before, after);
+            var pct = d.PercentBefore.HasValue && d.PercentAfter.HasValue ? (d.PercentBefore == d.PercentAfter ? $" ({d.PercentAfter}%)" : $" ({d.PercentBefore}% to {d.PercentAfter}%)") : "";
+            var undo = reason == "apply" ? " · 1 undo step (Ctrl+Z)" : "";
+            string text, tone;
+            if (before == null) { text = $"{Lead(reason)}Re-audited after {What(reason)}: {Count(after, "met")} {Reqs(Count(after, "met"))} met{(d.PercentAfter.HasValue ? $" ({d.PercentAfter}%)" : "")}{undo}"; tone = "same"; }
+            else if (d.Net > 0) { text = $"{Lead(reason)}{d.Net} more {Reqs(d.Net)} met since the last audit{pct}{undo}"; tone = "better"; }
+            else if (d.Net < 0) { text = $"{Lead(reason)}{-d.Net} fewer {Reqs(-d.Net)} met since the last audit{pct}{undo}"; tone = "worse"; }
+            else { text = $"{Lead(reason)}Re-audited after {What(reason)}: no change in requirements met{pct}{undo}"; tone = "same"; }
+            if (d.Net >= 0 && d.NewlyNotMet > 0) { text += $" · {d.NewlyNotMet} newly not met"; tone = "worse"; }
+            return new Band { Text = text, Tone = tone, Reason = reason, RunId = after?.Id, At = at };
+        }
+
+        /// <summary>The band when the re-audit could not run: the change itself stands.</summary>
+        public static Band Failed(string reason, string error, DateTime at) => new Band
+        {
+            Text = $"Re-audit after {What(reason)} failed: {(string.IsNullOrWhiteSpace(error) ? "unknown error" : error.Trim().TrimEnd('.'))}. The change itself stands; press Re-run audit.",
+            Tone = "failed", Reason = reason, At = at,
+        };
+
+        /// <summary>The band when the model check is too slow to run by itself after every change.</summary>
+        public static Band Skipped(string reason, double seconds, DateTime at) => new Band
+        {
+            Text = $"Not re-audited after {What(reason)}: the model check took {seconds.ToString("0", En)} s last time. Press Re-run audit when ready.",
+            Tone = "skipped", Reason = reason, At = at,
+        };
     }
 }

@@ -59,6 +59,7 @@ static class CompanionTests {
     Check(newest.SequenceEqual(new[] { "r/20261020T081000Z-ab12.json", "r/20261019T170000Z-0001.json" }), "vault fallback: the two newest run records, newest first");
 
     Deltas();
+    Bands();
     if (failures > 0) { Console.WriteLine($"companion test FAILED ({failures})"); Environment.Exit(1); }
   }
 
@@ -93,5 +94,31 @@ static class CompanionTests {
     Check(ComplianceDeltaLogic.SinceAuditText(tue, now, 0, 9, false, false) == "Since last audit (Tue 17:10): 0 changes, 9 not met", "since last audit line");
     Check(ComplianceDeltaLogic.SinceAuditText(tue, now, 1, 2140, true, true) == "Since last audit (Tue 17:10): 1 change since the model opened, 2,140 not met · the file was saved after this audit: Re-run audit to be sure", "since last audit line for a run read back from disk, file saved since");
     Check(ComplianceDeltaLogic.LocalTime("2026-10-20T15:10:00Z") == new DateTime(2026, 10, 20, 15, 10, 0, DateTimeKind.Utc).ToLocalTime() && ComplianceDeltaLogic.LocalTime("junk") == null, "run time read as local time");
+  }
+
+  // DM3: the band after the automatic re-audit.
+  static void Bands() {
+    JsonObject R(string id, int met, int notMet) => Record(id, "2026-10-20T15:10:00Z",
+      Enumerable.Range(1, met).Select(i => ($"TST-M{i}", "met", (int?)0, "k" + i)).Concat(Enumerable.Range(1, notMet).Select(i => ($"TST-N{i}", "not-met", (int?)5, "n" + i))).ToArray());
+    var at = new DateTime(2026, 10, 20, 15, 30, 0);
+    var b43 = ComplianceStoreLogic.ParseRun(Record("a", "2026-10-20T15:10:00Z", ("TST-1", "met", 0, "k1"), ("TST-2", "not-met", 9, "k2"), ("TST-3", "not-met", 4, "k3"), ("TST-4", "not-met", 1, "k4")));
+    var b100 = ComplianceStoreLogic.ParseRun(Record("b", "2026-10-20T15:30:00Z", ("TST-1", "met", 0, "k1"), ("TST-2", "met", 0, "k2"), ("TST-3", "met", 0, "k3"), ("TST-4", "met", 0, "k4")));
+    var better = ComplianceDeltaLogic.BandFor(b43, b100, "apply", at);
+    Check(better.Text == "3 more requirements met since the last audit (25% to 100%) · 1 undo step (Ctrl+Z)" && better.Tone == "better" && better.RunId == "b", "band: more met after an apply, with the undo step");
+    var undo = ComplianceDeltaLogic.BandFor(b100, b43, "undo", at);
+    Check(undo.Text == "After undo (Ctrl+Z): 3 fewer requirements met since the last audit (100% to 25%)" && undo.Tone == "worse", "band: fewer met after undo, amber, no undo step");
+    var redo = ComplianceDeltaLogic.BandFor(b43, b100, "redo", at);
+    Check(redo.Text.StartsWith("After redo (Ctrl+Y): 3 more requirements met") && !redo.Text.Contains("undo step"), "band: redo");
+    var one = ComplianceDeltaLogic.BandFor(ComplianceStoreLogic.ParseRun(R("c", 1, 1)), ComplianceStoreLogic.ParseRun(Record("d", "2026-10-20T15:30:00Z", ("TST-M1", "met", 0, "k1"), ("TST-N1", "met", 0, "n1"))), "apply", at);
+    Check(one.Text.StartsWith("1 more requirement met since"), "band: one requirement, singular");
+    var same = ComplianceDeltaLogic.BandFor(b43, b43, "apply", at);
+    Check(same.Text == "Re-audited after your apply: no change in requirements met (25%) · 1 undo step (Ctrl+Z)" && same.Tone == "same", "band: no change");
+    var mixed = ComplianceDeltaLogic.BandFor(b43, ComplianceStoreLogic.ParseRun(Record("e", "2026-10-20T15:30:00Z", ("TST-1", "not-met", 2, "k1"), ("TST-2", "met", 0, "k2"), ("TST-3", "met", 0, "k3"), ("TST-4", "not-met", 1, "k4"))), "apply", at);
+    Check(mixed.Text.StartsWith("1 more requirement met") && mixed.Text.EndsWith(" · 1 newly not met") && mixed.Tone == "worse", "band: net better but one newly not met is said, amber");
+    var first = ComplianceDeltaLogic.BandFor(null, b100, "apply", at);
+    Check(first.Text == "Re-audited after your apply: 4 requirements met (100%) · 1 undo step (Ctrl+Z)", "band: no earlier run");
+    var failed = ComplianceDeltaLogic.Failed("apply", "Revit is busy.", at);
+    Check(failed.Text == "Re-audit after your apply failed: Revit is busy. The change itself stands; press Re-run audit." && failed.Tone == "failed" && failed.RunId == null, "band: failure says so, the change stands");
+    Check(ComplianceDeltaLogic.Skipped("undo", 41.6, at).Text == "Not re-audited after the undo: the model check took 42 s last time. Press Re-run audit when ready.", "band: too slow to repeat by itself");
   }
 }

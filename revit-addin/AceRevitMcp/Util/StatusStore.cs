@@ -43,6 +43,8 @@ namespace AceRevitMcp.Util
             public bool ComplianceFromDisk;
             /// <summary>For a run read back from disk: the model's file was saved after that audit (changes made then are not counted).</summary>
             public bool SavedAfterAudit;
+            /// <summary>The band of the last automatic re-audit (after an apply, undo or redo); null when none ran.</summary>
+            public Rules.ComplianceDeltaLogic.Band ReAudit;
 
             public readonly ClashSession Session = new ClashSession();
         }
@@ -99,6 +101,12 @@ namespace AceRevitMcp.Util
             if (!fromDisk) e.SavedAfterAudit = false;
             if (!fromDisk && run != null) ChangeTracker.ResetSinceAudit(model);
             Raise();
+        }
+
+        /// <summary>The automatic re-audit's band (DM3), shown on Home and on the Compliance tab.</summary>
+        public static void PublishReAudit(string model, Rules.ComplianceDeltaLogic.Band band)
+        {
+            var e = Entry(model); e.ReAudit = band; Raise();
         }
 
         private static void Raise() { try { Changed?.Invoke(); } catch { } }

@@ -40,6 +40,7 @@ namespace AceRevitMcp.Companion
         private readonly TextBox _promptSearch = new TextBox(), _resultSearch = new TextBox();
         private readonly DispatcherTimer _clock = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         private bool _renderQueued, _changesOnly, _modeUpdating;
+        private Rules.ComplianceDeltaLogic.Band _seenBand;
         private readonly HashSet<string> _collapsed = new HashSet<string>();
 
         public CompanionView()
@@ -174,6 +175,12 @@ namespace AceRevitMcp.Companion
             var waiting = ActivityHub.Waiting.ToList();
             // Bring new previews to the user's attention.
             if (waiting.Any(w => DateTime.Now - w.PreviewedAt < TimeSpan.FromSeconds(5)) && _current != "Approvals") _current = "Approvals";
+            // ... and a fresh re-audit after an apply / undo / redo (DM3) to the Compliance tab, once per band.
+            else if (StatusStore.For(ActivityHub.Context.Document)?.ReAudit is { } band && band != _seenBand)
+            {
+                _seenBand = band;
+                if (DateTime.Now - band.At < TimeSpan.FromSeconds(10) && waiting.Count == 0 && _current is "Approvals" or "Home") _current = "Compliance";
+            }
             foreach (var (name, b) in _navButtons)
             {
                 var count = name == "Approvals" ? waiting.Count : name == "Results" ? ActivityHub.Results.Count
@@ -279,6 +286,7 @@ namespace AceRevitMcp.Companion
                     Foreground = _c.Muted, FontSize = 11, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0),
                 });
             panel.Children.Add(glance);
+            if (compliance != null && ReAuditBand(status) is UIElement reaudit) panel.Children.Insert(panel.Children.IndexOf(glance), reaudit);
 
             // Quick actions (run in Revit straight away; no Claude needed)
             var actions = Card();
@@ -387,6 +395,7 @@ namespace AceRevitMcp.Companion
                 return panel;
             }
 
+            if (ReAuditBand(StatusStore.For(model)) is UIElement reaudit) panel.Children.Add(reaudit);
             // Header: what the model was audited against, when, and the overall picture.
             if (_against.RunId != run.Id) _against = (run.Id, AgainstText(run.Vault), AgainstDocs(run.Vault));
             var previous = StatusStore.For(model)?.PreviousCompliance;
@@ -501,6 +510,33 @@ namespace AceRevitMcp.Companion
                 b.Children.Add(show);
             }
             return card;
+        }
+
+        // The re-audit band (DM3): shown while it describes the run on screen (or says why there is no new one), for 30 minutes.
+        private static readonly Brush Amber = new SolidColorBrush(Color.FromRgb(0xE8, 0xA3, 0x17));
+
+        private UIElement ReAuditBand(StatusStore.ModelStatus status)
+        {
+            var band = status?.ReAudit;
+            if (band == null || DateTime.Now - band.At > TimeSpan.FromMinutes(30)) return null;
+            var current = band.Tone is "failed" or "skipped" || band.RunId == status.Compliance?.Id;
+            if (!current) return null;
+            var colour = band.Tone switch { "better" => new SolidColorBrush(Coordination.ClashColours.Green), "worse" => Amber, "failed" => _c.Rule, _ => _c.Border };
+            var p = new StackPanel();
+            p.Children.Add(new TextBlock { Text = band.Text, TextWrapping = TextWrapping.Wrap, Foreground = _c.Text, FontWeight = FontWeights.SemiBold });
+            p.Children.Add(new TextBlock { Text = $"Re-audited by ACE at {band.At:HH:mm} (read-only model check)", Foreground = _c.Muted, FontSize = 10, Margin = new Thickness(0, 2, 0, 0) });
+            if (band.Tone is "failed" or "skipped")
+            {
+                var rerun = ActionButton("Re-run audit", true);
+                rerun.HorizontalAlignment = HorizontalAlignment.Left;
+                rerun.Click += async (s, e) => await RunModelCheckAsync();
+                p.Children.Add(rerun);
+            }
+            return new Border
+            {
+                BorderBrush = colour, BorderThickness = new Thickness(4, 1, 1, 1), Background = _c.Card, CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 0, 0, 10), Child = p,
+            };
         }
 
         // One bar: met, partly, not met, not checkable, in proportion; the words are in the tiles above.
@@ -740,8 +776,11 @@ namespace AceRevitMcp.Companion
                 ActivityHub.Decide(p, ok ? PendingState.AppliedByPanel : PendingState.Failed, outcome);
                 Journal.Append($"Change (applied in ACE panel): {p.Title}", null,
                     ok ? $"APPLIED by the user from the ACE Companion panel ({outcome})" : $"FAILED - nothing changed ({outcome})");
-                Toast(ok ? $"Applied: {outcome}. One undo step (Ctrl+Z). Tell Claude \"done\" so it can verify."
-                         : $"Not applied: {outcome}. Nothing was changed.");
+                // With a requirements vault ACE re-audits by itself (DM3); without one, Claude verifies.
+                var reaudits = StatusStore.For(p.DocumentTitle ?? ActivityHub.Context.Document)?.Compliance != null;
+                Toast(!ok ? $"Not applied: {outcome}. Nothing was changed."
+                    : reaudits ? $"Applied: {outcome}. One undo step (Ctrl+Z). Re-auditing the requirements..."
+                    : $"Applied: {outcome}. One undo step (Ctrl+Z). Tell Claude \"done\" so it can verify.");
             }
             catch (Exception ex)
             {

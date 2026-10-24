@@ -60,6 +60,9 @@ namespace AceRevitMcp.Util
                 {
                     var doc = e.GetDocument();
                     NoteSinceAudit(doc.Title, e.GetAddedElementIds().Concat(e.GetModifiedElementIds()).Concat(e.GetDeletedElementIds()).Select(i => i.Value));
+                    // Ctrl+Z / Ctrl+Y (or undo_last_claude_change): the requirements are checked again when Revit is idle (DM3).
+                    if (op == UndoOperation.TransactionUndone) Rules.ReAudit.Due(doc.Title, "undo");
+                    else if (op == UndoOperation.TransactionRedone) Rules.ReAudit.Due(doc.Title, "redo");
                 }
                 catch { /* counting is a convenience, never a failure */ }
             }
@@ -121,7 +124,12 @@ namespace AceRevitMcp.Util
         public static void End(Recording recording, bool keptChanges)
         {
             if (_current == recording) _current = null;
-            if (keptChanges && recording.Committed > 0) NoteSinceAudit(LastClaudeChangeDocument, recording.ChangedIds);
+            if (keptChanges && recording.Committed > 0)
+            {
+                NoteSinceAudit(LastClaudeChangeDocument, recording.ChangedIds);
+                // An applied change: the requirements are checked again when Revit is idle (DM3).
+                if (recording.ElementChanges > 0) Rules.ReAudit.Due(LastClaudeChangeDocument, "apply");
+            }
             // A rolled-back (dry) run leaves the undo stack exactly as it was before.
             if (!keptChanges && recording.Committed > 0)
             {
